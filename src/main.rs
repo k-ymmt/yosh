@@ -28,8 +28,12 @@ fn main() {
                     eprintln!("kish: -c requires an argument");
                     process::exit(2);
                 }
-                let positional: Vec<String> = if args.len() > 3 { args[3..].to_vec() } else { vec![] };
-                let sn = if args.len() > 3 { args[3].clone() } else { shell_name };
+                // POSIX: sh -c cmd [name [arg...]]
+                // After the script, the next arg is $0 (shell_name), remaining are $1, $2, ...
+                // Support `--` as an optional separator before positional args.
+                let rest_start = if args.len() > 3 && args[3] == "--" { 4 } else { 3 };
+                let sn = if rest_start < args.len() { args[rest_start].clone() } else { shell_name };
+                let positional: Vec<String> = if rest_start + 1 < args.len() { args[rest_start + 1..].to_vec() } else { vec![] };
                 let status = run_string(&args[2], sn, positional);
                 process::exit(status);
             } else if args[1] == "--parse" {
@@ -61,9 +65,21 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>) -> i32 {
     match parser::Parser::new(input).parse_program() {
         Ok(program) => {
             let mut executor = Executor::new(shell_name, positional);
-            executor.exec_program(&program)
+            let status = executor.exec_program(&program);
+            execute_exit_trap(&mut executor);
+            status
         }
         Err(e) => { eprintln!("{}", e); 2 }
+    }
+}
+
+fn execute_exit_trap(executor: &mut Executor) {
+    if let Some(action) = executor.env.traps.exit_trap.take() {
+        if let env::TrapAction::Command(cmd) = action {
+            if let Ok(program) = parser::Parser::new(&cmd).parse_program() {
+                executor.exec_program(&program);
+            }
+        }
     }
 }
 

@@ -64,7 +64,11 @@ impl Default for ExpandedField {
 pub fn expand_word(env: &mut ShellEnv, word: &Word) -> Vec<String> {
     let fields = expand_word_to_fields(env, word);
     let fields = field_split::split(env, fields);
-    let fields = pathname::expand(env, fields);
+    let fields = if env.options.noglob {
+        fields
+    } else {
+        pathname::expand(env, fields)
+    };
     fields
         .into_iter()
         .filter(|f| !f.is_empty())

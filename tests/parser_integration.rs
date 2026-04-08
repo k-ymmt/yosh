@@ -16,6 +16,17 @@ fn kish_exec(input: &str) -> std::process::Output {
         .expect("failed to execute kish")
 }
 
+fn kish_exec_with_args(input: &str, args: &[&str]) -> std::process::Output {
+    // POSIX: sh -c cmd [name [arg...]]
+    // We pass "kish" as $0 (name), then the test args as $1, $2, ...
+    let mut cmd_args = vec!["-c", input, "--", "kish"];
+    cmd_args.extend_from_slice(args);
+    Command::new(env!("CARGO_BIN_EXE_kish"))
+        .args(cmd_args)
+        .output()
+        .expect("failed to execute kish")
+}
+
 // ── execution tests ──────────────────────────────────────────────────────────
 
 #[test]
@@ -852,4 +863,147 @@ fn test_exec_script_with_functions() {
         String::from_utf8_lossy(&output.stdout),
         "Hello, Alice!\nHello, Bob!\n"
     );
+}
+
+// ── Phase 6: Special builtins tests ─────────────────────────────────────────
+
+// ── set ──
+
+#[test]
+fn test_set_positional_params() {
+    let out = kish_exec("set -- a b c; echo $1 $2 $3");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a b c\n");
+}
+
+#[test]
+fn test_set_enable_option() {
+    let out = kish_exec("set -f; echo *");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "*\n");
+}
+
+#[test]
+fn test_set_dash_o_display() {
+    let out = kish_exec("set -o");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("allexport"));
+    assert!(stdout.contains("off"));
+}
+
+#[test]
+fn test_set_no_args_displays_vars() {
+    let out = kish_exec("X=hello; set");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("X=hello"));
+}
+
+// ── eval ──
+
+#[test]
+fn test_eval_simple() {
+    let out = kish_exec("eval 'echo hello'");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_eval_variable_expansion() {
+    let out = kish_exec("CMD='echo world'; eval $CMD");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "world\n");
+}
+
+#[test]
+fn test_eval_empty() {
+    let out = kish_exec("eval; echo $?");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
+}
+
+// ── exec ──
+
+#[test]
+fn test_exec_replaces_process() {
+    // Use /bin/echo which is available on macOS and Linux
+    let echo_path = if std::path::Path::new("/bin/echo").exists() {
+        "/bin/echo"
+    } else {
+        "/usr/bin/echo"
+    };
+    let cmd = format!("exec {} replaced", echo_path);
+    let out = kish_exec(&cmd);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "replaced\n");
+}
+
+#[test]
+fn test_exec_no_args() {
+    let out = kish_exec("exec; echo still here");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "still here\n");
+}
+
+// ── trap ──
+
+#[test]
+fn test_trap_exit() {
+    let out = kish_exec("trap 'echo goodbye' EXIT; echo hello");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout, "hello\ngoodbye\n");
+}
+
+#[test]
+fn test_trap_display() {
+    let out = kish_exec("trap 'echo bye' EXIT; trap");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("trap -- 'echo bye' EXIT"));
+}
+
+#[test]
+fn test_trap_reset() {
+    let out = kish_exec("trap 'echo bye' EXIT; trap - EXIT; echo hello");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout, "hello\n");
+}
+
+// ── source ──
+
+#[test]
+fn test_source_file() {
+    let dir = helpers::TempDir::new();
+    let script = dir.write_file("lib.sh", "MY_SOURCE_VAR=sourced\n");
+    let cmd = format!(". {}; echo $MY_SOURCE_VAR", script.display());
+    let out = kish_exec(&cmd);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "sourced\n");
+}
+
+#[test]
+fn test_source_not_found() {
+    let out = kish_exec(". /nonexistent/file.sh");
+    assert!(!out.status.success());
+}
+
+// ── shift ──
+
+#[test]
+fn test_shift_default() {
+    let out = kish_exec_with_args("shift; echo $1 $2", &["a", "b", "c"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "b c\n");
+}
+
+#[test]
+fn test_shift_n() {
+    let out = kish_exec_with_args("shift 2; echo $1", &["a", "b", "c"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "c\n");
+}
+
+#[test]
+fn test_shift_too_many() {
+    let out = kish_exec_with_args("shift 5; echo $?", &["a", "b"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout, "1\n");
+}
+
+// ── times ──
+
+#[test]
+fn test_times() {
+    let out = kish_exec("times");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("m"));
 }
