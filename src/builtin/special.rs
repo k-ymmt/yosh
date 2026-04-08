@@ -249,7 +249,7 @@ fn builtin_eval(args: &[String], executor: &mut Executor) -> i32 {
         return 0;
     }
     let input = args.join(" ");
-    match crate::parser::Parser::new(&input).parse_program() {
+    match crate::parser::Parser::new_with_aliases(&input, &executor.env.aliases).parse_program() {
         Ok(program) => executor.exec_program(&program),
         Err(e) => {
             eprintln!("kish: eval: {}", e);
@@ -353,7 +353,7 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
         Ok(c) => c,
         Err(e) => { eprintln!("kish: .: {}: {}", path.display(), e); return 1; }
     };
-    match crate::parser::Parser::new(&content).parse_program() {
+    match crate::parser::Parser::new_with_aliases(&content, &executor.env.aliases).parse_program() {
         Ok(program) => executor.exec_program(&program),
         Err(e) => { eprintln!("kish: .: {}", e); 2 }
     }

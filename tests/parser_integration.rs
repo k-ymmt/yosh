@@ -1060,3 +1060,94 @@ fn test_allexport() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("MY_AE_VAR=exported"));
 }
+
+// ── Alias expansion tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_alias_basic() {
+    let out = kish_exec("alias greet='echo hello'\ngreet");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_alias_with_args() {
+    let out = kish_exec("alias say='echo'\nsay world");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "world\n");
+}
+
+#[test]
+fn test_alias_recursive_prevention() {
+    let out = kish_exec("alias ls='echo ls called'\nls");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ls called\n");
+}
+
+#[test]
+fn test_alias_trailing_space_chain() {
+    let out = kish_exec("alias run='echo '\nalias world='hello'\nrun world");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_alias_display() {
+    let out = kish_exec("alias ll='ls -l'\nalias ll");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("alias ll='ls -l'"));
+}
+
+#[test]
+fn test_unalias() {
+    let out = kish_exec("alias greet='echo hi'\nunalias greet\nalias greet");
+    assert!(!out.status.success());
+}
+
+#[test]
+fn test_unalias_all() {
+    let out = kish_exec("alias a='echo a'\nalias b='echo b'\nunalias -a\nalias");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.is_empty());
+}
+
+#[test]
+fn test_alias_in_pipeline() {
+    let out = kish_exec("alias greet='echo hello world'\ngreet | tr ' ' '\\n' | sort");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("hello"));
+    assert!(stdout.contains("world"));
+}
+
+#[test]
+fn test_alias_after_semicolon() {
+    // Alias should be expanded after ; (new command position)
+    let out = kish_exec("alias greet='echo hello'\necho start; greet");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "start\nhello\n");
+}
+
+#[test]
+fn test_alias_not_in_second_word() {
+    // Alias should NOT expand in non-command position
+    let out = kish_exec("alias world='EXPANDED'\necho world");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "world\n");
+}
+
+#[test]
+fn test_alias_via_eval() {
+    let out = kish_exec("alias greet='echo hello'\neval greet");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_alias_multiword_value() {
+    let out = kish_exec("alias greet='echo hello world'\ngreet");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello world\n");
+}
+
+#[test]
+fn test_alias_with_redirect() {
+    let tmp = helpers::TempDir::new();
+    let outfile = tmp.path().join("out.txt");
+    let cmd = format!("alias greet='echo hello'\ngreet > {}", outfile.display());
+    let out = kish_exec(&cmd);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&outfile).unwrap();
+    assert_eq!(content, "hello\n");
+}

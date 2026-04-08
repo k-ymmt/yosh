@@ -12,6 +12,8 @@ use ast::{
 pub struct Parser {
     lexer: Lexer,
     current: SpannedToken,
+    /// Lexer position before the current look-ahead token was read.
+    pre_current_pos: usize,
 }
 
 impl Parser {
@@ -22,7 +24,22 @@ impl Parser {
             token: Token::Eof,
             span: Span::default(),
         });
-        Self { lexer, current }
+        Self { lexer, current, pre_current_pos: 0 }
+    }
+
+    pub fn new_with_aliases(input: &str, aliases: &crate::env::aliases::AliasStore) -> Self {
+        let mut lexer = Lexer::new_with_aliases(input, aliases);
+        let current = lexer.next_token().unwrap_or(SpannedToken {
+            token: Token::Eof,
+            span: Span::default(),
+        });
+        Self { lexer, current, pre_current_pos: 0 }
+    }
+
+    /// Returns the byte position in the input up to (but not including) the current
+    /// look-ahead token. This is useful for incremental parsing.
+    pub fn consumed_bytes(&self) -> usize {
+        self.pre_current_pos
     }
 
     pub fn current_token(&self) -> &Token {
@@ -34,6 +51,7 @@ impl Parser {
     }
 
     pub fn advance(&mut self) -> error::Result<()> {
+        self.pre_current_pos = self.lexer.position();
         self.current = self.lexer.next_token()?;
         Ok(())
     }

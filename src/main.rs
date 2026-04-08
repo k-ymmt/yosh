@@ -62,16 +62,54 @@ fn main() {
 }
 
 fn run_string(input: &str, shell_name: String, positional: Vec<String>) -> i32 {
-    match parser::Parser::new(input).parse_program() {
-        Ok(program) => {
-            let mut executor = Executor::new(shell_name, positional);
-            executor.verbose_print(input);
-            let status = executor.exec_program(&program);
-            execute_exit_trap(&mut executor);
-            status
+    let mut executor = Executor::new(shell_name, positional);
+    executor.verbose_print(input);
+
+    // Parse and execute one complete command at a time so that aliases
+    // defined by earlier commands are available for later ones.
+    let mut remaining = input;
+    let mut status = 0;
+
+    loop {
+        // Skip leading whitespace and newlines
+        let trimmed = remaining.trim_start_matches(|c: char| c == ' ' || c == '\t' || c == '\n');
+        if trimmed.is_empty() {
+            break;
         }
-        Err(e) => { eprintln!("{}", e); 2 }
+        remaining = trimmed;
+
+        let mut p = parser::Parser::new_with_aliases(remaining, &executor.env.aliases);
+        if p.is_at_end() {
+            break;
+        }
+        match p.parse_complete_command() {
+            Ok(cmd) => {
+                let consumed = p.consumed_bytes();
+                // Advance remaining past the consumed bytes
+                if consumed == 0 {
+                    // Nothing consumed — avoid infinite loop.
+                    // This can happen if parse_complete_command succeeds but
+                    // the look-ahead didn't advance. Break out.
+                    break;
+                }
+                drop(p);
+                status = executor.exec_complete_command(&cmd);
+                // Check for flow control (exit handled by std::process::exit in builtin)
+                if executor.env.flow_control.is_some() {
+                    break;
+                }
+                remaining = &remaining[consumed..];
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                execute_exit_trap(&mut executor);
+                return 2;
+            }
+        }
     }
+
+    execute_exit_trap(&mut executor);
+    status
 }
 
 fn execute_exit_trap(executor: &mut Executor) {
