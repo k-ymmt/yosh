@@ -17,7 +17,6 @@
 ## Phase 3: Known Limitations
 
 - [ ] Unquoted `$@` should produce separate fields per positional param, currently joins with space (`src/expand/mod.rs`)
-- [ ] `set -f` (noglob) not checked — pathname expansion cannot be disabled yet (`src/expand/pathname.rs`)
 - [ ] Arithmetic compound assignment operators (`+=`, `-=`, `*=`, etc.) not implemented (`src/expand/arith.rs`)
 - [ ] `${parameter:?word}` should exit non-interactive shell, currently only prints error (`src/expand/param.rs`)
 - [ ] Deeply nested command substitution edge cases untested
@@ -43,7 +42,5 @@
 
 ## Remaining Phases
 
-- [x] Phase 5: Control structure execution (if, for, while, until, case, functions)
-- [x] Phase 6: Special builtins (set, export, trap, eval, exec, etc.) + alias expansion
 - [ ] Phase 7: Signals and errexit
 - [ ] Phase 8: Subshell environment isolation
