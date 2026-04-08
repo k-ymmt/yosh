@@ -1,14 +1,14 @@
+mod env;
 mod error;
 mod lexer;
 mod parser;
 
-use std::env;
 use std::fs;
 use std::io::{self, Read};
 use std::process;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = std::env::args().collect();
 
     match args.len() {
         1 => {
