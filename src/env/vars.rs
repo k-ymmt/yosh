@@ -111,6 +111,11 @@ impl VarStore {
             .map(|(k, v)| (k.clone(), v.value.clone()))
             .collect()
     }
+
+    /// Iterate over all variables as (&name, &Variable) pairs.
+    pub fn vars_iter(&self) -> impl Iterator<Item = (&String, &Variable)> {
+        self.vars.iter()
+    }
 }
 
 impl Default for VarStore {

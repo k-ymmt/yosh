@@ -1,3 +1,4 @@
+mod builtin;
 mod env;
 mod error;
 mod expand;
