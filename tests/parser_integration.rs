@@ -392,6 +392,50 @@ fn test_parse_error_unmatched_quote() {
     assert!(!out.status.success());
 }
 
+// ── Phase 4: Here-document I/O tests ─────────────────────────────────────────
+
+#[test]
+fn test_heredoc_basic() {
+    let out = kish_exec("cat <<EOF\nhello world\nEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello world\n");
+}
+
+#[test]
+fn test_heredoc_multiline() {
+    let out = kish_exec("cat <<EOF\nline1\nline2\nline3\nEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "line1\nline2\nline3\n");
+}
+
+#[test]
+fn test_heredoc_with_variable_expansion() {
+    let out = kish_exec("FOO=hello; cat <<EOF\nvalue is $FOO\nEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "value is hello\n");
+}
+
+#[test]
+fn test_heredoc_quoted_delimiter_no_expansion() {
+    let out = kish_exec("FOO=hello; cat <<'EOF'\nvalue is $FOO\nEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "value is $FOO\n");
+}
+
+#[test]
+fn test_heredoc_strip_tabs() {
+    let out = kish_exec("cat <<-EOF\n\thello\n\tworld\n\tEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\nworld\n");
+}
+
+#[test]
+fn test_heredoc_with_command_sub() {
+    let out = kish_exec("x=$(cat <<EOF\nhello\nEOF\n); echo $x");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_heredoc_empty_body() {
+    let out = kish_exec("cat <<EOF\nEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
+
 #[test]
 fn test_parse_script_file() {
     let tmp = helpers::TempDir::new();
