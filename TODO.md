@@ -58,6 +58,13 @@
 - [ ] `set -- a "" c` drops empty string arguments — `$#` returns 2 instead of 3
 - [ ] `${parameter:?word}` with spaces in word causes parse error instead of printing custom error message
 
+## E2E Test Runner Improvements
+
+- [ ] Timeout handler should use `exec` to avoid orphan child processes when kish forks (`e2e/run_tests.sh`)
+- [ ] `normalize_trailing()` is a no-op — `$()` already strips trailing newlines; update comment or remove (`e2e/run_tests.sh`)
+- [ ] Add warning when `EXPECT_OUTPUT<<DELIM` heredoc is never closed by matching delimiter (`e2e/run_tests.sh`)
+- [ ] Add `timedout` counter to summary output, separate from `failed` count (`e2e/run_tests.sh`)
+
 ## Future: E2E Test Expansion
 
 - [ ] Deep edge-case tests for each feature (e.g., nested expansions, unusual quoting combinations)
