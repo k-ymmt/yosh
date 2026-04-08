@@ -1,5 +1,6 @@
 mod env;
 mod error;
+mod expand;
 mod lexer;
 mod parser;
 
