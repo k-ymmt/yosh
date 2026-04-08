@@ -65,6 +65,7 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>) -> i32 {
     match parser::Parser::new(input).parse_program() {
         Ok(program) => {
             let mut executor = Executor::new(shell_name, positional);
+            executor.verbose_print(input);
             let status = executor.exec_program(&program);
             execute_exit_trap(&mut executor);
             status

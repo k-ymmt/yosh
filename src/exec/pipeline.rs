@@ -90,15 +90,24 @@ impl Executor {
 
         // Parent: wait for all children, return last child's exit status
         // POSIX: pipeline exit status = exit status of last command
+        // With pipefail: return the last non-zero status (or zero if all succeeded)
         let mut last_status = 0;
+        let mut max_nonzero = 0;
         for (idx, child) in children.into_iter().enumerate() {
             let status = wait_for_child(child);
+            if status != 0 {
+                max_nonzero = status;
+            }
             if idx == n - 1 {
                 last_status = status;
             }
         }
 
-        last_status
+        if self.env.options.pipefail {
+            max_nonzero
+        } else {
+            last_status
+        }
     }
 }
 

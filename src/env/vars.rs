@@ -80,6 +80,31 @@ impl VarStore {
         Ok(())
     }
 
+    /// Set a variable's value with allexport support. Returns an error if the variable is readonly.
+    pub fn set_with_options(&mut self, name: &str, value: impl Into<String>, allexport: bool) -> Result<(), String> {
+        if let Some(existing) = self.vars.get(name) {
+            if existing.readonly {
+                return Err(format!("{}: readonly variable", name));
+            }
+            let exported = existing.exported || allexport;
+            self.vars.insert(
+                name.to_string(),
+                Variable {
+                    value: value.into(),
+                    exported,
+                    readonly: false,
+                },
+            );
+        } else {
+            let mut var = Variable::new(value);
+            if allexport {
+                var.exported = true;
+            }
+            self.vars.insert(name.to_string(), var);
+        }
+        Ok(())
+    }
+
     /// Unset a variable. Returns an error if the variable is readonly.
     pub fn unset(&mut self, name: &str) -> Result<(), String> {
         if let Some(existing) = self.vars.get(name)

@@ -1007,3 +1007,56 @@ fn test_times() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("m"));
 }
+
+// ── shell option behaviors (phase 6) ────────────────────────────────────────
+
+#[test]
+fn test_dash_parameter() {
+    let out = kish_exec("set -x; echo $-");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.trim().contains('x'));
+}
+
+#[test]
+fn test_nounset() {
+    let out = kish_exec("set -u; echo $UNDEFINED_VAR_XYZ");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("UNDEFINED_VAR_XYZ"));
+}
+
+#[test]
+fn test_noclobber() {
+    let dir = helpers::TempDir::new();
+    let file = dir.write_file("existing.txt", "original");
+    let cmd = format!("set -C; echo new > {}", file.display());
+    let out = kish_exec(&cmd);
+    assert!(!out.status.success());
+    let content = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(content, "original");
+}
+
+#[test]
+fn test_noclobber_override() {
+    let dir = helpers::TempDir::new();
+    let file = dir.write_file("existing.txt", "original");
+    let cmd = format!("set -C; echo new >| {}", file.display());
+    let out = kish_exec(&cmd);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(content, "new\n");
+}
+
+#[test]
+fn test_xtrace() {
+    let out = kish_exec("set -x; echo hello");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("+ echo hello"));
+}
+
+#[test]
+fn test_allexport() {
+    let out = kish_exec("set -a; MY_AE_VAR=exported; /usr/bin/env | grep MY_AE_VAR");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("MY_AE_VAR=exported"));
+}

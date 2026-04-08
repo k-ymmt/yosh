@@ -59,16 +59,28 @@ impl RedirectState {
                 raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
                 unsafe { libc::close(fd) };
             }
-            RedirectKind::Output(word) | RedirectKind::OutputClobber(word) => {
+            RedirectKind::Output(word) => {
+                let target_fd = redirect.fd.unwrap_or(1);
+                let path = expand_word_to_string(env, word);
+                if env.options.noclobber && std::path::Path::new(&path).exists() {
+                    return Err(format!("{}: cannot overwrite existing file", path));
+                }
+                let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
+                let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
+                    .map_err(|e| format!("{}: {}", path, e))?
+                    .into_raw_fd();
+                if save { self.save_fd(target_fd)?; }
+                raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
+                unsafe { libc::close(fd) };
+            }
+            RedirectKind::OutputClobber(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
                 let path = expand_word_to_string(env, word);
                 let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
                 let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
-                if save {
-                    self.save_fd(target_fd)?;
-                }
+                if save { self.save_fd(target_fd)?; }
                 raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
                 unsafe { libc::close(fd) };
             }

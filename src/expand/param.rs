@@ -7,7 +7,17 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> String {
     match param {
         // ── Simple variable ──────────────────────────────────────────────
         ParamExpr::Simple(name) => {
-            env.vars.get(name).unwrap_or("").to_string()
+            match env.vars.get(name) {
+                Some(val) => val.to_string(),
+                None => {
+                    if env.options.nounset {
+                        eprintln!("kish: {}: parameter not set", name);
+                        env.last_exit_status = 1;
+                        env.flow_control = Some(crate::env::FlowControl::Return(1));
+                    }
+                    String::new()
+                }
+            }
         }
 
         // ── Positional parameters ────────────────────────────────────────
@@ -134,7 +144,7 @@ fn expand_special(env: &ShellEnv, sp: &SpecialParam) -> String {
         SpecialParam::Hash => env.positional_params.len().to_string(),
         SpecialParam::At | SpecialParam::Star => env.positional_params.join(" "),
         SpecialParam::Bang => String::new(),
-        SpecialParam::Dash => String::new(),
+        SpecialParam::Dash => env.options.to_flag_string(),
     }
 }
 

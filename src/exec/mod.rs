@@ -30,8 +30,18 @@ impl Executor {
         }
     }
 
+    /// Print the line if verbose mode is enabled.
+    pub fn verbose_print(&self, line: &str) {
+        if self.env.options.verbose {
+            eprintln!("{}", line);
+        }
+    }
+
     /// Dispatch a `Command` to the appropriate execution path.
     pub fn exec_command(&mut self, cmd: &Command) -> i32 {
+        if self.env.options.noexec {
+            return 0;
+        }
         match cmd {
             Command::Simple(simple) => self.exec_simple_command(simple),
             Command::Compound(compound, redirects) => {
@@ -302,6 +312,12 @@ impl Executor {
         // Expand all words
         let expanded = expand_words(&mut self.env, &cmd.words);
 
+        // Check if expansion triggered a flow control signal (e.g., nounset error)
+        if self.env.flow_control.is_some() {
+            self.env.last_exit_status = 1;
+            return 1;
+        }
+
         // Assignment-only command (no words)
         if expanded.is_empty() {
             // Track the exit status from any command substitutions in the assignments.
@@ -318,7 +334,7 @@ impl Executor {
                     .unwrap_or_default();
                 // Capture the status set by any command substitution during expansion
                 last_cmd_sub_status = self.env.last_exit_status;
-                if let Err(e) = self.env.vars.set(&assignment.name, value) {
+                if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.options.allexport) {
                     eprintln!("kish: {}", e);
                     self.env.last_exit_status = 1;
                     return 1;
@@ -326,6 +342,10 @@ impl Executor {
             }
             self.env.last_exit_status = last_cmd_sub_status;
             return last_cmd_sub_status;
+        }
+
+        if self.env.options.xtrace && !expanded.is_empty() {
+            eprintln!("+ {}", expanded.join(" "));
         }
 
         let command_name = expanded[0].clone();
@@ -354,7 +374,7 @@ impl Executor {
                         .as_ref()
                         .map(|w| crate::expand::expand_word_to_string(&mut self.env, w))
                         .unwrap_or_default();
-                    if let Err(e) = self.env.vars.set(&assignment.name, value) {
+                    if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.options.allexport) {
                         eprintln!("kish: {}", e);
                         self.env.last_exit_status = 1;
                         return 1;
