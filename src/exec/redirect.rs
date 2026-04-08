@@ -134,8 +134,38 @@ impl RedirectState {
                 raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
                 unsafe { libc::close(fd) };
             }
-            RedirectKind::HereDoc(_) => {
-                // Phase 4 — skip for now
+            RedirectKind::HereDoc(heredoc) => {
+                let target_fd = redirect.fd.unwrap_or(0);
+
+                // Expand the body
+                let body = crate::expand::expand_heredoc_body(
+                    env,
+                    &heredoc.body,
+                    heredoc.quoted,
+                );
+
+                // Create a pipe
+                let mut fds: [RawFd; 2] = [0; 2];
+                if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
+                    return Err(format!("pipe: {}", std::io::Error::last_os_error()));
+                }
+                let (read_fd, write_fd) = (fds[0], fds[1]);
+
+                // Write the body to the pipe write end, then close it
+                {
+                    use std::io::Write;
+                    use std::os::unix::io::FromRawFd;
+                    let mut write_file = unsafe { std::fs::File::from_raw_fd(write_fd) };
+                    let _ = write_file.write_all(body.as_bytes());
+                    // drop closes write_fd
+                }
+
+                // Connect read end to target fd (stdin by default)
+                if save {
+                    self.save_fd(target_fd)?;
+                }
+                raw_dup2(read_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
+                unsafe { libc::close(read_fd) };
             }
         }
         Ok(())
