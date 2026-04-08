@@ -45,38 +45,46 @@ impl Executor {
     /// Execute a simple command (assignments, builtins, or external programs).
     pub fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> i32 {
         // Expand all words
-        let expanded = expand_words(&self.env, &cmd.words);
+        let expanded = expand_words(&mut self.env, &cmd.words);
 
         // Assignment-only command (no words)
         if expanded.is_empty() {
+            // Track the exit status from any command substitutions in the assignments.
+            // POSIX: the exit status of an assignment-only command is the exit status
+            // of the last command substitution performed during expansion.
+            let mut last_cmd_sub_status = 0i32;
             for assignment in &cmd.assignments {
+                // Reset before each expansion so we can capture per-assignment status
+                self.env.last_exit_status = 0;
                 let value = assignment
                     .value
                     .as_ref()
-                    .map(|w| crate::expand::expand_word_to_string(&self.env, w))
+                    .map(|w| crate::expand::expand_word_to_string(&mut self.env, w))
                     .unwrap_or_default();
+                // Capture the status set by any command substitution during expansion
+                last_cmd_sub_status = self.env.last_exit_status;
                 if let Err(e) = self.env.vars.set(&assignment.name, value) {
                     eprintln!("kish: {}", e);
                     self.env.last_exit_status = 1;
                     return 1;
                 }
             }
-            self.env.last_exit_status = 0;
-            return 0;
+            self.env.last_exit_status = last_cmd_sub_status;
+            return last_cmd_sub_status;
         }
 
-        let command_name = &expanded[0];
-        let args = &expanded[1..];
+        let command_name = expanded[0].clone();
+        let args: Vec<String> = expanded[1..].to_vec();
 
-        if is_builtin(command_name) {
+        if is_builtin(&command_name) {
             // For builtins: apply redirects with save=true, run, restore
             let mut redirect_state = RedirectState::new();
-            if let Err(e) = redirect_state.apply(&cmd.redirects, &self.env, true) {
+            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 eprintln!("kish: {}", e);
                 self.env.last_exit_status = 1;
                 return 1;
             }
-            let status = exec_builtin(command_name, args, &mut self.env);
+            let status = exec_builtin(&command_name, &args, &mut self.env);
             redirect_state.restore();
             self.env.last_exit_status = status;
             status
@@ -84,8 +92,8 @@ impl Executor {
             // External command: fork, child applies redirects + env + exec, parent waits
             let env_vars = self.build_env_vars(&cmd.assignments);
             let status = self.exec_external_with_redirects(
-                command_name,
-                args,
+                &command_name,
+                &args,
                 &env_vars,
                 &cmd.redirects,
             );
@@ -95,13 +103,13 @@ impl Executor {
     }
 
     /// Merge exported shell variables with command-specific assignments.
-    pub fn build_env_vars(&self, assignments: &[Assignment]) -> Vec<(String, String)> {
+    pub fn build_env_vars(&mut self, assignments: &[Assignment]) -> Vec<(String, String)> {
         let mut vars = self.env.vars.to_environ();
         for assign in assignments {
             let value = assign
                 .value
                 .as_ref()
-                .map(|w| crate::expand::expand_word_to_string(&self.env, w))
+                .map(|w| crate::expand::expand_word_to_string(&mut self.env, w))
                 .unwrap_or_default();
             // Replace existing or push new
             if let Some(entry) = vars.iter_mut().find(|(k, _)| k == &assign.name) {
@@ -115,7 +123,7 @@ impl Executor {
 
     /// Fork, apply redirects in child, exec the command, wait in parent.
     pub fn exec_external_with_redirects(
-        &self,
+        &mut self,
         cmd: &str,
         args: &[String],
         env_vars: &[(String, String)],
@@ -149,7 +157,7 @@ impl Executor {
             Ok(ForkResult::Child) => {
                 // Apply redirects (no need to save, we're in the child)
                 let mut redir_state = RedirectState::new();
-                if let Err(e) = redir_state.apply(redirects, &self.env, false) {
+                if let Err(e) = redir_state.apply(redirects, &mut self.env, false) {
                     eprintln!("kish: {}", e);
                     std::process::exit(1);
                 }
