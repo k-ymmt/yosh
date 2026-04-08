@@ -64,6 +64,7 @@ impl Executor {
                     } else {
                         setpgid(my_pid, pgid).ok();
                     }
+                    self.env.traps.reset_non_ignored();
                     signal::reset_child_signals();
 
                     // Set up stdin from previous pipe's read end (if not first)
