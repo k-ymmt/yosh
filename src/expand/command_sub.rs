@@ -56,7 +56,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 aliases: env.aliases.clone(),
                 bg_jobs: Vec::new(),
             };
-            let mut executor = Executor { env: child_env };
+            let mut executor = Executor::from_env(child_env);
 
             let status = executor.exec_program(program);
             std::process::exit(status);

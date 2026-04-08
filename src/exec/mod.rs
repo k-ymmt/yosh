@@ -21,12 +21,64 @@ use redirect::RedirectState;
 
 pub struct Executor {
     pub env: ShellEnv,
+    errexit_suppressed_depth: usize,
 }
 
 impl Executor {
     pub fn new(shell_name: impl Into<String>, args: Vec<String>) -> Self {
         Executor {
             env: ShellEnv::new(shell_name, args),
+            errexit_suppressed_depth: 0,
+        }
+    }
+
+    /// Create an Executor from an existing ShellEnv (e.g. for subshell/command substitution).
+    pub fn from_env(env: ShellEnv) -> Self {
+        Executor {
+            env,
+            errexit_suppressed_depth: 0,
+        }
+    }
+
+    /// Execute closure within errexit-suppressed context.
+    pub fn with_errexit_suppressed<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        self.errexit_suppressed_depth += 1;
+        let result = f(self);
+        self.errexit_suppressed_depth -= 1;
+        result
+    }
+
+    /// Check if errexit is active and not suppressed.
+    pub fn should_errexit(&self) -> bool {
+        self.env.options.errexit && self.errexit_suppressed_depth == 0
+    }
+
+    /// Errexit check after command execution.
+    pub fn check_errexit(&mut self, status: i32) {
+        if status != 0 && self.should_errexit() {
+            self.execute_exit_trap();
+            std::process::exit(status);
+        }
+    }
+
+    /// Execute the EXIT trap if set.
+    pub fn execute_exit_trap(&mut self) {
+        if let Some(crate::env::TrapAction::Command(cmd)) = self.env.traps.exit_trap.take() {
+            self.with_errexit_suppressed(|exec| {
+                exec.eval_string(&cmd);
+            });
+        }
+    }
+
+    /// Evaluate a string as shell commands (used by trap actions and eval).
+    pub fn eval_string(&mut self, input: &str) {
+        if let Ok(program) =
+            crate::parser::Parser::new_with_aliases(input, &self.env.aliases).parse_program()
+        {
+            self.exec_program(&program);
         }
     }
 
@@ -812,5 +864,45 @@ mod tests {
             ],
         };
         assert_eq!(exec.exec_program(&program), 1);
+    }
+
+    #[test]
+    fn test_should_errexit_default_off() {
+        let exec = Executor::new("kish", vec![]);
+        assert!(!exec.should_errexit());
+    }
+
+    #[test]
+    fn test_should_errexit_enabled() {
+        let mut exec = Executor::new("kish", vec![]);
+        exec.env.options.errexit = true;
+        assert!(exec.should_errexit());
+    }
+
+    #[test]
+    fn test_with_errexit_suppressed() {
+        let mut exec = Executor::new("kish", vec![]);
+        exec.env.options.errexit = true;
+        assert!(exec.should_errexit());
+        let result = exec.with_errexit_suppressed(|e| {
+            assert!(!e.should_errexit());
+            42
+        });
+        assert_eq!(result, 42);
+        assert!(exec.should_errexit());
+    }
+
+    #[test]
+    fn test_with_errexit_suppressed_nested() {
+        let mut exec = Executor::new("kish", vec![]);
+        exec.env.options.errexit = true;
+        exec.with_errexit_suppressed(|e| {
+            assert!(!e.should_errexit());
+            e.with_errexit_suppressed(|e2| {
+                assert!(!e2.should_errexit());
+            });
+            assert!(!e.should_errexit());
+        });
+        assert!(exec.should_errexit());
     }
 }

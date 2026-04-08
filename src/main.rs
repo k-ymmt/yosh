@@ -103,22 +103,14 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>) -> i32 {
             }
             Err(e) => {
                 eprintln!("{}", e);
-                execute_exit_trap(&mut executor);
+                executor.execute_exit_trap();
                 return 2;
             }
         }
     }
 
-    execute_exit_trap(&mut executor);
+    executor.execute_exit_trap();
     status
-}
-
-fn execute_exit_trap(executor: &mut Executor) {
-    if let Some(env::TrapAction::Command(cmd)) = executor.env.traps.exit_trap.take()
-        && let Ok(program) = parser::Parser::new(&cmd).parse_program()
-    {
-        executor.exec_program(&program);
-    }
 }
 
 fn run_file(path: &str, shell_name: String, positional: Vec<String>) -> i32 {
