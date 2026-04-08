@@ -36,7 +36,7 @@ impl RedirectState {
     pub fn apply(
         &mut self,
         redirects: &[Redirect],
-        env: &ShellEnv,
+        env: &mut ShellEnv,
         save: bool,
     ) -> Result<(), String> {
         for redirect in redirects {
@@ -45,7 +45,7 @@ impl RedirectState {
         Ok(())
     }
 
-    fn apply_one(&mut self, redirect: &Redirect, env: &ShellEnv, save: bool) -> Result<(), String> {
+    fn apply_one(&mut self, redirect: &Redirect, env: &mut ShellEnv, save: bool) -> Result<(), String> {
         match &redirect.kind {
             RedirectKind::Input(word) => {
                 let target_fd = redirect.fd.unwrap_or(0);
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_redirect_output_and_restore() {
-        let env = make_env();
+        let mut env = make_env();
         let tmp = std::env::temp_dir().join("kish_redirect_test_output.txt");
         let path_str = tmp.to_str().unwrap().to_string();
 
@@ -195,7 +195,7 @@ mod tests {
         }];
 
         let mut state = RedirectState::new();
-        state.apply(&redirects, &env, true).expect("apply should succeed");
+        state.apply(&redirects, &mut env, true).expect("apply should succeed");
 
         // Write to stdout (fd 1), which is now the file
         use std::io::Write;
@@ -217,7 +217,7 @@ mod tests {
         use std::io::Read;
         use std::os::unix::io::FromRawFd;
 
-        let env = make_env();
+        let mut env = make_env();
         let tmp = std::env::temp_dir().join("kish_redirect_test_input.txt");
         std::fs::write(&tmp, "test input\n").unwrap();
         let path_str = tmp.to_str().unwrap().to_string();
@@ -228,7 +228,7 @@ mod tests {
         }];
 
         let mut state = RedirectState::new();
-        state.apply(&redirects, &env, true).expect("apply should succeed");
+        state.apply(&redirects, &mut env, true).expect("apply should succeed");
 
         let mut buf = String::new();
         let mut stdin = unsafe { std::fs::File::from_raw_fd(0) };
