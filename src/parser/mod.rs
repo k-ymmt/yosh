@@ -4,8 +4,9 @@ use crate::error::{self, ShellError, ShellErrorKind};
 use crate::lexer::Lexer;
 use crate::lexer::token::{Span, SpannedToken, Token};
 use ast::{
-    AndOrList, AndOrOp, Assignment, Command, CompleteCommand, FunctionDef, Pipeline, Program,
-    Redirect, RedirectKind, HereDoc, SeparatorOp, SimpleCommand, Word, CompoundCommand,
+    AndOrList, AndOrOp, Assignment, CaseItem, CaseTerminator, Command, CompleteCommand,
+    CompoundCommand, CompoundCommandKind, FunctionDef, HereDoc, Pipeline, Program, Redirect,
+    RedirectKind, SeparatorOp, SimpleCommand, Word,
 };
 
 pub struct Parser {
@@ -318,7 +319,7 @@ impl Parser {
         }
     }
 
-    // ---- Stubs for compound commands and function defs (Task 10+) ----
+    // ---- Compound commands and function defs ----
 
     pub fn is_compound_command_start(&self) -> bool {
         match &self.current.token {
@@ -336,17 +337,338 @@ impl Parser {
     }
 
     pub fn parse_compound_command(&mut self) -> error::Result<CompoundCommand> {
-        let span = self.current_span();
-        Err(ShellError::new(
-            ShellErrorKind::UnexpectedToken,
-            span.line,
-            span.column,
-            "compound commands not yet implemented",
-        ))
+        let kind = if self.is_reserved("if") {
+            self.parse_if_clause()?
+        } else if self.is_reserved("for") {
+            self.parse_for_clause()?
+        } else if self.is_reserved("while") {
+            self.parse_while_clause()?
+        } else if self.is_reserved("until") {
+            self.parse_until_clause()?
+        } else if self.is_reserved("case") {
+            self.parse_case_clause()?
+        } else if self.is_reserved("{") {
+            self.parse_brace_group()?
+        } else if self.current.token == Token::LParen {
+            self.parse_subshell()?
+        } else {
+            let span = self.current_span();
+            return Err(ShellError::new(
+                ShellErrorKind::UnexpectedToken,
+                span.line,
+                span.column,
+                "expected compound command",
+            ));
+        };
+        Ok(CompoundCommand { kind })
     }
 
+    /// Parse a compound_list: skip newlines, then parse complete_commands until at_end or is_complete_command_end.
+    pub fn parse_compound_list(&mut self) -> error::Result<Vec<CompleteCommand>> {
+        self.skip_newlines()?;
+        let mut commands = Vec::new();
+        while !self.is_at_end() && !self.is_complete_command_end() {
+            let cmd = self.parse_complete_command()?;
+            commands.push(cmd);
+            self.skip_newlines()?;
+        }
+        Ok(commands)
+    }
+
+    /// Parse: if compound_list then compound_list [elif compound_list then compound_list]... [else compound_list] fi
+    pub fn parse_if_clause(&mut self) -> error::Result<CompoundCommandKind> {
+        self.expect_reserved("if")?;
+        let condition = self.parse_compound_list()?;
+        self.expect_reserved("then")?;
+        let then_part = self.parse_compound_list()?;
+
+        let mut elif_parts = Vec::new();
+        let mut else_part = None;
+
+        loop {
+            if self.is_reserved("elif") {
+                self.advance()?;
+                let elif_cond = self.parse_compound_list()?;
+                self.expect_reserved("then")?;
+                let elif_body = self.parse_compound_list()?;
+                elif_parts.push((elif_cond, elif_body));
+            } else if self.is_reserved("else") {
+                self.advance()?;
+                else_part = Some(self.parse_compound_list()?);
+                break;
+            } else {
+                break;
+            }
+        }
+
+        self.expect_reserved("fi")?;
+
+        Ok(CompoundCommandKind::If {
+            condition,
+            then_part,
+            elif_parts,
+            else_part,
+        })
+    }
+
+    /// Parse: for name [in [word ...]] do compound_list done
+    pub fn parse_for_clause(&mut self) -> error::Result<CompoundCommandKind> {
+        self.expect_reserved("for")?;
+
+        // Expect a valid variable name
+        let var = match &self.current.token.clone() {
+            Token::Word(word) => {
+                let name = word.as_literal().ok_or_else(|| {
+                    let span = self.current_span();
+                    ShellError::new(
+                        ShellErrorKind::UnexpectedToken,
+                        span.line,
+                        span.column,
+                        "expected valid variable name after 'for'",
+                    )
+                })?;
+                if !is_valid_name(name) {
+                    let span = self.current_span();
+                    return Err(ShellError::new(
+                        ShellErrorKind::UnexpectedToken,
+                        span.line,
+                        span.column,
+                        format!("'{}' is not a valid variable name", name),
+                    ));
+                }
+                let name = name.to_string();
+                self.advance()?;
+                name
+            }
+            _ => {
+                let span = self.current_span();
+                return Err(ShellError::new(
+                    ShellErrorKind::UnexpectedToken,
+                    span.line,
+                    span.column,
+                    "expected variable name after 'for'",
+                ));
+            }
+        };
+
+        self.skip_newlines()?;
+
+        let words = if self.is_reserved("in") {
+            self.advance()?;
+            // Read words until ; or newline or "do"
+            let mut word_list = Vec::new();
+            loop {
+                if self.is_at_end()
+                    || self.current.token == Token::Semi
+                    || self.current.token == Token::Newline
+                    || self.is_reserved("do")
+                {
+                    break;
+                }
+                if let Token::Word(_) = &self.current.token {
+                    let w = self.expect_word("for word list")?;
+                    word_list.push(w);
+                } else {
+                    break;
+                }
+            }
+            // Advance past ; or newline
+            if self.current.token == Token::Semi || self.current.token == Token::Newline {
+                self.advance()?;
+            }
+            Some(word_list)
+        } else {
+            // No "in" clause — words is None (means "$@")
+            if self.current.token == Token::Semi {
+                self.advance()?;
+            }
+            None
+        };
+
+        self.skip_newlines()?;
+        let body = self.parse_do_group()?;
+
+        Ok(CompoundCommandKind::For { var, words, body })
+    }
+
+    /// Parse: do compound_list done
+    pub fn parse_do_group(&mut self) -> error::Result<Vec<CompleteCommand>> {
+        self.expect_reserved("do")?;
+        let body = self.parse_compound_list()?;
+        self.expect_reserved("done")?;
+        Ok(body)
+    }
+
+    /// Parse: while compound_list do compound_list done
+    pub fn parse_while_clause(&mut self) -> error::Result<CompoundCommandKind> {
+        self.expect_reserved("while")?;
+        let condition = self.parse_compound_list()?;
+        let body = self.parse_do_group()?;
+        Ok(CompoundCommandKind::While { condition, body })
+    }
+
+    /// Parse: until compound_list do compound_list done
+    pub fn parse_until_clause(&mut self) -> error::Result<CompoundCommandKind> {
+        self.expect_reserved("until")?;
+        let condition = self.parse_compound_list()?;
+        let body = self.parse_do_group()?;
+        Ok(CompoundCommandKind::Until { condition, body })
+    }
+
+    /// Parse: case word in [pattern [| pattern]... ) compound-list ;; ]... esac
+    pub fn parse_case_clause(&mut self) -> error::Result<CompoundCommandKind> {
+        self.expect_reserved("case")?;
+        let word = self.expect_word("case subject")?;
+        self.skip_newlines()?;
+        self.expect_reserved("in")?;
+        self.skip_newlines()?;
+
+        let mut items = Vec::new();
+
+        while !self.is_at_end() && !self.is_reserved("esac") {
+            // Optional leading (
+            let _ = self.eat(&Token::LParen)?;
+
+            // Read patterns separated by |
+            let mut patterns = Vec::new();
+            let first_pattern = self.expect_word("case pattern")?;
+            patterns.push(first_pattern);
+            while self.current.token == Token::Pipe {
+                self.advance()?;
+                let pat = self.expect_word("case pattern")?;
+                patterns.push(pat);
+            }
+
+            // Expect )
+            if !self.eat(&Token::RParen)? {
+                let span = self.current_span();
+                return Err(ShellError::new(
+                    ShellErrorKind::UnexpectedToken,
+                    span.line,
+                    span.column,
+                    "expected ')' after case pattern",
+                ));
+            }
+            self.skip_newlines()?;
+
+            // Parse body until ;; or ;& or esac
+            let mut body = Vec::new();
+            while !self.is_at_end()
+                && self.current.token != Token::DSemi
+                && self.current.token != Token::SemiAnd
+                && !self.is_reserved("esac")
+            {
+                let cmd = self.parse_complete_command()?;
+                body.push(cmd);
+                self.skip_newlines()?;
+            }
+
+            let terminator = if self.current.token == Token::SemiAnd {
+                self.advance()?;
+                CaseTerminator::FallThrough
+            } else if self.current.token == Token::DSemi {
+                self.advance()?;
+                CaseTerminator::Break
+            } else {
+                // esac without terminator → Break
+                CaseTerminator::Break
+            };
+
+            self.skip_newlines()?;
+
+            items.push(CaseItem {
+                patterns,
+                body,
+                terminator,
+            });
+        }
+
+        self.expect_reserved("esac")?;
+
+        Ok(CompoundCommandKind::Case { word, items })
+    }
+
+    /// Parse: { compound_list }
+    pub fn parse_brace_group(&mut self) -> error::Result<CompoundCommandKind> {
+        self.expect_reserved("{")?;
+        let body = self.parse_compound_list()?;
+        self.expect_reserved("}")?;
+        Ok(CompoundCommandKind::BraceGroup { body })
+    }
+
+    /// Parse: ( compound_list )
+    pub fn parse_subshell(&mut self) -> error::Result<CompoundCommandKind> {
+        self.eat(&Token::LParen)?;
+        let body = self.parse_compound_list()?;
+        if !self.eat(&Token::RParen)? {
+            let span = self.current_span();
+            return Err(ShellError::new(
+                ShellErrorKind::UnexpectedToken,
+                span.line,
+                span.column,
+                "expected ')' to close subshell",
+            ));
+        }
+        Ok(CompoundCommandKind::Subshell { body })
+    }
+
+    /// Try to parse a function definition: NAME ( ) linebreak compound_command [redirect_list]
     pub fn try_parse_function_def(&mut self) -> error::Result<Option<FunctionDef>> {
-        Ok(None)
+        // Check if current token is a Word with a valid name
+        let name = match &self.current.token {
+            Token::Word(word) => {
+                if let Some(lit) = word.as_literal() {
+                    if is_valid_name(lit) {
+                        lit.to_string()
+                    } else {
+                        return Ok(None);
+                    }
+                } else {
+                    return Ok(None);
+                }
+            }
+            _ => return Ok(None),
+        };
+
+        // Save state for backtracking
+        let saved_lexer_state = self.lexer.save_state();
+        let saved_current = self.current.clone();
+
+        // Advance past the name
+        self.advance()?;
+
+        // Check for (
+        if self.current.token != Token::LParen {
+            // Restore state
+            self.lexer.restore_state(saved_lexer_state);
+            self.current = saved_current;
+            return Ok(None);
+        }
+        self.advance()?;
+
+        // Check for )
+        if self.current.token != Token::RParen {
+            // Restore state
+            self.lexer.restore_state(saved_lexer_state);
+            self.current = saved_current;
+            return Ok(None);
+        }
+        self.advance()?;
+
+        // Skip newlines (linebreak)
+        self.skip_newlines()?;
+
+        // Parse compound command body
+        let body = self.parse_compound_command()?;
+
+        // Parse optional redirect list
+        let redirects = self.parse_redirect_list()?;
+
+        Ok(Some(FunctionDef {
+            name,
+            body,
+            redirects,
+        }))
     }
 
     // ---- Redirect parsing (Task 9) ----
@@ -471,7 +793,7 @@ fn is_valid_name(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ast::{AndOrOp, RedirectKind, SeparatorOp};
+    use ast::{AndOrOp, CaseTerminator, CompoundCommandKind, RedirectKind, SeparatorOp};
 
     fn parse(input: &str) -> Program {
         let mut parser = Parser::new(input);
@@ -650,5 +972,186 @@ mod tests {
     fn test_multiple_redirects() {
         let sc = parse_first_simple("cmd < in > out 2>&1");
         assert_eq!(sc.redirects.len(), 3);
+    }
+
+    // ---- Task 10 & 11: Compound command tests ----
+
+    fn parse_first_compound(input: &str) -> CompoundCommandKind {
+        let prog = parse(input);
+        let cmd = &prog.commands[0].items[0].0.first.commands[0];
+        match cmd {
+            Command::Compound(cc, _) => cc.kind.clone(),
+            _ => panic!("expected compound command"),
+        }
+    }
+
+    #[test]
+    fn test_if_then_fi() {
+        let kind = parse_first_compound("if true; then echo yes; fi");
+        match kind {
+            CompoundCommandKind::If {
+                condition,
+                then_part,
+                elif_parts,
+                else_part,
+            } => {
+                assert!(!condition.is_empty());
+                assert!(!then_part.is_empty());
+                assert!(elif_parts.is_empty());
+                assert!(else_part.is_none());
+            }
+            _ => panic!("expected if"),
+        }
+    }
+
+    #[test]
+    fn test_if_else() {
+        let kind = parse_first_compound("if true; then echo yes; else echo no; fi");
+        match kind {
+            CompoundCommandKind::If { else_part, .. } => assert!(else_part.is_some()),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_if_elif() {
+        let kind =
+            parse_first_compound("if false; then echo 1; elif true; then echo 2; else echo 3; fi");
+        match kind {
+            CompoundCommandKind::If {
+                elif_parts,
+                else_part,
+                ..
+            } => {
+                assert_eq!(elif_parts.len(), 1);
+                assert!(else_part.is_some());
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_for_loop_with_words() {
+        let kind = parse_first_compound("for i in a b c; do echo $i; done");
+        match kind {
+            CompoundCommandKind::For { var, words, body } => {
+                assert_eq!(var, "i");
+                assert_eq!(words.unwrap().len(), 3);
+                assert!(!body.is_empty());
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_for_loop_without_in() {
+        let kind = parse_first_compound("for i; do echo $i; done");
+        match kind {
+            CompoundCommandKind::For { var, words, .. } => {
+                assert_eq!(var, "i");
+                assert!(words.is_none());
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_for_loop_with_do_on_newline() {
+        let kind = parse_first_compound("for i in a b c\ndo\necho $i\ndone");
+        match kind {
+            CompoundCommandKind::For { words, .. } => assert!(words.is_some()),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_while_loop() {
+        let kind = parse_first_compound("while true; do echo loop; done");
+        assert!(matches!(kind, CompoundCommandKind::While { .. }));
+    }
+
+    #[test]
+    fn test_until_loop() {
+        let kind = parse_first_compound("until false; do echo loop; done");
+        assert!(matches!(kind, CompoundCommandKind::Until { .. }));
+    }
+
+    #[test]
+    fn test_case_basic() {
+        let kind = parse_first_compound("case $x in\na) echo a;;\nb) echo b;;\nesac");
+        match kind {
+            CompoundCommandKind::Case { items, .. } => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].terminator, CaseTerminator::Break);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_case_fallthrough() {
+        let kind = parse_first_compound("case $x in\na) echo a;&\nb) echo b;;\nesac");
+        match kind {
+            CompoundCommandKind::Case { items, .. } => {
+                assert_eq!(items[0].terminator, CaseTerminator::FallThrough);
+                assert_eq!(items[1].terminator, CaseTerminator::Break);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_case_multiple_patterns() {
+        let kind = parse_first_compound("case $x in\na|b|c) echo match;;\nesac");
+        match kind {
+            CompoundCommandKind::Case { items, .. } => {
+                assert_eq!(items[0].patterns.len(), 3);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_case_empty() {
+        let kind = parse_first_compound("case $x in\nesac");
+        match kind {
+            CompoundCommandKind::Case { items, .. } => assert!(items.is_empty()),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_brace_group() {
+        let kind = parse_first_compound("{ echo hello; }");
+        assert!(matches!(kind, CompoundCommandKind::BraceGroup { .. }));
+    }
+
+    #[test]
+    fn test_subshell() {
+        let kind = parse_first_compound("(echo hello)");
+        assert!(matches!(kind, CompoundCommandKind::Subshell { .. }));
+    }
+
+    #[test]
+    fn test_function_def() {
+        let prog = parse("myfunc() { echo hello; }");
+        let cmd = &prog.commands[0].items[0].0.first.commands[0];
+        match cmd {
+            Command::FunctionDef(fd) => assert_eq!(fd.name, "myfunc"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn test_function_def_with_redirect() {
+        let prog = parse("myfunc() { echo hello; } > out.txt");
+        let cmd = &prog.commands[0].items[0].0.first.commands[0];
+        match cmd {
+            Command::FunctionDef(fd) => {
+                assert_eq!(fd.name, "myfunc");
+                assert_eq!(fd.redirects.len(), 1);
+            }
+            _ => panic!(),
+        }
     }
 }
