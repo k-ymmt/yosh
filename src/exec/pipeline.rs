@@ -1,9 +1,10 @@
 use std::os::unix::io::RawFd;
 
 use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::{fork, ForkResult, Pid};
+use nix::unistd::{fork, setpgid, ForkResult, Pid};
 
 use crate::parser::ast::Pipeline;
+use crate::signal;
 
 use super::Executor;
 
@@ -46,16 +47,25 @@ impl Executor {
         }
 
         let mut children: Vec<Pid> = Vec::with_capacity(n);
+        let mut pgid = Pid::from_raw(0);
 
         for (i, cmd) in pipeline.commands.iter().enumerate() {
             match unsafe { fork() } {
                 Err(e) => {
                     eprintln!("kish: fork: {}", e);
-                    // Close all remaining pipes and return error
                     close_all_pipes(&pipes);
                     return 1;
                 }
                 Ok(ForkResult::Child) => {
+                    // Set process group
+                    let my_pid = nix::unistd::getpid();
+                    if i == 0 {
+                        setpgid(my_pid, my_pid).ok();
+                    } else {
+                        setpgid(my_pid, pgid).ok();
+                    }
+                    signal::reset_child_signals();
+
                     // Set up stdin from previous pipe's read end (if not first)
                     if i > 0 {
                         let read_fd = pipes[i - 1].0;
@@ -73,13 +83,16 @@ impl Executor {
                         }
                     }
 
-                    // Close all pipe fds in child
                     close_all_pipes(&pipes);
 
                     let status = self.exec_command(cmd);
                     std::process::exit(status);
                 }
                 Ok(ForkResult::Parent { child }) => {
+                    if i == 0 {
+                        pgid = child;
+                    }
+                    setpgid(child, pgid).ok();
                     children.push(child);
                 }
             }

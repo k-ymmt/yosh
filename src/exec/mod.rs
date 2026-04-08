@@ -552,6 +552,8 @@ impl Executor {
                 1
             }
             Ok(ForkResult::Child) => {
+                signal::reset_child_signals();
+
                 // Apply redirects (no need to save, we're in the child)
                 let mut redir_state = RedirectState::new();
                 if let Err(e) = redir_state.apply(redirects, &mut self.env, false) {
@@ -627,15 +629,53 @@ impl Executor {
     }
 
     /// Reap any zombie background children without blocking.
-    fn reap_zombies(&self) {
+    fn reap_zombies(&mut self) {
         loop {
             match nix::sys::wait::waitpid(
                 nix::unistd::Pid::from_raw(-1),
                 Some(nix::sys::wait::WaitPidFlag::WNOHANG),
             ) {
+                Ok(nix::sys::wait::WaitStatus::Exited(pid, code)) => {
+                    if let Some(job) = self.env.bg_jobs.iter_mut().find(|j| j.pid == pid) {
+                        job.status = Some(code);
+                    }
+                }
+                Ok(nix::sys::wait::WaitStatus::Signaled(pid, sig, _)) => {
+                    if let Some(job) = self.env.bg_jobs.iter_mut().find(|j| j.pid == pid) {
+                        job.status = Some(128 + sig as i32);
+                    }
+                }
                 Ok(nix::sys::wait::WaitStatus::StillAlive) => break,
-                Ok(_) => continue, // Reaped a zombie, check for more
-                Err(_) => break,   // No children or error
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// Execute a command asynchronously (background with &).
+    fn exec_async(&mut self, and_or: &AndOrList) -> i32 {
+        match unsafe { fork() } {
+            Err(e) => {
+                eprintln!("kish: fork: {}", e);
+                1
+            }
+            Ok(ForkResult::Child) => {
+                let pid = nix::unistd::getpid();
+                nix::unistd::setpgid(pid, pid).ok();
+                signal::ignore_signal(libc::SIGINT);
+                signal::ignore_signal(libc::SIGQUIT);
+                signal::reset_child_signals();
+                let status = self.exec_and_or(and_or);
+                std::process::exit(status);
+            }
+            Ok(ForkResult::Parent { child }) => {
+                nix::unistd::setpgid(child, child).ok();
+                self.env.bg_jobs.push(crate::env::BgJob {
+                    pid: child,
+                    status: None,
+                });
+                self.env.last_bg_pid = Some(child.as_raw());
+                0
             }
         }
     }
@@ -649,23 +689,7 @@ impl Executor {
 
         for (and_or, separator) in &cmd.items {
             if separator == &Some(SeparatorOp::Amp) {
-                // Background: fork child to execute, parent continues with status 0
-                match unsafe { fork() } {
-                    Err(e) => {
-                        eprintln!("kish: fork: {}", e);
-                        status = 1;
-                    }
-                    Ok(ForkResult::Child) => {
-                        let s = self.exec_and_or(and_or);
-                        std::process::exit(s);
-                    }
-                    Ok(ForkResult::Parent { child }) => {
-                        // Track last background PID ($!)
-                        self.env.last_bg_pid = Some(child.as_raw());
-                        // Parent continues; background job status = 0
-                        status = 0;
-                    }
-                }
+                status = self.exec_async(and_or);
             } else {
                 // Sequential execution
                 status = self.exec_and_or(and_or);
