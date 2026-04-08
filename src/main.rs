@@ -63,6 +63,7 @@ fn main() {
 }
 
 fn run_string(input: &str, shell_name: String, positional: Vec<String>) -> i32 {
+    signal::init_signal_handling();
     let mut executor = Executor::new(shell_name, positional);
     executor.verbose_print(input);
 
@@ -104,12 +105,14 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>) -> i32 {
             }
             Err(e) => {
                 eprintln!("{}", e);
+                executor.process_pending_signals();
                 executor.execute_exit_trap();
                 return 2;
             }
         }
     }
 
+    executor.process_pending_signals();
     executor.execute_exit_trap();
     status
 }

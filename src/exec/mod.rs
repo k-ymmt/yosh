@@ -9,6 +9,7 @@ use nix::unistd::{execvp, fork, ForkResult};
 use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
 use crate::builtin::special::exec_special_builtin;
 use crate::env::{FlowControl, ShellEnv};
+use crate::signal;
 use crate::expand::expand_words;
 use crate::parser::ast::{
     AndOrList, AndOrOp, Assignment, CaseItem, CaseTerminator, Command, CompoundCommand,
@@ -71,6 +72,30 @@ impl Executor {
                 exec.eval_string(&cmd);
             });
         }
+    }
+
+    /// Process any pending signals from the self-pipe.
+    pub fn process_pending_signals(&mut self) {
+        let signals = signal::drain_pending_signals();
+        for sig in signals {
+            match self.env.traps.get_signal_trap(sig).cloned() {
+                Some(crate::env::TrapAction::Command(cmd)) => {
+                    self.with_errexit_suppressed(|exec| {
+                        exec.eval_string(&cmd);
+                    });
+                }
+                Some(crate::env::TrapAction::Ignore) => {}
+                Some(crate::env::TrapAction::Default) | None => {
+                    self.handle_default_signal(sig);
+                }
+            }
+        }
+    }
+
+    /// Handle a signal with default behavior (terminate).
+    fn handle_default_signal(&mut self, sig: i32) {
+        self.execute_exit_trap();
+        std::process::exit(128 + sig);
     }
 
     /// Evaluate a string as shell commands (used by trap actions and eval).
@@ -157,6 +182,7 @@ impl Executor {
                 break;
             }
             self.check_errexit(status);
+            self.process_pending_signals();
         }
         status
     }
@@ -171,6 +197,8 @@ impl Executor {
                 1
             }
             Ok(ForkResult::Child) => {
+                self.env.traps.reset_non_ignored();
+                signal::reset_child_signals();
                 let status = self.exec_body(body);
                 std::process::exit(status);
             }
