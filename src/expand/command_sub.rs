@@ -42,7 +42,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
             }
 
             // Create a new executor with a clone of the parent's environment
-            let child_env = ShellEnv {
+            let mut child_env = ShellEnv {
                 vars: env.vars.clone(),
                 last_exit_status: env.last_exit_status,
                 shell_pid: env.shell_pid,
@@ -56,6 +56,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 aliases: env.aliases.clone(),
                 bg_jobs: Vec::new(),
             };
+            child_env.traps.reset_non_ignored();
             let mut executor = Executor::from_env(child_env);
 
             let status = executor.exec_program(program);

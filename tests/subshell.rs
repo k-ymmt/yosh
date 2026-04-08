@@ -228,14 +228,11 @@ fn test_cmdsub_nested_isolation() {
 
 #[test]
 fn test_cmdsub_trap_isolation() {
-    // Command substitution inherits traps from the parent (consistent with bash behaviour).
-    // The child's own trap changes do not propagate back to the parent.
-    let out = kish_exec("trap 'echo parent' INT; X=$(trap 'echo child' INT; trap); echo \"${X}\"");
+    let out = kish_exec("trap 'echo parent' INT; X=$(trap); echo \"${X}\"");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // The variable X was captured inside the substitution where the trap was 'echo child',
-    // so the parent's original handler must NOT appear in X.
-    assert!(!stdout.contains("echo parent"));
+    // Command trap should be reset in command substitution subshell
+    assert!(!stdout.contains("parent"));
 }
 
 #[test]
