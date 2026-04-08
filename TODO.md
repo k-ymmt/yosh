@@ -28,7 +28,7 @@
 ## Phase 5: Known Limitations
 
 - [ ] `$N` (positional params) inside `$((...))` arithmetic not supported — use temp variable workaround: `x=$1; echo $((x - 1))` (`src/expand/arith.rs`)
-- [ ] Subshell environment isolation is basic (fork-based) — full isolation deferred to Phase 8
+- [x] Subshell environment isolation is basic (fork-based) — full isolation deferred to Phase 8
 - [ ] Function-scoped assignments with prefix syntax (`VAR=val func`) not implemented — assignments only apply to external commands
 
 ## Phase 6: Known Limitations
@@ -50,4 +50,4 @@
 
 ## Remaining Phases
 
-- [ ] Phase 8: Subshell environment isolation
+- [x] Phase 8: Subshell environment isolation
