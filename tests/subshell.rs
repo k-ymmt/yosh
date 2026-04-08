@@ -352,3 +352,13 @@ fn test_deeply_nested_isolation() {
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(lines, vec!["3", "2", "1", "0"]);
 }
+
+#[test]
+fn test_background_command_trap_reset() {
+    // Background commands run in subshell; command traps should be reset
+    let out = kish_exec("trap 'echo trapped' INT; true & wait; trap");
+    assert!(out.status.success());
+    // Parent's trap should still be set (background didn't affect it)
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("echo trapped"));
+}

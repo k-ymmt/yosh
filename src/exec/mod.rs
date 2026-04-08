@@ -681,6 +681,7 @@ impl Executor {
                 nix::unistd::setpgid(pid, pid).ok();
                 signal::ignore_signal(libc::SIGINT);
                 signal::ignore_signal(libc::SIGQUIT);
+                self.env.traps.reset_non_ignored();
                 signal::reset_child_signals();
                 let status = self.exec_and_or(and_or);
                 std::process::exit(status);
