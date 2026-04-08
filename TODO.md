@@ -50,3 +50,8 @@
 - [ ] `exec N>file` fd persistence not implemented — `exec` builtin restores redirects, so `test_fd_inheritance` is ignored (`tests/subshell.rs`, `src/builtin/special.rs`)
 - [ ] `test_umask_isolation` may pass incidentally due to fork isolation, not because umask is correctly set/read (`tests/subshell.rs`)
 - [ ] `return` outside function in subshell error test not implemented — POSIX requires error, untested (`tests/subshell.rs`)
+
+## Future: E2E Test Expansion
+
+- [ ] Deep edge-case tests for each feature (e.g., nested expansions, unusual quoting combinations)
+- [ ] POSIX corner cases (e.g., special IFS values, empty IFS, IFS with whitespace/non-whitespace mix)
