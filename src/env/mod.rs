@@ -94,6 +94,20 @@ impl TrapStore {
         }
     }
 
+    /// Reset all non-ignored traps to default (POSIX subshell behavior).
+    /// Command traps are removed. Ignore traps are preserved.
+    pub fn reset_non_ignored(&mut self) {
+        if matches!(self.exit_trap, Some(TrapAction::Command(_))) {
+            self.exit_trap = None;
+        }
+        self.signal_traps.retain(|_, action| matches!(action, TrapAction::Ignore));
+    }
+
+    /// Get the trap action for a signal by number (not EXIT).
+    pub fn get_signal_trap(&self, sig: i32) -> Option<&TrapAction> {
+        self.signal_traps.get(&sig)
+    }
+
     /// Print all active traps in a format suitable for re-input.
     /// Format: `trap -- 'cmd' SIGNAME` or `trap -- '' SIGNAME`.
     /// Default actions are skipped. Exit trap first, then signals sorted by number.
@@ -244,6 +258,13 @@ impl ShellOptions {
     }
 }
 
+/// A background job tracked by the shell.
+#[derive(Debug, Clone)]
+pub struct BgJob {
+    pub pid: Pid,
+    pub status: Option<i32>,
+}
+
 /// The complete shell environment.
 #[derive(Debug, Clone)]
 pub struct ShellEnv {
@@ -259,6 +280,7 @@ pub struct ShellEnv {
     pub options: ShellOptions,
     pub traps: TrapStore,
     pub aliases: AliasStore,
+    pub bg_jobs: Vec<BgJob>,
 }
 
 impl ShellEnv {
@@ -278,6 +300,7 @@ impl ShellEnv {
             options: ShellOptions::default(),
             traps: TrapStore::default(),
             aliases: AliasStore::default(),
+            bg_jobs: Vec::new(),
         }
     }
 }
@@ -379,5 +402,36 @@ mod tests {
         store.set_trap("EXIT", TrapAction::Command("echo bye".to_string())).unwrap();
         store.remove_trap("EXIT");
         assert!(store.exit_trap.is_none());
+    }
+
+    #[test]
+    fn test_trap_store_reset_non_ignored() {
+        let mut store = TrapStore::default();
+        store.set_trap("INT", TrapAction::Command("echo caught".to_string())).unwrap();
+        store.set_trap("HUP", TrapAction::Ignore).unwrap();
+        store.set_trap("TERM", TrapAction::Command("echo term".to_string())).unwrap();
+        store.reset_non_ignored();
+        assert!(store.signal_traps.get(&2).is_none());
+        assert_eq!(store.signal_traps.get(&1), Some(&TrapAction::Ignore));
+        assert!(store.signal_traps.get(&15).is_none());
+    }
+
+    #[test]
+    fn test_trap_store_get_signal_trap() {
+        let mut store = TrapStore::default();
+        store.set_trap("INT", TrapAction::Command("echo caught".to_string())).unwrap();
+        assert!(matches!(store.get_signal_trap(2), Some(TrapAction::Command(_))));
+        assert!(store.get_signal_trap(15).is_none());
+    }
+
+    #[test]
+    fn test_bg_jobs() {
+        let mut env = ShellEnv::new("kish", vec![]);
+        assert!(env.bg_jobs.is_empty());
+        env.bg_jobs.push(BgJob { pid: Pid::from_raw(1234), status: None });
+        assert_eq!(env.bg_jobs.len(), 1);
+        assert!(env.bg_jobs[0].status.is_none());
+        env.bg_jobs[0].status = Some(0);
+        assert_eq!(env.bg_jobs[0].status, Some(0));
     }
 }

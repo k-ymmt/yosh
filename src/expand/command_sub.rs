@@ -54,6 +54,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 options: env.options.clone(),
                 traps: env.traps.clone(),
                 aliases: env.aliases.clone(),
+                bg_jobs: Vec::new(),
             };
             let mut executor = Executor { env: child_env };
 
