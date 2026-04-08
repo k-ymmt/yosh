@@ -10,7 +10,10 @@ use nix::unistd::{execvp, fork, ForkResult};
 use crate::builtin::{exec_builtin, is_builtin};
 use crate::env::ShellEnv;
 use crate::expand::expand_words;
-use crate::parser::ast::{Assignment, Command, SimpleCommand, Word};
+use crate::parser::ast::{
+    AndOrList, AndOrOp, Assignment, Command, CompleteCommand, Program, SeparatorOp, SimpleCommand,
+    Word,
+};
 
 use command::wait_child;
 use redirect::RedirectState;
@@ -180,12 +183,79 @@ impl Executor {
             Ok(ForkResult::Parent { child }) => wait_child(child),
         }
     }
+
+    /// Execute an AND-OR list.
+    pub fn exec_and_or(&mut self, and_or: &AndOrList) -> i32 {
+        let mut status = self.exec_pipeline(&and_or.first);
+
+        for (op, pipeline) in &and_or.rest {
+            match op {
+                AndOrOp::And => {
+                    if status == 0 {
+                        status = self.exec_pipeline(pipeline);
+                    }
+                }
+                AndOrOp::Or => {
+                    if status != 0 {
+                        status = self.exec_pipeline(pipeline);
+                    }
+                }
+            }
+        }
+
+        self.env.last_exit_status = status;
+        status
+    }
+
+    /// Execute a complete command (list of AND-OR lists with separators).
+    pub fn exec_complete_command(&mut self, cmd: &CompleteCommand) -> i32 {
+        let mut status = 0;
+
+        for (and_or, separator) in &cmd.items {
+            if separator == &Some(SeparatorOp::Amp) {
+                // Background: fork child to execute, parent continues with status 0
+                match unsafe { fork() } {
+                    Err(e) => {
+                        eprintln!("kish: fork: {}", e);
+                        status = 1;
+                    }
+                    Ok(ForkResult::Child) => {
+                        let s = self.exec_and_or(and_or);
+                        std::process::exit(s);
+                    }
+                    Ok(ForkResult::Parent { .. }) => {
+                        // Parent continues; background job status = 0
+                        status = 0;
+                    }
+                }
+            } else {
+                // Sequential execution
+                status = self.exec_and_or(and_or);
+            }
+        }
+
+        self.env.last_exit_status = status;
+        status
+    }
+
+    /// Execute a program (sequence of complete commands).
+    pub fn exec_program(&mut self, program: &Program) -> i32 {
+        let mut status = 0;
+        for cmd in &program.commands {
+            status = self.exec_complete_command(cmd);
+        }
+        self.env.last_exit_status = status;
+        status
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{Command, Pipeline, Redirect, SimpleCommand, Word};
+    use crate::parser::ast::{
+        AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, Redirect, SeparatorOp,
+        SimpleCommand, Word,
+    };
 
     fn make_simple_cmd(words: &[&str]) -> SimpleCommand {
         SimpleCommand {
@@ -275,5 +345,89 @@ mod tests {
             })],
         };
         assert_eq!(exec.exec_pipeline(&pipeline), 1);
+    }
+
+    fn make_pipeline(word: &str) -> Pipeline {
+        Pipeline {
+            negated: false,
+            commands: vec![Command::Simple(SimpleCommand {
+                assignments: vec![],
+                words: vec![Word::literal(word)],
+                redirects: vec![],
+            })],
+        }
+    }
+
+    #[test]
+    fn test_and_list_all_succeed() {
+        // true && true → 0
+        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let and_or = AndOrList {
+            first: make_pipeline("true"),
+            rest: vec![(AndOrOp::And, make_pipeline("true"))],
+        };
+        assert_eq!(exec.exec_and_or(&and_or), 0);
+    }
+
+    #[test]
+    fn test_and_list_first_fails() {
+        // false && true → 1 (second not executed)
+        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let and_or = AndOrList {
+            first: make_pipeline("false"),
+            rest: vec![(AndOrOp::And, make_pipeline("true"))],
+        };
+        assert_eq!(exec.exec_and_or(&and_or), 1);
+    }
+
+    #[test]
+    fn test_or_list_first_fails() {
+        // false || true → 0
+        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let and_or = AndOrList {
+            first: make_pipeline("false"),
+            rest: vec![(AndOrOp::Or, make_pipeline("true"))],
+        };
+        assert_eq!(exec.exec_and_or(&and_or), 0);
+    }
+
+    #[test]
+    fn test_or_list_first_succeeds() {
+        // true || false → 0 (second not executed)
+        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let and_or = AndOrList {
+            first: make_pipeline("true"),
+            rest: vec![(AndOrOp::Or, make_pipeline("false"))],
+        };
+        assert_eq!(exec.exec_and_or(&and_or), 0);
+    }
+
+    #[test]
+    fn test_exec_program_sequential() {
+        // true; false → 1 (last command status)
+        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let program = Program {
+            commands: vec![
+                CompleteCommand {
+                    items: vec![(
+                        AndOrList {
+                            first: make_pipeline("true"),
+                            rest: vec![],
+                        },
+                        Some(SeparatorOp::Semi),
+                    )],
+                },
+                CompleteCommand {
+                    items: vec![(
+                        AndOrList {
+                            first: make_pipeline("false"),
+                            rest: vec![],
+                        },
+                        None,
+                    )],
+                },
+            ],
+        };
+        assert_eq!(exec.exec_program(&program), 1);
     }
 }
