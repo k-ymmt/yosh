@@ -798,11 +798,11 @@ impl Executor {
 
         for pid in &target_pids {
             // Check if already reaped
-            if let Some(job) = self.env.bg_jobs.iter().find(|j| j.pid == *pid) {
-                if let Some(s) = job.status {
-                    last_status = s;
-                    continue;
-                }
+            if let Some(job) = self.env.bg_jobs.iter().find(|j| j.pid == *pid)
+                && let Some(s) = job.status
+            {
+                last_status = s;
+                continue;
             }
 
             loop {

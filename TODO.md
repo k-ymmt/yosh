@@ -11,7 +11,7 @@
 - [ ] `echo -n` flag not handled — POSIX strict doesn't require it but practical shells need it (`src/builtin/mod.rs`)
 - [ ] `cd -` (change to OLDPWD) not implemented (`src/builtin/mod.rs`)
 - [ ] `VarStore` has no scope mechanism — needed for function execution in Phase 5 (`src/env/vars.rs`)
-- [ ] `builtin_exit` calls `process::exit` directly — needs change for EXIT trap support in Phase 7 (`src/builtin/mod.rs`)
+- [x] `builtin_exit` calls `process::exit` directly — fixed in Phase 7: now calls `execute_exit_trap` before exit (`src/builtin/special.rs`)
 - [ ] `TempDir` ID uses nanosecond timestamp — risk of collision under heavy parallel testing (`tests/helpers/mod.rs`)
 
 ## Phase 3: Known Limitations
@@ -33,14 +33,21 @@
 
 ## Phase 6: Known Limitations
 
-- [ ] `trap` signal execution (INT, HUP, etc.) not implemented — only EXIT trap fires; signal trap registration is stored but execution deferred to Phase 7
-- [ ] `-e` (errexit) flag is settable but behavior is not implemented — deferred to Phase 7
+- [x] `trap` signal execution (INT, HUP, etc.) — implemented in Phase 7 via self-pipe signal handling (`src/signal.rs`, `src/exec/mod.rs`)
+- [x] `-e` (errexit) flag — behavior implemented in Phase 7 with all POSIX exception contexts (`src/exec/mod.rs`)
 - [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
 - [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
 - [ ] `ignoreeof` is settable but has no effect — interactive mode feature
 - [ ] Alias expansion in non-interactive mode requires incremental parsing — complex scripts with nested structures may have edge cases
 
+## Phase 7: Known Limitations
+
+- [ ] `wait` signal interruption — if multiple signals arrive simultaneously during `wait`, only the first is used for the return status
+- [ ] `kill 0` in pipeline subshell sends to pipeline's process group, not the shell's
+- [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
+- [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
+- [ ] `ignoreeof` is settable but has no effect — interactive mode feature
+
 ## Remaining Phases
 
-- [ ] Phase 7: Signals and errexit
 - [ ] Phase 8: Subshell environment isolation
