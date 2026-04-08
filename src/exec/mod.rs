@@ -1,4 +1,5 @@
 pub mod command;
+pub mod pipeline;
 pub mod redirect;
 
 use std::ffi::CString;
@@ -184,7 +185,7 @@ impl Executor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{Redirect, SimpleCommand, Word};
+    use crate::parser::ast::{Command, Pipeline, Redirect, SimpleCommand, Word};
 
     fn make_simple_cmd(words: &[&str]) -> SimpleCommand {
         SimpleCommand {
@@ -246,5 +247,33 @@ mod tests {
         let true_cmd = make_simple_cmd(&["true"]);
         exec.exec_simple_command(&true_cmd);
         assert_eq!(exec.env.last_exit_status, 0);
+    }
+
+    #[test]
+    fn test_single_command_pipeline() {
+        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let pipeline = Pipeline {
+            negated: false,
+            commands: vec![Command::Simple(SimpleCommand {
+                assignments: vec![],
+                words: vec![Word::literal("true")],
+                redirects: vec![],
+            })],
+        };
+        assert_eq!(exec.exec_pipeline(&pipeline), 0);
+    }
+
+    #[test]
+    fn test_negated_pipeline() {
+        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let pipeline = Pipeline {
+            negated: true,
+            commands: vec![Command::Simple(SimpleCommand {
+                assignments: vec![],
+                words: vec![Word::literal("true")],
+                redirects: vec![],
+            })],
+        };
+        assert_eq!(exec.exec_pipeline(&pipeline), 1);
     }
 }
