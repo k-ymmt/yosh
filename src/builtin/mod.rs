@@ -5,7 +5,7 @@ pub fn is_builtin(name: &str) -> bool {
     matches!(
         name,
         "exit" | "cd" | "export" | "unset" | "readonly" | "true" | "false" | ":" | "echo"
-            | "return"
+            | "return" | "break" | "continue"
     )
 }
 
@@ -21,6 +21,8 @@ pub fn exec_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> i32 {
         "false" => 1,
         "echo" => builtin_echo(args),
         "return" => builtin_return(args, env),
+        "break" => builtin_break(args, env),
+        "continue" => builtin_continue(args, env),
         _ => {
             eprintln!("kish: {}: not a builtin", name);
             1
@@ -168,8 +170,8 @@ fn builtin_echo(args: &[String]) -> i32 {
     0
 }
 
-fn builtin_return(args: &[String], env: &ShellEnv) -> i32 {
-    if args.is_empty() {
+fn builtin_return(args: &[String], env: &mut ShellEnv) -> i32 {
+    let code = if args.is_empty() {
         env.last_exit_status & 0xFF
     } else {
         match args[0].parse::<i32>() {
@@ -179,7 +181,49 @@ fn builtin_return(args: &[String], env: &ShellEnv) -> i32 {
                 2
             }
         }
-    }
+    };
+    env.flow_control = Some(crate::env::FlowControl::Return(code));
+    code
+}
+
+fn builtin_break(args: &[String], env: &mut ShellEnv) -> i32 {
+    let n = if args.is_empty() {
+        1
+    } else {
+        match args[0].parse::<usize>() {
+            Ok(0) => {
+                eprintln!("kish: break: loop count must be > 0");
+                return 1;
+            }
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!("kish: break: {}: numeric argument required", args[0]);
+                return 1;
+            }
+        }
+    };
+    env.flow_control = Some(crate::env::FlowControl::Break(n));
+    0
+}
+
+fn builtin_continue(args: &[String], env: &mut ShellEnv) -> i32 {
+    let n = if args.is_empty() {
+        1
+    } else {
+        match args[0].parse::<usize>() {
+            Ok(0) => {
+                eprintln!("kish: continue: loop count must be > 0");
+                return 1;
+            }
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!("kish: continue: {}: numeric argument required", args[0]);
+                return 1;
+            }
+        }
+    };
+    env.flow_control = Some(crate::env::FlowControl::Continue(n));
+    0
 }
 
 #[cfg(test)]

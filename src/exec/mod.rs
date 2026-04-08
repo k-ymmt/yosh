@@ -97,16 +97,204 @@ impl Executor {
         status
     }
 
-    fn exec_brace_group(&mut self, _body: &[CompleteCommand]) -> i32 { todo!("Task 2") }
-    fn exec_subshell(&mut self, _body: &[CompleteCommand]) -> i32 { todo!("Task 9") }
-    fn exec_if(&mut self, _cond: &[CompleteCommand], _then: &[CompleteCommand],
-               _elifs: &[(Vec<CompleteCommand>, Vec<CompleteCommand>)],
-               _else_: &Option<Vec<CompleteCommand>>) -> i32 { todo!("Task 3") }
-    fn exec_loop(&mut self, _cond: &[CompleteCommand], _body: &[CompleteCommand],
-                 _until: bool) -> i32 { todo!("Task 4") }
-    fn exec_for(&mut self, _var: &str, _words: &Option<Vec<Word>>,
-                _body: &[CompleteCommand]) -> i32 { todo!("Task 5") }
-    fn exec_case(&mut self, _word: &Word, _items: &[CaseItem]) -> i32 { todo!("Task 7") }
+    fn exec_brace_group(&mut self, body: &[CompleteCommand]) -> i32 {
+        self.exec_body(body)
+    }
+    fn exec_subshell(&mut self, body: &[CompleteCommand]) -> i32 {
+        match unsafe { fork() } {
+            Err(e) => {
+                eprintln!("kish: fork: {}", e);
+                1
+            }
+            Ok(ForkResult::Child) => {
+                let status = self.exec_body(body);
+                std::process::exit(status);
+            }
+            Ok(ForkResult::Parent { child }) => command::wait_child(child),
+        }
+    }
+    fn exec_if(
+        &mut self,
+        condition: &[CompleteCommand],
+        then_part: &[CompleteCommand],
+        elif_parts: &[(Vec<CompleteCommand>, Vec<CompleteCommand>)],
+        else_part: &Option<Vec<CompleteCommand>>,
+    ) -> i32 {
+        let cond_status = self.exec_body(condition);
+        if self.env.flow_control.is_some() {
+            return cond_status;
+        }
+
+        if cond_status == 0 {
+            return self.exec_body(then_part);
+        }
+
+        for (elif_cond, elif_body) in elif_parts {
+            let cond_status = self.exec_body(elif_cond);
+            if self.env.flow_control.is_some() {
+                return cond_status;
+            }
+            if cond_status == 0 {
+                return self.exec_body(elif_body);
+            }
+        }
+
+        if let Some(else_body) = else_part {
+            return self.exec_body(else_body);
+        }
+
+        0
+    }
+    /// Execute a while or until loop.
+    /// `until=false` → while (run while condition succeeds)
+    /// `until=true`  → until (run while condition fails)
+    fn exec_loop(
+        &mut self,
+        condition: &[CompleteCommand],
+        body: &[CompleteCommand],
+        until: bool,
+    ) -> i32 {
+        let mut status = 0;
+        loop {
+            let cond_status = self.exec_body(condition);
+            if self.env.flow_control.is_some() {
+                return cond_status;
+            }
+            let should_run = if until {
+                cond_status != 0
+            } else {
+                cond_status == 0
+            };
+            if !should_run {
+                break;
+            }
+
+            status = self.exec_body(body);
+
+            match self.env.flow_control.take() {
+                Some(FlowControl::Break(n)) => {
+                    if n > 1 {
+                        self.env.flow_control = Some(FlowControl::Break(n - 1));
+                    }
+                    break;
+                }
+                Some(FlowControl::Continue(n)) => {
+                    if n > 1 {
+                        self.env.flow_control = Some(FlowControl::Continue(n - 1));
+                        break;
+                    }
+                    // n <= 1: continue this loop (re-evaluate condition)
+                }
+                Some(other) => {
+                    self.env.flow_control = Some(other);
+                    break;
+                }
+                None => {}
+            }
+        }
+        status
+    }
+    fn exec_for(
+        &mut self,
+        var: &str,
+        words: &Option<Vec<Word>>,
+        body: &[CompleteCommand],
+    ) -> i32 {
+        let items: Vec<String> = match words {
+            Some(word_list) => expand_words(&mut self.env, word_list),
+            None => self.env.positional_params.clone(),
+        };
+
+        let mut status = 0;
+        for item in &items {
+            if let Err(e) = self.env.vars.set(var, item.as_str()) {
+                eprintln!("kish: {}", e);
+                return 1;
+            }
+
+            status = self.exec_body(body);
+
+            match self.env.flow_control.take() {
+                Some(FlowControl::Break(n)) => {
+                    if n > 1 {
+                        self.env.flow_control = Some(FlowControl::Break(n - 1));
+                    }
+                    break;
+                }
+                Some(FlowControl::Continue(n)) => {
+                    if n > 1 {
+                        self.env.flow_control = Some(FlowControl::Continue(n - 1));
+                        break;
+                    }
+                    // n <= 1: continue this loop
+                }
+                Some(other) => {
+                    self.env.flow_control = Some(other);
+                    break;
+                }
+                None => {}
+            }
+        }
+        status
+    }
+    fn exec_case(&mut self, word: &Word, items: &[CaseItem]) -> i32 {
+        let case_word = crate::expand::expand_word_to_string(&mut self.env, word);
+        let mut status = 0;
+        let mut falling_through = false;
+
+        for item in items {
+            if !falling_through {
+                let mut matched = false;
+                for pattern in &item.patterns {
+                    let pat = crate::expand::expand_word_to_string(&mut self.env, pattern);
+                    if crate::expand::pattern::matches(&pat, &case_word) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    continue;
+                }
+            }
+
+            status = self.exec_body(&item.body);
+            if self.env.flow_control.is_some() {
+                break;
+            }
+
+            match item.terminator {
+                CaseTerminator::Break => break,
+                CaseTerminator::FallThrough => {
+                    falling_through = true;
+                }
+            }
+        }
+
+        status
+    }
+
+    /// Invoke a function: save/restore positional params, execute body.
+    fn exec_function_call(&mut self, func_def: &FunctionDef, args: &[String]) -> i32 {
+        let saved_params =
+            std::mem::replace(&mut self.env.positional_params, args.to_vec());
+
+        let status =
+            self.exec_compound_command(&func_def.body, &func_def.redirects);
+
+        // Handle return flow control
+        let final_status = match self.env.flow_control.take() {
+            Some(FlowControl::Return(s)) => s,
+            Some(other) => {
+                self.env.flow_control = Some(other);
+                status
+            }
+            None => status,
+        };
+
+        self.env.positional_params = saved_params;
+        self.env.last_exit_status = final_status;
+        final_status
+    }
 
     /// Execute a simple command (assignments, builtins, or external programs).
     pub fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> i32 {
@@ -141,6 +329,20 @@ impl Executor {
 
         let command_name = expanded[0].clone();
         let args: Vec<String> = expanded[1..].to_vec();
+
+        // Check for function call (before builtins, matching POSIX lookup order)
+        if let Some(func_def) = self.env.functions.get(&command_name).cloned() {
+            let mut redirect_state = RedirectState::new();
+            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
+                eprintln!("kish: {}", e);
+                self.env.last_exit_status = 1;
+                return 1;
+            }
+            let status = self.exec_function_call(&func_def, &args);
+            redirect_state.restore();
+            self.env.last_exit_status = status;
+            return status;
+        }
 
         if is_builtin(&command_name) {
             // For builtins: apply redirects with save=true, run, restore

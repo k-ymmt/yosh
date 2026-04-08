@@ -454,3 +454,402 @@ fn test_parse_script_file() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+// ── Phase 5: Control structure execution tests ──────────────────────────────
+
+// ── brace group ──
+
+#[test]
+fn test_exec_brace_group() {
+    let out = kish_exec("{ echo hello; echo world; }");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\nworld\n");
+}
+
+#[test]
+fn test_exec_brace_group_exit_status() {
+    assert!(kish_exec("{ true; }").status.success());
+    assert!(!kish_exec("{ false; }").status.success());
+}
+
+#[test]
+fn test_exec_brace_group_shares_env() {
+    let out = kish_exec("x=hello; { x=world; }; echo $x");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "world\n");
+}
+
+// ── if/elif/else ──
+
+#[test]
+fn test_exec_if_true() {
+    let out = kish_exec("if true; then echo yes; fi");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "yes\n");
+}
+
+#[test]
+fn test_exec_if_false() {
+    let out = kish_exec("if false; then echo yes; fi");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
+
+#[test]
+fn test_exec_if_else() {
+    let out = kish_exec("if false; then echo no; else echo yes; fi");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "yes\n");
+}
+
+#[test]
+fn test_exec_if_elif() {
+    let out = kish_exec("if false; then echo 1; elif true; then echo 2; elif true; then echo 3; fi");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n");
+}
+
+#[test]
+fn test_exec_if_elif_else() {
+    let out = kish_exec("if false; then echo 1; elif false; then echo 2; else echo 3; fi");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n");
+}
+
+#[test]
+fn test_exec_if_exit_status() {
+    assert!(kish_exec("if false; then echo no; fi").status.success());
+}
+
+#[test]
+fn test_exec_nested_if() {
+    let out = kish_exec("if true; then if false; then echo no; else echo yes; fi; fi");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "yes\n");
+}
+
+// ── while/until ──
+
+#[test]
+fn test_exec_while_loop() {
+    let out = kish_exec("x=0; while test $x -lt 3; do echo $x; x=$((x + 1)); done");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n1\n2\n");
+}
+
+#[test]
+fn test_exec_while_false_no_exec() {
+    let out = kish_exec("while false; do echo never; done");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
+
+#[test]
+fn test_exec_until_loop() {
+    let out = kish_exec("x=0; until test $x -ge 3; do echo $x; x=$((x + 1)); done");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n1\n2\n");
+}
+
+#[test]
+fn test_exec_until_true_no_exec() {
+    let out = kish_exec("until true; do echo never; done");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
+
+// ── for loop ──
+
+#[test]
+fn test_exec_for_loop() {
+    let out = kish_exec("for i in a b c; do echo $i; done");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a\nb\nc\n");
+}
+
+#[test]
+fn test_exec_for_empty_list() {
+    let out = kish_exec("for i in; do echo $i; done");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
+
+#[test]
+fn test_exec_for_with_expansion() {
+    let out = kish_exec("items='x y z'; for i in $items; do echo $i; done");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "x\ny\nz\n");
+}
+
+#[test]
+fn test_exec_for_default_positional_params() {
+    let tmp = helpers::TempDir::new();
+    let script = tmp.write_file("test.sh", "for i; do echo $i; done\n");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_kish"))
+        .args([script.to_str().unwrap(), "hello", "world"])
+        .output()
+        .expect("failed");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "hello\nworld\n");
+}
+
+#[test]
+fn test_exec_nested_for() {
+    let out = kish_exec("for i in 1 2; do for j in a b; do echo $i$j; done; done");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "1a\n1b\n2a\n2b\n"
+    );
+}
+
+// ── break/continue ──
+
+#[test]
+fn test_exec_break() {
+    let out = kish_exec("for i in 1 2 3; do if test $i = 2; then break; fi; echo $i; done");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+}
+
+#[test]
+fn test_exec_continue() {
+    let out = kish_exec("for i in 1 2 3; do if test $i = 2; then continue; fi; echo $i; done");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n3\n");
+}
+
+#[test]
+fn test_exec_break_nested() {
+    let out = kish_exec(
+        "for i in 1 2; do for j in a b c; do if test $j = b; then break 2; fi; echo $i$j; done; done",
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1a\n");
+}
+
+#[test]
+fn test_exec_continue_nested() {
+    let out = kish_exec(
+        "for i in 1 2; do for j in a b; do if test $j = b; then continue 2; fi; echo $i$j; done; done",
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1a\n2a\n");
+}
+
+#[test]
+fn test_exec_break_while() {
+    let out = kish_exec("x=0; while true; do x=$((x+1)); if test $x = 3; then break; fi; echo $x; done");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n2\n");
+}
+
+// ── case ──
+
+#[test]
+fn test_exec_case_basic() {
+    let out = kish_exec("case foo in foo) echo yes;; bar) echo no;; esac");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "yes\n");
+}
+
+#[test]
+fn test_exec_case_no_match() {
+    let out = kish_exec("case baz in foo) echo no;; bar) echo no;; esac");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
+
+#[test]
+fn test_exec_case_glob_pattern() {
+    let out = kish_exec("case hello in h*) echo matched;; esac");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "matched\n");
+}
+
+#[test]
+fn test_exec_case_multiple_patterns() {
+    let out = kish_exec("case bar in foo|bar|baz) echo matched;; esac");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "matched\n");
+}
+
+#[test]
+fn test_exec_case_default() {
+    let out = kish_exec("case xyz in foo) echo no;; *) echo default;; esac");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "default\n");
+}
+
+#[test]
+fn test_exec_case_with_variable() {
+    let out = kish_exec("x=hello; case $x in hello) echo yes;; esac");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "yes\n");
+}
+
+#[test]
+fn test_exec_case_fallthrough() {
+    let out = kish_exec("case a in a) echo first;& b) echo second;; c) echo third;; esac");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "first\nsecond\n");
+}
+
+// ── functions ──
+
+#[test]
+fn test_exec_function_basic() {
+    let out = kish_exec("greet() { echo hello; }; greet");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_exec_function_args() {
+    let out = kish_exec("greet() { echo \"hello $1\"; }; greet world");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello world\n");
+}
+
+#[test]
+fn test_exec_function_dollar_at() {
+    let out = kish_exec("show() { echo \"$@\"; }; show a b c");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a b c\n");
+}
+
+#[test]
+fn test_exec_function_return() {
+    let out = kish_exec("myfn() { return 42; echo never; }; myfn; echo $?");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
+}
+
+#[test]
+fn test_exec_function_return_default() {
+    let out = kish_exec("myfn() { true; }; myfn; echo $?");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
+}
+
+#[test]
+fn test_exec_function_recursion() {
+    // Note: use temp variable before arithmetic because $N inside $((...)) is a known limitation
+    let out = kish_exec(
+        "countdown() { if test $1 -gt 0; then echo $1; x=$1; countdown $((x - 1)); fi; }; countdown 3",
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n2\n1\n");
+}
+
+#[test]
+fn test_exec_function_global_vars() {
+    let out = kish_exec("x=before; setx() { x=after; }; setx; echo $x");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "after\n");
+}
+
+#[test]
+fn test_exec_function_restores_positional_params() {
+    let tmp = helpers::TempDir::new();
+    let script = tmp.write_file(
+        "test.sh",
+        "show() { echo \"func: $1\"; }; show inner; echo \"script: $1\"\n",
+    );
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_kish"))
+        .args([script.to_str().unwrap(), "outer"])
+        .output()
+        .expect("failed");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "func: inner\nscript: outer\n"
+    );
+}
+
+// ── subshell ──
+
+#[test]
+fn test_exec_subshell_basic() {
+    let out = kish_exec("(echo hello)");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_exec_subshell_isolation() {
+    let out = kish_exec("x=before; (x=after; echo $x); echo $x");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "after\nbefore\n"
+    );
+}
+
+#[test]
+fn test_exec_subshell_exit_status() {
+    assert!(kish_exec("(true)").status.success());
+    assert!(!kish_exec("(false)").status.success());
+}
+
+// ── compound command redirects ──
+
+#[test]
+fn test_exec_brace_group_redirect() {
+    let tmp = helpers::TempDir::new();
+    let outfile = tmp.path().join("out.txt");
+    kish_exec(&format!("{{ echo hello; echo world; }} > {}", outfile.display()));
+    assert_eq!(
+        std::fs::read_to_string(&outfile).unwrap(),
+        "hello\nworld\n"
+    );
+}
+
+#[test]
+fn test_exec_if_redirect() {
+    let tmp = helpers::TempDir::new();
+    let outfile = tmp.path().join("out.txt");
+    kish_exec(&format!(
+        "if true; then echo yes; fi > {}",
+        outfile.display()
+    ));
+    assert_eq!(std::fs::read_to_string(&outfile).unwrap(), "yes\n");
+}
+
+#[test]
+fn test_exec_for_redirect() {
+    let tmp = helpers::TempDir::new();
+    let outfile = tmp.path().join("out.txt");
+    kish_exec(&format!(
+        "for i in a b; do echo $i; done > {}",
+        outfile.display()
+    ));
+    assert_eq!(std::fs::read_to_string(&outfile).unwrap(), "a\nb\n");
+}
+
+// ── complex / combined tests ──
+
+#[test]
+fn test_exec_if_with_pipeline_condition() {
+    let out = kish_exec("if echo hello | grep -q hello; then echo found; fi");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "found\n");
+}
+
+#[test]
+fn test_exec_for_in_function() {
+    let out = kish_exec("each() { for i in \"$@\"; do echo $i; done; }; each x y z");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "x\ny\nz\n");
+}
+
+#[test]
+fn test_exec_case_in_loop() {
+    let out = kish_exec(
+        "for f in a.txt b.rs c.txt; do case $f in *.txt) echo $f;; esac; done",
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a.txt\nc.txt\n");
+}
+
+#[test]
+fn test_exec_nested_control_structures() {
+    let out = kish_exec(
+        "if true; then for i in 1 2 3; do case $i in 2) echo two;; *) echo other;; esac; done; fi",
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "other\ntwo\nother\n"
+    );
+}
+
+#[test]
+fn test_exec_function_with_control() {
+    let out = kish_exec(
+        "first_match() { for i in \"$@\"; do if test $i = target; then echo found; return 0; fi; done; return 1; }; first_match a b target c; echo $?",
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "found\n0\n");
+}
+
+#[test]
+fn test_exec_sum_with_for() {
+    let out = kish_exec(
+        "sum=0; for i in 1 2 3 4 5; do sum=$((sum + i)); done; echo $sum",
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "15\n");
+}
+
+#[test]
+fn test_exec_script_with_functions() {
+    let tmp = helpers::TempDir::new();
+    let script = tmp.write_file(
+        "test.sh",
+        "greet() {\n  echo \"Hello, $1!\"\n}\nfor name in Alice Bob; do\n  greet $name\ndone\n",
+    );
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_kish"))
+        .arg(script.to_str().unwrap())
+        .output()
+        .expect("failed");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Hello, Alice!\nHello, Bob!\n"
+    );
+}
