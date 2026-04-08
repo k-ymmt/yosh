@@ -1,6 +1,7 @@
 mod builtin;
 mod env;
 mod error;
+mod exec;
 mod expand;
 mod lexer;
 mod parser;
