@@ -1,8 +1,10 @@
+pub mod aliases;
 pub mod vars;
 
 use std::collections::HashMap;
 
 use nix::unistd::{Pid, getpid};
+use aliases::AliasStore;
 use vars::VarStore;
 
 use crate::parser::ast::FunctionDef;
@@ -283,6 +285,7 @@ pub struct ShellEnv {
     pub flow_control: Option<FlowControl>,
     pub options: ShellOptions,
     pub traps: TrapStore,
+    pub aliases: AliasStore,
 }
 
 impl ShellEnv {
@@ -301,6 +304,7 @@ impl ShellEnv {
             flow_control: None,
             options: ShellOptions::default(),
             traps: TrapStore::default(),
+            aliases: AliasStore::default(),
         }
     }
 }
