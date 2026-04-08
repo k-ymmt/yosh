@@ -3,8 +3,7 @@
 ## Phase 1: Known Limitations
 
 - [ ] Nested command substitution edge cases: `$(echo $(echo ')'))` may fail due to balanced-paren approach in lexer (`src/lexer/mod.rs` `read_balanced_parens`)
-- [ ] Unquoted here-document body is stored as single Literal — needs expansion parsing in Phase 3 (use `HereDoc.quoted` flag to determine)
-- [ ] Arithmetic expressions inside `$((...))` stored as raw string — `$var` references not pre-parsed; handle in Phase 3 expansion
+- [ ] Unquoted here-document body is stored as single Literal — needs expansion in Phase 4 (use `HereDoc.quoted` flag to determine)
 - [ ] `Lexer.pending_heredocs` is `pub` — consider accessor methods for better encapsulation
 
 ## Phase 2: Known Limitations
@@ -16,9 +15,16 @@
 - [ ] `builtin_exit` calls `process::exit` directly — needs change for EXIT trap support in Phase 7 (`src/builtin/mod.rs`)
 - [ ] `TempDir` ID uses nanosecond timestamp — risk of collision under heavy parallel testing (`tests/helpers/mod.rs`)
 
+## Phase 3: Known Limitations
+
+- [ ] Unquoted `$@` should produce separate fields per positional param, currently joins with space (`src/expand/mod.rs`)
+- [ ] `set -f` (noglob) not checked — pathname expansion cannot be disabled yet (`src/expand/pathname.rs`)
+- [ ] Arithmetic compound assignment operators (`+=`, `-=`, `*=`, etc.) not implemented (`src/expand/arith.rs`)
+- [ ] `${parameter:?word}` should exit non-interactive shell, currently only prints error (`src/expand/param.rs`)
+- [ ] Deeply nested command substitution edge cases untested
+
 ## Remaining Phases
 
-- [ ] Phase 3: Word expansion (tilde, parameter, command sub, arithmetic, field splitting, pathname, quote removal)
 - [ ] Phase 4: Redirections and here-document I/O
 - [ ] Phase 5: Control structure execution (if, for, while, until, case, functions)
 - [ ] Phase 6: Special builtins (set, export, trap, eval, exec, etc.) + alias expansion
