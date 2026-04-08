@@ -446,6 +446,23 @@ impl Executor {
             return status;
         }
 
+        // wait needs Executor access (bg_jobs + signal processing)
+        if command_name == "wait" {
+            let saved = self.apply_temp_assignments(&cmd.assignments);
+            let mut redirect_state = RedirectState::new();
+            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
+                eprintln!("kish: {}", e);
+                self.restore_assignments(saved);
+                self.env.last_exit_status = 1;
+                return 1;
+            }
+            let status = self.builtin_wait(&args);
+            redirect_state.restore();
+            self.restore_assignments(saved);
+            self.env.last_exit_status = status;
+            return status;
+        }
+
         match classify_builtin(&command_name) {
             BuiltinKind::Special => {
                 // Special builtins: prefix assignments persist in current env
@@ -745,6 +762,107 @@ impl Executor {
                 }
             }
         }
+    }
+
+    /// POSIX wait builtin: wait for background jobs.
+    fn builtin_wait(&mut self, args: &[String]) -> i32 {
+        use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+        use nix::unistd::Pid;
+
+        let target_pids: Vec<Pid> = if args.is_empty() {
+            self.env
+                .bg_jobs
+                .iter()
+                .filter(|j| j.status.is_none())
+                .map(|j| j.pid)
+                .collect()
+        } else {
+            let mut pids = Vec::new();
+            for arg in args {
+                match arg.parse::<i32>() {
+                    Ok(n) => pids.push(Pid::from_raw(n)),
+                    Err(_) => {
+                        eprintln!("kish: wait: {}: not a pid", arg);
+                        return 2;
+                    }
+                }
+            }
+            pids
+        };
+
+        if target_pids.is_empty() {
+            return self.env.last_exit_status;
+        }
+
+        let mut last_status = 0;
+
+        for pid in &target_pids {
+            // Check if already reaped
+            if let Some(job) = self.env.bg_jobs.iter().find(|j| j.pid == *pid) {
+                if let Some(s) = job.status {
+                    last_status = s;
+                    continue;
+                }
+            }
+
+            loop {
+                match waitpid(*pid, Some(WaitPidFlag::WNOHANG)) {
+                    Ok(WaitStatus::Exited(_, code)) => {
+                        if let Some(job) =
+                            self.env.bg_jobs.iter_mut().find(|j| j.pid == *pid)
+                        {
+                            job.status = Some(code);
+                        }
+                        last_status = code;
+                        break;
+                    }
+                    Ok(WaitStatus::Signaled(_, sig, _)) => {
+                        let code = 128 + sig as i32;
+                        if let Some(job) =
+                            self.env.bg_jobs.iter_mut().find(|j| j.pid == *pid)
+                        {
+                            job.status = Some(code);
+                        }
+                        last_status = code;
+                        break;
+                    }
+                    Ok(WaitStatus::StillAlive) => {
+                        // Poll: wait for self-pipe signal or SIGCHLD (EINTR)
+                        let pipe_fd = signal::self_pipe_read_fd();
+                        let mut fds = [nix::poll::PollFd::new(
+                            unsafe { std::os::fd::BorrowedFd::borrow_raw(pipe_fd) },
+                            nix::poll::PollFlags::POLLIN,
+                        )];
+                        match nix::poll::poll(&mut fds, nix::poll::PollTimeout::NONE) {
+                            Ok(_)
+                                if fds[0]
+                                    .revents()
+                                    .is_some_and(|r| r.contains(nix::poll::PollFlags::POLLIN)) =>
+                            {
+                                let signals = signal::drain_pending_signals();
+                                if !signals.is_empty() {
+                                    self.process_pending_signals();
+                                    last_status = 128 + signals[0];
+                                    return last_status;
+                                }
+                            }
+                            Err(nix::errno::Errno::EINTR) => {
+                                // SIGCHLD — try waitpid again
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(nix::errno::Errno::ECHILD) => {
+                        eprintln!("kish: wait: pid {} is not a child of this shell", pid);
+                        last_status = 127;
+                        break;
+                    }
+                    Err(_) | Ok(_) => break,
+                }
+            }
+        }
+
+        last_status
     }
 }
 

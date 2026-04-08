@@ -21,7 +21,7 @@ pub fn classify_builtin(name: &str) -> BuiltinKind {
         | "readonly" | "return" | "set" | "shift" | "times" | "trap" | "unset" => {
             BuiltinKind::Special
         }
-        "cd" | "echo" | "true" | "false" | "alias" | "unalias" => BuiltinKind::Regular,
+        "cd" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait" => BuiltinKind::Regular,
         _ => BuiltinKind::NotBuiltin,
     }
 }
@@ -35,6 +35,12 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "echo" => builtin_echo(args),
         "alias" => builtin_alias(args, env),
         "unalias" => builtin_unalias(args, env),
+        "kill" => builtin_kill(args),
+        "wait" => {
+            // Handled in Executor::exec_simple_command — should not reach here
+            eprintln!("kish: wait: internal error");
+            1
+        }
         _ => {
             eprintln!("kish: {}: not a regular builtin", name);
             1
@@ -131,6 +137,99 @@ fn builtin_unalias(args: &[String], env: &mut ShellEnv) -> i32 {
         }
     }
     status
+}
+
+fn builtin_kill(args: &[String]) -> i32 {
+    if args.is_empty() {
+        eprintln!("kish: kill: usage: kill [-s sigspec | -signum] pid...");
+        return 2;
+    }
+
+    if args[0] == "-l" {
+        return kill_list(&args[1..]);
+    }
+
+    let (sig_num, pid_args) = match parse_kill_signal(args) {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("kish: kill: {}", msg);
+            return 2;
+        }
+    };
+
+    let mut status = 0;
+    for pid_str in pid_args {
+        let pid: i32 = match pid_str.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!("kish: kill: {}: invalid pid", pid_str);
+                status = 1;
+                continue;
+            }
+        };
+        if let Err(e) = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::try_from(sig_num).ok(),
+        ) {
+            eprintln!("kish: kill: ({}) - {}", pid_str, e);
+            status = 1;
+        }
+    }
+    status
+}
+
+fn parse_kill_signal(args: &[String]) -> Result<(i32, &[String]), String> {
+    if args[0] == "-s" {
+        if args.len() < 3 {
+            return Err("option requires an argument -- s".to_string());
+        }
+        let sig = crate::signal::signal_name_to_number(&args[1])?;
+        Ok((sig, &args[2..]))
+    } else if args[0] == "--" {
+        Ok((libc::SIGTERM, &args[1..]))
+    } else if args[0].starts_with('-') && args[0].len() > 1 {
+        let spec = &args[0][1..];
+        if let Ok(num) = spec.parse::<i32>() {
+            Ok((num, &args[1..]))
+        } else {
+            let sig = crate::signal::signal_name_to_number(spec)?;
+            Ok((sig, &args[1..]))
+        }
+    } else {
+        Ok((libc::SIGTERM, args))
+    }
+}
+
+fn kill_list(args: &[String]) -> i32 {
+    if args.is_empty() {
+        let names: Vec<&str> = crate::signal::SIGNAL_TABLE
+            .iter()
+            .map(|&(_, name)| name)
+            .collect();
+        println!("{}", names.join(" "));
+        return 0;
+    }
+    for arg in args {
+        if let Ok(num) = arg.parse::<i32>() {
+            let sig = if num > 128 { num - 128 } else { num };
+            match crate::signal::signal_number_to_name(sig) {
+                Some(name) => println!("{}", name),
+                None => {
+                    eprintln!("kish: kill: {}: invalid signal number", arg);
+                    return 1;
+                }
+            }
+        } else {
+            match crate::signal::signal_name_to_number(arg) {
+                Ok(num) => println!("{}", num),
+                Err(e) => {
+                    eprintln!("kish: kill: {}", e);
+                    return 1;
+                }
+            }
+        }
+    }
+    0
 }
 
 #[cfg(test)]
