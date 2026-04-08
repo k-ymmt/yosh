@@ -138,6 +138,32 @@ fn test_exec_complex_pipeline() {
     assert!(stdout.contains("world"));
 }
 
+// ── command substitution tests ───────────────────────────────────────────────
+
+#[test]
+fn test_command_substitution() {
+    let out = kish_exec("echo $(echo hello)");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_command_sub_strips_trailing_newlines() {
+    let out = kish_exec("echo \"x$(echo hello)x\"");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "xhellox\n");
+}
+
+#[test]
+fn test_command_sub_exit_status() {
+    let out = kish_exec("x=$(false); echo $?");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+}
+
+#[test]
+fn test_command_sub_in_assignment() {
+    let out = kish_exec("x=$(echo hello); echo $x");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
 // ── parse tests ──────────────────────────────────────────────────────────────
 
 #[test]

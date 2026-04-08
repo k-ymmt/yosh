@@ -49,20 +49,28 @@ impl Executor {
 
         // Assignment-only command (no words)
         if expanded.is_empty() {
+            // Track the exit status from any command substitutions in the assignments.
+            // POSIX: the exit status of an assignment-only command is the exit status
+            // of the last command substitution performed during expansion.
+            let mut last_cmd_sub_status = 0i32;
             for assignment in &cmd.assignments {
+                // Reset before each expansion so we can capture per-assignment status
+                self.env.last_exit_status = 0;
                 let value = assignment
                     .value
                     .as_ref()
                     .map(|w| crate::expand::expand_word_to_string(&mut self.env, w))
                     .unwrap_or_default();
+                // Capture the status set by any command substitution during expansion
+                last_cmd_sub_status = self.env.last_exit_status;
                 if let Err(e) = self.env.vars.set(&assignment.name, value) {
                     eprintln!("kish: {}", e);
                     self.env.last_exit_status = 1;
                     return 1;
                 }
             }
-            self.env.last_exit_status = 0;
-            return 0;
+            self.env.last_exit_status = last_cmd_sub_status;
+            return last_cmd_sub_status;
         }
 
         let command_name = expanded[0].clone();
