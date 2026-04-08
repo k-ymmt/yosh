@@ -6,7 +6,8 @@ use std::ffi::CString;
 
 use nix::unistd::{execvp, fork, ForkResult};
 
-use crate::builtin::{exec_builtin, is_builtin};
+use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
+use crate::builtin::special::exec_special_builtin;
 use crate::env::{FlowControl, ShellEnv};
 use crate::expand::expand_words;
 use crate::parser::ast::{
@@ -344,29 +345,56 @@ impl Executor {
             return status;
         }
 
-        if is_builtin(&command_name) {
-            // For builtins: apply redirects with save=true, run, restore
-            let mut redirect_state = RedirectState::new();
-            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                eprintln!("kish: {}", e);
-                self.env.last_exit_status = 1;
-                return 1;
+        match classify_builtin(&command_name) {
+            BuiltinKind::Special => {
+                // Special builtins: prefix assignments persist in current env
+                for assignment in &cmd.assignments {
+                    let value = assignment
+                        .value
+                        .as_ref()
+                        .map(|w| crate::expand::expand_word_to_string(&mut self.env, w))
+                        .unwrap_or_default();
+                    if let Err(e) = self.env.vars.set(&assignment.name, value) {
+                        eprintln!("kish: {}", e);
+                        self.env.last_exit_status = 1;
+                        return 1;
+                    }
+                }
+                let mut redirect_state = RedirectState::new();
+                if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
+                    eprintln!("kish: {}", e);
+                    self.env.last_exit_status = 1;
+                    return 1;
+                }
+                let status = exec_special_builtin(&command_name, &args, self);
+                redirect_state.restore();
+                self.env.last_exit_status = status;
+                status
             }
-            let status = exec_builtin(&command_name, &args, &mut self.env);
-            redirect_state.restore();
-            self.env.last_exit_status = status;
-            status
-        } else {
-            // External command: fork, child applies redirects + env + exec, parent waits
-            let env_vars = self.build_env_vars(&cmd.assignments);
-            let status = self.exec_external_with_redirects(
-                &command_name,
-                &args,
-                &env_vars,
-                &cmd.redirects,
-            );
-            self.env.last_exit_status = status;
-            status
+            BuiltinKind::Regular => {
+                // Regular builtins: prefix assignments are temporary
+                let saved = self.apply_temp_assignments(&cmd.assignments);
+                let mut redirect_state = RedirectState::new();
+                if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
+                    eprintln!("kish: {}", e);
+                    self.restore_assignments(saved);
+                    self.env.last_exit_status = 1;
+                    return 1;
+                }
+                let status = exec_regular_builtin(&command_name, &args, &mut self.env);
+                redirect_state.restore();
+                self.restore_assignments(saved);
+                self.env.last_exit_status = status;
+                status
+            }
+            BuiltinKind::NotBuiltin => {
+                let env_vars = self.build_env_vars(&cmd.assignments);
+                let status = self.exec_external_with_redirects(
+                    &command_name, &args, &env_vars, &cmd.redirects,
+                );
+                self.env.last_exit_status = status;
+                status
+            }
         }
     }
 
@@ -548,6 +576,39 @@ impl Executor {
         }
         self.env.last_exit_status = status;
         status
+    }
+
+    /// Apply prefix assignments temporarily, returning saved values for later restoration.
+    fn apply_temp_assignments(
+        &mut self,
+        assignments: &[crate::parser::ast::Assignment],
+    ) -> Vec<(String, Option<String>)> {
+        let mut saved = Vec::new();
+        for assignment in assignments {
+            let old_val = self.env.vars.get(&assignment.name).map(|s| s.to_string());
+            saved.push((assignment.name.clone(), old_val));
+            let value = assignment
+                .value
+                .as_ref()
+                .map(|w| crate::expand::expand_word_to_string(&mut self.env, w))
+                .unwrap_or_default();
+            let _ = self.env.vars.set(&assignment.name, value);
+        }
+        saved
+    }
+
+    /// Restore variables to their pre-assignment values.
+    fn restore_assignments(&mut self, saved: Vec<(String, Option<String>)>) {
+        for (name, old_val) in saved {
+            match old_val {
+                Some(val) => {
+                    let _ = self.env.vars.set(&name, val);
+                }
+                None => {
+                    let _ = self.env.vars.unset(&name);
+                }
+            }
+        }
     }
 }
 
