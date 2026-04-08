@@ -124,10 +124,8 @@ impl Word {
     }
 
     pub fn as_literal(&self) -> Option<&str> {
-        if self.parts.len() == 1 {
-            if let WordPart::Literal(s) = &self.parts[0] {
-                return Some(s);
-            }
+        if self.parts.len() == 1 && let WordPart::Literal(s) = &self.parts[0] {
+            return Some(s);
         }
         None
     }
@@ -211,6 +209,7 @@ pub enum RedirectKind {
 pub struct HereDoc {
     pub body: Vec<WordPart>,
     pub strip_tabs: bool,
+    pub quoted: bool,  // true if delimiter was quoted (no expansion needed)
 }
 
 #[cfg(test)]

@@ -68,6 +68,9 @@ impl Parser {
     pub fn skip_newlines(&mut self) -> error::Result<()> {
         while self.current.token == Token::Newline {
             self.advance()?;
+            if !self.lexer.pending_heredocs.is_empty() {
+                self.lexer.process_pending_heredocs()?;
+            }
         }
         Ok(())
     }
@@ -97,34 +100,28 @@ impl Parser {
         let mut items = Vec::new();
 
         let first_aol = self.parse_and_or()?;
+        let was_newline = self.current.token == Token::Newline;
         let sep = self.parse_separator_op()?;
-        let _is_newline_sep = matches!(sep, Some(SeparatorOp::Semi));
+        let ended = sep.is_none() || was_newline;
+        items.push((first_aol, sep));
 
-        items.push((first_aol, sep.clone()));
-
-        // After a newline-as-separator (or real Semi/Amp), check if we should continue
-        // A bare newline separator ends the command, but real semicolons can chain
-        // We need to loop for semicolons and ampersands
-        if matches!(sep, Some(SeparatorOp::Semi) | Some(SeparatorOp::Amp)) {
-            // Check if next is a real separator (not a newline acting as semicolon)
-            // We continue only if we consumed ; or & (not \n)
-        }
-
-        // Continue parsing while there are more and_or lists separated by ; or &
-        loop {
-            if self.is_at_end() || self.is_complete_command_end() {
-                break;
-            }
-            // Check if we got a Newline (which ends a complete command at top level)
-            if self.current.token == Token::Newline {
-                break;
-            }
-            let aol = self.parse_and_or()?;
-            let sep = self.parse_separator_op()?;
-            let ended = matches!(sep, None);
-            items.push((aol, sep));
-            if ended {
-                break;
+        if !ended {
+            // Continue parsing while there are more and_or lists separated by ; or &
+            loop {
+                if self.is_at_end() || self.is_complete_command_end() {
+                    break;
+                }
+                if self.current.token == Token::Newline {
+                    break;
+                }
+                let aol = self.parse_and_or()?;
+                let was_newline = self.current.token == Token::Newline;
+                let sep = self.parse_separator_op()?;
+                let ended = sep.is_none() || was_newline;
+                items.push((aol, sep));
+                if ended {
+                    break;
+                }
             }
         }
 
@@ -134,21 +131,21 @@ impl Parser {
     /// Parse separator: ; → Semi, & → Amp, Newline → Semi (as terminator)
     /// Returns None if no separator found.
     pub fn parse_separator_op(&mut self) -> error::Result<Option<SeparatorOp>> {
-        match &self.current.token {
+        match self.current.token {
             Token::Semi => {
                 self.advance()?;
-                self.skip_newlines()?;
                 Ok(Some(SeparatorOp::Semi))
             }
             Token::Amp => {
                 self.advance()?;
-                self.skip_newlines()?;
                 Ok(Some(SeparatorOp::Amp))
             }
             Token::Newline => {
-                // Newline terminates a complete command (acts like Semi)
-                // But we don't consume it here — let parse_program/skip_newlines handle
-                Ok(None)
+                self.advance()?;
+                if !self.lexer.pending_heredocs.is_empty() {
+                    self.lexer.process_pending_heredocs()?;
+                }
+                Ok(Some(SeparatorOp::Semi))
             }
             _ => Ok(None),
         }
@@ -226,12 +223,10 @@ impl Parser {
                 let word = word.clone();
 
                 // Only try assignments before any command words have been seen
-                if words.is_empty() {
-                    if let Some(assignment) = self.try_parse_assignment(&word) {
-                        self.advance()?;
-                        assignments.push(assignment);
-                        continue;
-                    }
+                if words.is_empty() && let Some(assignment) = self.try_parse_assignment(&word) {
+                    self.advance()?;
+                    assignments.push(assignment);
+                    continue;
                 }
 
                 // It's a regular word
@@ -737,6 +732,7 @@ impl Parser {
                 RedirectKind::HereDoc(HereDoc {
                     body: vec![],
                     strip_tabs: false,
+                    quoted,
                 })
             }
             Token::DLessDash => {
@@ -747,6 +743,7 @@ impl Parser {
                 RedirectKind::HereDoc(HereDoc {
                     body: vec![],
                     strip_tabs: true,
+                    quoted,
                 })
             }
             _ => {
@@ -803,12 +800,11 @@ impl Parser {
 
     fn fill_heredoc_bodies(&mut self, redirects: &mut Vec<Redirect>) {
         for redir in redirects {
-            if let RedirectKind::HereDoc(ref mut hd) = redir.kind {
-                if hd.body.is_empty() {
-                    if let Some(body) = self.lexer.take_heredoc_body() {
-                        hd.body = body;
-                    }
-                }
+            if let RedirectKind::HereDoc(ref mut hd) = redir.kind
+                && hd.body.is_empty()
+                && let Some(body) = self.lexer.take_heredoc_body()
+            {
+                hd.body = body;
             }
         }
     }

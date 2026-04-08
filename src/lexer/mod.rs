@@ -224,10 +224,8 @@ impl Lexer {
             b'<' => self.read_less(),
             b'>' => self.read_great(),
             ch => {
-                if ch.is_ascii_digit() {
-                    if let Some(io_num) = self.try_read_io_number() {
-                        return Ok(SpannedToken { token: io_num, span });
-                    }
+                if ch.is_ascii_digit() && let Some(io_num) = self.try_read_io_number() {
+                    return Ok(SpannedToken { token: io_num, span });
                 }
                 self.read_word()
             }
@@ -393,10 +391,8 @@ impl Lexer {
             let ch = self.current_byte();
 
             // check end_byte (e.g. '}' for ${...})
-            if let Some(end) = end_byte {
-                if ch == end {
-                    break;
-                }
+            if let Some(end) = end_byte && ch == end {
+                break;
             }
 
             if in_double_quote {
@@ -637,7 +633,7 @@ impl Lexer {
                         let mut val = (esc - b'0') as u32;
                         for _ in 0..2 {
                             let next = self.current_byte();
-                            if next >= b'0' && next <= b'7' {
+                            if (b'0'..=b'7').contains(&next) {
                                 val = val * 8 + (next - b'0') as u32;
                                 self.advance();
                             } else {
@@ -1222,10 +1218,8 @@ impl Lexer {
         }
 
         let next = self.current_byte();
-        if next == b'<' || next == b'>' {
-            if let Ok(n) = digits.parse::<i32>() {
-                return Some(Token::IoNumber(n));
-            }
+        if (next == b'<' || next == b'>') && let Ok(n) = digits.parse::<i32>() {
+            return Some(Token::IoNumber(n));
         }
 
         // Not an IO_NUMBER: restore state
