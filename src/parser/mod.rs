@@ -6,7 +6,7 @@ use crate::lexer::token::{Span, SpannedToken, Token};
 use ast::{
     AndOrList, AndOrOp, Assignment, CaseItem, CaseTerminator, Command, CompleteCommand,
     CompoundCommand, CompoundCommandKind, FunctionDef, HereDoc, Pipeline, Program, Redirect,
-    RedirectKind, SeparatorOp, SimpleCommand, Word,
+    RedirectKind, SeparatorOp, SimpleCommand, Word, WordPart,
 };
 
 pub struct Parser {
@@ -147,7 +147,7 @@ impl Parser {
             }
             Token::Newline => {
                 // Newline terminates a complete command (acts like Semi)
-                // But we don't consume it here — let parse_program handle
+                // But we don't consume it here — let parse_program/skip_newlines handle
                 Ok(None)
             }
             _ => Ok(None),
@@ -196,7 +196,8 @@ impl Parser {
     pub fn parse_command(&mut self) -> error::Result<Command> {
         if self.is_compound_command_start() {
             let compound = self.parse_compound_command()?;
-            let redirects = self.parse_redirect_list()?;
+            let mut redirects = self.parse_redirect_list()?;
+            self.fill_heredoc_bodies(&mut redirects);
             return Ok(Command::Compound(compound, redirects));
         }
 
@@ -239,9 +240,16 @@ impl Parser {
                 continue;
             }
 
+            // If we hit a newline and have pending heredocs, process them now
+            if self.current.token == Token::Newline && !self.lexer.pending_heredocs.is_empty() {
+                self.lexer.process_pending_heredocs()?;
+            }
+
             // End of simple command
             break;
         }
+
+        self.fill_heredoc_bodies(&mut redirects);
 
         Ok(SimpleCommand {
             assignments,
@@ -723,7 +731,9 @@ impl Parser {
             }
             Token::DLess => {
                 self.advance()?;
-                let _delimiter = self.expect_word("here-doc delimiter")?;
+                let delimiter_word = self.expect_word("here-document delimiter")?;
+                let (delimiter, quoted) = self.extract_heredoc_delimiter(&delimiter_word);
+                self.lexer.register_heredoc(delimiter, quoted, false);
                 RedirectKind::HereDoc(HereDoc {
                     body: vec![],
                     strip_tabs: false,
@@ -731,7 +741,9 @@ impl Parser {
             }
             Token::DLessDash => {
                 self.advance()?;
-                let _delimiter = self.expect_word("here-doc delimiter")?;
+                let delimiter_word = self.expect_word("here-document delimiter")?;
+                let (delimiter, quoted) = self.extract_heredoc_delimiter(&delimiter_word);
+                self.lexer.register_heredoc(delimiter, quoted, true);
                 RedirectKind::HereDoc(HereDoc {
                     body: vec![],
                     strip_tabs: true,
@@ -759,6 +771,46 @@ impl Parser {
             redirects.push(redirect);
         }
         Ok(redirects)
+    }
+
+    fn extract_heredoc_delimiter(&self, word: &Word) -> (String, bool) {
+        let mut delimiter = String::new();
+        let mut quoted = false;
+        for part in &word.parts {
+            match part {
+                WordPart::Literal(s) => delimiter.push_str(s),
+                WordPart::SingleQuoted(s) => {
+                    delimiter.push_str(s);
+                    quoted = true;
+                }
+                WordPart::DoubleQuoted(parts) => {
+                    quoted = true;
+                    for p in parts {
+                        if let WordPart::Literal(s) = p {
+                            delimiter.push_str(s);
+                        }
+                    }
+                }
+                WordPart::DollarSingleQuoted(s) => {
+                    delimiter.push_str(s);
+                    quoted = true;
+                }
+                _ => {}
+            }
+        }
+        (delimiter, quoted)
+    }
+
+    fn fill_heredoc_bodies(&mut self, redirects: &mut Vec<Redirect>) {
+        for redir in redirects {
+            if let RedirectKind::HereDoc(ref mut hd) = redir.kind {
+                if hd.body.is_empty() {
+                    if let Some(body) = self.lexer.take_heredoc_body() {
+                        hd.body = body;
+                    }
+                }
+            }
+        }
     }
 
     pub fn expect_word(&mut self, context: &str) -> error::Result<Word> {
@@ -793,7 +845,7 @@ fn is_valid_name(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ast::{AndOrOp, CaseTerminator, CompoundCommandKind, RedirectKind, SeparatorOp};
+    use ast::{AndOrOp, CaseTerminator, CompoundCommandKind, RedirectKind, SeparatorOp, WordPart};
 
     fn parse(input: &str) -> Program {
         let mut parser = Parser::new(input);
@@ -1153,5 +1205,49 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    // ---- Task 12: here-document tests ----
+
+    #[test]
+    fn test_heredoc_body() {
+        let sc = parse_first_simple("cat <<EOF\nhello world\nEOF");
+        assert_eq!(sc.redirects.len(), 1);
+        match &sc.redirects[0].kind {
+            RedirectKind::HereDoc(hd) => {
+                assert_eq!(hd.body, vec![WordPart::Literal("hello world\n".to_string())]);
+                assert!(!hd.strip_tabs);
+            }
+            _ => panic!("expected heredoc"),
+        }
+    }
+
+    #[test]
+    fn test_heredoc_strip_tabs() {
+        let sc = parse_first_simple("cat <<-EOF\n\thello\n\tworld\n\tEOF");
+        match &sc.redirects[0].kind {
+            RedirectKind::HereDoc(hd) => {
+                assert!(hd.strip_tabs);
+                assert_eq!(hd.body, vec![WordPart::Literal("hello\nworld\n".to_string())]);
+            }
+            _ => panic!("expected heredoc"),
+        }
+    }
+
+    #[test]
+    fn test_heredoc_quoted_delimiter() {
+        let sc = parse_first_simple("cat <<'EOF'\nhello $name\nEOF");
+        match &sc.redirects[0].kind {
+            RedirectKind::HereDoc(hd) => {
+                assert_eq!(hd.body, vec![WordPart::Literal("hello $name\n".to_string())]);
+            }
+            _ => panic!("expected heredoc"),
+        }
+    }
+
+    #[test]
+    fn test_heredoc_with_command_after() {
+        let prog = parse("cat <<EOF\nhello\nEOF\necho done");
+        assert_eq!(prog.commands.len(), 2);
     }
 }

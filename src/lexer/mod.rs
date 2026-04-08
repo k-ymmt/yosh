@@ -10,11 +10,19 @@ pub struct LexerState {
     pub column: usize,
 }
 
+pub struct PendingHereDoc {
+    pub delimiter: String,
+    pub quoted: bool,
+    pub strip_tabs: bool,
+}
+
 pub struct Lexer {
     input: Vec<u8>,
     pos: usize,
     line: usize,
     column: usize,
+    pub pending_heredocs: Vec<PendingHereDoc>,
+    heredoc_bodies: Vec<Vec<WordPart>>,
 }
 
 fn is_name_start(ch: u8) -> bool {
@@ -32,6 +40,8 @@ impl Lexer {
             pos: 0,
             line: 1,
             column: 1,
+            pending_heredocs: Vec::new(),
+            heredoc_bodies: Vec::new(),
         }
     }
 
@@ -88,6 +98,71 @@ impl Lexer {
         self.pos = state.pos;
         self.line = state.line;
         self.column = state.column;
+    }
+
+    pub fn register_heredoc(&mut self, delimiter: String, quoted: bool, strip_tabs: bool) {
+        self.pending_heredocs.push(PendingHereDoc { delimiter, quoted, strip_tabs });
+    }
+
+    pub fn take_heredoc_body(&mut self) -> Option<Vec<WordPart>> {
+        if self.heredoc_bodies.is_empty() {
+            None
+        } else {
+            Some(self.heredoc_bodies.remove(0))
+        }
+    }
+
+    pub fn process_pending_heredocs(&mut self) -> error::Result<()> {
+        let pending: Vec<PendingHereDoc> = self.pending_heredocs.drain(..).collect();
+        for hd in pending {
+            let body = self.read_heredoc_body(&hd)?;
+            self.heredoc_bodies.push(body);
+        }
+        Ok(())
+    }
+
+    fn read_heredoc_body(&mut self, hd: &PendingHereDoc) -> error::Result<Vec<WordPart>> {
+        let mut body = String::new();
+        loop {
+            if self.at_end() {
+                return Err(ShellError::new(
+                    ShellErrorKind::InvalidHereDoc,
+                    self.line,
+                    self.column,
+                    format!("here-document delimited by '{}' was not closed", hd.delimiter),
+                ));
+            }
+            // Read a line
+            let mut line = String::new();
+            while !self.at_end() && self.current_byte() != b'\n' {
+                line.push(self.current_byte() as char);
+                self.advance();
+            }
+            if !self.at_end() {
+                self.advance(); // consume newline
+            }
+
+            // Strip leading tabs if <<-
+            let check_line = if hd.strip_tabs {
+                line.trim_start_matches('\t').to_string()
+            } else {
+                line.clone()
+            };
+
+            // Check if this is the delimiter line
+            if check_line == hd.delimiter {
+                break;
+            }
+
+            // Add line to body (with tab stripping if applicable)
+            if hd.strip_tabs {
+                body.push_str(line.trim_start_matches('\t'));
+            } else {
+                body.push_str(&line);
+            }
+            body.push('\n');
+        }
+        Ok(vec![WordPart::Literal(body)])
     }
 
     fn skip_whitespace_and_comments(&mut self) {
