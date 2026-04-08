@@ -3,7 +3,6 @@
 ## Phase 1: Known Limitations
 
 - [ ] Nested command substitution edge cases: `$(echo $(echo ')'))` may fail due to balanced-paren approach in lexer (`src/lexer/mod.rs` `read_balanced_parens`)
-- [ ] Unquoted here-document body is stored as single Literal — needs expansion in Phase 4 (use `HereDoc.quoted` flag to determine)
 - [ ] `Lexer.pending_heredocs` is `pub` — consider accessor methods for better encapsulation
 
 ## Phase 2: Known Limitations
@@ -23,9 +22,12 @@
 - [ ] `${parameter:?word}` should exit non-interactive shell, currently only prints error (`src/expand/param.rs`)
 - [ ] Deeply nested command substitution edge cases untested
 
+## Phase 4: Known Limitations
+
+- [ ] Heredoc + pipeline not working — `cat <<EOF | tr a-z A-Z` produces empty output due to redirect timing in child process (`src/exec/pipeline.rs`)
+
 ## Remaining Phases
 
-- [ ] Phase 4: Redirections and here-document I/O
 - [ ] Phase 5: Control structure execution (if, for, while, until, case, functions)
 - [ ] Phase 6: Special builtins (set, export, trap, eval, exec, etc.) + alias expansion
 - [ ] Phase 7: Signals and errexit
