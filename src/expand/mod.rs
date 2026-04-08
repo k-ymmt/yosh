@@ -54,10 +54,10 @@ fn expand_param(env: &ShellEnv, param: &ParamExpr, out: &mut String) {
             }
         }
         ParamExpr::Positional(n) => {
-            if *n > 0 {
-                if let Some(val) = env.positional_params.get(n - 1) {
-                    out.push_str(val);
-                }
+            if *n > 0
+                && let Some(val) = env.positional_params.get(n - 1)
+            {
+                out.push_str(val);
             }
         }
         ParamExpr::Special(sp) => expand_special(env, sp, out),
@@ -113,7 +113,7 @@ mod tests {
     use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 
     fn make_env() -> ShellEnv {
-        let mut env = ShellEnv::new("kish", vec![]);
+        let env = ShellEnv::new("kish", vec![]);
         // Clear any inherited env vars for predictable tests
         // We'll set vars directly for testing
         env

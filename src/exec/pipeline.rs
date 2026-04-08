@@ -35,8 +35,14 @@ impl Executor {
         // pipes[i].0 = read end, pipes[i].1 = write end
         let mut pipes: Vec<(RawFd, RawFd)> = Vec::with_capacity(n - 1);
         for _ in 0..n - 1 {
-            let (read_fd, write_fd) = create_pipe();
-            pipes.push((read_fd, write_fd));
+            match create_pipe() {
+                Ok(fds) => pipes.push(fds),
+                Err(e) => {
+                    eprintln!("kish: pipe: {}", e);
+                    close_all_pipes(&pipes);
+                    return 1;
+                }
+            }
         }
 
         let mut children: Vec<Pid> = Vec::with_capacity(n);
@@ -53,12 +59,18 @@ impl Executor {
                     // Set up stdin from previous pipe's read end (if not first)
                     if i > 0 {
                         let read_fd = pipes[i - 1].0;
-                        unsafe { libc::dup2(read_fd, 0) };
+                        if unsafe { libc::dup2(read_fd, 0) } == -1 {
+                            eprintln!("kish: dup2: {}", std::io::Error::last_os_error());
+                            unsafe { libc::_exit(1) };
+                        }
                     }
                     // Set up stdout to next pipe's write end (if not last)
                     if i < n - 1 {
                         let write_fd = pipes[i].1;
-                        unsafe { libc::dup2(write_fd, 1) };
+                        if unsafe { libc::dup2(write_fd, 1) } == -1 {
+                            eprintln!("kish: dup2: {}", std::io::Error::last_os_error());
+                            unsafe { libc::_exit(1) };
+                        }
                     }
 
                     // Close all pipe fds in child
@@ -91,13 +103,13 @@ impl Executor {
 }
 
 /// Create a pipe, returning (read_fd, write_fd) as raw file descriptors.
-fn create_pipe() -> (RawFd, RawFd) {
+fn create_pipe() -> Result<(RawFd, RawFd), std::io::Error> {
     let mut fds: [libc::c_int; 2] = [0; 2];
     let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if ret != 0 {
-        panic!("kish: pipe: failed to create pipe");
+        return Err(std::io::Error::last_os_error());
     }
-    (fds[0], fds[1])
+    Ok((fds[0], fds[1]))
 }
 
 /// Close all pipe file descriptors.

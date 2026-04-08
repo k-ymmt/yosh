@@ -60,6 +60,11 @@ fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
         args[0].clone()
     };
 
+    // Save current directory as OLDPWD before changing
+    if let Ok(old_pwd) = std::env::current_dir() {
+        let _ = env.vars.set("OLDPWD", old_pwd.to_string_lossy().to_string());
+    }
+
     match std::env::set_current_dir(&target) {
         Ok(_) => {
             // Update $PWD

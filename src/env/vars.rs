@@ -82,10 +82,10 @@ impl VarStore {
 
     /// Unset a variable. Returns an error if the variable is readonly.
     pub fn unset(&mut self, name: &str) -> Result<(), String> {
-        if let Some(existing) = self.vars.get(name) {
-            if existing.readonly {
-                return Err(format!("{}: readonly variable", name));
-            }
+        if let Some(existing) = self.vars.get(name)
+            && existing.readonly
+        {
+            return Err(format!("{}: readonly variable", name));
         }
         self.vars.remove(name);
         Ok(())

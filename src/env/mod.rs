@@ -11,6 +11,8 @@ pub struct ShellEnv {
     pub shell_pid: Pid,
     pub shell_name: String,
     pub positional_params: Vec<String>,
+    /// PID of the most recently started background job ($!)
+    pub last_bg_pid: Option<i32>,
 }
 
 impl ShellEnv {
@@ -24,6 +26,7 @@ impl ShellEnv {
             shell_pid: getpid(),
             shell_name: shell_name.into(),
             positional_params: args,
+            last_bg_pid: None,
         }
     }
 }

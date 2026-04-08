@@ -4,7 +4,6 @@ pub mod redirect;
 
 use std::ffi::CString;
 
-use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{execvp, fork, ForkResult};
 
 use crate::builtin::{exec_builtin, is_builtin};
@@ -12,7 +11,6 @@ use crate::env::ShellEnv;
 use crate::expand::expand_words;
 use crate::parser::ast::{
     AndOrList, AndOrOp, Assignment, Command, CompleteCommand, Program, SeparatorOp, SimpleCommand,
-    Word,
 };
 
 use command::wait_child;
@@ -207,8 +205,25 @@ impl Executor {
         status
     }
 
+    /// Reap any zombie background children without blocking.
+    fn reap_zombies(&self) {
+        loop {
+            match nix::sys::wait::waitpid(
+                nix::unistd::Pid::from_raw(-1),
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+            ) {
+                Ok(nix::sys::wait::WaitStatus::StillAlive) => break,
+                Ok(_) => continue, // Reaped a zombie, check for more
+                Err(_) => break,   // No children or error
+            }
+        }
+    }
+
     /// Execute a complete command (list of AND-OR lists with separators).
     pub fn exec_complete_command(&mut self, cmd: &CompleteCommand) -> i32 {
+        // Reap any finished background children before forking new ones
+        self.reap_zombies();
+
         let mut status = 0;
 
         for (and_or, separator) in &cmd.items {
@@ -223,7 +238,9 @@ impl Executor {
                         let s = self.exec_and_or(and_or);
                         std::process::exit(s);
                     }
-                    Ok(ForkResult::Parent { .. }) => {
+                    Ok(ForkResult::Parent { child }) => {
+                        // Track last background PID ($!)
+                        self.env.last_bg_pid = Some(child.as_raw());
                         // Parent continues; background job status = 0
                         status = 0;
                     }
@@ -253,7 +270,7 @@ impl Executor {
 mod tests {
     use super::*;
     use crate::parser::ast::{
-        AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, Redirect, SeparatorOp,
+        AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, SeparatorOp,
         SimpleCommand, Word,
     };
 

@@ -17,15 +17,6 @@ fn raw_dup2(oldfd: RawFd, newfd: RawFd) -> nix::Result<()> {
     }
 }
 
-/// Perform a low-level dup(fd) via libc.
-fn raw_dup(fd: RawFd) -> nix::Result<RawFd> {
-    let res = unsafe { libc::dup(fd) };
-    if res == -1 {
-        Err(nix::errno::Errno::last())
-    } else {
-        Ok(res)
-    }
-}
 
 /// Tracks saved file descriptors so they can be restored after a builtin runs.
 pub struct RedirectState {
@@ -151,8 +142,12 @@ impl RedirectState {
     }
 
     /// dup() the fd before it gets overwritten, storing the saved copy.
+    /// Uses F_DUPFD_CLOEXEC so the saved fd is automatically closed in child processes.
     fn save_fd(&mut self, fd: RawFd) -> Result<(), String> {
-        let saved = raw_dup(fd).map_err(|e| format!("dup({}): {}", fd, e))?;
+        let saved = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10) };
+        if saved == -1 {
+            return Err(format!("dup: {}", std::io::Error::last_os_error()));
+        }
         self.saved_fds.push((fd, saved));
         Ok(())
     }
