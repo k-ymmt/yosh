@@ -261,3 +261,94 @@ fn test_cmdsub_cwd_isolation() {
     assert!(lines[0].ends_with("/tmp"));
     assert_eq!(lines[1], "/");
 }
+
+// =============================================================================
+// Category 4: Edge cases
+// =============================================================================
+
+#[test]
+fn test_nested_subshell() {
+    let out = kish_exec("X=1; (X=2; (X=3; echo $X); echo $X); echo $X");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines[0], "3");
+    assert_eq!(lines[1], "2");
+    assert_eq!(lines[2], "1");
+}
+
+#[test]
+fn test_subshell_exit_no_parent() {
+    let out = kish_exec("(exit 1); echo still_running");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "still_running");
+}
+
+#[test]
+fn test_subshell_errexit() {
+    // set -e in subshell should not affect parent
+    let out = kish_exec("(set -e; false); echo $?");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1");
+}
+
+#[test]
+fn test_subshell_errexit_inherited() {
+    // Parent's set -e should be inherited by subshell
+    let out = kish_exec("set -e; (false); echo unreachable");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("unreachable"));
+}
+
+#[test]
+#[ignore = "umask builtin not yet implemented in kish"]
+fn test_umask_inheritance() {
+    let out = kish_exec("umask 027; (umask)");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0027");
+}
+
+#[test]
+fn test_umask_isolation() {
+    let out = kish_exec("umask 022; (umask 077); umask");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0022");
+}
+
+#[test]
+#[ignore = "exec N>file fd persistence not yet implemented in kish"]
+fn test_fd_inheritance() {
+    // exec 3>file should open fd 3 persistently so subshells can write to it.
+    // kish currently restores redirects applied to builtins, so exec 3>file
+    // does not persist the fd.
+    let out = kish_exec("exec 3>/tmp/kish-fd-test-$$; (echo hello >&3); cat /tmp/kish-fd-test-$$; rm -f /tmp/kish-fd-test-$$");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
+}
+
+#[test]
+fn test_export_and_non_export_in_subshell() {
+    let out = kish_exec("A=exported; export A; B=local; (echo $A $B)");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "exported local");
+}
+
+#[test]
+fn test_last_bg_pid_inheritance() {
+    let out = kish_exec("true & PARENT_BG=$!; CHILD_BG=$(echo $!); echo \"$PARENT_BG $CHILD_BG\"");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0], parts[1]);
+}
+
+#[test]
+fn test_deeply_nested_isolation() {
+    let out = kish_exec("X=0; (X=1; (X=2; (X=3; echo $X); echo $X); echo $X); echo $X");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines, vec!["3", "2", "1", "0"]);
+}
