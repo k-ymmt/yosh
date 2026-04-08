@@ -32,9 +32,18 @@
 - [ ] Subshell environment isolation is basic (fork-based) — full isolation deferred to Phase 8
 - [ ] Function-scoped assignments with prefix syntax (`VAR=val func`) not implemented — assignments only apply to external commands
 
+## Phase 6: Known Limitations
+
+- [ ] `trap` signal execution (INT, HUP, etc.) not implemented — only EXIT trap fires; signal trap registration is stored but execution deferred to Phase 7
+- [ ] `-e` (errexit) flag is settable but behavior is not implemented — deferred to Phase 7
+- [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
+- [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
+- [ ] `ignoreeof` is settable but has no effect — interactive mode feature
+- [ ] Alias expansion in non-interactive mode requires incremental parsing — complex scripts with nested structures may have edge cases
+
 ## Remaining Phases
 
 - [x] Phase 5: Control structure execution (if, for, while, until, case, functions)
-- [ ] Phase 6: Special builtins (set, export, trap, eval, exec, etc.) + alias expansion
+- [x] Phase 6: Special builtins (set, export, trap, eval, exec, etc.) + alias expansion
 - [ ] Phase 7: Signals and errexit
 - [ ] Phase 8: Subshell environment isolation
