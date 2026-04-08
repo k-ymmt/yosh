@@ -7,6 +7,127 @@ use vars::VarStore;
 
 use crate::parser::ast::FunctionDef;
 
+/// Action to take when a trap fires.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrapAction {
+    Default,
+    Ignore,
+    Command(String),
+}
+
+/// Storage for shell trap settings.
+#[derive(Debug, Clone)]
+pub struct TrapStore {
+    pub exit_trap: Option<TrapAction>,
+    pub signal_traps: HashMap<i32, TrapAction>,
+}
+
+impl Default for TrapStore {
+    fn default() -> Self {
+        TrapStore {
+            exit_trap: None,
+            signal_traps: HashMap::new(),
+        }
+    }
+}
+
+impl TrapStore {
+    /// Convert a signal name or number string to a signal number.
+    /// Returns None for unknown signals.
+    pub fn signal_name_to_number(name: &str) -> Option<i32> {
+        // Try numeric parse first
+        if let Ok(n) = name.parse::<i32>() {
+            return Some(n);
+        }
+        match name.to_uppercase().as_str() {
+            "EXIT"    => Some(0),
+            "HUP"  | "SIGHUP"  => Some(1),
+            "INT"  | "SIGINT"  => Some(2),
+            "QUIT" | "SIGQUIT" => Some(3),
+            "ABRT" | "SIGABRT" => Some(6),
+            "KILL" | "SIGKILL" => Some(9),
+            "ALRM" | "SIGALRM" => Some(14),
+            "TERM" | "SIGTERM" => Some(15),
+            _ => None,
+        }
+    }
+
+    /// Convert a signal number to its canonical name.
+    fn signal_number_to_name(num: i32) -> &'static str {
+        match num {
+            0  => "EXIT",
+            1  => "HUP",
+            2  => "INT",
+            3  => "QUIT",
+            6  => "ABRT",
+            9  => "KILL",
+            14 => "ALRM",
+            15 => "TERM",
+            _  => "UNKNOWN",
+        }
+    }
+
+    /// Set a trap for the given condition (signal name or number).
+    pub fn set_trap(&mut self, condition: &str, action: TrapAction) -> Result<(), String> {
+        let num = Self::signal_name_to_number(condition)
+            .ok_or_else(|| format!("invalid signal name: {}", condition))?;
+        if num == 0 {
+            self.exit_trap = Some(action);
+        } else {
+            self.signal_traps.insert(num, action);
+        }
+        Ok(())
+    }
+
+    /// Get the trap action for the given condition (signal name or number).
+    pub fn get_trap(&self, condition: &str) -> Option<&TrapAction> {
+        let num = Self::signal_name_to_number(condition)?;
+        if num == 0 {
+            self.exit_trap.as_ref()
+        } else {
+            self.signal_traps.get(&num)
+        }
+    }
+
+    /// Remove/reset the trap for the given condition.
+    pub fn remove_trap(&mut self, condition: &str) {
+        if let Some(num) = Self::signal_name_to_number(condition) {
+            if num == 0 {
+                self.exit_trap = None;
+            } else {
+                self.signal_traps.remove(&num);
+            }
+        }
+    }
+
+    /// Print all active traps in a format suitable for re-input.
+    /// Format: `trap -- 'cmd' SIGNAME` or `trap -- '' SIGNAME`.
+    /// Default actions are skipped. Exit trap first, then signals sorted by number.
+    pub fn display_all(&self) {
+        // Exit trap first
+        if let Some(action) = &self.exit_trap {
+            match action {
+                TrapAction::Command(cmd) => println!("trap -- '{}' EXIT", cmd),
+                TrapAction::Ignore       => println!("trap -- '' EXIT"),
+                TrapAction::Default      => {}
+            }
+        }
+        // Signal traps sorted by number
+        let mut keys: Vec<i32> = self.signal_traps.keys().copied().collect();
+        keys.sort();
+        for num in keys {
+            if let Some(action) = self.signal_traps.get(&num) {
+                let name = Self::signal_number_to_name(num);
+                match action {
+                    TrapAction::Command(cmd) => println!("trap -- '{}' SIG{}", cmd, name),
+                    TrapAction::Ignore       => println!("trap -- '' SIG{}", name),
+                    TrapAction::Default      => {}
+                }
+            }
+        }
+    }
+}
+
 /// Flow control signals for break, continue, and return.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowControl {
@@ -161,6 +282,7 @@ pub struct ShellEnv {
     pub functions: HashMap<String, FunctionDef>,
     pub flow_control: Option<FlowControl>,
     pub options: ShellOptions,
+    pub traps: TrapStore,
 }
 
 impl ShellEnv {
@@ -178,6 +300,7 @@ impl ShellEnv {
             functions: HashMap::new(),
             flow_control: None,
             options: ShellOptions::default(),
+            traps: TrapStore::default(),
         }
     }
 }
@@ -236,5 +359,48 @@ mod tests {
         opts.set_by_name("allexport", false).unwrap();
         assert!(!opts.allexport);
         assert!(opts.set_by_name("invalid", true).is_err());
+    }
+
+    #[test]
+    fn test_trap_store_default() {
+        let store = TrapStore::default();
+        assert!(store.exit_trap.is_none());
+        assert!(store.signal_traps.is_empty());
+    }
+
+    #[test]
+    fn test_trap_store_set_exit() {
+        let mut store = TrapStore::default();
+        store.set_trap("EXIT", TrapAction::Command("echo bye".to_string())).unwrap();
+        assert!(matches!(store.get_trap("EXIT"), Some(TrapAction::Command(_))));
+    }
+
+    #[test]
+    fn test_trap_store_set_signal() {
+        let mut store = TrapStore::default();
+        store.set_trap("INT", TrapAction::Ignore).unwrap();
+        assert!(matches!(store.get_trap("INT"), Some(TrapAction::Ignore)));
+        store.set_trap("INT", TrapAction::Default).unwrap();
+        assert!(matches!(store.get_trap("INT"), Some(TrapAction::Default)));
+    }
+
+    #[test]
+    fn test_trap_store_signal_name_to_number() {
+        assert_eq!(TrapStore::signal_name_to_number("EXIT"), Some(0));
+        assert_eq!(TrapStore::signal_name_to_number("HUP"), Some(1));
+        assert_eq!(TrapStore::signal_name_to_number("INT"), Some(2));
+        assert_eq!(TrapStore::signal_name_to_number("QUIT"), Some(3));
+        assert_eq!(TrapStore::signal_name_to_number("TERM"), Some(15));
+        assert_eq!(TrapStore::signal_name_to_number("0"), Some(0));
+        assert_eq!(TrapStore::signal_name_to_number("2"), Some(2));
+        assert_eq!(TrapStore::signal_name_to_number("INVALID"), None);
+    }
+
+    #[test]
+    fn test_trap_store_remove() {
+        let mut store = TrapStore::default();
+        store.set_trap("EXIT", TrapAction::Command("echo bye".to_string())).unwrap();
+        store.remove_trap("EXIT");
+        assert!(store.exit_trap.is_none());
     }
 }
