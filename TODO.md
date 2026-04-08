@@ -51,6 +51,13 @@
 - [ ] `test_umask_isolation` may pass incidentally due to fork isolation, not because umask is correctly set/read (`tests/subshell.rs`)
 - [ ] `return` outside function in subshell error test not implemented — POSIX requires error, untested (`tests/subshell.rs`)
 
+## Discovered via E2E Tests
+
+- [ ] Pattern matcher panics on negated character class `[!0-9]` — slice index out of bounds at `src/expand/pattern.rs:37`
+- [ ] `$(trap)` does not capture trap output in command substitution — trap writes to original stdout, not captured
+- [ ] `set -- a "" c` drops empty string arguments — `$#` returns 2 instead of 3
+- [ ] `${parameter:?word}` with spaces in word causes parse error instead of printing custom error message
+
 ## Future: E2E Test Expansion
 
 - [ ] Deep edge-case tests for each feature (e.g., nested expansions, unusual quoting combinations)
