@@ -156,6 +156,7 @@ impl Executor {
             if self.env.flow_control.is_some() {
                 break;
             }
+            self.check_errexit(status);
         }
         status
     }
@@ -183,7 +184,7 @@ impl Executor {
         elif_parts: &[(Vec<CompleteCommand>, Vec<CompleteCommand>)],
         else_part: &Option<Vec<CompleteCommand>>,
     ) -> i32 {
-        let cond_status = self.exec_body(condition);
+        let cond_status = self.with_errexit_suppressed(|e| e.exec_body(condition));
         if self.env.flow_control.is_some() {
             return cond_status;
         }
@@ -193,7 +194,7 @@ impl Executor {
         }
 
         for (elif_cond, elif_body) in elif_parts {
-            let cond_status = self.exec_body(elif_cond);
+            let cond_status = self.with_errexit_suppressed(|e| e.exec_body(elif_cond));
             if self.env.flow_control.is_some() {
                 return cond_status;
             }
@@ -219,7 +220,7 @@ impl Executor {
     ) -> i32 {
         let mut status = 0;
         loop {
-            let cond_status = self.exec_body(condition);
+            let cond_status = self.with_errexit_suppressed(|e| e.exec_body(condition));
             if self.env.flow_control.is_some() {
                 return cond_status;
             }
@@ -560,24 +561,34 @@ impl Executor {
 
     /// Execute an AND-OR list.
     pub fn exec_and_or(&mut self, and_or: &AndOrList) -> i32 {
-        let mut status = self.exec_pipeline(&and_or.first);
+        let has_rest = !and_or.rest.is_empty();
+
+        let mut status = if and_or.first.negated || has_rest {
+            self.with_errexit_suppressed(|e| e.exec_pipeline(&and_or.first))
+        } else {
+            self.exec_pipeline(&and_or.first)
+        };
+
         if self.env.flow_control.is_some() {
             return status;
         }
 
-        for (op, pipeline) in &and_or.rest {
-            match op {
-                AndOrOp::And => {
-                    if status == 0 {
-                        status = self.exec_pipeline(pipeline);
-                    }
-                }
-                AndOrOp::Or => {
-                    if status != 0 {
-                        status = self.exec_pipeline(pipeline);
-                    }
-                }
+        for (i, (op, pipeline)) in and_or.rest.iter().enumerate() {
+            let is_last = i == and_or.rest.len() - 1;
+            let should_run = match op {
+                AndOrOp::And => status == 0,
+                AndOrOp::Or => status != 0,
+            };
+            if !should_run {
+                continue;
             }
+
+            status = if pipeline.negated || !is_last {
+                self.with_errexit_suppressed(|e| e.exec_pipeline(pipeline))
+            } else {
+                self.exec_pipeline(pipeline)
+            };
+
             if self.env.flow_control.is_some() {
                 break;
             }
@@ -634,6 +645,7 @@ impl Executor {
             if self.env.flow_control.is_some() {
                 break;
             }
+            self.check_errexit(status);
         }
 
         self.env.last_exit_status = status;

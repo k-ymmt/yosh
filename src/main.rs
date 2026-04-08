@@ -99,6 +99,7 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>) -> i32 {
                 if executor.env.flow_control.is_some() {
                     break;
                 }
+                executor.check_errexit(status);
                 remaining = &remaining[consumed..];
             }
             Err(e) => {
