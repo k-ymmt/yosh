@@ -1,7 +1,19 @@
 pub mod vars;
 
+use std::collections::HashMap;
+
 use nix::unistd::{Pid, getpid};
 use vars::VarStore;
+
+use crate::parser::ast::FunctionDef;
+
+/// Flow control signals for break, continue, and return.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FlowControl {
+    Break(usize),
+    Continue(usize),
+    Return(i32),
+}
 
 /// The complete shell environment.
 #[derive(Debug, Clone)]
@@ -13,6 +25,8 @@ pub struct ShellEnv {
     pub positional_params: Vec<String>,
     /// PID of the most recently started background job ($!)
     pub last_bg_pid: Option<i32>,
+    pub functions: HashMap<String, FunctionDef>,
+    pub flow_control: Option<FlowControl>,
 }
 
 impl ShellEnv {
@@ -27,6 +41,8 @@ impl ShellEnv {
             shell_name: shell_name.into(),
             positional_params: args,
             last_bg_pid: None,
+            functions: HashMap::new(),
+            flow_control: None,
         }
     }
 }

@@ -7,10 +7,12 @@ use std::ffi::CString;
 use nix::unistd::{execvp, fork, ForkResult};
 
 use crate::builtin::{exec_builtin, is_builtin};
-use crate::env::ShellEnv;
+use crate::env::{FlowControl, ShellEnv};
 use crate::expand::expand_words;
 use crate::parser::ast::{
-    AndOrList, AndOrOp, Assignment, Command, CompleteCommand, Program, SeparatorOp, SimpleCommand,
+    AndOrList, AndOrOp, Assignment, CaseItem, CaseTerminator, Command, CompoundCommand,
+    CompoundCommandKind, CompleteCommand, FunctionDef, Program, Redirect, SeparatorOp,
+    SimpleCommand, Word,
 };
 
 use command::wait_child;
@@ -31,16 +33,80 @@ impl Executor {
     pub fn exec_command(&mut self, cmd: &Command) -> i32 {
         match cmd {
             Command::Simple(simple) => self.exec_simple_command(simple),
-            Command::Compound(_, _) => {
-                eprintln!("kish: compound commands not yet implemented");
-                1
+            Command::Compound(compound, redirects) => {
+                self.exec_compound_command(compound, redirects)
             }
-            Command::FunctionDef(_) => {
-                eprintln!("kish: function definitions not yet implemented");
-                1
+            Command::FunctionDef(func_def) => {
+                self.env
+                    .functions
+                    .insert(func_def.name.clone(), func_def.clone());
+                0
             }
         }
     }
+
+    /// Execute a compound command, applying any redirects around it.
+    fn exec_compound_command(
+        &mut self,
+        compound: &CompoundCommand,
+        redirects: &[Redirect],
+    ) -> i32 {
+        let mut redirect_state = RedirectState::new();
+        if let Err(e) = redirect_state.apply(redirects, &mut self.env, true) {
+            eprintln!("kish: {}", e);
+            self.env.last_exit_status = 1;
+            return 1;
+        }
+
+        let status = match &compound.kind {
+            CompoundCommandKind::BraceGroup { body } => self.exec_brace_group(body),
+            CompoundCommandKind::Subshell { body } => self.exec_subshell(body),
+            CompoundCommandKind::If {
+                condition,
+                then_part,
+                elif_parts,
+                else_part,
+            } => self.exec_if(condition, then_part, elif_parts, else_part),
+            CompoundCommandKind::While { condition, body } => {
+                self.exec_loop(condition, body, false)
+            }
+            CompoundCommandKind::Until { condition, body } => {
+                self.exec_loop(condition, body, true)
+            }
+            CompoundCommandKind::For { var, words, body } => {
+                self.exec_for(var, words, body)
+            }
+            CompoundCommandKind::Case { word, items } => self.exec_case(word, items),
+        };
+
+        redirect_state.restore();
+        self.env.last_exit_status = status;
+        status
+    }
+
+    /// Execute a list of complete commands (a compound-list / body).
+    /// Checks for flow control signals after each command.
+    fn exec_body(&mut self, body: &[CompleteCommand]) -> i32 {
+        let mut status = 0;
+        for cmd in body {
+            status = self.exec_complete_command(cmd);
+            if self.env.flow_control.is_some() {
+                break;
+            }
+        }
+        status
+    }
+
+    fn exec_brace_group(&mut self, _body: &[CompleteCommand]) -> i32 { todo!("Task 2") }
+    fn exec_subshell(&mut self, _body: &[CompleteCommand]) -> i32 { todo!("Task 9") }
+    fn exec_if(&mut self, _cond: &[CompleteCommand], _then: &[CompleteCommand],
+               _elifs: &[(Vec<CompleteCommand>, Vec<CompleteCommand>)],
+               _else_: &Option<Vec<CompleteCommand>>) -> i32 { todo!("Task 3") }
+    fn exec_loop(&mut self, _cond: &[CompleteCommand], _body: &[CompleteCommand],
+                 _until: bool) -> i32 { todo!("Task 4") }
+    fn exec_for(&mut self, _var: &str, _words: &Option<Vec<Word>>,
+                _body: &[CompleteCommand]) -> i32 { todo!("Task 5") }
+    fn exec_case(&mut self, _word: &Word, _items: &[CaseItem]) -> i32 { todo!("Task 7") }
 
     /// Execute a simple command (assignments, builtins, or external programs).
     pub fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> i32 {
@@ -193,6 +259,9 @@ impl Executor {
     /// Execute an AND-OR list.
     pub fn exec_and_or(&mut self, and_or: &AndOrList) -> i32 {
         let mut status = self.exec_pipeline(&and_or.first);
+        if self.env.flow_control.is_some() {
+            return status;
+        }
 
         for (op, pipeline) in &and_or.rest {
             match op {
@@ -206,6 +275,9 @@ impl Executor {
                         status = self.exec_pipeline(pipeline);
                     }
                 }
+            }
+            if self.env.flow_control.is_some() {
+                break;
             }
         }
 
@@ -256,6 +328,9 @@ impl Executor {
             } else {
                 // Sequential execution
                 status = self.exec_and_or(and_or);
+            }
+            if self.env.flow_control.is_some() {
+                break;
             }
         }
 
