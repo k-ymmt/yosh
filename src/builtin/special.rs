@@ -8,7 +8,7 @@ use crate::exec::Executor;
 pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor) -> i32 {
     match name {
         ":" => 0,
-        "exit" => builtin_exit(args, &executor.env),
+        "exit" => builtin_exit(args, executor),
         "export" => builtin_export(args, &mut executor.env),
         "unset" => builtin_unset(args, &mut executor.env),
         "readonly" => builtin_readonly(args, &mut executor.env),
@@ -33,9 +33,9 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
 // Existing implementations (moved from mod.rs)
 // ---------------------------------------------------------------------------
 
-fn builtin_exit(args: &[String], env: &ShellEnv) -> i32 {
+fn builtin_exit(args: &[String], executor: &mut Executor) -> i32 {
     let code = if args.is_empty() {
-        env.last_exit_status
+        executor.env.last_exit_status
     } else {
         match args[0].parse::<i32>() {
             Ok(n) => n & 0xFF,
@@ -45,6 +45,8 @@ fn builtin_exit(args: &[String], env: &ShellEnv) -> i32 {
             }
         }
     };
+    executor.process_pending_signals();
+    executor.execute_exit_trap();
     std::process::exit(code);
 }
 

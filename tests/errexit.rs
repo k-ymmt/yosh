@@ -88,8 +88,6 @@ fn test_errexit_function() {
 
 #[test]
 fn test_errexit_trap_action_suppressed() {
-    // Use normal script termination (not `exit 0`) so run_string's execute_exit_trap fires.
-    // The EXIT trap body runs with errexit suppressed, so `false` must not abort.
-    let out = kish_exec("set -e; trap 'false; echo trap' EXIT; true");
+    let out = kish_exec("set -e; trap 'false; echo trap' EXIT; exit 0");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "trap\n");
 }

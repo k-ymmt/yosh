@@ -25,6 +25,7 @@ pub fn expand(_env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField>
                     result.push(ExpandedField {
                         quoted_mask: vec![true; m.len()],
                         value: m,
+                        was_quoted: false,
                     });
                 }
             }

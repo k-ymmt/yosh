@@ -24,9 +24,9 @@ fn get_ifs(env: &ShellEnv) -> String {
 pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
     let ifs = get_ifs(env);
 
-    // IFS empty: no splitting; drop fully-empty fields.
+    // IFS empty: no splitting; drop fully-empty unquoted fields.
     if ifs.is_empty() {
-        return fields.into_iter().filter(|f| !f.value.is_empty()).collect();
+        return fields.into_iter().filter(|f| !f.value.is_empty() || f.was_quoted).collect();
     }
 
     // Partition IFS characters.
@@ -74,6 +74,12 @@ fn split_field(
     let bytes = field.value.as_bytes();
     let mask = &field.quoted_mask;
     let len = bytes.len();
+
+    // A quoted empty field (e.g. '' or "") should be preserved as-is.
+    if len == 0 && field.was_quoted {
+        out.push(ExpandedField { was_quoted: true, ..ExpandedField::new() });
+        return;
+    }
 
     let mut current = ExpandedField::new();
     let mut state = State::Start;

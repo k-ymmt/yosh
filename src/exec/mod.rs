@@ -827,13 +827,14 @@ impl Executor {
                         break;
                     }
                     Ok(WaitStatus::StillAlive) => {
-                        // Poll: wait for self-pipe signal or SIGCHLD (EINTR)
+                        // Poll self-pipe with a short timeout so we also notice
+                        // SIGCHLD (which is not written to the self-pipe).
                         let pipe_fd = signal::self_pipe_read_fd();
                         let mut fds = [nix::poll::PollFd::new(
                             unsafe { std::os::fd::BorrowedFd::borrow_raw(pipe_fd) },
                             nix::poll::PollFlags::POLLIN,
                         )];
-                        match nix::poll::poll(&mut fds, nix::poll::PollTimeout::NONE) {
+                        match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16)) {
                             Ok(_)
                                 if fds[0]
                                     .revents()
@@ -847,9 +848,11 @@ impl Executor {
                                 }
                             }
                             Err(nix::errno::Errno::EINTR) => {
-                                // SIGCHLD — try waitpid again
+                                // Interrupted — retry waitpid
                             }
-                            _ => {}
+                            _ => {
+                                // Timeout or no self-pipe data — retry waitpid
+                            }
                         }
                     }
                     Err(nix::errno::Errno::ECHILD) => {

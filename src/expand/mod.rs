@@ -19,6 +19,10 @@ pub struct ExpandedField {
     pub value: String,
     /// One bool per *byte* (not char) of `value`.
     pub quoted_mask: Vec<bool>,
+    /// True if any quoting context was applied to this field (even if value is empty).
+    /// POSIX requires that quoted empty strings like `''` and `""` produce a
+    /// zero-length field rather than being removed.
+    pub was_quoted: bool,
 }
 
 impl ExpandedField {
@@ -26,11 +30,13 @@ impl ExpandedField {
         Self {
             value: String::new(),
             quoted_mask: Vec::new(),
+            was_quoted: false,
         }
     }
 
     /// Append `s` marking each byte as **quoted** (protected).
     pub fn push_quoted(&mut self, s: &str) {
+        self.was_quoted = true;
         self.value.push_str(s);
         self.quoted_mask
             .extend(std::iter::repeat_n(true, s.len()));
@@ -71,7 +77,7 @@ pub fn expand_word(env: &mut ShellEnv, word: &Word) -> Vec<String> {
     };
     fields
         .into_iter()
-        .filter(|f| !f.is_empty())
+        .filter(|f| !f.is_empty() || f.was_quoted)
         .map(|f| f.value)
         .collect()
 }
