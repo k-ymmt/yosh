@@ -51,6 +51,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 last_bg_pid: env.last_bg_pid,
                 functions: env.functions.clone(),
                 flow_control: None,
+                options: env.options.clone(),
             };
             let mut executor = Executor { env: child_env };
 
