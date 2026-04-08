@@ -33,14 +33,14 @@ impl ExpandedField {
     pub fn push_quoted(&mut self, s: &str) {
         self.value.push_str(s);
         self.quoted_mask
-            .extend(std::iter::repeat(true).take(s.len()));
+            .extend(std::iter::repeat_n(true, s.len()));
     }
 
     /// Append `s` marking each byte as **unquoted** (splittable/globbable).
     pub fn push_unquoted(&mut self, s: &str) {
         self.value.push_str(s);
         self.quoted_mask
-            .extend(std::iter::repeat(false).take(s.len()));
+            .extend(std::iter::repeat_n(false, s.len()));
     }
 
     pub fn is_empty(&self) -> bool {

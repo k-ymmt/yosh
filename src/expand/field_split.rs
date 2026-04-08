@@ -168,7 +168,7 @@ fn append_byte(dest: &mut ExpandedField, source: &ExpandedField, i: usize) {
 /// Push `current` into `out`, replacing `current` with a fresh empty field.
 #[inline]
 fn emit(current: &mut ExpandedField, out: &mut Vec<ExpandedField>) {
-    let done = std::mem::replace(current, ExpandedField::new());
+    let done = std::mem::take(current);
     out.push(done);
 }
 

@@ -84,22 +84,6 @@ impl<'a> ArithParser<'a> {
         }
     }
 
-    fn peek(&mut self) -> Option<u8> {
-        self.skip_whitespace();
-        self.input.get(self.pos).copied()
-    }
-
-    fn consume(&mut self) -> Option<u8> {
-        self.skip_whitespace();
-        if self.pos < self.input.len() {
-            let ch = self.input[self.pos];
-            self.pos += 1;
-            Some(ch)
-        } else {
-            None
-        }
-    }
-
     fn expect(&mut self, ch: u8) -> Result<(), String> {
         self.skip_whitespace();
         if self.pos < self.input.len() && self.input[self.pos] == ch {
