@@ -164,6 +164,20 @@ fn test_command_sub_in_assignment() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
 }
 
+// ── arithmetic expansion tests ───────────────────────────────────────────────
+
+#[test]
+fn test_arithmetic_expansion() {
+    let out = kish_exec("echo $((2 + 3 * 4))");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "14\n");
+}
+
+#[test]
+fn test_arithmetic_with_variables() {
+    let out = kish_exec("x=10; y=3; echo $((x + y))");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "13\n");
+}
+
 // ── parse tests ──────────────────────────────────────────────────────────────
 
 #[test]
