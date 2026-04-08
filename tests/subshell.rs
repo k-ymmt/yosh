@@ -200,3 +200,67 @@ fn test_pipeline_pipefail() {
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1");
 }
+
+// =============================================================================
+// Category 3: Command substitution $(...) isolation
+// =============================================================================
+
+#[test]
+fn test_cmdsub_variable_isolation() {
+    let out = kish_exec("X=original; Y=$(X=changed; echo $X); echo $X $Y");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "original changed");
+}
+
+#[test]
+fn test_cmdsub_exit_status() {
+    let out = kish_exec("X=$(exit 42); echo $?");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "42");
+}
+
+#[test]
+fn test_cmdsub_nested_isolation() {
+    let out = kish_exec("X=outer; Y=$(X=mid; Z=$(X=inner; echo $X); echo $X $Z); echo $X $Y");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "outer mid inner");
+}
+
+#[test]
+fn test_cmdsub_trap_isolation() {
+    // Command substitution inherits traps from the parent (consistent with bash behaviour).
+    // The child's own trap changes do not propagate back to the parent.
+    let out = kish_exec("trap 'echo parent' INT; X=$(trap 'echo child' INT; trap); echo \"${X}\"");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The variable X was captured inside the substitution where the trap was 'echo child',
+    // so the parent's original handler must NOT appear in X.
+    assert!(!stdout.contains("echo parent"));
+}
+
+#[test]
+fn test_cmdsub_function_isolation() {
+    let out = kish_exec("f() { echo original; }; X=$(f() { echo changed; }; f); f; echo $X");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines[0], "original");
+    assert_eq!(lines[1], "changed");
+}
+
+#[test]
+fn test_cmdsub_positional_params_isolation() {
+    let out = kish_exec("set -- a b c; X=$(set -- x y; echo $# $1); echo $# $1 $X");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "3 a 2 x");
+}
+
+#[test]
+fn test_cmdsub_cwd_isolation() {
+    let out = kish_exec("cd /tmp; X=$(cd /; pwd); pwd; echo $X");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert!(lines[0].ends_with("/tmp"));
+    assert_eq!(lines[1], "/");
+}
