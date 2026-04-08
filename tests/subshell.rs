@@ -133,3 +133,70 @@ fn test_subshell_cwd_isolation() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.trim().ends_with("/tmp"));
 }
+
+// =============================================================================
+// Category 2: Pipeline subshell isolation
+// =============================================================================
+
+#[test]
+fn test_pipeline_variable_isolation() {
+    let out = kish_exec("X=original; echo hello | { X=changed; cat >/dev/null; }; echo $X");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "original");
+}
+
+#[test]
+fn test_pipeline_trap_reset() {
+    // Command traps should be reset in pipeline subshell (fixed in Task 1)
+    let out = kish_exec("trap 'echo trapped' INT; echo hello | trap; cat >/dev/null");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("trapped"));
+    assert!(!stdout.contains("echo trapped"));
+}
+
+#[test]
+fn test_pipeline_trap_ignore_preserved() {
+    let out = kish_exec("trap '' INT; echo hello | trap; cat >/dev/null");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("INT"));
+}
+
+#[test]
+fn test_pipeline_function_isolation() {
+    let out = kish_exec("f() { echo original; }; echo x | f() { echo changed; }; f");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.trim(), "original");
+}
+
+#[test]
+fn test_pipeline_cwd_isolation() {
+    let out = kish_exec("cd /tmp; echo x | cd /; pwd");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.trim().ends_with("/tmp"));
+}
+
+#[test]
+fn test_pipeline_option_isolation() {
+    let out = kish_exec("set +x; echo x | set -x; echo \"$-\"");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.trim().contains('x'));
+}
+
+#[test]
+fn test_pipeline_exit_status() {
+    let out = kish_exec("false | true; echo $?");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0");
+}
+
+#[test]
+fn test_pipeline_pipefail() {
+    let out = kish_exec("set -o pipefail; false | true; echo $?");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1");
+}
