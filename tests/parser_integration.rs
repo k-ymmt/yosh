@@ -178,6 +178,116 @@ fn test_arithmetic_with_variables() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "13\n");
 }
 
+// --- Phase 3: Full expansion integration tests ---
+
+#[test]
+fn test_arithmetic_hex_full() {
+    let out = kish_exec("echo $((0xFF))");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "255\n");
+}
+
+#[test]
+fn test_param_assign_full() {
+    let out = kish_exec("echo ${x:=hello}; echo $x");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\nhello\n");
+}
+
+#[test]
+fn test_param_alt_full() {
+    let out = kish_exec("x=set; echo ${x:+alt}; echo ${y:+alt}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "alt\n\n");
+}
+
+#[test]
+fn test_param_strip_suffix_full() {
+    let out = kish_exec("f=/path/to/file.txt; echo ${f%.txt}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "/path/to/file\n");
+}
+
+#[test]
+fn test_param_strip_long_prefix_full() {
+    let out = kish_exec("f=/path/to/file.txt; echo ${f##*/}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "file.txt\n");
+}
+
+#[test]
+fn test_param_length_full() {
+    let out = kish_exec("x=hello; echo ${#x}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "5\n");
+}
+
+#[test]
+fn test_quoted_glob_no_expansion_full() {
+    let out = kish_exec("echo 'src/*.rs'");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "src/*.rs");
+}
+
+#[test]
+fn test_tilde_expansion_full() {
+    let out = kish_exec("echo ~");
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(stdout.starts_with('/'), "tilde should expand to home dir, got: {}", stdout);
+}
+
+#[test]
+fn test_dollar_at_in_script_full() {
+    let tmp = helpers::TempDir::new();
+    let script = tmp.write_file("args.sh", "echo \"$@\"\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_kish"))
+        .args([script.to_str().unwrap(), "a", "b", "c"])
+        .output().expect("failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.trim() == "a b c", "got: {}", stdout);
+}
+
+#[test]
+fn test_param_default_full() {
+    let out = kish_exec("echo ${UNSET_XYZ:-fallback}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "fallback\n");
+
+    let out = kish_exec("X=value; echo ${X:-fallback}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "value\n");
+}
+
+#[test]
+fn test_param_error_full() {
+    // Use a quoted word so the lexer accepts the space inside ${...:?...}
+    let out = kish_exec("echo ${UNSET_XYZ:?\"custom error\"}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("custom error"), "stderr: {}", stderr);
+}
+
+#[test]
+fn test_nested_expansion() {
+    // Variable in command substitution
+    let out = kish_exec("x=hello; echo $(echo $x)");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_arithmetic_assign_persists() {
+    let out = kish_exec("echo $((x = 42)); echo $x");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n42\n");
+}
+
+#[test]
+fn test_complex_expansion_pipeline() {
+    // Combines multiple expansion types
+    let out = kish_exec("x=hello; echo \"$x $(echo world) $((1+2))\"");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello world 3\n");
+}
+
+#[test]
+fn test_script_with_expansions() {
+    let tmp = helpers::TempDir::new();
+    let script = tmp.write_file("test.sh",
+        "x=hello\ny=$(echo world)\necho \"$x $y $((2+2))\"\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_kish"))
+        .arg(script.to_str().unwrap())
+        .output().expect("failed");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "hello world 4\n");
+}
+
 // ── parse tests ──────────────────────────────────────────────────────────────
 
 #[test]
