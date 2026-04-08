@@ -26,9 +26,15 @@
 
 - [ ] Heredoc + pipeline not working — `cat <<EOF | tr a-z A-Z` produces empty output due to redirect timing in child process (`src/exec/pipeline.rs`)
 
+## Phase 5: Known Limitations
+
+- [ ] `$N` (positional params) inside `$((...))` arithmetic not supported — use temp variable workaround: `x=$1; echo $((x - 1))` (`src/expand/arith.rs`)
+- [ ] Subshell environment isolation is basic (fork-based) — full isolation deferred to Phase 8
+- [ ] Function-scoped assignments with prefix syntax (`VAR=val func`) not implemented — assignments only apply to external commands
+
 ## Remaining Phases
 
-- [ ] Phase 5: Control structure execution (if, for, while, until, case, functions)
+- [x] Phase 5: Control structure execution (if, for, while, until, case, functions)
 - [ ] Phase 6: Special builtins (set, export, trap, eval, exec, etc.) + alias expansion
 - [ ] Phase 7: Signals and errexit
 - [ ] Phase 8: Subshell environment isolation
