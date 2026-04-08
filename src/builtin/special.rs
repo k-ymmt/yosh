@@ -334,7 +334,7 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
     } else {
         if let Some(path_var) = executor.env.vars.get("PATH") {
             let mut found = None;
-            for dir in path_var.to_string().split(':') {
+            for dir in path_var.split(':') {
                 let candidate = std::path::PathBuf::from(dir).join(filename);
                 if candidate.is_file() {
                     found = Some(candidate);

@@ -72,7 +72,7 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>) -> i32 {
 
     loop {
         // Skip leading whitespace and newlines
-        let trimmed = remaining.trim_start_matches(|c: char| c == ' ' || c == '\t' || c == '\n');
+        let trimmed = remaining.trim_start_matches([' ', '\t', '\n']);
         if trimmed.is_empty() {
             break;
         }
@@ -113,12 +113,10 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>) -> i32 {
 }
 
 fn execute_exit_trap(executor: &mut Executor) {
-    if let Some(action) = executor.env.traps.exit_trap.take() {
-        if let env::TrapAction::Command(cmd) = action {
-            if let Ok(program) = parser::Parser::new(&cmd).parse_program() {
-                executor.exec_program(&program);
-            }
-        }
+    if let Some(env::TrapAction::Command(cmd)) = executor.env.traps.exit_trap.take()
+        && let Ok(program) = parser::Parser::new(&cmd).parse_program()
+    {
+        executor.exec_program(&program);
     }
 }
 

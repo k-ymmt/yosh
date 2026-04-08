@@ -38,6 +38,7 @@ impl AliasStore {
     }
 
     /// Returns true if no aliases are defined.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.aliases.is_empty()
     }

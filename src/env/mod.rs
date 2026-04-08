@@ -18,19 +18,10 @@ pub enum TrapAction {
 }
 
 /// Storage for shell trap settings.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TrapStore {
     pub exit_trap: Option<TrapAction>,
     pub signal_traps: HashMap<i32, TrapAction>,
-}
-
-impl Default for TrapStore {
-    fn default() -> Self {
-        TrapStore {
-            exit_trap: None,
-            signal_traps: HashMap::new(),
-        }
-    }
 }
 
 impl TrapStore {
@@ -82,6 +73,7 @@ impl TrapStore {
     }
 
     /// Get the trap action for the given condition (signal name or number).
+    #[allow(dead_code)]
     pub fn get_trap(&self, condition: &str) -> Option<&TrapAction> {
         let num = Self::signal_name_to_number(condition)?;
         if num == 0 {
@@ -139,7 +131,7 @@ pub enum FlowControl {
 }
 
 /// POSIX shell option flags (set -o / set +o).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ShellOptions {
     pub allexport: bool,  // -a
     pub notify: bool,     // -b
@@ -153,25 +145,6 @@ pub struct ShellOptions {
     pub xtrace: bool,     // -x
     pub ignoreeof: bool,
     pub pipefail: bool,
-}
-
-impl Default for ShellOptions {
-    fn default() -> Self {
-        ShellOptions {
-            allexport: false,
-            notify: false,
-            noclobber: false,
-            errexit: false,
-            noglob: false,
-            noexec: false,
-            monitor: false,
-            nounset: false,
-            verbose: false,
-            xtrace: false,
-            ignoreeof: false,
-            pipefail: false,
-        }
-    }
 }
 
 impl ShellOptions {

@@ -117,6 +117,7 @@ pub struct Word {
 }
 
 impl Word {
+    #[allow(dead_code)]
     pub fn literal(s: &str) -> Self {
         Word {
             parts: vec![WordPart::Literal(s.to_string())],

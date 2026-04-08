@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_star_does_not_match_dotfiles() {
-        let env = make_env();
+        let _env = make_env();
         // In any directory, "*" should not return dotfiles.
         let matches = glob_in_dir(".", "*");
         for m in &matches {

@@ -203,7 +203,7 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                     result.push_str(&param::expand(env, &ParamExpr::Special(sp)));
                     i += 1;
                 }
-                ch if ch >= b'1' && ch <= b'9' => {
+                ch if (b'1'..=b'9').contains(&ch) => {
                     let n = (ch - b'0') as usize;
                     result.push_str(&param::expand(env, &ParamExpr::Positional(n)));
                     i += 1;

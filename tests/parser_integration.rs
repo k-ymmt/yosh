@@ -1151,3 +1151,25 @@ fn test_alias_with_redirect() {
     let content = std::fs::read_to_string(&outfile).unwrap();
     assert_eq!(content, "hello\n");
 }
+
+// ── prefix assignment POSIX compliance ──────────────────────────────────────
+
+#[test]
+fn test_special_builtin_assignment_persists() {
+    // VAR=val on a special builtin should persist
+    let out = kish_exec("MY_SP_VAR=hello :; echo $MY_SP_VAR");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_assignment_only_sets_var() {
+    let out = kish_exec("MY_ASSIGN_VAR=world; echo $MY_ASSIGN_VAR");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "world\n");
+}
+
+#[test]
+fn test_external_cmd_assignment_does_not_persist() {
+    let out = kish_exec("MY_EXT_VAR=hello /usr/bin/true; echo \"MY_EXT_VAR=$MY_EXT_VAR\"");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout, "MY_EXT_VAR=\n");
+}

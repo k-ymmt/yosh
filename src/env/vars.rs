@@ -55,6 +55,7 @@ impl VarStore {
     }
 
     /// Get the full Variable struct, if set.
+    #[allow(dead_code)]
     pub fn get_var(&self, name: &str) -> Option<&Variable> {
         self.vars.get(name)
     }

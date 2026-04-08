@@ -42,6 +42,7 @@ impl Parser {
         self.pre_current_pos
     }
 
+    #[allow(dead_code)]
     pub fn current_token(&self) -> &Token {
         &self.current.token
     }

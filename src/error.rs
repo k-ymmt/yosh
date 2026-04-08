@@ -9,6 +9,7 @@ pub struct ShellError {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum ShellErrorKind {
     UnterminatedSingleQuote,
     UnterminatedDoubleQuote,
