@@ -11,7 +11,6 @@
 - [ ] `echo -n` flag not handled — POSIX strict doesn't require it but practical shells need it (`src/builtin/mod.rs`)
 - [ ] `cd -` (change to OLDPWD) not implemented (`src/builtin/mod.rs`)
 - [ ] `VarStore` has no scope mechanism — needed for function execution in Phase 5 (`src/env/vars.rs`)
-- [x] `builtin_exit` calls `process::exit` directly — fixed in Phase 7: now calls `execute_exit_trap` before exit (`src/builtin/special.rs`)
 - [ ] `TempDir` ID uses nanosecond timestamp — risk of collision under heavy parallel testing (`tests/helpers/mod.rs`)
 
 ## Phase 3: Known Limitations
@@ -28,13 +27,10 @@
 ## Phase 5: Known Limitations
 
 - [ ] `$N` (positional params) inside `$((...))` arithmetic not supported — use temp variable workaround: `x=$1; echo $((x - 1))` (`src/expand/arith.rs`)
-- [x] Subshell environment isolation is basic (fork-based) — full isolation deferred to Phase 8
 - [ ] Function-scoped assignments with prefix syntax (`VAR=val func`) not implemented — assignments only apply to external commands
 
 ## Phase 6: Known Limitations
 
-- [x] `trap` signal execution (INT, HUP, etc.) — implemented in Phase 7 via self-pipe signal handling (`src/signal.rs`, `src/exec/mod.rs`)
-- [x] `-e` (errexit) flag — behavior implemented in Phase 7 with all POSIX exception contexts (`src/exec/mod.rs`)
 - [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
 - [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
 - [ ] `ignoreeof` is settable but has no effect — interactive mode feature
@@ -48,6 +44,9 @@
 - [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
 - [ ] `ignoreeof` is settable but has no effect — interactive mode feature
 
-## Remaining Phases
+## Phase 8: Known Limitations
 
-- [x] Phase 8: Subshell environment isolation
+- [ ] `umask` builtin not implemented — `test_umask_inheritance` is ignored; umask inheritance cannot be verified (`tests/subshell.rs`)
+- [ ] `exec N>file` fd persistence not implemented — `exec` builtin restores redirects, so `test_fd_inheritance` is ignored (`tests/subshell.rs`, `src/builtin/special.rs`)
+- [ ] `test_umask_isolation` may pass incidentally due to fork isolation, not because umask is correctly set/read (`tests/subshell.rs`)
+- [ ] `return` outside function in subshell error test not implemented — POSIX requires error, untested (`tests/subshell.rs`)
