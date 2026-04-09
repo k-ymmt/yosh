@@ -49,19 +49,6 @@
 - [ ] `test_umask_isolation` may pass incidentally due to fork isolation, not because umask is correctly set/read (`tests/subshell.rs`)
 - [ ] `return` outside function in subshell error test not implemented — POSIX requires error, untested (`tests/subshell.rs`)
 
-## Discovered via E2E Tests
-
-- [ ] `$-` special parameter not implemented — `test -n "$-"` fails (`src/expand/param.rs`)
-- [ ] Double-quote backslash handling duplicates following character — `"\a"` outputs `\aa` instead of `\a` (`src/expand/mod.rs`)
-- [ ] Consecutive non-whitespace IFS delimiters don't produce empty fields — `IFS=: x="a::b"` gives 2 fields instead of 3 (`src/expand/field_split.rs`)
-- [ ] Glob `*` matches dot files — POSIX says `*` should not match filenames starting with `.` (`src/expand/pathname.rs`)
-- [ ] Division by zero returns exit code 0 instead of 1 (`src/expand/arith.rs`)
-- [ ] Modulo by zero returns exit code 0 instead of 1 (`src/expand/arith.rs`)
-- [ ] Comma operator not implemented in arithmetic expansion (`src/expand/arith.rs`)
-- [ ] `export -p` does not output exported variables (`src/builtin/mod.rs`)
-- [ ] `trap '' SIGNAL` does not properly ignore signals — USR1 still kills process (`src/signal.rs`)
-- [ ] Subshell does not inherit ignored signal disposition — `trap ''` not propagated to child (`src/signal.rs`)
-
 ## E2E Test Runner Improvements
 
 - [ ] Timeout handler should use `exec` to avoid orphan child processes when kish forks (`e2e/run_tests.sh`)
