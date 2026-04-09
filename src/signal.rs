@@ -175,12 +175,15 @@ pub fn default_signal(sig: i32) {
     }
 }
 
-/// Reset all handled signals to SIG_DFL and close the self-pipe file
-/// descriptors. Intended to be called in a child process after fork().
-pub fn reset_child_signals() {
-    // Reset all handled signals to default.
+/// Reset signals after fork for child processes.
+/// `ignored` signals retain SIG_IGN; all others reset to SIG_DFL.
+pub fn reset_child_signals(ignored: &[i32]) {
     for &(num, _) in HANDLED_SIGNALS {
-        default_signal(num);
+        if ignored.contains(&num) {
+            ignore_signal(num);
+        } else {
+            default_signal(num);
+        }
     }
 
     // Close self-pipe fds if they exist.

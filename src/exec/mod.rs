@@ -197,8 +197,9 @@ impl Executor {
                 1
             }
             Ok(ForkResult::Child) => {
+                let ignored = self.env.traps.ignored_signals();
                 self.env.traps.reset_non_ignored();
-                signal::reset_child_signals();
+                signal::reset_child_signals(&ignored);
                 let status = self.exec_body(body);
                 std::process::exit(status);
             }
@@ -569,7 +570,7 @@ impl Executor {
                 1
             }
             Ok(ForkResult::Child) => {
-                signal::reset_child_signals();
+                signal::reset_child_signals(&self.env.traps.ignored_signals());
 
                 // Apply redirects (no need to save, we're in the child)
                 let mut redir_state = RedirectState::new();
@@ -681,8 +682,9 @@ impl Executor {
                 nix::unistd::setpgid(pid, pid).ok();
                 signal::ignore_signal(libc::SIGINT);
                 signal::ignore_signal(libc::SIGQUIT);
+                let ignored = self.env.traps.ignored_signals();
                 self.env.traps.reset_non_ignored();
-                signal::reset_child_signals();
+                signal::reset_child_signals(&ignored);
                 let status = self.exec_and_or(and_or);
                 std::process::exit(status);
             }

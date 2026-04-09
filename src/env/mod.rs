@@ -103,6 +103,15 @@ impl TrapStore {
         self.reset_non_ignored();
     }
 
+    /// Return signal numbers that have TrapAction::Ignore disposition.
+    pub fn ignored_signals(&self) -> Vec<i32> {
+        self.signal_traps
+            .iter()
+            .filter(|(_, action)| matches!(action, TrapAction::Ignore))
+            .map(|(&num, _)| num)
+            .collect()
+    }
+
     /// Get the trap action for a signal by number (not EXIT).
     pub fn get_signal_trap(&self, sig: i32) -> Option<&TrapAction> {
         self.signal_traps.get(&sig)

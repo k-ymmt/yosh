@@ -64,8 +64,9 @@ impl Executor {
                     } else {
                         setpgid(my_pid, pgid).ok();
                     }
+                    let ignored = self.env.traps.ignored_signals();
                     self.env.traps.reset_non_ignored();
-                    signal::reset_child_signals();
+                    signal::reset_child_signals(&ignored);
 
                     // Set up stdin from previous pipe's read end (if not first)
                     if i > 0 {
