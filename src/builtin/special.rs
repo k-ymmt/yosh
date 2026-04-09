@@ -51,12 +51,12 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> i32 {
 }
 
 fn builtin_export(args: &[String], env: &mut ShellEnv) -> i32 {
-    if args.is_empty() {
-        // Print all exported variables in the form: export NAME=VALUE
+    if args.is_empty() || args[0] == "-p" {
+        // Print all exported variables in POSIX re-input format
         let mut exported: Vec<(String, String)> = env.vars.to_environ();
         exported.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in exported {
-            println!("export {}={}", name, value);
+            println!("export {}=\"{}\"", name, value);
         }
         return 0;
     }

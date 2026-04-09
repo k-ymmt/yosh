@@ -1,7 +1,6 @@
 #!/bin/sh
 # POSIX_REF: 2.14 Special Built-In Utilities
 # DESCRIPTION: export -p output is suitable for re-input
-# XFAIL: Phase 3 limitation — export -p does not output variables
 # EXPECT_EXIT: 0
 export MY_TEST_EXPORT_VAR=hello
 output=$(export -p)
