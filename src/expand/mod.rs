@@ -5,7 +5,7 @@ pub mod param;
 pub mod pathname;
 pub mod pattern;
 
-use crate::env::ShellEnv;
+use crate::env::{FlowControl, ShellEnv};
 use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 
 // ─── ExpandedField ──────────────────────────────────────────────────────────
@@ -175,7 +175,14 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                         }
                         let expr = &s[start..i];
                         if i + 1 < bytes.len() { i += 2; } // skip ))
-                        result.push_str(&arith::evaluate(env, expr));
+                        match arith::evaluate(env, expr) {
+                            Ok(val) => result.push_str(&val),
+                            Err(_) => {
+                                env.last_exit_status = 1;
+                                env.flow_control = Some(FlowControl::Return(1));
+                                result.push_str("0");
+                            }
+                        }
                     } else {
                         // $(...) — command substitution
                         i += 1;
@@ -277,8 +284,14 @@ fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
             out.push_str(&output);
         }
         WordPart::ArithSub(expr) => {
-            let result = arith::evaluate(env, expr);
-            out.push_str(&result);
+            match arith::evaluate(env, expr) {
+                Ok(val) => out.push_str(&val),
+                Err(_) => {
+                    env.last_exit_status = 1;
+                    env.flow_control = Some(FlowControl::Return(1));
+                    out.push_str("0");
+                }
+            }
         }
         WordPart::SingleQuoted(s) | WordPart::DollarSingleQuoted(s) => out.push_str(s),
         WordPart::DoubleQuoted(parts) => {
@@ -370,11 +383,24 @@ fn expand_part_to_fields(
 
         // ── Arithmetic expansion ──────────────────────────────────────────
         WordPart::ArithSub(expr) => {
-            let result = arith::evaluate(env, expr);
-            if in_double_quote {
-                fields.last_mut().unwrap().push_quoted(&result);
-            } else {
-                fields.last_mut().unwrap().push_unquoted(&result);
+            match arith::evaluate(env, expr) {
+                Ok(result) => {
+                    if in_double_quote {
+                        fields.last_mut().unwrap().push_quoted(&result);
+                    } else {
+                        fields.last_mut().unwrap().push_unquoted(&result);
+                    }
+                }
+                Err(_) => {
+                    env.last_exit_status = 1;
+                    env.flow_control = Some(FlowControl::Return(1));
+                    let zero = "0";
+                    if in_double_quote {
+                        fields.last_mut().unwrap().push_quoted(zero);
+                    } else {
+                        fields.last_mut().unwrap().push_unquoted(zero);
+                    }
+                }
             }
         }
     }

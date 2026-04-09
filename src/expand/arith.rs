@@ -2,7 +2,7 @@ use crate::env::ShellEnv;
 
 /// Evaluate an arithmetic expression and return the result as a string.
 /// Expands `$VAR` and `${VAR}` first, then parses and evaluates the expression.
-pub fn evaluate(env: &mut ShellEnv, expr: &str) -> String {
+pub fn evaluate(env: &mut ShellEnv, expr: &str) -> Result<String, String> {
     // Step 1: expand $VAR and ${VAR} references
     let expanded = expand_vars(env, expr);
 
@@ -15,10 +15,10 @@ pub fn evaluate(env: &mut ShellEnv, expr: &str) -> String {
     };
 
     match parser.expr() {
-        Ok(val) => val.to_string(),
+        Ok(val) => Ok(val.to_string()),
         Err(msg) => {
             eprintln!("kish: arithmetic: {}", msg);
-            "0".to_string()
+            Err(msg)
         }
     }
 }
@@ -347,7 +347,6 @@ impl<'a> ArithParser<'a> {
                 self.pos += 1;
                 let right = self.unary()?;
                 if right == 0 {
-                    eprintln!("kish: arithmetic: division by zero");
                     return Err("division by zero".to_string());
                 }
                 left /= right;
@@ -355,8 +354,7 @@ impl<'a> ArithParser<'a> {
                 self.pos += 1;
                 let right = self.unary()?;
                 if right == 0 {
-                    eprintln!("kish: arithmetic: division by zero (modulo)");
-                    return Err("division by zero".to_string());
+                    return Err("division by zero (modulo)".to_string());
                 }
                 left %= right;
             } else {
@@ -579,77 +577,77 @@ mod tests {
 
     #[test]
     fn test_simple_number() {
-        assert_eq!(evaluate(&mut env(), "42"), "42");
+        assert_eq!(evaluate(&mut env(), "42"), Ok("42".to_string()));
     }
 
     #[test]
     fn test_addition() {
-        assert_eq!(evaluate(&mut env(), "1 + 2"), "3");
+        assert_eq!(evaluate(&mut env(), "1 + 2"), Ok("3".to_string()));
     }
 
     #[test]
     fn test_precedence() {
-        assert_eq!(evaluate(&mut env(), "2 + 3 * 4"), "14");
+        assert_eq!(evaluate(&mut env(), "2 + 3 * 4"), Ok("14".to_string()));
     }
 
     #[test]
     fn test_parens() {
-        assert_eq!(evaluate(&mut env(), "(2 + 3) * 4"), "20");
+        assert_eq!(evaluate(&mut env(), "(2 + 3) * 4"), Ok("20".to_string()));
     }
 
     #[test]
     fn test_unary_minus() {
-        assert_eq!(evaluate(&mut env(), "-5"), "-5");
+        assert_eq!(evaluate(&mut env(), "-5"), Ok("-5".to_string()));
     }
 
     #[test]
     fn test_comparison() {
-        assert_eq!(evaluate(&mut env(), "3 > 2"), "1");
+        assert_eq!(evaluate(&mut env(), "3 > 2"), Ok("1".to_string()));
     }
 
     #[test]
     fn test_logical() {
-        assert_eq!(evaluate(&mut env(), "1 && 0"), "0");
+        assert_eq!(evaluate(&mut env(), "1 && 0"), Ok("0".to_string()));
     }
 
     #[test]
     fn test_ternary() {
-        assert_eq!(evaluate(&mut env(), "1 ? 10 : 20"), "10");
+        assert_eq!(evaluate(&mut env(), "1 ? 10 : 20"), Ok("10".to_string()));
     }
 
     #[test]
     fn test_bitwise() {
-        assert_eq!(evaluate(&mut env(), "5 & 3"), "1");
+        assert_eq!(evaluate(&mut env(), "5 & 3"), Ok("1".to_string()));
     }
 
     #[test]
     fn test_hex() {
-        assert_eq!(evaluate(&mut env(), "0xFF"), "255");
+        assert_eq!(evaluate(&mut env(), "0xFF"), Ok("255".to_string()));
     }
 
     #[test]
     fn test_octal() {
-        assert_eq!(evaluate(&mut env(), "010"), "8");
+        assert_eq!(evaluate(&mut env(), "010"), Ok("8".to_string()));
     }
 
     #[test]
     fn test_variable() {
         let mut e = env();
         e.vars.set("x", "10").unwrap();
-        assert_eq!(evaluate(&mut e, "x + 5"), "15");
+        assert_eq!(evaluate(&mut e, "x + 5"), Ok("15".to_string()));
     }
 
     #[test]
     fn test_dollar_variable() {
         let mut e = env();
         e.vars.set("x", "10").unwrap();
-        assert_eq!(evaluate(&mut e, "$x + 5"), "15");
+        assert_eq!(evaluate(&mut e, "$x + 5"), Ok("15".to_string()));
     }
 
     #[test]
     fn test_variable_assign() {
         let mut e = env();
-        assert_eq!(evaluate(&mut e, "z = 5 + 3"), "8");
+        assert_eq!(evaluate(&mut e, "z = 5 + 3"), Ok("8".to_string()));
         assert_eq!(e.vars.get("z"), Some("8"));
     }
 }
