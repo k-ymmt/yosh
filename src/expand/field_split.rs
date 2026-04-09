@@ -102,7 +102,7 @@ fn split_field(
                 else if is_nws {
                     // An IFS non-whitespace delimiter immediately after
                     // Start/AfterNws → emit an empty field.
-                    out.push(ExpandedField::new());
+                    out.push(ExpandedField { was_quoted: true, ..ExpandedField::new() });
                     state = State::AfterNws;
                     i += 1;
                 } else {

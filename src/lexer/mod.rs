@@ -703,6 +703,7 @@ impl Lexer {
             }
             _ => {
                 // backslash is kept literally
+                self.advance();
                 Ok(WordPart::Literal(format!("\\{}", ch as char)))
             }
         }
