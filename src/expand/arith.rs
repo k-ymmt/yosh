@@ -101,7 +101,23 @@ impl<'a> ArithParser<'a> {
     // ── Top-level expression ─────────────────────────────────────────────────
 
     fn expr(&mut self) -> Result<i64, String> {
-        self.ternary()
+        self.comma()
+    }
+
+    // ── Comma: a, b, c (lowest precedence) ──────────────────────────────────
+
+    fn comma(&mut self) -> Result<i64, String> {
+        let mut result = self.ternary()?;
+        loop {
+            self.skip_whitespace();
+            if self.pos < self.input.len() && self.input[self.pos] == b',' {
+                self.pos += 1;
+                result = self.ternary()?;
+            } else {
+                break;
+            }
+        }
+        Ok(result)
     }
 
     // ── Ternary: a ? b : c ───────────────────────────────────────────────────
@@ -472,7 +488,7 @@ impl<'a> ArithParser<'a> {
 
         // Check for compound assignment operators: +=, -=, *=, /=, %=, <<=, >>=, &=, ^=, |=
         if let Some(compound_op) = self.try_compound_assign_op() {
-            let rhs = self.expr()?;
+            let rhs = self.ternary()?;
             let cur = self.env.vars.get(&name).unwrap_or("0").to_string();
             let cur_val = cur.trim().parse::<i64>().unwrap_or(0);
             let val = match compound_op {
@@ -503,7 +519,7 @@ impl<'a> ArithParser<'a> {
             && self.input.get(self.pos + 1) != Some(&b'=')
         {
             self.pos += 1; // consume '='
-            let val = self.expr()?;
+            let val = self.ternary()?;
             // Assign into env
             let _ = self.env.vars.set(&name, val.to_string());
             return Ok(val);
