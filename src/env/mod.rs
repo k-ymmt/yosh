@@ -299,6 +299,9 @@ pub struct ShellEnv {
     pub traps: TrapStore,
     pub aliases: AliasStore,
     pub bg_jobs: Vec<BgJob>,
+    /// Set during word expansion when an arithmetic error occurs.
+    /// Aborts the current simple command but does NOT prevent subsequent commands.
+    pub expansion_error: bool,
 }
 
 impl ShellEnv {
@@ -319,6 +322,7 @@ impl ShellEnv {
             traps: TrapStore::default(),
             aliases: AliasStore::default(),
             bg_jobs: Vec::new(),
+            expansion_error: false,
         }
     }
 }

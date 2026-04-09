@@ -48,10 +48,6 @@
 - [ ] `test_umask_isolation` may pass incidentally due to fork isolation, not because umask is correctly set/read (`tests/subshell.rs`)
 - [ ] `return` outside function in subshell error test not implemented — POSIX requires error, untested (`tests/subshell.rs`)
 
-## Discovered During E2E Bug Fix Session
-
-- [ ] Arithmetic error (`$((1/0))`) uses `FlowControl::Return(1)` to abort — this prevents subsequent commands from running (e.g., `echo $((1/0)); echo after` skips `after`). Bash executes subsequent commands. Should only abort the current simple command, not the entire script (`src/expand/mod.rs`)
-
 ## E2E Test Runner Improvements
 
 - [ ] Timeout handler should use `exec` to avoid orphan child processes when kish forks (`e2e/run_tests.sh`)

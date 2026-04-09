@@ -400,6 +400,13 @@ impl Executor {
             return 1;
         }
 
+        // Check if expansion had a non-fatal error (e.g., arithmetic error).
+        // Abort the current command but allow subsequent commands to run.
+        if self.env.expansion_error {
+            self.env.expansion_error = false;
+            return self.env.last_exit_status;
+        }
+
         // Assignment-only command (no words)
         if expanded.is_empty() {
             // Track the exit status from any command substitutions in the assignments.

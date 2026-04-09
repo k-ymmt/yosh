@@ -5,7 +5,7 @@ pub mod param;
 pub mod pathname;
 pub mod pattern;
 
-use crate::env::{FlowControl, ShellEnv};
+use crate::env::ShellEnv;
 use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 
 // ─── ExpandedField ──────────────────────────────────────────────────────────
@@ -179,7 +179,7 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                             Ok(val) => result.push_str(&val),
                             Err(_) => {
                                 env.last_exit_status = 1;
-                                env.flow_control = Some(FlowControl::Return(1));
+                                env.expansion_error = true;
                                 result.push_str("0");
                             }
                         }
@@ -288,7 +288,7 @@ fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
                 Ok(val) => out.push_str(&val),
                 Err(_) => {
                     env.last_exit_status = 1;
-                    env.flow_control = Some(FlowControl::Return(1));
+                    env.expansion_error = true;
                     out.push_str("0");
                 }
             }
@@ -393,7 +393,7 @@ fn expand_part_to_fields(
                 }
                 Err(_) => {
                     env.last_exit_status = 1;
-                    env.flow_control = Some(FlowControl::Return(1));
+                    env.expansion_error = true;
                     let zero = "0";
                     if in_double_quote {
                         fields.last_mut().unwrap().push_quoted(zero);
