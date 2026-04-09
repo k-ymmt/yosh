@@ -1,20 +1,15 @@
 #!/bin/sh
 # POSIX_REF: 2.6.2 Parameter Expansion
 # DESCRIPTION: ${var+alt} vs ${var:+alt} — empty string handling
-# EXPECT_OUTPUT<<END
-# 
-# alt
-# 
-# 
-# alt
-# END
-unset x
-echo "${x+alt}"
+# EXPECT_EXIT: 0
 x=set
-echo "${x+alt}"
+r1="${x+alt}"
+unset x
+r2="${x+alt}"
 y=
-echo "${y:+alt}"
+r3="${y:+alt}"
 unset z
-echo "${z:+alt}"
+r4="${z:+alt}"
 z=set
-echo "${z:+alt}"
+r5="${z:+alt}"
+test "$r1" = "alt" && test "$r2" = "" && test "$r3" = "" && test "$r4" = "" && test "$r5" = "alt"
