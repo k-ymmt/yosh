@@ -16,8 +16,8 @@
 ## Phase 3: Known Limitations
 
 - [ ] Unquoted `$@` should produce separate fields per positional param, currently joins with space (`src/expand/mod.rs`)
-- [ ] Arithmetic compound assignment operators (`+=`, `-=`, `*=`, etc.) not implemented (`src/expand/arith.rs`)
-- [ ] `${parameter:?word}` should exit non-interactive shell, currently only prints error (`src/expand/param.rs`)
+- [x] ~~Arithmetic compound assignment operators (`+=`, `-=`, `*=`, etc.) not implemented~~ — implemented
+- [x] ~~`${parameter:?word}` should exit non-interactive shell~~ — now exits with status 1
 - [ ] Deeply nested command substitution edge cases untested
 
 ## Phase 4: Known Limitations
@@ -53,10 +53,10 @@
 
 ## Discovered via E2E Tests
 
-- [ ] Pattern matcher panics on negated character class `[!0-9]` — slice index out of bounds at `src/expand/pattern.rs:37`
-- [ ] `$(trap)` does not capture trap output in command substitution — trap writes to original stdout, not captured
-- [ ] `set -- a "" c` drops empty string arguments — `$#` returns 2 instead of 3
-- [ ] `${parameter:?word}` with spaces in word causes parse error instead of printing custom error message
+- [x] ~~Pattern matcher panics on negated character class `[!0-9]`~~ — fixed: bracket expressions require non-empty string
+- [x] ~~`$(trap)` does not capture trap output in command substitution~~ — fixed: parent traps saved for display in command substitution
+- [x] ~~`set -- a "" c` drops empty string arguments~~ — fixed: DoubleQuoted([]) now sets was_quoted=true
+- [x] ~~`${parameter:?word}` with spaces in word causes parse error~~ — fixed: spaces treated as literal inside ${...}
 
 ## E2E Test Runner Improvements
 

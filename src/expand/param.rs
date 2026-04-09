@@ -75,6 +75,9 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> String {
                     .map(|w| expand_word_to_string(env, w))
                     .unwrap_or_else(|| format!("{}: parameter null or not set", name));
                 eprintln!("kish: {}", msg);
+                // POSIX: non-interactive shell shall exit with non-zero status
+                env.last_exit_status = 1;
+                env.flow_control = Some(crate::env::FlowControl::Return(1));
                 String::new()
             } else {
                 val.unwrap_or_default()

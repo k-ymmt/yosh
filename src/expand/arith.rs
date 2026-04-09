@@ -470,8 +470,36 @@ impl<'a> ArithParser<'a> {
             .map_err(|e| e.to_string())?
             .to_string();
 
-        // Check for assignment: `name = expr` (not `==`)
         self.skip_whitespace();
+
+        // Check for compound assignment operators: +=, -=, *=, /=, %=, <<=, >>=, &=, ^=, |=
+        if let Some(compound_op) = self.try_compound_assign_op() {
+            let rhs = self.expr()?;
+            let cur = self.env.vars.get(&name).unwrap_or("0").to_string();
+            let cur_val = cur.trim().parse::<i64>().unwrap_or(0);
+            let val = match compound_op {
+                CompoundOp::Add => cur_val.wrapping_add(rhs),
+                CompoundOp::Sub => cur_val.wrapping_sub(rhs),
+                CompoundOp::Mul => cur_val.wrapping_mul(rhs),
+                CompoundOp::Div => {
+                    if rhs == 0 { return Err("division by zero".to_string()); }
+                    cur_val / rhs
+                }
+                CompoundOp::Mod => {
+                    if rhs == 0 { return Err("division by zero".to_string()); }
+                    cur_val % rhs
+                }
+                CompoundOp::Shl => cur_val.wrapping_shl(rhs as u32),
+                CompoundOp::Shr => cur_val.wrapping_shr(rhs as u32),
+                CompoundOp::And => cur_val & rhs,
+                CompoundOp::Xor => cur_val ^ rhs,
+                CompoundOp::Or  => cur_val | rhs,
+            };
+            let _ = self.env.vars.set(&name, val.to_string());
+            return Ok(val);
+        }
+
+        // Check for simple assignment: `name = expr` (not `==`)
         if self.pos < self.input.len()
             && self.input[self.pos] == b'='
             && self.input.get(self.pos + 1) != Some(&b'=')
@@ -493,6 +521,49 @@ impl<'a> ArithParser<'a> {
         let val = raw.trim().parse::<i64>().unwrap_or(0);
         Ok(val)
     }
+
+    /// Try to match a compound assignment operator at current position.
+    /// Returns the operator kind and advances past it (including the `=`), or None.
+    fn try_compound_assign_op(&mut self) -> Option<CompoundOp> {
+        if self.pos >= self.input.len() {
+            return None;
+        }
+        let ch = self.input[self.pos];
+        // Two-character prefix operators: <<= and >>=
+        if self.pos + 2 < self.input.len() && self.input[self.pos + 2] == b'=' {
+            if ch == b'<' && self.input[self.pos + 1] == b'<' {
+                self.pos += 3;
+                return Some(CompoundOp::Shl);
+            }
+            if ch == b'>' && self.input[self.pos + 1] == b'>' {
+                self.pos += 3;
+                return Some(CompoundOp::Shr);
+            }
+        }
+        // Single-character prefix operators: +=, -=, *=, /=, %=, &=, ^=, |=
+        if self.pos + 1 < self.input.len() && self.input[self.pos + 1] == b'=' {
+            let op = match ch {
+                b'+' => Some(CompoundOp::Add),
+                b'-' => Some(CompoundOp::Sub),
+                b'*' => Some(CompoundOp::Mul),
+                b'/' => Some(CompoundOp::Div),
+                b'%' => Some(CompoundOp::Mod),
+                b'&' => Some(CompoundOp::And),
+                b'^' => Some(CompoundOp::Xor),
+                b'|' => Some(CompoundOp::Or),
+                _ => None,
+            };
+            if op.is_some() {
+                self.pos += 2;
+            }
+            return op;
+        }
+        None
+    }
+}
+
+enum CompoundOp {
+    Add, Sub, Mul, Div, Mod, Shl, Shr, And, Xor, Or,
 }
 
 // ─── Unit tests ──────────────────────────────────────────────────────────────

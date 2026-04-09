@@ -22,6 +22,8 @@ pub enum TrapAction {
 pub struct TrapStore {
     pub exit_trap: Option<TrapAction>,
     pub signal_traps: HashMap<i32, TrapAction>,
+    /// Saved parent traps for display in subshells (POSIX: $(trap) shows parent traps).
+    saved_traps: Option<Box<(Option<TrapAction>, HashMap<i32, TrapAction>)>>,
 }
 
 impl TrapStore {
@@ -103,6 +105,16 @@ impl TrapStore {
         self.signal_traps.retain(|_, action| matches!(action, TrapAction::Ignore));
     }
 
+    /// Reset traps for command substitution context.
+    /// Saves parent traps so `trap` (no args) in `$(trap)` shows parent traps (POSIX).
+    pub fn reset_for_command_sub(&mut self) {
+        self.saved_traps = Some(Box::new((
+            self.exit_trap.clone(),
+            self.signal_traps.clone(),
+        )));
+        self.reset_non_ignored();
+    }
+
     /// Get the trap action for a signal by number (not EXIT).
     pub fn get_signal_trap(&self, sig: i32) -> Option<&TrapAction> {
         self.signal_traps.get(&sig)
@@ -111,9 +123,16 @@ impl TrapStore {
     /// Print all active traps in a format suitable for re-input.
     /// Format: `trap -- 'cmd' SIGNAME` or `trap -- '' SIGNAME`.
     /// Default actions are skipped. Exit trap first, then signals sorted by number.
+    /// In subshells, displays the saved parent traps (POSIX requirement).
     pub fn display_all(&self) {
+        let (exit_trap, signal_traps) = if let Some(saved) = &self.saved_traps {
+            (&saved.0, &saved.1)
+        } else {
+            (&self.exit_trap, &self.signal_traps)
+        };
+
         // Exit trap first
-        if let Some(action) = &self.exit_trap {
+        if let Some(action) = exit_trap {
             match action {
                 TrapAction::Command(cmd) => println!("trap -- '{}' EXIT", cmd),
                 TrapAction::Ignore       => println!("trap -- '' EXIT"),
@@ -121,10 +140,10 @@ impl TrapStore {
             }
         }
         // Signal traps sorted by number
-        let mut keys: Vec<i32> = self.signal_traps.keys().copied().collect();
+        let mut keys: Vec<i32> = signal_traps.keys().copied().collect();
         keys.sort();
         for num in keys {
-            if let Some(action) = self.signal_traps.get(&num) {
+            if let Some(action) = signal_traps.get(&num) {
                 let name = Self::signal_number_to_name(num);
                 match action {
                     TrapAction::Command(cmd) => println!("trap -- '{}' SIG{}", cmd, name),

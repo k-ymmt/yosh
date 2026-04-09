@@ -558,7 +558,10 @@ impl Lexer {
                 }
             } else {
                 // unquoted context
-                if Self::is_meta_or_whitespace(ch) {
+                // Inside ${...} (end_byte == '}'), spaces are literal, not delimiters
+                if end_byte == Some(b'}') {
+                    if ch == b'}' { break; }
+                } else if Self::is_meta_or_whitespace(ch) {
                     break;
                 }
                 match ch {

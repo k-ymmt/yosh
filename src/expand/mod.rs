@@ -335,6 +335,8 @@ fn expand_part_to_fields(
 
         // ── Double-quoted group ───────────────────────────────────────────
         WordPart::DoubleQuoted(parts) => {
+            // Mark as quoted even when parts is empty (e.g. "")
+            fields.last_mut().unwrap().was_quoted = true;
             for inner in parts {
                 expand_part_to_fields(env, inner, fields, true);
             }

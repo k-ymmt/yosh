@@ -231,8 +231,8 @@ fn test_cmdsub_trap_isolation() {
     let out = kish_exec("trap 'echo parent' INT; X=$(trap); echo \"${X}\"");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Command trap should be reset in command substitution subshell
-    assert!(!stdout.contains("parent"));
+    // POSIX: $(trap) shows parent traps, not the reset subshell traps
+    assert!(stdout.contains("parent"));
 }
 
 #[test]

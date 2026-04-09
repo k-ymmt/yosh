@@ -34,7 +34,8 @@ fn match_pat(pat: &[char], s: &[char]) -> bool {
         Some('[') => {
             // Find the closing ']'
             if let Some((consumed, matched_char)) = parse_bracket(&pat[1..], s.first().copied()) {
-                matched_char && match_pat(&pat[1 + consumed..], &s[1..])
+                // Bracket expressions always match exactly one character
+                !s.is_empty() && matched_char && match_pat(&pat[1 + consumed..], &s[1..])
             } else {
                 // Malformed bracket — treat '[' as literal
                 !s.is_empty() && s[0] == '[' && match_pat(&pat[1..], &s[1..])
