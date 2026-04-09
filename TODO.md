@@ -7,7 +7,6 @@
 
 ## Phase 2: Known Limitations
 
-- [ ] `export` output format missing quotes — should be `export FOO="bar"` not `export FOO=bar` (`src/builtin/mod.rs`)
 - [ ] `echo -n` flag not handled — POSIX strict doesn't require it but practical shells need it (`src/builtin/mod.rs`)
 - [ ] `cd -` (change to OLDPWD) not implemented (`src/builtin/mod.rs`)
 - [ ] `VarStore` has no scope mechanism — needed for function execution in Phase 5 (`src/env/vars.rs`)
@@ -48,6 +47,10 @@
 - [ ] `exec N>file` fd persistence not implemented — `exec` builtin restores redirects, so `test_fd_inheritance` is ignored (`tests/subshell.rs`, `src/builtin/special.rs`)
 - [ ] `test_umask_isolation` may pass incidentally due to fork isolation, not because umask is correctly set/read (`tests/subshell.rs`)
 - [ ] `return` outside function in subshell error test not implemented — POSIX requires error, untested (`tests/subshell.rs`)
+
+## Discovered During E2E Bug Fix Session
+
+- [ ] Arithmetic error (`$((1/0))`) uses `FlowControl::Return(1)` to abort — this prevents subsequent commands from running (e.g., `echo $((1/0)); echo after` skips `after`). Bash executes subsequent commands. Should only abort the current simple command, not the entire script (`src/expand/mod.rs`)
 
 ## E2E Test Runner Improvements
 
