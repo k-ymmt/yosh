@@ -35,7 +35,7 @@ fn main() {
                 let rest_start = if args.len() > 3 && args[3] == "--" { 4 } else { 3 };
                 let sn = if rest_start < args.len() { args[rest_start].clone() } else { shell_name };
                 let positional: Vec<String> = if rest_start + 1 < args.len() { args[rest_start + 1..].to_vec() } else { vec![] };
-                let status = run_string(&args[2], sn, positional);
+                let status = run_string(&args[2], sn, positional, true);
                 process::exit(status);
             } else if args[1] == "--parse" {
                 if args.len() < 3 {
@@ -62,9 +62,10 @@ fn main() {
     }
 }
 
-fn run_string(input: &str, shell_name: String, positional: Vec<String>) -> i32 {
+fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_string: bool) -> i32 {
     signal::init_signal_handling();
     let mut executor = Executor::new(shell_name, positional);
+    executor.env.options.cmd_string = cmd_string;
     executor.verbose_print(input);
 
     // Parse and execute one complete command at a time so that aliases
@@ -122,5 +123,5 @@ fn run_file(path: &str, shell_name: String, positional: Vec<String>) -> i32 {
         Ok(c) => c,
         Err(e) => { eprintln!("kish: {}: {}", path, e); return 127; }
     };
-    run_string(&content, shell_name, positional)
+    run_string(&content, shell_name, positional, false)
 }

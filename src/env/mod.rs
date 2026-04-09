@@ -178,6 +178,7 @@ pub struct ShellOptions {
     pub xtrace: bool,     // -x
     pub ignoreeof: bool,
     pub pipefail: bool,
+    pub cmd_string: bool, // -c
 }
 
 impl ShellOptions {
@@ -187,6 +188,7 @@ impl ShellOptions {
         let mut s = String::new();
         if self.allexport  { s.push('a'); }
         if self.notify     { s.push('b'); }
+        if self.cmd_string { s.push('c'); }
         if self.noclobber  { s.push('C'); }
         if self.errexit    { s.push('e'); }
         if self.noglob     { s.push('f'); }
