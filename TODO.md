@@ -53,10 +53,16 @@
 
 ## Discovered via E2E Tests
 
-- [x] ~~Pattern matcher panics on negated character class `[!0-9]`~~ — fixed: bracket expressions require non-empty string
-- [x] ~~`$(trap)` does not capture trap output in command substitution~~ — fixed: parent traps saved for display in command substitution
-- [x] ~~`set -- a "" c` drops empty string arguments~~ — fixed: DoubleQuoted([]) now sets was_quoted=true
-- [x] ~~`${parameter:?word}` with spaces in word causes parse error~~ — fixed: spaces treated as literal inside ${...}
+- [ ] `$-` special parameter not implemented — `test -n "$-"` fails (`src/expand/param.rs`)
+- [ ] Double-quote backslash handling duplicates following character — `"\a"` outputs `\aa` instead of `\a` (`src/expand/mod.rs`)
+- [ ] Consecutive non-whitespace IFS delimiters don't produce empty fields — `IFS=: x="a::b"` gives 2 fields instead of 3 (`src/expand/field_split.rs`)
+- [ ] Glob `*` matches dot files — POSIX says `*` should not match filenames starting with `.` (`src/expand/pathname.rs`)
+- [ ] Division by zero returns exit code 0 instead of 1 (`src/expand/arith.rs`)
+- [ ] Modulo by zero returns exit code 0 instead of 1 (`src/expand/arith.rs`)
+- [ ] Comma operator not implemented in arithmetic expansion (`src/expand/arith.rs`)
+- [ ] `export -p` does not output exported variables (`src/builtin/mod.rs`)
+- [ ] `trap '' SIGNAL` does not properly ignore signals — USR1 still kills process (`src/signal.rs`)
+- [ ] Subshell does not inherit ignored signal disposition — `trap ''` not propagated to child (`src/signal.rs`)
 
 ## E2E Test Runner Improvements
 
@@ -64,8 +70,11 @@
 - [ ] `normalize_trailing()` is a no-op — `$()` already strips trailing newlines; update comment or remove (`e2e/run_tests.sh`)
 - [ ] Add warning when `EXPECT_OUTPUT<<DELIM` heredoc is never closed by matching delimiter (`e2e/run_tests.sh`)
 - [ ] Add `timedout` counter to summary output, separate from `failed` count (`e2e/run_tests.sh`)
+- [ ] Heredoc parser drops first empty line — `_heredoc_buf` empty check fails when first content line is empty (`e2e/run_tests.sh`)
 
 ## Future: E2E Test Expansion
 
-- [ ] Deep edge-case tests for each feature (e.g., nested expansions, unusual quoting combinations)
-- [ ] POSIX corner cases (e.g., special IFS values, empty IFS, IFS with whitespace/non-whitespace mix)
+- [x] ~~Deep edge-case tests for each feature (e.g., nested expansions, unusual quoting combinations)~~ — 81 edge case tests added across all 13 categories
+- [x] ~~POSIX corner cases (e.g., special IFS values, empty IFS, IFS with whitespace/non-whitespace mix)~~ — covered in field_splitting edge cases
+- [ ] Builtin test POSIX_REF values could use more specific section numbers (e.g., `2.14.3` instead of `2.14 Special Built-In Utilities`)
+- [ ] `fd_close.sh` test only checks exit code, not actual fd close effect
