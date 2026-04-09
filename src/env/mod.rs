@@ -34,32 +34,20 @@ impl TrapStore {
         if let Ok(n) = name.parse::<i32>() {
             return Some(n);
         }
-        match name.to_uppercase().as_str() {
-            "EXIT"    => Some(0),
-            "HUP"  | "SIGHUP"  => Some(1),
-            "INT"  | "SIGINT"  => Some(2),
-            "QUIT" | "SIGQUIT" => Some(3),
-            "ABRT" | "SIGABRT" => Some(6),
-            "KILL" | "SIGKILL" => Some(9),
-            "ALRM" | "SIGALRM" => Some(14),
-            "TERM" | "SIGTERM" => Some(15),
-            _ => None,
+        // "EXIT" is trap-specific (signal 0)
+        if name.eq_ignore_ascii_case("EXIT") {
+            return Some(0);
         }
+        // Delegate to the canonical signal table
+        crate::signal::signal_name_to_number(name).ok()
     }
 
     /// Convert a signal number to its canonical name.
     fn signal_number_to_name(num: i32) -> &'static str {
-        match num {
-            0  => "EXIT",
-            1  => "HUP",
-            2  => "INT",
-            3  => "QUIT",
-            6  => "ABRT",
-            9  => "KILL",
-            14 => "ALRM",
-            15 => "TERM",
-            _  => "UNKNOWN",
+        if num == 0 {
+            return "EXIT";
         }
+        crate::signal::signal_number_to_name(num).unwrap_or("UNKNOWN")
     }
 
     /// Set a trap for the given condition (signal name or number).
