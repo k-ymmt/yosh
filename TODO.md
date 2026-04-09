@@ -37,6 +37,7 @@
 
 - [ ] `wait` signal interruption — if multiple signals arrive simultaneously during `wait`, only the first is used for the return status
 - [ ] `kill 0` in pipeline subshell sends to pipeline's process group, not the shell's
+- [ ] `test_kill_dash_s` is flaky — intermittently returns 137 (SIGKILL) instead of expected 130 (SIGINT), likely a timing issue (`tests/signals.rs`)
 - [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
 - [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
 - [ ] `ignoreeof` is settable but has no effect — interactive mode feature
