@@ -16,8 +16,6 @@
 ## Phase 3: Known Limitations
 
 - [ ] Unquoted `$@` should produce separate fields per positional param, currently joins with space (`src/expand/mod.rs`)
-- [x] ~~Arithmetic compound assignment operators (`+=`, `-=`, `*=`, etc.) not implemented~~ — implemented
-- [x] ~~`${parameter:?word}` should exit non-interactive shell~~ — now exits with status 1
 - [ ] Deeply nested command substitution edge cases untested
 
 ## Phase 4: Known Limitations
@@ -74,7 +72,5 @@
 
 ## Future: E2E Test Expansion
 
-- [x] ~~Deep edge-case tests for each feature (e.g., nested expansions, unusual quoting combinations)~~ — 81 edge case tests added across all 13 categories
-- [x] ~~POSIX corner cases (e.g., special IFS values, empty IFS, IFS with whitespace/non-whitespace mix)~~ — covered in field_splitting edge cases
 - [ ] Builtin test POSIX_REF values could use more specific section numbers (e.g., `2.14.3` instead of `2.14 Special Built-In Utilities`)
 - [ ] `fd_close.sh` test only checks exit code, not actual fd close effect
