@@ -1,4 +1,7 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub struct TempDir {
     path: PathBuf,
@@ -11,7 +14,8 @@ impl TempDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        path.push(format!("kish-test-{}", id));
+        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        path.push(format!("kish-test-{}-{}", id, seq));
         std::fs::create_dir_all(&path).unwrap();
         TempDir { path }
     }
