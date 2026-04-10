@@ -1,9 +1,9 @@
 use crate::env::ShellEnv;
 
 /// Evaluate an arithmetic expression and return the result as a string.
-/// Expands `$VAR` and `${VAR}` first, then parses and evaluates the expression.
+/// Expands `$VAR`, `${VAR}`, and `$(cmd)` first, then parses and evaluates the expression.
 pub fn evaluate(env: &mut ShellEnv, expr: &str) -> Result<String, String> {
-    // Step 1: expand $VAR and ${VAR} references
+    // Step 1: expand $VAR, ${VAR}, and $(cmd) references
     let expanded = expand_vars(env, expr);
 
     // Step 2: parse and evaluate
@@ -23,16 +23,43 @@ pub fn evaluate(env: &mut ShellEnv, expr: &str) -> Result<String, String> {
     }
 }
 
-/// Replace `$VAR` and `${VAR}` in an arithmetic expression with their values.
+/// Replace `$VAR`, `${VAR}`, and `$(cmd)` in an arithmetic expression with their values.
 /// Unset variables default to "0".
-fn expand_vars(env: &ShellEnv, expr: &str) -> String {
+fn expand_vars(env: &mut ShellEnv, expr: &str) -> String {
     let bytes = expr.as_bytes();
     let mut result = String::new();
     let mut i = 0;
 
     while i < bytes.len() {
         if bytes[i] == b'$' && i + 1 < bytes.len() {
-            if bytes[i + 1] == b'{' {
+            if bytes[i + 1] == b'(' {
+                // $(cmd) — command substitution inside arithmetic
+                i += 2; // skip '$('
+                let start = i;
+                let mut depth: usize = 1;
+                while i < bytes.len() && depth > 0 {
+                    if bytes[i] == b'(' {
+                        depth += 1;
+                    } else if bytes[i] == b')' {
+                        depth -= 1;
+                    }
+                    if depth > 0 {
+                        i += 1;
+                    }
+                }
+                let cmd_str = &expr[start..i];
+                if i < bytes.len() {
+                    i += 1; // skip closing ')'
+                }
+                if let Ok(program) = crate::parser::Parser::new(cmd_str).parse_program() {
+                    let output = crate::expand::command_sub::execute(env, &program);
+                    let trimmed = output.trim();
+                    // Default to "0" if the output is empty
+                    result.push_str(if trimmed.is_empty() { "0" } else { trimmed });
+                } else {
+                    result.push_str("0");
+                }
+            } else if bytes[i + 1] == b'{' {
                 // ${VAR}
                 i += 2;
                 let start = i;
@@ -43,8 +70,8 @@ fn expand_vars(env: &ShellEnv, expr: &str) -> String {
                 if i < bytes.len() {
                     i += 1; // consume '}'
                 }
-                let val = env.vars.get(name).unwrap_or("0");
-                result.push_str(val);
+                let val = env.vars.get(name).unwrap_or("0").to_string();
+                result.push_str(&val);
             } else if bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_' {
                 // $VAR
                 i += 1;
@@ -55,8 +82,8 @@ fn expand_vars(env: &ShellEnv, expr: &str) -> String {
                     i += 1;
                 }
                 let name = &expr[start..i];
-                let val = env.vars.get(name).unwrap_or("0");
-                result.push_str(val);
+                let val = env.vars.get(name).unwrap_or("0").to_string();
+                result.push_str(&val);
             } else {
                 result.push(bytes[i] as char);
                 i += 1;
