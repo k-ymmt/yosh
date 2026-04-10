@@ -54,6 +54,7 @@ The test continues execution with no stdout check (existing behavior), but the d
 **Solution:**
 - Add `timedout=0` counter alongside existing counters
 - When a test times out, increment `timedout` instead of `failed`
+- Timeout takes priority over xfail — a timed-out xfail test counts as `timedout`, not `xfailed` (timeout is a runner issue, not a test result)
 - Display result as `[TIME]` instead of `[FAIL]`
 - Add `Timedout: N` to summary output
 - Include `timedout > 0` in the exit code failure condition
