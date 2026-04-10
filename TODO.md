@@ -1,12 +1,5 @@
 # TODO
 
-## Phase 2: Known Limitations
-
-- [ ] `echo -n` flag not handled — POSIX strict doesn't require it but practical shells need it (`src/builtin/mod.rs`)
-- [ ] `cd -` (change to OLDPWD) not implemented (`src/builtin/mod.rs`)
-- [ ] `VarStore` has no scope mechanism — needed for function execution in Phase 5 (`src/env/vars.rs`)
-- [ ] `TempDir` ID uses nanosecond timestamp — risk of collision under heavy parallel testing (`tests/helpers/mod.rs`)
-
 ## Phase 3: Known Limitations
 
 - [ ] Unquoted `$@` should produce separate fields per positional param, currently joins with space (`src/expand/mod.rs`)
