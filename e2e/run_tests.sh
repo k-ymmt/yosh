@@ -317,7 +317,7 @@ printf "${YELLOW}Timedout: %d${RESET}  " "$timedout"
 printf "${CYAN}XFail: %d${RESET}  " "$xfailed"
 printf "${YELLOW}XPass: %d${RESET}\n" "$xpassed"
 
-# Exit code: 0 if no failures (XPASS counts as failure too)
+# Exit code: 0 if no failures (XPASS and timedout count as failures too)
 if [ "$failed" -gt 0 ] || [ "$xpassed" -gt 0 ] || [ "$timedout" -gt 0 ]; then
     exit 1
 fi
