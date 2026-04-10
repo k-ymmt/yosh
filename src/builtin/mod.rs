@@ -53,6 +53,8 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
 // ---------------------------------------------------------------------------
 
 fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
+    let is_dash = !args.is_empty() && args[0] == "-";
+
     let target = if args.is_empty() {
         match env.vars.get("HOME") {
             Some(h) => h.to_string(),
@@ -63,11 +65,7 @@ fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
         }
     } else if args[0] == "-" {
         match env.vars.get("OLDPWD") {
-            Some(old) => {
-                let old = old.to_string();
-                println!("{}", old);
-                old
-            }
+            Some(old) => old.to_string(),
             None => {
                 eprintln!("kish: cd: OLDPWD not set");
                 return 1;
@@ -84,6 +82,9 @@ fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
 
     match std::env::set_current_dir(&target) {
         Ok(_) => {
+            if is_dash {
+                println!("{}", target);
+            }
             // Update $PWD
             match std::env::current_dir() {
                 Ok(cwd) => {
