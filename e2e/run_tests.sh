@@ -85,6 +85,7 @@ parse_metadata() {
     _in_heredoc=0
     _heredoc_delim=""
     _heredoc_buf=""
+    _heredoc_first=0
 
     while IFS= read -r _line; do
         # Inside a heredoc block
@@ -98,11 +99,12 @@ parse_metadata() {
                 continue
             fi
             # Append line (strip leading "# ")
-            if [ -n "$_heredoc_buf" ]; then
+            if [ "$_heredoc_first" = 1 ]; then
+                _heredoc_buf="$_stripped"
+                _heredoc_first=0
+            else
                 _heredoc_buf="${_heredoc_buf}
 ${_stripped}"
-            else
-                _heredoc_buf="$_stripped"
             fi
             continue
         fi
@@ -119,6 +121,7 @@ ${_stripped}"
                 _heredoc_delim="${_line#"# EXPECT_OUTPUT<<"}"
                 _in_heredoc=1
                 _heredoc_buf=""
+                _heredoc_first=1
                 ;;
             "# EXPECT_OUTPUT: "*)
                 meta_expect_output="${_line#"# EXPECT_OUTPUT: "}"
