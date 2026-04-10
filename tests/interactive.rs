@@ -1,4 +1,6 @@
+use kish::env::ShellEnv;
 use kish::interactive::line_editor::LineEditor;
+use kish::interactive::prompt::expand_prompt;
 
 #[test]
 fn test_insert_char_at_start() {
@@ -160,4 +162,47 @@ fn test_backspace_in_middle() {
     ed.backspace();
     assert_eq!(ed.buffer(), "ac");
     assert_eq!(ed.cursor(), 1);
+}
+
+// ── Prompt expansion tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_prompt_default_ps1() {
+    let mut env = ShellEnv::new("kish", vec![]);
+    let _ = env.vars.unset("PS1");
+    let prompt = expand_prompt(&mut env, "PS1");
+    assert_eq!(prompt, "$ ");
+}
+
+#[test]
+fn test_prompt_default_ps2() {
+    let mut env = ShellEnv::new("kish", vec![]);
+    let _ = env.vars.unset("PS2");
+    let prompt = expand_prompt(&mut env, "PS2");
+    assert_eq!(prompt, "> ");
+}
+
+#[test]
+fn test_prompt_custom_ps1() {
+    let mut env = ShellEnv::new("kish", vec![]);
+    env.vars.set("PS1", "myshell> ").unwrap();
+    let prompt = expand_prompt(&mut env, "PS1");
+    assert_eq!(prompt, "myshell> ");
+}
+
+#[test]
+fn test_prompt_with_variable_expansion() {
+    let mut env = ShellEnv::new("kish", vec![]);
+    env.vars.set("MYVAR", "hello").unwrap();
+    env.vars.set("PS1", "${MYVAR}$ ").unwrap();
+    let prompt = expand_prompt(&mut env, "PS1");
+    assert_eq!(prompt, "hello$ ");
+}
+
+#[test]
+fn test_prompt_empty_string() {
+    let mut env = ShellEnv::new("kish", vec![]);
+    env.vars.set("PS1", "").unwrap();
+    let prompt = expand_prompt(&mut env, "PS1");
+    assert_eq!(prompt, "");
 }
