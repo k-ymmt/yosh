@@ -23,6 +23,45 @@ pub fn evaluate(env: &mut ShellEnv, expr: &str) -> Result<String, String> {
     }
 }
 
+/// Look up a variable name in the arithmetic context.
+/// Handles positional parameters (all-digit names), special parameters
+/// (single char: #, ?, -, !, $), and regular variable names.
+/// Returns "0" for unset values (arithmetic context default).
+fn arith_var_lookup(env: &ShellEnv, name: &str) -> String {
+    // All-digit name → positional parameter (or $0 for shell name)
+    if !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
+        let n: usize = name.parse().unwrap_or(0);
+        let val = if n == 0 {
+            env.shell_name.clone()
+        } else {
+            env.vars.positional_params().get(n - 1).cloned().unwrap_or_default()
+        };
+        return if val.is_empty() || val.parse::<i64>().is_err() {
+            "0".to_string()
+        } else {
+            val
+        };
+    }
+
+    // Single-char special parameters
+    if name.len() == 1 {
+        match name.as_bytes()[0] {
+            b'#' => return env.vars.positional_params().len().to_string(),
+            b'?' => return env.last_exit_status.to_string(),
+            b'-' => {
+                let s = env.options.to_flag_string();
+                return if s.is_empty() { "0".to_string() } else { s };
+            }
+            b'!' => return env.last_bg_pid.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string()),
+            b'$' => return env.shell_pid.as_raw().to_string(),
+            _ => {}
+        }
+    }
+
+    // Regular variable
+    env.vars.get(name).unwrap_or("0").to_string()
+}
+
 /// Replace `$VAR`, `${VAR}`, and `$(cmd)` in an arithmetic expression with their values.
 /// Unset variables default to "0".
 fn expand_vars(env: &mut ShellEnv, expr: &str) -> String {
@@ -70,7 +109,7 @@ fn expand_vars(env: &mut ShellEnv, expr: &str) -> String {
                 if i < bytes.len() {
                     i += 1; // consume '}'
                 }
-                let val = env.vars.get(name).unwrap_or("0").to_string();
+                let val = arith_var_lookup(env, name);
                 result.push_str(&val);
             } else if bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_' {
                 // $VAR
@@ -82,8 +121,24 @@ fn expand_vars(env: &mut ShellEnv, expr: &str) -> String {
                     i += 1;
                 }
                 let name = &expr[start..i];
-                let val = env.vars.get(name).unwrap_or("0").to_string();
+                let val = arith_var_lookup(env, name);
                 result.push_str(&val);
+            } else if bytes[i + 1].is_ascii_digit() {
+                // $0, $1, ..., $9
+                i += 1;
+                let buf = [bytes[i]];
+                let name = std::str::from_utf8(&buf).unwrap();
+                let val = arith_var_lookup(env, name);
+                result.push_str(&val);
+                i += 1;
+            } else if b"#?-!$".contains(&bytes[i + 1]) {
+                // $#, $?, $-, $!, $$
+                i += 1;
+                let buf = [bytes[i]];
+                let name = std::str::from_utf8(&buf).unwrap();
+                let val = arith_var_lookup(env, name);
+                result.push_str(&val);
+                i += 1;
             } else {
                 result.push(bytes[i] as char);
                 i += 1;
@@ -692,5 +747,56 @@ mod tests {
         let mut e = env();
         assert_eq!(evaluate(&mut e, "z = 5 + 3"), Ok("8".to_string()));
         assert_eq!(e.vars.get("z"), Some("8"));
+    }
+
+    #[test]
+    fn test_positional_param_in_arith() {
+        let mut e = ShellEnv::new(
+            "kish",
+            vec!["10".to_string(), "20".to_string()],
+        );
+        assert_eq!(evaluate(&mut e, "$1 + $2"), Ok("30".to_string()));
+    }
+
+    #[test]
+    fn test_positional_param_zero() {
+        let mut e = ShellEnv::new(
+            "kish",
+            vec!["5".to_string()],
+        );
+        // $0 is the shell name "kish", non-numeric → defaults to 0
+        assert_eq!(evaluate(&mut e, "$0"), Ok("0".to_string()));
+    }
+
+    #[test]
+    fn test_special_param_hash_in_arith() {
+        let mut e = ShellEnv::new(
+            "kish",
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        );
+        assert_eq!(evaluate(&mut e, "$# + 1"), Ok("4".to_string()));
+    }
+
+    #[test]
+    fn test_special_param_question_in_arith() {
+        let mut e = env();
+        e.last_exit_status = 42;
+        assert_eq!(evaluate(&mut e, "$?"), Ok("42".to_string()));
+    }
+
+    #[test]
+    fn test_braced_positional_param_in_arith() {
+        let mut e = ShellEnv::new(
+            "kish",
+            vec!["100".to_string()],
+        );
+        assert_eq!(evaluate(&mut e, "${1} + 1"), Ok("101".to_string()));
+    }
+
+    #[test]
+    fn test_unset_positional_param_defaults_to_zero() {
+        let mut e = env();
+        // No positional params set; $1 should default to 0
+        assert_eq!(evaluate(&mut e, "$1 + 5"), Ok("5".to_string()));
     }
 }
