@@ -21,6 +21,20 @@
 - [ ] `test_umask_isolation` may pass incidentally due to fork isolation, not because umask is correctly set/read (`tests/subshell.rs`)
 - [ ] `return` outside function in subshell error test not implemented — POSIX requires error, untested (`tests/subshell.rs`)
 
+## Future: Interactive Mode Enhancements
+
+- [ ] History — ↑/↓ for history navigation, `~/.kish_history` persistence, Ctrl+R reverse search
+- [ ] Tab completion — file path and command name completion
+- [ ] Multiline editing — visual multiline editing with cursor movement across lines
+- [ ] Emacs keybindings — Ctrl+K (kill to end), Ctrl+U (kill to start), Ctrl+W (kill word), Ctrl+Y (yank)
+- [ ] `~/.kishrc` startup file — ENV variable support for interactive initialization
+- [ ] `set -o interactive` flag management
+- [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
+- [ ] Job control — `-m` flag, fg/bg/jobs builtins, process group management, SIGTSTP/SIGCONT
+- [ ] Prompt width — accurate column width calculation for control characters and escape sequences
+- [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
+- [ ] History expansion — `!!` (last command), `!n` (by number)
+
 ## Future: Arithmetic Expansion Edge Cases
 
 - [ ] `$(cmd)` inside `$((...))` does not handle quoted `)` — depth counter in `expand_vars` ignores quote context, so `$(echo "3)")` breaks (`src/expand/arith.rs`)
