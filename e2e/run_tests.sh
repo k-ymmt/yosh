@@ -175,8 +175,7 @@ for test_file in $test_files; do
 
     # Use a background process + wait to implement timeout
     (
-        "$SHELL_UNDER_TEST" "$test_file" >"$_stdout_file" 2>"$_stderr_file"
-        echo $? >"$_exit_file"
+        exec "$SHELL_UNDER_TEST" "$test_file" >"$_stdout_file" 2>"$_stderr_file"
     ) &
     _pid=$!
 
@@ -198,14 +197,14 @@ for test_file in $test_files; do
     _timer_pid=$!
 
     wait "$_pid" 2>/dev/null
+    _wait_status=$?
     kill "$_timer_pid" 2>/dev/null
     wait "$_timer_pid" 2>/dev/null
 
-    # Read results
-    if [ -f "$_exit_file" ]; then
-        actual_exit=$(cat "$_exit_file")
-    else
-        actual_exit="unknown"
+    # Read results — exit code from wait, timeout from marker file
+    actual_exit=$_wait_status
+    if [ -f "$_exit_file" ] && [ "$(cat "$_exit_file")" = "timeout" ]; then
+        actual_exit="timeout"
     fi
 
     if [ -f "$_stdout_file" ]; then
