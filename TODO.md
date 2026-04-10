@@ -4,7 +4,6 @@
 
 - [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
 - [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
-- [ ] `ignoreeof` is settable but has no effect — interactive mode feature
 
 ## Phase 7: Known Limitations
 
@@ -12,7 +11,6 @@
 - [ ] `kill 0` in pipeline subshell sends to pipeline's process group, not the shell's
 - [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
 - [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
-- [ ] `ignoreeof` is settable but has no effect — interactive mode feature
 
 ## Phase 8: Known Limitations
 
