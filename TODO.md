@@ -45,14 +45,6 @@
 - [ ] `test_umask_isolation` may pass incidentally due to fork isolation, not because umask is correctly set/read (`tests/subshell.rs`)
 - [ ] `return` outside function in subshell error test not implemented — POSIX requires error, untested (`tests/subshell.rs`)
 
-## E2E Test Runner Improvements
-
-- [ ] Timeout handler should use `exec` to avoid orphan child processes when kish forks (`e2e/run_tests.sh`)
-- [ ] `normalize_trailing()` is a no-op — `$()` already strips trailing newlines; update comment or remove (`e2e/run_tests.sh`)
-- [ ] Add warning when `EXPECT_OUTPUT<<DELIM` heredoc is never closed by matching delimiter (`e2e/run_tests.sh`)
-- [ ] Add `timedout` counter to summary output, separate from `failed` count (`e2e/run_tests.sh`)
-- [ ] Heredoc parser drops first empty line — `_heredoc_buf` empty check fails when first content line is empty (`e2e/run_tests.sh`)
-
 ## Future: E2E Test Expansion
 
 - [ ] Builtin test POSIX_REF values could use more specific section numbers (e.g., `2.14.3` instead of `2.14 Special Built-In Utilities`)
