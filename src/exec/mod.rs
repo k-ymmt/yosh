@@ -441,14 +441,17 @@ impl Executor {
 
         // Check for function call (before builtins, matching POSIX lookup order)
         if let Some(func_def) = self.env.functions.get(&command_name).cloned() {
+            let saved = self.apply_temp_assignments(&cmd.assignments);
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 eprintln!("kish: {}", e);
+                self.restore_assignments(saved);
                 self.env.last_exit_status = 1;
                 return 1;
             }
             let status = self.exec_function_call(&func_def, &args);
             redirect_state.restore();
+            self.restore_assignments(saved);
             self.env.last_exit_status = status;
             return status;
         }
