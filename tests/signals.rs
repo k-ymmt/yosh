@@ -2,7 +2,11 @@ mod helpers;
 
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+/// Atomic counter to ensure unique temp file names across parallel tests.
+static TIMEOUT_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn kish_exec(input: &str) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_kish"))
@@ -15,12 +19,10 @@ fn kish_exec(input: &str) -> std::process::Output {
 /// pipe-inheritance issues with background processes.
 /// Returns (stdout, stderr, exit_code).
 fn kish_exec_timeout(input: &str, timeout_secs: u64) -> (String, String, Option<i32>) {
-    let id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let stdout_path = format!("/tmp/kish-test-{}-out", id);
-    let stderr_path = format!("/tmp/kish-test-{}-err", id);
+    let id = std::process::id();
+    let seq = TIMEOUT_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let stdout_path = format!("/tmp/kish-test-{}-{}-out", id, seq);
+    let stderr_path = format!("/tmp/kish-test-{}-{}-err", id, seq);
 
     let stdout_file = std::fs::File::create(&stdout_path).expect("create stdout file");
     let stderr_file = std::fs::File::create(&stderr_path).expect("create stderr file");

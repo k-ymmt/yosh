@@ -687,13 +687,20 @@ impl Executor {
                 1
             }
             Ok(ForkResult::Child) => {
-                let pid = nix::unistd::getpid();
-                nix::unistd::setpgid(pid, pid).ok();
-                signal::ignore_signal(libc::SIGINT);
-                signal::ignore_signal(libc::SIGQUIT);
+                // Reset signals immediately after fork to minimize the window
+                // where the parent's self-pipe handler is active. This avoids
+                // a race where the parent sends a signal (e.g., kill -s INT $!)
+                // before the child has finished signal setup.
                 let ignored = self.env.traps.ignored_signals();
                 self.env.traps.reset_non_ignored();
                 signal::reset_child_signals(&ignored);
+
+                let pid = nix::unistd::getpid();
+                nix::unistd::setpgid(pid, pid).ok();
+
+                // Note: we do NOT call ignore_signal(SIGINT/SIGQUIT) here.
+                // setpgid already isolates this process from keyboard signals,
+                // and reset_child_signals would undo the ignore anyway.
                 let status = self.exec_and_or(and_or);
                 std::process::exit(status);
             }
