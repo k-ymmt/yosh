@@ -301,6 +301,8 @@ pub struct ShellEnv {
     /// Set during word expansion when an arithmetic error occurs.
     /// Aborts the current simple command but does NOT prevent subsequent commands.
     pub expansion_error: bool,
+    /// True when running as an interactive shell (stdin is a TTY).
+    pub is_interactive: bool,
 }
 
 impl ShellEnv {
@@ -323,6 +325,7 @@ impl ShellEnv {
             aliases: AliasStore::default(),
             bg_jobs: Vec::new(),
             expansion_error: false,
+            is_interactive: false,
         }
     }
 }
