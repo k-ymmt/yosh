@@ -60,6 +60,7 @@ passed=0
 failed=0
 xfailed=0
 xpassed=0
+timedout=0
 
 # ── Parse metadata from a test file ─────────────────────────────────
 # Sets: meta_posix_ref, meta_description, meta_expect_output,
@@ -259,7 +260,11 @@ for test_file in $test_files; do
     fi
 
     # ── Report result ────────────────────────────────────────────
-    if [ -n "$meta_xfail" ]; then
+    if [ "$actual_exit" = "timeout" ]; then
+        timedout=$((timedout + 1))
+        printf "${YELLOW}[TIME]${RESET}  %s\n" "$rel_path"
+        printf "        Timed out after ${TIMEOUT}s\n"
+    elif [ -n "$meta_xfail" ]; then
         # Expected failure
         if [ "$_test_ok" = 1 ]; then
             xpassed=$((xpassed + 1))
@@ -283,16 +288,18 @@ for test_file in $test_files; do
     if [ "$VERBOSE" = 1 ]; then
         printf "        ${BOLD}Description:${RESET} %s\n" "${meta_description:-<none>}"
         [ -n "$meta_posix_ref" ] && printf "        ${BOLD}POSIX ref:${RESET}   %s\n" "$meta_posix_ref"
-        printf "        ${BOLD}Exit code:${RESET}   %s (expected %s)\n" "$actual_exit" "$meta_expect_exit"
-        if [ "$meta_has_expect_output" = 1 ]; then
-            printf "        ${BOLD}Expected stdout:${RESET}\n"
-            printf "          |%s\n" "$meta_expect_output"
-            printf "        ${BOLD}Actual stdout:${RESET}\n"
-            printf "          |%s\n" "$actual_stdout"
-        fi
-        if [ -n "$meta_expect_stderr" ]; then
-            printf "        ${BOLD}Expected stderr substring:${RESET} %s\n" "$meta_expect_stderr"
-            printf "        ${BOLD}Actual stderr:${RESET} %s\n" "$actual_stderr"
+        if [ "$actual_exit" != "timeout" ]; then
+            printf "        ${BOLD}Exit code:${RESET}   %s (expected %s)\n" "$actual_exit" "$meta_expect_exit"
+            if [ "$meta_has_expect_output" = 1 ]; then
+                printf "        ${BOLD}Expected stdout:${RESET}\n"
+                printf "          |%s\n" "$meta_expect_output"
+                printf "        ${BOLD}Actual stdout:${RESET}\n"
+                printf "          |%s\n" "$actual_stdout"
+            fi
+            if [ -n "$meta_expect_stderr" ]; then
+                printf "        ${BOLD}Expected stderr substring:${RESET} %s\n" "$meta_expect_stderr"
+                printf "        ${BOLD}Actual stderr:${RESET} %s\n" "$actual_stderr"
+            fi
         fi
         printf "\n"
     fi
@@ -306,11 +313,12 @@ printf "\n${BOLD}── Summary ──${RESET}\n"
 printf "Total: %d  " "$total"
 printf "${GREEN}Passed: %d${RESET}  " "$passed"
 printf "${RED}Failed: %d${RESET}  " "$failed"
+printf "${YELLOW}Timedout: %d${RESET}  " "$timedout"
 printf "${CYAN}XFail: %d${RESET}  " "$xfailed"
 printf "${YELLOW}XPass: %d${RESET}\n" "$xpassed"
 
 # Exit code: 0 if no failures (XPASS counts as failure too)
-if [ "$failed" -gt 0 ] || [ "$xpassed" -gt 0 ]; then
+if [ "$failed" -gt 0 ] || [ "$xpassed" -gt 0 ] || [ "$timedout" -gt 0 ]; then
     exit 1
 fi
 exit 0
