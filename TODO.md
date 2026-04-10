@@ -1,15 +1,5 @@
 # TODO
 
-## Phase 3: Known Limitations
-
-- [ ] Unquoted `$@` should produce separate fields per positional param, currently joins with space (`src/expand/mod.rs`)
-- [ ] Deeply nested command substitution edge cases untested
-
-## Phase 5: Known Limitations
-
-- [ ] `$N` (positional params) inside `$((...))` arithmetic not supported — use temp variable workaround: `x=$1; echo $((x - 1))` (`src/expand/arith.rs`)
-- [ ] Function-scoped assignments with prefix syntax (`VAR=val func`) not implemented — assignments only apply to external commands
-
 ## Phase 6: Known Limitations
 
 - [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
