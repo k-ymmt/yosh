@@ -87,7 +87,7 @@ impl Parser {
     pub fn skip_newlines(&mut self) -> error::Result<()> {
         while self.current.token == Token::Newline {
             self.advance()?;
-            if !self.lexer.pending_heredocs.is_empty() {
+            if self.lexer.has_pending_heredocs() {
                 self.lexer.process_pending_heredocs()?;
             }
         }
@@ -161,7 +161,7 @@ impl Parser {
             }
             Token::Newline => {
                 self.advance()?;
-                if !self.lexer.pending_heredocs.is_empty() {
+                if self.lexer.has_pending_heredocs() {
                     self.lexer.process_pending_heredocs()?;
                 }
                 Ok(Some(SeparatorOp::Semi))
@@ -270,7 +270,7 @@ impl Parser {
             }
 
             // If we hit a newline and have pending heredocs, process them now
-            if self.current.token == Token::Newline && !self.lexer.pending_heredocs.is_empty() {
+            if self.current.token == Token::Newline && self.lexer.has_pending_heredocs() {
                 self.lexer.process_pending_heredocs()?;
             }
 

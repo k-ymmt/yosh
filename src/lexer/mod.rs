@@ -27,7 +27,7 @@ pub struct Lexer {
     pos: usize,
     line: usize,
     column: usize,
-    pub pending_heredocs: Vec<PendingHereDoc>,
+    pending_heredocs: Vec<PendingHereDoc>,
     heredoc_bodies: Vec<Vec<WordPart>>,
     aliases: HashMap<String, String>,
     expanding_aliases: HashSet<String>,
@@ -155,6 +155,10 @@ impl Lexer {
             self.heredoc_bodies.push(body);
         }
         Ok(())
+    }
+
+    pub fn has_pending_heredocs(&self) -> bool {
+        !self.pending_heredocs.is_empty()
     }
 
     fn read_heredoc_body(&mut self, hd: &PendingHereDoc) -> error::Result<Vec<WordPart>> {
