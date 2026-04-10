@@ -175,6 +175,24 @@ fn test_command_sub_in_assignment() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
 }
 
+#[test]
+fn test_nested_command_sub_with_quoted_paren() {
+    let out = kish_exec("echo $(echo $(echo ')'))");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), ")\n");
+}
+
+#[test]
+fn test_nested_command_sub_basic() {
+    let out = kish_exec("echo $(echo $(echo hello))");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn test_command_sub_with_arith_inside() {
+    let out = kish_exec("echo $(echo $((1+2)))");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n");
+}
+
 // ── arithmetic expansion tests ───────────────────────────────────────────────
 
 #[test]
