@@ -21,8 +21,19 @@ fn main() {
 
     match args.len() {
         1 => {
-            eprintln!("kish: interactive mode not yet implemented");
-            process::exit(1);
+            if nix::unistd::isatty(std::io::stdin()).unwrap_or(false) {
+                let mut repl = interactive::Repl::new(shell_name);
+                process::exit(repl.run());
+            } else {
+                // stdin is a pipe — read as script
+                let mut input = String::new();
+                io::stdin().read_to_string(&mut input).unwrap_or_else(|e| {
+                    eprintln!("kish: {}", e);
+                    process::exit(1);
+                });
+                let status = run_string(&input, shell_name, vec![], false);
+                process::exit(status);
+            }
         }
         _ => {
             if args[1] == "-c" {
