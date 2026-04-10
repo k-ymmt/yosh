@@ -15,7 +15,6 @@
 - [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
 - [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
 - [ ] `ignoreeof` is settable but has no effect — interactive mode feature
-- [ ] Alias expansion in non-interactive mode requires incremental parsing — complex scripts with nested structures may have edge cases
 
 ## Phase 7: Known Limitations
 
