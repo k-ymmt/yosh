@@ -3,6 +3,7 @@
 /// The buffer stores characters as a `Vec<char>` so that cursor
 /// movement and insertion work correctly with multi-byte UTF-8
 /// characters.
+#[derive(Debug, Default)]
 pub struct LineEditor {
     buf: Vec<char>,
     pos: usize,
@@ -11,10 +12,7 @@ pub struct LineEditor {
 impl LineEditor {
     /// Create an empty line editor.
     pub fn new() -> Self {
-        Self {
-            buf: Vec::new(),
-            pos: 0,
-        }
+        Self::default()
     }
 
     /// Return the current buffer contents as a `String`.
@@ -92,7 +90,6 @@ impl LineEditor {
 
 impl std::fmt::Display for LineEditor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s: String = self.buf.iter().collect();
-        f.write_str(&s)
+        f.write_str(&self.buffer())
     }
 }
