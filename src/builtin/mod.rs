@@ -61,6 +61,18 @@ fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
                 return 1;
             }
         }
+    } else if args[0] == "-" {
+        match env.vars.get("OLDPWD") {
+            Some(old) => {
+                let old = old.to_string();
+                println!("{}", old);
+                old
+            }
+            None => {
+                eprintln!("kish: cd: OLDPWD not set");
+                return 1;
+            }
+        }
     } else {
         args[0].clone()
     };
