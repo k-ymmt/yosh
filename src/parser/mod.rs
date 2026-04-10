@@ -278,18 +278,6 @@ impl Parser {
             break;
         }
 
-        // An empty simple command (no words, no assignments, no redirects) is
-        // a syntax error — the grammar requires at least one token.
-        if words.is_empty() && assignments.is_empty() && redirects.is_empty() {
-            let span = self.current_span();
-            return Err(ShellError::new(
-                ShellErrorKind::UnexpectedToken,
-                span.line,
-                span.column,
-                format!("expected a command, got '{:?}'", self.current.token),
-            ));
-        }
-
         Ok(SimpleCommand {
             assignments,
             words,

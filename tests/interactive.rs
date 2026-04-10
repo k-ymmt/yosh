@@ -295,7 +295,7 @@ fn test_classify_incomplete_and_or() {
 #[test]
 fn test_classify_error() {
     let aliases = AliasStore::default();
-    match classify_parse("if ; then\n", &aliases) {
+    match classify_parse("echo hello >>\n", &aliases) {
         ParseStatus::Error(_) => {}
         other => panic!("expected Error, got {:?}", other),
     }
