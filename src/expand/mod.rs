@@ -458,6 +458,23 @@ fn expand_param_to_fields(
             fields.last_mut().unwrap().push_quoted(&joined);
         }
 
+        // Unquoted $@: each positional parameter becomes its own field,
+        // with content unquoted (subject to IFS splitting and glob).
+        ParamExpr::Special(SpecialParam::At) if !in_double_quote => {
+            let params = env.vars.positional_params().to_vec();
+            if params.is_empty() {
+                return;
+            }
+            for (i, p) in params.iter().enumerate() {
+                if i == 0 {
+                    fields.last_mut().unwrap().push_unquoted(p);
+                } else {
+                    fields.push(ExpandedField::new());
+                    fields.last_mut().unwrap().push_unquoted(p);
+                }
+            }
+        }
+
         // Everything else: expand to a string, then push.
         _ => {
             let value = param::expand(env, param);
@@ -539,6 +556,43 @@ mod tests {
         };
         let result = expand_word(&mut env, &word);
         assert!(result.is_empty(), "expected empty, got {:?}", result);
+    }
+
+    // ── Unquoted $@ splitting ──
+
+    #[test]
+    fn test_unquoted_dollar_at_splits_per_param() {
+        let mut env = ShellEnv::new(
+            "kish",
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        );
+        // Unquoted $@ — each positional param becomes its own field
+        let word = Word {
+            parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::At))],
+        };
+        let fields = expand_word_to_fields(&mut env, &word);
+        assert_eq!(fields.len(), 3, "expected 3 fields, got {:?}", fields);
+        assert_eq!(fields[0].value, "a");
+        assert_eq!(fields[1].value, "b");
+        assert_eq!(fields[2].value, "c");
+        // All bytes should be unquoted (subject to IFS splitting)
+        assert!(fields[0].quoted_mask.iter().all(|&q| !q));
+        assert!(fields[1].quoted_mask.iter().all(|&q| !q));
+        assert!(fields[2].quoted_mask.iter().all(|&q| !q));
+    }
+
+    #[test]
+    fn test_unquoted_dollar_at_empty_produces_nothing() {
+        let mut env = ShellEnv::new("kish", vec![]);
+        let word = Word {
+            parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::At))],
+        };
+        let fields = expand_word_to_fields(&mut env, &word);
+        assert!(
+            fields.len() <= 1,
+            "expected 0 or 1 fields, got {:?}",
+            fields
+        );
     }
 
     // ── "$*" joining ──
