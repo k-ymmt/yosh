@@ -33,6 +33,12 @@
 - [ ] `test_umask_isolation` may pass incidentally due to fork isolation, not because umask is correctly set/read (`tests/subshell.rs`)
 - [ ] `return` outside function in subshell error test not implemented — POSIX requires error, untested (`tests/subshell.rs`)
 
+## Future: Code Quality Improvements
+
+- [ ] `cd` overwrites OLDPWD before `set_current_dir` — if chdir fails, OLDPWD is still modified (`src/builtin/mod.rs`)
+- [ ] `exec_function_call` lacks panic safety — `push_scope` without Drop guard means `pop_scope` is skipped on panic (`src/exec/mod.rs`)
+- [ ] `VarStore::vars_iter()` rebuilds HashMap on every call — consider returning `Vec` or caching for performance (`src/env/vars.rs`)
+
 ## Future: E2E Test Expansion
 
 - [ ] Builtin test POSIX_REF values could use more specific section numbers (e.g., `2.14.3` instead of `2.14 Special Built-In Utilities`)
