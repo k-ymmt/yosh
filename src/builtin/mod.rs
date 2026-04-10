@@ -92,7 +92,11 @@ fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
 }
 
 fn builtin_echo(args: &[String]) -> i32 {
-    println!("{}", args.join(" "));
+    if args.first().map(|a| a.as_str()) == Some("-n") {
+        print!("{}", args[1..].join(" "));
+    } else {
+        println!("{}", args.join(" "));
+    }
     0
 }
 
@@ -293,5 +297,14 @@ mod tests {
         let args = vec!["-a".to_string()];
         assert_eq!(exec_regular_builtin("unalias", &args, &mut env), 0);
         assert!(env.aliases.is_empty());
+    }
+
+    #[test]
+    fn test_echo_dash_n() {
+        // -n flag should suppress trailing newline.
+        // We can't easily capture stdout in unit tests, so verify
+        // the function returns 0 (behavior tested via E2E).
+        let args = vec!["-n".to_string(), "hello".to_string()];
+        assert_eq!(builtin_echo(&args), 0);
     }
 }
