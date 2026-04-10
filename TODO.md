@@ -1,10 +1,5 @@
 # TODO
 
-## Phase 1: Known Limitations
-
-- [ ] Nested command substitution edge cases: `$(echo $(echo ')'))` may fail due to balanced-paren approach in lexer (`src/lexer/mod.rs` `read_balanced_parens`)
-- [ ] `Lexer.pending_heredocs` is `pub` — consider accessor methods for better encapsulation
-
 ## Phase 2: Known Limitations
 
 - [ ] `echo -n` flag not handled — POSIX strict doesn't require it but practical shells need it (`src/builtin/mod.rs`)
