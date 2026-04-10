@@ -49,3 +49,4 @@
 
 - [ ] Builtin test POSIX_REF values could use more specific section numbers (e.g., `2.14.3` instead of `2.14 Special Built-In Utilities`)
 - [ ] `fd_close.sh` test only checks exit code, not actual fd close effect
+- [ ] `redirection/heredoc_pipeline.sh` has stale XFAIL marker — test now passes, remove XFAIL to eliminate XPASS in summary
