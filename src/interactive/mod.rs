@@ -84,6 +84,8 @@ impl Repl {
                     for cmd in &commands {
                         let status = self.executor.exec_complete_command(cmd);
                         self.executor.env.last_exit_status = status;
+                        // Note: errexit (set -e) is intentionally not checked here.
+                        // Most POSIX shells do not exit on errexit in interactive mode.
                     }
                     input_buffer.clear();
                 }

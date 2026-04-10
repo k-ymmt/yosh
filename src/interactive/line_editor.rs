@@ -168,10 +168,11 @@ impl LineEditor {
 
     /// Redraw the current buffer on screen, positioning the cursor correctly.
     fn redraw(&self, stdout: &mut Stdout, prompt_width: usize) -> io::Result<()> {
-        stdout.execute(cursor::MoveToColumn(prompt_width as u16))?;
+        let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
+        stdout.execute(cursor::MoveToColumn(col(prompt_width)))?;
         stdout.execute(terminal::Clear(ClearType::UntilNewLine))?;
         write!(stdout, "{}", self.buffer())?;
-        stdout.execute(cursor::MoveToColumn((prompt_width + self.pos) as u16))?;
+        stdout.execute(cursor::MoveToColumn(col(prompt_width + self.pos)))?;
         stdout.flush()?;
         Ok(())
     }
