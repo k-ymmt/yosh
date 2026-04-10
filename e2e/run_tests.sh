@@ -61,13 +61,6 @@ failed=0
 xfailed=0
 xpassed=0
 
-# ── Helper: strip trailing newlines from a string ────────────────────
-# We normalize by removing the final trailing newline(s) for comparison.
-normalize_trailing() {
-    # Use printf %s to strip trailing newline, then awk to handle content
-    printf '%s' "$1"
-}
-
 # ── Parse metadata from a test file ─────────────────────────────────
 # Sets: meta_posix_ref, meta_description, meta_expect_output,
 #       meta_expect_exit, meta_expect_stderr, meta_xfail,
@@ -240,8 +233,8 @@ for test_file in $test_files; do
 
         # Check stdout (exact match, trailing newline normalized)
         if [ "$meta_has_expect_output" = 1 ]; then
-            _norm_expected=$(normalize_trailing "$meta_expect_output")
-            _norm_actual=$(normalize_trailing "$actual_stdout")
+            _norm_expected=$(printf '%s' "$meta_expect_output")
+            _norm_actual=$(printf '%s' "$actual_stdout")
             if [ "$_norm_expected" != "$_norm_actual" ]; then
                 _test_ok=0
                 if [ -n "$_failure_reason" ]; then
