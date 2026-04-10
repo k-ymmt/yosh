@@ -432,7 +432,7 @@ fn expand_param_to_fields(
     match param {
         // "$@" inside double quotes: each positional parameter becomes its own field.
         ParamExpr::Special(SpecialParam::At) if in_double_quote => {
-            let params = env.positional_params.clone();
+            let params = env.vars.positional_params().to_vec();
             if params.is_empty() {
                 // "$@" with no params → produces nothing (not even an empty field)
                 // Remove the last (empty) field if it is empty.
@@ -454,7 +454,7 @@ fn expand_param_to_fields(
         // "$*" inside double quotes: join all positional params with IFS[0].
         ParamExpr::Special(SpecialParam::Star) if in_double_quote => {
             let sep = ifs_first_char(env);
-            let joined = env.positional_params.join(&sep.to_string());
+            let joined = env.vars.positional_params().join(&sep.to_string());
             fields.last_mut().unwrap().push_quoted(&joined);
         }
 

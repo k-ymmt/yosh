@@ -290,7 +290,6 @@ pub struct ShellEnv {
     pub last_exit_status: i32,
     pub shell_pid: Pid,
     pub shell_name: String,
-    pub positional_params: Vec<String>,
     /// PID of the most recently started background job ($!)
     pub last_bg_pid: Option<i32>,
     pub functions: HashMap<String, FunctionDef>,
@@ -309,12 +308,13 @@ impl ShellEnv {
     ///
     /// `shell_name` is $0 (argv[0]), `args` are the positional parameters ($1, $2, ...).
     pub fn new(shell_name: impl Into<String>, args: Vec<String>) -> Self {
+        let mut vars = VarStore::from_environ();
+        vars.set_positional_params(args);
         ShellEnv {
-            vars: VarStore::from_environ(),
+            vars,
             last_exit_status: 0,
             shell_pid: getpid(),
             shell_name: shell_name.into(),
-            positional_params: args,
             last_bg_pid: None,
             functions: HashMap::new(),
             flow_control: None,
@@ -335,7 +335,7 @@ mod tests {
     fn test_shell_env_construction() {
         let env = ShellEnv::new("kish", vec!["arg1".to_string(), "arg2".to_string()]);
         assert_eq!(env.shell_name, "kish");
-        assert_eq!(env.positional_params, vec!["arg1", "arg2"]);
+        assert_eq!(env.vars.positional_params(), &["arg1", "arg2"]);
         assert_eq!(env.last_exit_status, 0);
         // PID should be a positive number
         assert!(env.shell_pid.as_raw() > 0);

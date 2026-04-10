@@ -295,7 +295,7 @@ impl Executor {
     ) -> i32 {
         let items: Vec<String> = match words {
             Some(word_list) => expand_words(&mut self.env, word_list),
-            None => self.env.positional_params.clone(),
+            None => self.env.vars.positional_params().to_vec(),
         };
 
         let mut status = 0;
@@ -366,10 +366,9 @@ impl Executor {
         status
     }
 
-    /// Invoke a function: save/restore positional params, execute body.
+    /// Invoke a function: push a new scope for positional params, execute body.
     fn exec_function_call(&mut self, func_def: &FunctionDef, args: &[String]) -> i32 {
-        let saved_params =
-            std::mem::replace(&mut self.env.positional_params, args.to_vec());
+        self.env.vars.push_scope(args.to_vec());
 
         let status =
             self.exec_compound_command(&func_def.body, &func_def.redirects);
@@ -384,7 +383,7 @@ impl Executor {
             None => status,
         };
 
-        self.env.positional_params = saved_params;
+        self.env.vars.pop_scope();
         self.env.last_exit_status = final_status;
         final_status
     }

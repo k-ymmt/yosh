@@ -47,7 +47,6 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 last_exit_status: env.last_exit_status,
                 shell_pid: env.shell_pid,
                 shell_name: env.shell_name.clone(),
-                positional_params: env.positional_params.clone(),
                 last_bg_pid: env.last_bg_pid,
                 functions: env.functions.clone(),
                 flow_control: None,

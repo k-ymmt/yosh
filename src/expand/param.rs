@@ -23,7 +23,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> String {
         // ── Positional parameters ────────────────────────────────────────
         ParamExpr::Positional(n) => {
             if *n > 0 {
-                env.positional_params.get(n - 1).cloned().unwrap_or_default()
+                env.vars.positional_params().get(n - 1).cloned().unwrap_or_default()
             } else {
                 String::new()
             }
@@ -144,8 +144,8 @@ fn expand_special(env: &ShellEnv, sp: &SpecialParam) -> String {
         SpecialParam::Question => env.last_exit_status.to_string(),
         SpecialParam::Dollar => env.shell_pid.as_raw().to_string(),
         SpecialParam::Zero => env.shell_name.clone(),
-        SpecialParam::Hash => env.positional_params.len().to_string(),
-        SpecialParam::At | SpecialParam::Star => env.positional_params.join(" "),
+        SpecialParam::Hash => env.vars.positional_params().len().to_string(),
+        SpecialParam::At | SpecialParam::Star => env.vars.positional_params().join(" "),
         SpecialParam::Bang => env.last_bg_pid.map(|p| p.to_string()).unwrap_or_default(),
         SpecialParam::Dash => env.options.to_flag_string(),
     }

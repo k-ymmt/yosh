@@ -203,14 +203,14 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
     while i < args.len() {
         let arg = &args[i];
         if arg == "--" {
-            env.positional_params = args[i + 1..].to_vec();
+            env.vars.set_positional_params(args[i + 1..].to_vec());
             return 0;
         }
         if arg == "-" {
             env.options.xtrace = false;
             env.options.verbose = false;
             if i + 1 < args.len() {
-                env.positional_params = args[i + 1..].to_vec();
+                env.vars.set_positional_params(args[i + 1..].to_vec());
             }
             return 0;
         }
@@ -240,7 +240,7 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
             continue;
         }
         // Remaining args are positional params
-        env.positional_params = args[i..].to_vec();
+        env.vars.set_positional_params(args[i..].to_vec());
         return 0;
     }
     0
@@ -373,11 +373,11 @@ fn builtin_shift(args: &[String], env: &mut ShellEnv) -> i32 {
             }
         }
     };
-    if n > env.positional_params.len() {
+    if n > env.vars.positional_params().len() {
         eprintln!("kish: shift: shift count out of range");
         return 1;
     }
-    env.positional_params = env.positional_params[n..].to_vec();
+    env.vars.set_positional_params(env.vars.positional_params()[n..].to_vec());
     0
 }
 
