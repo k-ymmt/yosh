@@ -448,6 +448,36 @@ fn test_heredoc_empty_body() {
 }
 
 #[test]
+fn test_heredoc_pipeline() {
+    let out = kish_exec("cat <<EOF | tr a-z A-Z\nhello world\nEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "HELLO WORLD\n");
+}
+
+#[test]
+fn test_heredoc_pipeline_three_stages() {
+    let out = kish_exec("cat <<EOF | tr a-z A-Z | sed 's/HELLO/HI/'\nhello world\nEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "HI WORLD\n");
+}
+
+#[test]
+fn test_heredoc_pipeline_middle_command() {
+    let out = kish_exec("echo start | cat <<EOF | tr a-z A-Z\nmiddle\nEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "MIDDLE\n");
+}
+
+#[test]
+fn test_heredoc_pipeline_strip_tabs() {
+    let out = kish_exec("cat <<-EOF | tr a-z A-Z\n\thello\n\tEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "HELLO\n");
+}
+
+#[test]
+fn test_heredoc_pipeline_variable_expansion() {
+    let out = kish_exec("X=test; cat <<EOF | tr a-z A-Z\nvalue is $X\nEOF");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "VALUE IS TEST\n");
+}
+
+#[test]
 fn test_parse_script_file() {
     let tmp = helpers::TempDir::new();
     let script = tmp.write_file(

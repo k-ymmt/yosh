@@ -206,14 +206,29 @@ impl Parser {
             commands.push(self.parse_command()?);
         }
 
+        // Fill heredoc bodies across all pipeline commands.
+        // Heredoc bodies are read by process_pending_heredocs (triggered at newlines),
+        // which may occur during a later command's parsing. This pass ensures bodies
+        // queued by the lexer are assigned to the correct command's redirects.
+        for cmd in &mut commands {
+            match cmd {
+                Command::Simple(simple) => {
+                    self.fill_heredoc_bodies(&mut simple.redirects);
+                }
+                Command::Compound(_, redirects) => {
+                    self.fill_heredoc_bodies(redirects);
+                }
+                Command::FunctionDef(_) => {}
+            }
+        }
+
         Ok(Pipeline { negated, commands })
     }
 
     pub fn parse_command(&mut self) -> error::Result<Command> {
         if self.is_compound_command_start() {
             let compound = self.parse_compound_command()?;
-            let mut redirects = self.parse_redirect_list()?;
-            self.fill_heredoc_bodies(&mut redirects);
+            let redirects = self.parse_redirect_list()?;
             return Ok(Command::Compound(compound, redirects));
         }
 
@@ -262,8 +277,6 @@ impl Parser {
             // End of simple command
             break;
         }
-
-        self.fill_heredoc_bodies(&mut redirects);
 
         Ok(SimpleCommand {
             assignments,

@@ -17,10 +17,6 @@
 - [ ] Unquoted `$@` should produce separate fields per positional param, currently joins with space (`src/expand/mod.rs`)
 - [ ] Deeply nested command substitution edge cases untested
 
-## Phase 4: Known Limitations
-
-- [ ] Heredoc + pipeline not working — `cat <<EOF | tr a-z A-Z` produces empty output due to redirect timing in child process (`src/exec/pipeline.rs`)
-
 ## Phase 5: Known Limitations
 
 - [ ] `$N` (positional params) inside `$((...))` arithmetic not supported — use temp variable workaround: `x=$1; echo $((x - 1))` (`src/expand/arith.rs`)
