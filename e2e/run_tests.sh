@@ -138,6 +138,11 @@ ${_stripped}"
                 ;;
         esac
     done < "$_file"
+
+    if [ "$_in_heredoc" = 1 ]; then
+        printf "Warning: unclosed EXPECT_OUTPUT heredoc (delimiter '%s') in %s\n" \
+            "$_heredoc_delim" "$_file" >&2
+    fi
 }
 
 # ── Collect test files ───────────────────────────────────────────────
