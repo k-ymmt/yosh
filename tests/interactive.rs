@@ -1,5 +1,7 @@
 use kish::env::ShellEnv;
+use kish::env::aliases::AliasStore;
 use kish::interactive::line_editor::LineEditor;
+use kish::interactive::parse_status::{classify_parse, ParseStatus};
 use kish::interactive::prompt::expand_prompt;
 
 #[test]
@@ -205,4 +207,105 @@ fn test_prompt_empty_string() {
     env.vars.set("PS1", "").unwrap();
     let prompt = expand_prompt(&mut env, "PS1");
     assert_eq!(prompt, "");
+}
+
+// ── Parse status classification tests ──────────────────────────────────────
+
+#[test]
+fn test_classify_complete_command() {
+    let aliases = AliasStore::default();
+    match classify_parse("echo hello\n", &aliases) {
+        ParseStatus::Complete(_) => {}
+        other => panic!("expected Complete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_empty_input() {
+    let aliases = AliasStore::default();
+    match classify_parse("\n", &aliases) {
+        ParseStatus::Empty => {}
+        other => panic!("expected Empty, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_incomplete_if() {
+    let aliases = AliasStore::default();
+    match classify_parse("if true; then\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_incomplete_while() {
+    let aliases = AliasStore::default();
+    match classify_parse("while true; do\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_incomplete_single_quote() {
+    let aliases = AliasStore::default();
+    match classify_parse("echo 'hello\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_incomplete_double_quote() {
+    let aliases = AliasStore::default();
+    match classify_parse("echo \"hello\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_incomplete_backslash_newline() {
+    let aliases = AliasStore::default();
+    match classify_parse("echo hello \\\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_incomplete_pipe() {
+    let aliases = AliasStore::default();
+    match classify_parse("echo hello |\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_incomplete_and_or() {
+    let aliases = AliasStore::default();
+    match classify_parse("true &&\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_error() {
+    let aliases = AliasStore::default();
+    match classify_parse("if ; then\n", &aliases) {
+        ParseStatus::Error(_) => {}
+        other => panic!("expected Error, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_multiple_commands() {
+    let aliases = AliasStore::default();
+    match classify_parse("echo a; echo b\n", &aliases) {
+        ParseStatus::Complete(_) => {}
+        other => panic!("expected Complete, got {:?}", other),
+    }
 }
