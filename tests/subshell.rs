@@ -316,7 +316,6 @@ fn test_umask_isolation() {
 }
 
 #[test]
-#[ignore = "exec N>file fd persistence not yet implemented in kish"]
 fn test_fd_inheritance() {
     // exec 3>file should open fd 3 persistently so subshells can write to it.
     // kish currently restores redirects applied to builtins, so exec 3>file
@@ -405,6 +404,14 @@ fn test_umask_symbolic_minus() {
     let out = kish_exec("umask 022; umask u-r; umask");
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0422");
+}
+
+#[test]
+fn test_exec_redirect_persistence() {
+    // exec 3>file should persist fd 3 for subsequent commands
+    let out = kish_exec("exec 3>/tmp/kish-exec-persist-$$; echo hello >&3; exec 3>&-; cat /tmp/kish-exec-persist-$$; rm -f /tmp/kish-exec-persist-$$");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
 }
 
 #[test]

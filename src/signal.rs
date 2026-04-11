@@ -91,17 +91,24 @@ pub fn init_signal_handling() {
         let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
         assert_eq!(ret, 0, "pipe() failed");
 
-        // Set O_NONBLOCK | O_CLOEXEC on both ends.
-        for &fd in &fds {
+        // Move pipe fds to high numbers (>= 10) so they don't collide with
+        // user-visible fds (0–9).  F_DUPFD_CLOEXEC atomically dups to >= 10
+        // and sets CLOEXEC.
+        let read_fd = unsafe { libc::fcntl(fds[0], libc::F_DUPFD_CLOEXEC, 10) };
+        assert!(read_fd >= 10, "F_DUPFD_CLOEXEC failed for read end");
+        unsafe { libc::close(fds[0]) };
+
+        let write_fd = unsafe { libc::fcntl(fds[1], libc::F_DUPFD_CLOEXEC, 10) };
+        assert!(write_fd >= 10, "F_DUPFD_CLOEXEC failed for write end");
+        unsafe { libc::close(fds[1]) };
+
+        // Set O_NONBLOCK on both ends (CLOEXEC already set by F_DUPFD_CLOEXEC).
+        for &fd in &[read_fd, write_fd] {
             let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
             unsafe {
                 libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
             }
         }
-
-        let read_fd = fds[0];
-        let write_fd = fds[1];
 
         // Register sigaction handlers for all HANDLED_SIGNALS.
         let sa = SigAction::new(

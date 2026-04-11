@@ -56,8 +56,10 @@ impl RedirectState {
                 if save {
                     self.save_fd(target_fd)?;
                 }
-                raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                unsafe { libc::close(fd) };
+                if fd != target_fd {
+                    raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
+                    unsafe { libc::close(fd) };
+                }
             }
             RedirectKind::Output(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
@@ -70,8 +72,10 @@ impl RedirectState {
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
                 if save { self.save_fd(target_fd)?; }
-                raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                unsafe { libc::close(fd) };
+                if fd != target_fd {
+                    raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
+                    unsafe { libc::close(fd) };
+                }
             }
             RedirectKind::OutputClobber(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
@@ -81,8 +85,10 @@ impl RedirectState {
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
                 if save { self.save_fd(target_fd)?; }
-                raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                unsafe { libc::close(fd) };
+                if fd != target_fd {
+                    raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
+                    unsafe { libc::close(fd) };
+                }
             }
             RedirectKind::Append(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
@@ -94,8 +100,10 @@ impl RedirectState {
                 if save {
                     self.save_fd(target_fd)?;
                 }
-                raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                unsafe { libc::close(fd) };
+                if fd != target_fd {
+                    raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
+                    unsafe { libc::close(fd) };
+                }
             }
             RedirectKind::DupOutput(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
@@ -143,8 +151,10 @@ impl RedirectState {
                 if save {
                     self.save_fd(target_fd)?;
                 }
-                raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                unsafe { libc::close(fd) };
+                if fd != target_fd {
+                    raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
+                    unsafe { libc::close(fd) };
+                }
             }
             RedirectKind::HereDoc(heredoc) => {
                 let target_fd = redirect.fd.unwrap_or(0);
@@ -176,8 +186,10 @@ impl RedirectState {
                 if save {
                     self.save_fd(target_fd)?;
                 }
-                raw_dup2(read_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                unsafe { libc::close(read_fd) };
+                if read_fd != target_fd {
+                    raw_dup2(read_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
+                    unsafe { libc::close(read_fd) };
+                }
             }
         }
         Ok(())

@@ -510,6 +510,18 @@ impl Executor {
                         return 1;
                     }
                 }
+                // exec with no args: redirects persist (don't save/restore)
+                if command_name == "exec" && args.is_empty() {
+                    let mut redirect_state = RedirectState::new();
+                    if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, false) {
+                        eprintln!("kish: {}", e);
+                        self.env.last_exit_status = 1;
+                        return 1;
+                    }
+                    self.env.last_exit_status = 0;
+                    return 0;
+                }
+
                 let mut redirect_state = RedirectState::new();
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                     eprintln!("kish: {}", e);
