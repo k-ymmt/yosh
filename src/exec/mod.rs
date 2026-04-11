@@ -473,6 +473,28 @@ impl Executor {
             return status;
         }
 
+        // fg/bg/jobs need Executor access for job table + terminal control
+        if command_name == "fg" || command_name == "bg" || command_name == "jobs" {
+            let saved = self.apply_temp_assignments(&cmd.assignments);
+            let mut redirect_state = RedirectState::new();
+            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
+                eprintln!("kish: {}", e);
+                self.restore_assignments(saved);
+                self.env.last_exit_status = 1;
+                return 1;
+            }
+            let status = match command_name.as_str() {
+                "fg" => self.builtin_fg(&args),
+                "bg" => self.builtin_bg(&args),
+                "jobs" => self.builtin_jobs(&args),
+                _ => unreachable!(),
+            };
+            redirect_state.restore();
+            self.restore_assignments(saved);
+            self.env.last_exit_status = status;
+            return status;
+        }
+
         match classify_builtin(&command_name) {
             BuiltinKind::Special => {
                 // Special builtins: prefix assignments persist in current env
@@ -889,6 +911,231 @@ impl Executor {
         }
 
         last_status
+    }
+
+    fn builtin_jobs(&mut self, args: &[String]) -> i32 {
+        let long_format = args.contains(&"-l".to_string());
+        let pgid_only = args.contains(&"-p".to_string());
+
+        // Collect job IDs first to avoid borrow issues
+        let job_ids: Vec<crate::env::jobs::JobId> = self.env.jobs.all_jobs().map(|j| j.id).collect();
+
+        for id in &job_ids {
+            if pgid_only {
+                if let Some(job) = self.env.jobs.get(*id) {
+                    println!("{}", job.pgid.as_raw());
+                }
+            } else if long_format {
+                if let Some(line) = self.env.jobs.format_job_long(*id) {
+                    println!("{}", line);
+                }
+            } else if let Some(line) = self.env.jobs.format_job(*id) {
+                println!("{}", line);
+            }
+        }
+
+        // Mark done/terminated jobs as notified
+        let pending = self.env.jobs.pending_notifications();
+        for id in pending {
+            self.env.jobs.mark_notified(id);
+        }
+
+        0
+    }
+
+    fn builtin_fg(&mut self, args: &[String]) -> i32 {
+        use crate::env::jobs::{self, JobStatus};
+
+        if !self.env.options.monitor {
+            eprintln!("kish: fg: no job control");
+            return 1;
+        }
+
+        let job_id = if args.is_empty() {
+            match self.env.jobs.current_id() {
+                Some(id) => id,
+                None => {
+                    eprintln!("kish: fg: no current job");
+                    return 1;
+                }
+            }
+        } else {
+            match self.env.jobs.resolve_job_spec(&args[0]) {
+                Some(id) => id,
+                None => {
+                    eprintln!("kish: fg: {}: no such job", args[0]);
+                    return 1;
+                }
+            }
+        };
+
+        let (pgid, command) = {
+            let job = match self.env.jobs.get(job_id) {
+                Some(j) => j,
+                None => {
+                    eprintln!("kish: fg: job not found");
+                    return 1;
+                }
+            };
+            (job.pgid, job.command.clone())
+        };
+
+        // Print the command being foregrounded
+        eprintln!("{}", command);
+
+        // Update job state
+        if let Some(job) = self.env.jobs.get_mut(job_id) {
+            job.foreground = true;
+            if matches!(job.status, JobStatus::Stopped(_)) {
+                job.status = JobStatus::Running;
+            }
+        }
+
+        // Send SIGCONT to resume if stopped
+        nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGCONT).ok();
+
+        // Give terminal to the job
+        jobs::give_terminal(pgid).ok();
+
+        // Wait for the job
+        let status = self.wait_for_foreground_job(job_id);
+
+        // Take terminal back
+        jobs::take_terminal(self.env.shell_pgid).ok();
+
+        status
+    }
+
+    fn builtin_bg(&mut self, args: &[String]) -> i32 {
+        use crate::env::jobs::JobStatus;
+
+        if !self.env.options.monitor {
+            eprintln!("kish: bg: no job control");
+            return 1;
+        }
+
+        let job_id = if args.is_empty() {
+            match self.env.jobs.current_id() {
+                Some(id) => id,
+                None => {
+                    eprintln!("kish: bg: no current job");
+                    return 1;
+                }
+            }
+        } else {
+            match self.env.jobs.resolve_job_spec(&args[0]) {
+                Some(id) => id,
+                None => {
+                    eprintln!("kish: bg: {}: no such job", args[0]);
+                    return 1;
+                }
+            }
+        };
+
+        let pgid = {
+            let job = match self.env.jobs.get(job_id) {
+                Some(j) => j,
+                None => {
+                    eprintln!("kish: bg: job not found");
+                    return 1;
+                }
+            };
+            if !matches!(job.status, JobStatus::Stopped(_)) {
+                eprintln!("kish: bg: job {} not stopped", job_id);
+                return 1;
+            }
+            job.pgid
+        };
+
+        // Update job state
+        if let Some(job) = self.env.jobs.get_mut(job_id) {
+            job.status = JobStatus::Running;
+            job.foreground = false;
+            eprintln!("[{}]+ {} &", job.id, job.command);
+        }
+
+        // Send SIGCONT
+        nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGCONT).ok();
+
+        0
+    }
+
+    /// Wait for a foreground job to complete or stop.
+    fn wait_for_foreground_job(&mut self, job_id: crate::env::jobs::JobId) -> i32 {
+        use crate::env::jobs::JobStatus;
+        use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+
+        let pgid = match self.env.jobs.get(job_id) {
+            Some(j) => j.pgid,
+            None => return 1,
+        };
+
+        let mut last_status = 0;
+
+        loop {
+            match waitpid(nix::unistd::Pid::from_raw(-pgid.as_raw()), Some(WaitPidFlag::WUNTRACED)) {
+                Ok(WaitStatus::Exited(pid, code)) => {
+                    self.env.jobs.update_status(pid, JobStatus::Done(code));
+                    last_status = code;
+                    // Check if job is done
+                    if self.all_job_processes_done(job_id) {
+                        self.env.jobs.mark_notified(job_id);
+                        self.env.jobs.remove_job(job_id);
+                        break;
+                    }
+                }
+                Ok(WaitStatus::Signaled(pid, sig, _)) => {
+                    let code = 128 + sig as i32;
+                    self.env.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
+                    last_status = code;
+                    if self.all_job_processes_done(job_id) {
+                        self.env.jobs.mark_notified(job_id);
+                        self.env.jobs.remove_job(job_id);
+                        break;
+                    }
+                }
+                Ok(WaitStatus::Stopped(pid, sig)) => {
+                    self.env.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
+                    if let Some(line) = self.env.jobs.format_job(job_id) {
+                        eprintln!("{}", line);
+                    }
+                    last_status = 128 + sig as i32;
+                    break;
+                }
+                Err(nix::errno::Errno::ECHILD) => {
+                    self.env.jobs.remove_job(job_id);
+                    break;
+                }
+                Err(nix::errno::Errno::EINTR) => {
+                    self.process_pending_signals();
+                    continue;
+                }
+                _ => break,
+            }
+        }
+
+        last_status
+    }
+
+    /// Check if all processes in a job have finished (Done or Terminated).
+    fn all_job_processes_done(&self, job_id: crate::env::jobs::JobId) -> bool {
+        use crate::env::jobs::JobStatus;
+        match self.env.jobs.get(job_id) {
+            Some(job) => matches!(job.status, JobStatus::Done(_) | JobStatus::Terminated(_)),
+            None => true,
+        }
+    }
+
+    /// Display pending job notifications and clean up completed jobs.
+    pub fn display_job_notifications(&mut self) {
+        let pending = self.env.jobs.pending_notifications();
+        for id in &pending {
+            if let Some(line) = self.env.jobs.format_job(*id) {
+                eprintln!("{}", line);
+            }
+            self.env.jobs.mark_notified(*id);
+        }
+        self.env.jobs.cleanup_notified();
     }
 }
 
