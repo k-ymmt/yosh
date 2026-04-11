@@ -49,7 +49,8 @@ impl RedirectState {
         match &redirect.kind {
             RedirectKind::Input(word) => {
                 let target_fd = redirect.fd.unwrap_or(0);
-                let path = expand_word_to_string(env, word);
+                let path = expand_word_to_string(env, word)
+                    .map_err(|e| e.to_string())?;
                 let fd = open(path.as_str(), OFlag::O_RDONLY, Mode::empty())
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
@@ -63,7 +64,8 @@ impl RedirectState {
             }
             RedirectKind::Output(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
-                let path = expand_word_to_string(env, word);
+                let path = expand_word_to_string(env, word)
+                    .map_err(|e| e.to_string())?;
                 if env.options.noclobber && std::path::Path::new(&path).exists() {
                     return Err(format!("{}: cannot overwrite existing file", path));
                 }
@@ -79,7 +81,8 @@ impl RedirectState {
             }
             RedirectKind::OutputClobber(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
-                let path = expand_word_to_string(env, word);
+                let path = expand_word_to_string(env, word)
+                    .map_err(|e| e.to_string())?;
                 let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
                 let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?
@@ -92,7 +95,8 @@ impl RedirectState {
             }
             RedirectKind::Append(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
-                let path = expand_word_to_string(env, word);
+                let path = expand_word_to_string(env, word)
+                    .map_err(|e| e.to_string())?;
                 let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_APPEND;
                 let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?
@@ -107,7 +111,8 @@ impl RedirectState {
             }
             RedirectKind::DupOutput(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
-                let src = expand_word_to_string(env, word);
+                let src = expand_word_to_string(env, word)
+                    .map_err(|e| e.to_string())?;
                 if src == "-" {
                     if save {
                         self.save_fd(target_fd)?;
@@ -125,7 +130,8 @@ impl RedirectState {
             }
             RedirectKind::DupInput(word) => {
                 let target_fd = redirect.fd.unwrap_or(0);
-                let src = expand_word_to_string(env, word);
+                let src = expand_word_to_string(env, word)
+                    .map_err(|e| e.to_string())?;
                 if src == "-" {
                     if save {
                         self.save_fd(target_fd)?;
@@ -143,7 +149,8 @@ impl RedirectState {
             }
             RedirectKind::ReadWrite(word) => {
                 let target_fd = redirect.fd.unwrap_or(0);
-                let path = expand_word_to_string(env, word);
+                let path = expand_word_to_string(env, word)
+                    .map_err(|e| e.to_string())?;
                 let flags = OFlag::O_RDWR | OFlag::O_CREAT;
                 let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?

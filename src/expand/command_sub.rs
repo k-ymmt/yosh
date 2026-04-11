@@ -54,7 +54,6 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 aliases: env.aliases.clone(),
                 jobs: env.jobs.clone(),
                 shell_pgid: env.shell_pgid,
-                expansion_error: false,
                 is_interactive: false,
                 in_dot_script: false,
             };

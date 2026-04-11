@@ -292,9 +292,6 @@ pub struct ShellEnv {
     pub aliases: AliasStore,
     pub jobs: JobTable,
     pub shell_pgid: Pid,
-    /// Set during word expansion when an arithmetic error occurs.
-    /// Aborts the current simple command but does NOT prevent subsequent commands.
-    pub expansion_error: bool,
     /// True when running as an interactive shell (stdin is a TTY).
     pub is_interactive: bool,
     /// True when executing inside a dot script (`. file` / `source file`).
@@ -320,7 +317,6 @@ impl ShellEnv {
             aliases: AliasStore::default(),
             jobs: JobTable::default(),
             shell_pgid: nix::unistd::getpgrp(),
-            expansion_error: false,
             is_interactive: false,
             in_dot_script: false,
         }

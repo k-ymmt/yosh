@@ -294,7 +294,14 @@ impl Executor {
         body: &[CompleteCommand],
     ) -> i32 {
         let items: Vec<String> = match words {
-            Some(word_list) => expand_words(&mut self.env, word_list),
+            Some(word_list) => match expand_words(&mut self.env, word_list) {
+                Ok(words) => words,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    self.env.last_exit_status = 1;
+                    return 1;
+                }
+            },
             None => self.env.vars.positional_params().to_vec(),
         };
 
@@ -331,7 +338,14 @@ impl Executor {
         status
     }
     fn exec_case(&mut self, word: &Word, items: &[CaseItem]) -> i32 {
-        let case_word = crate::expand::expand_word_to_string(&mut self.env, word);
+        let case_word = match crate::expand::expand_word_to_string(&mut self.env, word) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("{}", e);
+                self.env.last_exit_status = 1;
+                return 1;
+            }
+        };
         let mut status = 0;
         let mut falling_through = false;
 
@@ -339,7 +353,14 @@ impl Executor {
             if !falling_through {
                 let mut matched = false;
                 for pattern in &item.patterns {
-                    let pat = crate::expand::expand_word_to_string(&mut self.env, pattern);
+                    let pat = match crate::expand::expand_word_to_string(&mut self.env, pattern) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            self.env.last_exit_status = 1;
+                            return 1;
+                        }
+                    };
                     if crate::expand::pattern::matches(&pat, &case_word) {
                         matched = true;
                         break;
@@ -391,19 +412,19 @@ impl Executor {
     /// Execute a simple command (assignments, builtins, or external programs).
     pub fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> i32 {
         // Expand all words
-        let expanded = expand_words(&mut self.env, &cmd.words);
+        let expanded = match expand_words(&mut self.env, &cmd.words) {
+            Ok(words) => words,
+            Err(e) => {
+                eprintln!("{}", e);
+                self.env.last_exit_status = 1;
+                return 1;
+            }
+        };
 
         // Check if expansion triggered a flow control signal (e.g., nounset error)
         if self.env.flow_control.is_some() {
             self.env.last_exit_status = 1;
             return 1;
-        }
-
-        // Check if expansion had a non-fatal error (e.g., arithmetic error).
-        // Abort the current command but allow subsequent commands to run.
-        if self.env.expansion_error {
-            self.env.expansion_error = false;
-            return self.env.last_exit_status;
         }
 
         // Assignment-only command (no words)
@@ -415,11 +436,17 @@ impl Executor {
             for assignment in &cmd.assignments {
                 // Reset before each expansion so we can capture per-assignment status
                 self.env.last_exit_status = 0;
-                let value = assignment
-                    .value
-                    .as_ref()
-                    .map(|w| crate::expand::expand_word_to_string(&mut self.env, w))
-                    .unwrap_or_default();
+                let value = match assignment.value.as_ref() {
+                    Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            self.env.last_exit_status = 1;
+                            return 1;
+                        }
+                    },
+                    None => String::new(),
+                };
                 // Capture the status set by any command substitution during expansion
                 last_cmd_sub_status = self.env.last_exit_status;
                 if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.options.allexport) {
@@ -441,7 +468,14 @@ impl Executor {
 
         // Check for function call (before builtins, matching POSIX lookup order)
         if let Some(func_def) = self.env.functions.get(&command_name).cloned() {
-            let saved = self.apply_temp_assignments(&cmd.assignments);
+            let saved = match self.apply_temp_assignments(&cmd.assignments) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    self.env.last_exit_status = 1;
+                    return 1;
+                }
+            };
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 eprintln!("kish: {}", e);
@@ -458,7 +492,14 @@ impl Executor {
 
         // wait needs Executor access (bg_jobs + signal processing)
         if command_name == "wait" {
-            let saved = self.apply_temp_assignments(&cmd.assignments);
+            let saved = match self.apply_temp_assignments(&cmd.assignments) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    self.env.last_exit_status = 1;
+                    return 1;
+                }
+            };
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 eprintln!("kish: {}", e);
@@ -475,7 +516,14 @@ impl Executor {
 
         // fg/bg/jobs need Executor access for job table + terminal control
         if command_name == "fg" || command_name == "bg" || command_name == "jobs" {
-            let saved = self.apply_temp_assignments(&cmd.assignments);
+            let saved = match self.apply_temp_assignments(&cmd.assignments) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    self.env.last_exit_status = 1;
+                    return 1;
+                }
+            };
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 eprintln!("kish: {}", e);
@@ -499,11 +547,17 @@ impl Executor {
             BuiltinKind::Special => {
                 // Special builtins: prefix assignments persist in current env
                 for assignment in &cmd.assignments {
-                    let value = assignment
-                        .value
-                        .as_ref()
-                        .map(|w| crate::expand::expand_word_to_string(&mut self.env, w))
-                        .unwrap_or_default();
+                    let value = match assignment.value.as_ref() {
+                        Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("{}", e);
+                                self.env.last_exit_status = 1;
+                                return 1;
+                            }
+                        },
+                        None => String::new(),
+                    };
                     if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.options.allexport) {
                         eprintln!("kish: {}", e);
                         self.env.last_exit_status = 1;
@@ -535,7 +589,14 @@ impl Executor {
             }
             BuiltinKind::Regular => {
                 // Regular builtins: prefix assignments are temporary
-                let saved = self.apply_temp_assignments(&cmd.assignments);
+                let saved = match self.apply_temp_assignments(&cmd.assignments) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        self.env.last_exit_status = 1;
+                        return 1;
+                    }
+                };
                 let mut redirect_state = RedirectState::new();
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                     eprintln!("kish: {}", e);
@@ -550,7 +611,14 @@ impl Executor {
                 status
             }
             BuiltinKind::NotBuiltin => {
-                let env_vars = self.build_env_vars(&cmd.assignments);
+                let env_vars = match self.build_env_vars(&cmd.assignments) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        self.env.last_exit_status = 1;
+                        return 1;
+                    }
+                };
                 let status = self.exec_external_with_redirects(
                     &command_name, &args, &env_vars, &cmd.redirects,
                 );
@@ -561,14 +629,13 @@ impl Executor {
     }
 
     /// Merge exported shell variables with command-specific assignments.
-    pub fn build_env_vars(&mut self, assignments: &[Assignment]) -> Vec<(String, String)> {
+    pub fn build_env_vars(&mut self, assignments: &[Assignment]) -> crate::error::Result<Vec<(String, String)>> {
         let mut vars = self.env.vars.to_environ();
         for assign in assignments {
-            let value = assign
-                .value
-                .as_ref()
-                .map(|w| crate::expand::expand_word_to_string(&mut self.env, w))
-                .unwrap_or_default();
+            let value = match assign.value.as_ref() {
+                Some(w) => crate::expand::expand_word_to_string(&mut self.env, w)?,
+                None => String::new(),
+            };
             // Replace existing or push new
             if let Some(entry) = vars.iter_mut().find(|(k, _)| k == &assign.name) {
                 entry.1 = value;
@@ -576,7 +643,7 @@ impl Executor {
                 vars.push((assign.name.clone(), value));
             }
         }
-        vars
+        Ok(vars)
     }
 
     /// Fork, apply redirects in child, exec the command, wait in parent.
@@ -791,19 +858,18 @@ impl Executor {
     fn apply_temp_assignments(
         &mut self,
         assignments: &[crate::parser::ast::Assignment],
-    ) -> Vec<(String, Option<String>)> {
+    ) -> crate::error::Result<Vec<(String, Option<String>)>> {
         let mut saved = Vec::new();
         for assignment in assignments {
             let old_val = self.env.vars.get(&assignment.name).map(|s| s.to_string());
             saved.push((assignment.name.clone(), old_val));
-            let value = assignment
-                .value
-                .as_ref()
-                .map(|w| crate::expand::expand_word_to_string(&mut self.env, w))
-                .unwrap_or_default();
+            let value = match assignment.value.as_ref() {
+                Some(w) => crate::expand::expand_word_to_string(&mut self.env, w)?,
+                None => String::new(),
+            };
             let _ = self.env.vars.set(&assignment.name, value);
         }
-        saved
+        Ok(saved)
     }
 
     /// Restore variables to their pre-assignment values.

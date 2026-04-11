@@ -16,7 +16,7 @@ fn bench_expand(c: &mut Criterion) {
                 })],
             };
             for _ in 0..1000 {
-                let _ = expand_word(black_box(&mut env), black_box(&word));
+                let _ = expand_word(black_box(&mut env), black_box(&word)).unwrap();
             }
         })
     });
@@ -30,7 +30,7 @@ fn bench_expand(c: &mut Criterion) {
                 parts: vec![WordPart::Parameter(ParamExpr::Simple("PATH".to_string()))],
             };
             for _ in 0..1000 {
-                let _ = expand_word(black_box(&mut env), black_box(&word));
+                let _ = expand_word(black_box(&mut env), black_box(&word)).unwrap();
             }
         })
     });
@@ -41,7 +41,7 @@ fn bench_expand(c: &mut Criterion) {
             let words: Vec<Word> = (0..100)
                 .map(|i| Word::literal(&format!("arg{}", i)))
                 .collect();
-            let _ = expand_words(black_box(&mut env), black_box(&words));
+            let _ = expand_words(black_box(&mut env), black_box(&words)).unwrap();
         })
     });
 }

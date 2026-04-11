@@ -103,42 +103,42 @@ impl Default for ExpandedField {
 ///   2. Field splitting (IFS)
 ///   3. Pathname expansion (glob)
 ///   4. Quote removal  ← callers receive plain `String`s
-pub fn expand_word(env: &mut ShellEnv, word: &Word) -> Vec<String> {
-    let fields = expand_word_to_fields(env, word);
+pub fn expand_word(env: &mut ShellEnv, word: &Word) -> crate::error::Result<Vec<String>> {
+    let fields = expand_word_to_fields(env, word)?;
     let fields = field_split::split(env, fields);
     let fields = if env.options.noglob {
         fields
     } else {
         pathname::expand(env, fields)
     };
-    fields
+    Ok(fields
         .into_iter()
         .filter(|f| !f.is_empty() || f.was_quoted)
         .map(|f| f.value)
-        .collect()
+        .collect())
 }
 
 /// Expand a slice of `Word`s — each word is expanded independently,
 /// then all resulting fields are concatenated.
-pub fn expand_words(env: &mut ShellEnv, words: &[Word]) -> Vec<String> {
+pub fn expand_words(env: &mut ShellEnv, words: &[Word]) -> crate::error::Result<Vec<String>> {
     let mut result = Vec::new();
     for word in words {
-        result.extend(expand_word(env, word));
+        result.extend(expand_word(env, word)?);
     }
-    result
+    Ok(result)
 }
 
 /// Expand a `Word` to a single `String`, suitable for assignments and
 /// redirect targets (no field splitting, no glob).
-pub fn expand_word_to_string(env: &mut ShellEnv, word: &Word) -> String {
-    let fields = expand_word_to_fields(env, word);
+pub fn expand_word_to_string(env: &mut ShellEnv, word: &Word) -> crate::error::Result<String> {
+    let fields = expand_word_to_fields(env, word)?;
     // Concatenate all fields (there is normally only one here, but $@ inside
     // double quotes can produce multiple — join them with a space in that case).
-    fields
+    Ok(fields
         .into_iter()
         .map(|f| f.value)
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" "))
 }
 
 /// Expand a here-document body.
@@ -213,9 +213,9 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                         if i + 1 < bytes.len() { i += 2; } // skip ))
                         match arith::evaluate(env, expr) {
                             Ok(val) => result.push_str(&val),
-                            Err(_) => {
+                            Err(msg) => {
+                                eprintln!("kish: arithmetic: {}", msg);
                                 env.last_exit_status = 1;
-                                env.expansion_error = true;
                                 result.push_str("0");
                             }
                         }
@@ -249,12 +249,12 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                         b'0' => crate::parser::ast::SpecialParam::Zero,
                         _ => unreachable!(),
                     };
-                    result.push_str(&param::expand(env, &ParamExpr::Special(sp)));
+                    result.push_str(&param::expand(env, &ParamExpr::Special(sp)).unwrap_or_default());
                     i += 1;
                 }
                 ch if (b'1'..=b'9').contains(&ch) => {
                     let n = (ch - b'0') as usize;
-                    result.push_str(&param::expand(env, &ParamExpr::Positional(n)));
+                    result.push_str(&param::expand(env, &ParamExpr::Positional(n)).unwrap_or_default());
                     i += 1;
                 }
                 ch if ch.is_ascii_alphabetic() || ch == b'_' => {
@@ -312,7 +312,7 @@ fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
     match part {
         WordPart::Literal(s) => out.push_str(s),
         WordPart::Parameter(p) => {
-            let expanded = param::expand(env, p);
+            let expanded = param::expand(env, p).unwrap_or_default();
             out.push_str(&expanded);
         }
         WordPart::CommandSub(program) => {
@@ -322,9 +322,9 @@ fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
         WordPart::ArithSub(expr) => {
             match arith::evaluate(env, expr) {
                 Ok(val) => out.push_str(&val),
-                Err(_) => {
+                Err(msg) => {
+                    eprintln!("kish: arithmetic: {}", msg);
                     env.last_exit_status = 1;
-                    env.expansion_error = true;
                     out.push_str("0");
                 }
             }
@@ -348,12 +348,12 @@ fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
 // ─── Stage 1: expand to ExpandedField list ──────────────────────────────────
 
 /// Expand a `Word` into a list of `ExpandedField`s (before field splitting).
-fn expand_word_to_fields(env: &mut ShellEnv, word: &Word) -> Vec<ExpandedField> {
+fn expand_word_to_fields(env: &mut ShellEnv, word: &Word) -> crate::error::Result<Vec<ExpandedField>> {
     let mut fields = vec![ExpandedField::new()];
     for part in &word.parts {
-        expand_part_to_fields(env, part, &mut fields, false);
+        expand_part_to_fields(env, part, &mut fields, false)?;
     }
-    fields
+    Ok(fields)
 }
 
 /// Expand one `WordPart`, appending into `fields`.
@@ -363,7 +363,7 @@ fn expand_part_to_fields(
     part: &WordPart,
     fields: &mut Vec<ExpandedField>,
     in_double_quote: bool,
-) {
+) -> crate::error::Result<()> {
     match part {
         // ── Quoted literals ───────────────────────────────────────────────
         WordPart::Literal(s) => {
@@ -387,7 +387,7 @@ fn expand_part_to_fields(
             // Mark as quoted even when parts is empty (e.g. "")
             fields.last_mut().unwrap().was_quoted = true;
             for inner in parts {
-                expand_part_to_fields(env, inner, fields, true);
+                expand_part_to_fields(env, inner, fields, true)?;
             }
         }
 
@@ -404,7 +404,7 @@ fn expand_part_to_fields(
 
         // ── Parameter expansion ───────────────────────────────────────────
         WordPart::Parameter(param) => {
-            expand_param_to_fields(env, param, fields, in_double_quote);
+            expand_param_to_fields(env, param, fields, in_double_quote)?;
         }
 
         // ── Command substitution ──────────────────────────────────────────
@@ -427,19 +427,16 @@ fn expand_part_to_fields(
                         fields.last_mut().unwrap().push_unquoted(&result);
                     }
                 }
-                Err(_) => {
-                    env.last_exit_status = 1;
-                    env.expansion_error = true;
-                    let zero = "0";
-                    if in_double_quote {
-                        fields.last_mut().unwrap().push_quoted(zero);
-                    } else {
-                        fields.last_mut().unwrap().push_unquoted(zero);
-                    }
+                Err(msg) => {
+                    return Err(crate::error::ShellError::expansion(
+                        crate::error::ExpansionErrorKind::InvalidArithmetic,
+                        msg,
+                    ));
                 }
             }
         }
     }
+    Ok(())
 }
 
 /// Expand `~username` using `getpwnam`.
@@ -464,7 +461,7 @@ fn expand_param_to_fields(
     param: &ParamExpr,
     fields: &mut Vec<ExpandedField>,
     in_double_quote: bool,
-) {
+) -> crate::error::Result<()> {
     match param {
         // "$@" inside double quotes: each positional parameter becomes its own field.
         ParamExpr::Special(SpecialParam::At) if in_double_quote => {
@@ -475,7 +472,7 @@ fn expand_param_to_fields(
                 if fields.last().map(|f| f.is_empty()).unwrap_or(false) {
                     fields.pop();
                 }
-                return;
+                return Ok(());
             }
             for (i, p) in params.iter().enumerate() {
                 if i == 0 {
@@ -499,7 +496,7 @@ fn expand_param_to_fields(
         ParamExpr::Special(SpecialParam::At) if !in_double_quote => {
             let params = env.vars.positional_params().to_vec();
             if params.is_empty() {
-                return;
+                return Ok(());
             }
             for (i, p) in params.iter().enumerate() {
                 if i == 0 {
@@ -513,7 +510,7 @@ fn expand_param_to_fields(
 
         // Everything else: expand to a string, then push.
         _ => {
-            let value = param::expand(env, param);
+            let value = param::expand(env, param)?;
             if in_double_quote {
                 fields.last_mut().unwrap().push_quoted(&value);
             } else {
@@ -521,6 +518,7 @@ fn expand_param_to_fields(
             }
         }
     }
+    Ok(())
 }
 
 /// Return the first character of IFS, defaulting to space.
@@ -549,7 +547,7 @@ mod tests {
     fn test_expand_word_basic() {
         let mut env = make_env();
         let word = Word::literal("hello");
-        assert_eq!(expand_word(&mut env, &word), vec!["hello"]);
+        assert_eq!(expand_word(&mut env, &word).unwrap(), vec!["hello"]);
     }
 
     #[test]
@@ -562,7 +560,7 @@ mod tests {
                 parts: vec![WordPart::Parameter(ParamExpr::Simple("A".to_string()))],
             },
         ];
-        assert_eq!(expand_words(&mut env, &words), vec!["hello", "foo"]);
+        assert_eq!(expand_words(&mut env, &words).unwrap(), vec!["hello", "foo"]);
     }
 
     // ── "$@" splitting ──
@@ -579,7 +577,7 @@ mod tests {
                 ParamExpr::Special(SpecialParam::At),
             )])],
         };
-        assert_eq!(expand_word(&mut env, &word), vec!["a", "b", "c"]);
+        assert_eq!(expand_word(&mut env, &word).unwrap(), vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -590,7 +588,7 @@ mod tests {
                 ParamExpr::Special(SpecialParam::At),
             )])],
         };
-        let result = expand_word(&mut env, &word);
+        let result = expand_word(&mut env, &word).unwrap();
         assert!(result.is_empty(), "expected empty, got {:?}", result);
     }
 
@@ -606,7 +604,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::At))],
         };
-        let fields = expand_word_to_fields(&mut env, &word);
+        let fields = expand_word_to_fields(&mut env, &word).unwrap();
         assert_eq!(fields.len(), 3, "expected 3 fields, got {:?}", fields);
         assert_eq!(fields[0].value, "a");
         assert_eq!(fields[1].value, "b");
@@ -623,7 +621,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::At))],
         };
-        let fields = expand_word_to_fields(&mut env, &word);
+        let fields = expand_word_to_fields(&mut env, &word).unwrap();
         assert!(
             fields.len() <= 1,
             "expected 0 or 1 fields, got {:?}",
@@ -645,7 +643,7 @@ mod tests {
                 ParamExpr::Special(SpecialParam::Star),
             )])],
         };
-        assert_eq!(expand_word(&mut env, &word), vec!["a b c"]);
+        assert_eq!(expand_word(&mut env, &word).unwrap(), vec!["a b c"]);
     }
 
     // ── ~root expansion ──
@@ -656,7 +654,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Tilde(Some("root".to_string()))],
         };
-        let result = expand_word_to_string(&mut env, &word);
+        let result = expand_word_to_string(&mut env, &word).unwrap();
         // Either expands to a path starting with "/" or falls back to "~root"
         assert!(
             result.starts_with('/') || result == "~root",
@@ -671,7 +669,7 @@ mod tests {
     fn test_literal() {
         let mut env = make_env();
         let word = Word::literal("hello");
-        assert_eq!(expand_word_to_string(&mut env, &word), "hello");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "hello");
     }
 
     #[test]
@@ -680,7 +678,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::SingleQuoted("hello world".to_string())],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "hello world");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "hello world");
     }
 
     #[test]
@@ -690,7 +688,7 @@ mod tests {
             parts: vec![WordPart::DollarSingleQuoted("hello\\nworld".to_string())],
         };
         assert_eq!(
-            expand_word_to_string(&mut env, &word),
+            expand_word_to_string(&mut env, &word).unwrap(),
             "hello\\nworld"
         );
     }
@@ -703,7 +701,7 @@ mod tests {
                 "hello".to_string(),
             )])],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "hello");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "hello");
     }
 
     #[test]
@@ -713,7 +711,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Simple("FOO".to_string()))],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "bar");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "bar");
     }
 
     #[test]
@@ -724,7 +722,7 @@ mod tests {
                 "UNSET_VAR_XYZ".to_string(),
             ))],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "");
     }
 
     #[test]
@@ -736,7 +734,7 @@ mod tests {
                 SpecialParam::Question,
             ))],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "42");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "42");
     }
 
     #[test]
@@ -745,7 +743,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::Dollar))],
         };
-        let result = expand_word_to_string(&mut env, &word);
+        let result = expand_word_to_string(&mut env, &word).unwrap();
         let pid: i32 = result.parse().expect("PID should be an integer");
         assert!(pid > 0);
     }
@@ -756,7 +754,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::Zero))],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "mykish");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "mykish");
     }
 
     #[test]
@@ -765,11 +763,11 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Positional(1))],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "first");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "first");
         let word2 = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Positional(2))],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word2), "second");
+        assert_eq!(expand_word_to_string(&mut env, &word2).unwrap(), "second");
     }
 
     #[test]
@@ -778,7 +776,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Positional(5))],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "");
     }
 
     #[test]
@@ -788,7 +786,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::Hash))],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "3");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "3");
     }
 
     #[test]
@@ -798,7 +796,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Tilde(None)],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "/home/user");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "/home/user");
     }
 
     #[test]
@@ -808,7 +806,7 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Tilde(None)],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "~");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "~");
     }
 
     #[test]
@@ -822,7 +820,7 @@ mod tests {
                 WordPart::Literal("!".to_string()),
             ],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "hello world!");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "hello world!");
     }
 
     #[test]
@@ -835,7 +833,7 @@ mod tests {
                 WordPart::Parameter(ParamExpr::Simple("X".to_string())),
             ])],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "value=42");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "value=42");
     }
 
     #[test]
@@ -848,10 +846,10 @@ mod tests {
                 null_check: false,
             })],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "default");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "default");
 
         env.vars.set("UNSET_VAR", "actual").unwrap();
-        assert_eq!(expand_word_to_string(&mut env, &word), "actual");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "actual");
     }
 
     #[test]
@@ -865,7 +863,7 @@ mod tests {
                 null_check: true,
             })],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word), "fallback");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "fallback");
 
         let word2 = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Default {
@@ -874,7 +872,7 @@ mod tests {
                 null_check: false,
             })],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word2), "");
+        assert_eq!(expand_word_to_string(&mut env, &word2).unwrap(), "");
     }
 
     #[test]

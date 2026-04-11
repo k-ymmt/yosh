@@ -66,5 +66,6 @@ pub fn expand_prompt(env: &mut ShellEnv, var_name: &str) -> String {
     let word = parse_prompt_word(&raw);
 
     // 4. Expand via expand_word_to_string (no field splitting / glob).
-    expand_word_to_string(env, &word)
+    //    Prompt expansion errors are non-fatal: fall back to the raw value.
+    expand_word_to_string(env, &word).unwrap_or(raw)
 }
