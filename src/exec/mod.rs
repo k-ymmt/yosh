@@ -894,7 +894,7 @@ impl Executor {
                                 let signals = signal::drain_pending_signals();
                                 if !signals.is_empty() {
                                     self.process_pending_signals();
-                                    last_status = 128 + signals[0];
+                                    last_status = 128 + *signals.last().unwrap();
                                     return last_status;
                                 }
                             }
