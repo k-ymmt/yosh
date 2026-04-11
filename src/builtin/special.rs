@@ -362,15 +362,19 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
     let prev_dot_script = executor.env.mode.in_dot_script;
     executor.env.mode.in_dot_script = true;
     let status = match crate::parser::Parser::new_with_aliases(&content, &executor.env.aliases).parse_program() {
-        Ok(program) => executor.exec_program(&program),
+        Ok(program) => {
+            let s = executor.exec_program(&program);
+            // If the sourced script used `return`, consume the FlowControl and use its status.
+            if let Some(FlowControl::Return(code)) = executor.env.exec.flow_control {
+                executor.env.exec.flow_control = None;
+                executor.env.mode.in_dot_script = prev_dot_script;
+                return code;
+            }
+            s
+        }
         Err(e) => { eprintln!("kish: .: {}", e); 2 }
     };
     executor.env.mode.in_dot_script = prev_dot_script;
-    // If the sourced script used `return`, consume the FlowControl and use its status.
-    if let Some(FlowControl::Return(code)) = executor.env.exec.flow_control {
-        executor.env.exec.flow_control = None;
-        return code;
-    }
     status
 }
 

@@ -31,12 +31,6 @@
 
 ## Future: Code Quality Improvements
 
-- [ ] `cd` overwrites OLDPWD before `set_current_dir` — if chdir fails, OLDPWD is still modified (`src/builtin/mod.rs`)
-- [ ] `exec_function_call` lacks panic safety — `push_scope` without Drop guard means `pop_scope` is skipped on panic (`src/exec/mod.rs`)
-- [ ] `VarStore::vars_iter()` rebuilds HashMap on every call — consider returning `Vec` or caching for performance (`src/env/vars.rs`)
-- [ ] `DupOutput`/`DupInput` redirect kinds lack `fd == target_fd` guard — other redirect kinds have it to prevent closing a just-opened fd; not currently exploitable since dup variants don't call `close` (`src/exec/redirect.rs`)
-- [ ] `builtin_source` `FlowControl::Return` consumption runs unconditionally — should only consume after `exec_program`, not on parse error path; currently unreachable but fragile (`src/builtin/special.rs`)
-
 ## Future: E2E Test Expansion
 
 - [ ] Builtin test POSIX_REF values could use more specific section numbers (e.g., `2.14.3` instead of `2.14 Special Built-In Utilities`)

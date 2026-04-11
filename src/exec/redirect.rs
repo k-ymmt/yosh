@@ -122,10 +122,12 @@ impl RedirectState {
                     let src_fd: RawFd = src
                         .parse()
                         .map_err(|_| format!("{}: invalid file descriptor", src))?;
-                    if save {
-                        self.save_fd(target_fd)?;
+                    if src_fd != target_fd {
+                        if save {
+                            self.save_fd(target_fd)?;
+                        }
+                        raw_dup2(src_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
                     }
-                    raw_dup2(src_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
                 }
             }
             RedirectKind::DupInput(word) => {
@@ -141,10 +143,12 @@ impl RedirectState {
                     let src_fd: RawFd = src
                         .parse()
                         .map_err(|_| format!("{}: invalid file descriptor", src))?;
-                    if save {
-                        self.save_fd(target_fd)?;
+                    if src_fd != target_fd {
+                        if save {
+                            self.save_fd(target_fd)?;
+                        }
+                        raw_dup2(src_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
                     }
-                    raw_dup2(src_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
                 }
             }
             RedirectKind::ReadWrite(word) => {
