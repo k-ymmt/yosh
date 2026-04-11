@@ -297,6 +297,8 @@ pub struct ShellEnv {
     pub expansion_error: bool,
     /// True when running as an interactive shell (stdin is a TTY).
     pub is_interactive: bool,
+    /// True when executing inside a dot script (`. file` / `source file`).
+    pub in_dot_script: bool,
 }
 
 impl ShellEnv {
@@ -320,6 +322,7 @@ impl ShellEnv {
             shell_pgid: nix::unistd::getpgrp(),
             expansion_error: false,
             is_interactive: false,
+            in_dot_script: false,
         }
     }
 }

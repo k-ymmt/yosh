@@ -127,6 +127,10 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> i32 {
 }
 
 fn builtin_return(args: &[String], env: &mut ShellEnv) -> i32 {
+    if env.vars.scope_depth() <= 1 && !env.in_dot_script {
+        eprintln!("kish: return: can only return from a function or sourced script");
+        return 1;
+    }
     let code = if args.is_empty() {
         env.last_exit_status & 0xFF
     } else {
@@ -355,10 +359,19 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
         Ok(c) => c,
         Err(e) => { eprintln!("kish: .: {}: {}", path.display(), e); return 1; }
     };
-    match crate::parser::Parser::new_with_aliases(&content, &executor.env.aliases).parse_program() {
+    let prev_dot_script = executor.env.in_dot_script;
+    executor.env.in_dot_script = true;
+    let status = match crate::parser::Parser::new_with_aliases(&content, &executor.env.aliases).parse_program() {
         Ok(program) => executor.exec_program(&program),
         Err(e) => { eprintln!("kish: .: {}", e); 2 }
+    };
+    executor.env.in_dot_script = prev_dot_script;
+    // If the sourced script used `return`, consume the FlowControl and use its status.
+    if let Some(FlowControl::Return(code)) = executor.env.flow_control {
+        executor.env.flow_control = None;
+        return code;
     }
+    status
 }
 
 fn builtin_shift(args: &[String], env: &mut ShellEnv) -> i32 {

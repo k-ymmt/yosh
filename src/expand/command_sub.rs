@@ -56,6 +56,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 shell_pgid: env.shell_pgid,
                 expansion_error: false,
                 is_interactive: false,
+                in_dot_script: false,
             };
             child_env.traps.reset_for_command_sub();
             let mut executor = Executor::from_env(child_env);

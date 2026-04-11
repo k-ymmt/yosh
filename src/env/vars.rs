@@ -90,6 +90,11 @@ impl VarStore {
         self.scopes.pop();
     }
 
+    /// Return the current scope depth. 1 = global scope only.
+    pub fn scope_depth(&self) -> usize {
+        self.scopes.len()
+    }
+
     // ── Positional parameters ───────────────────────────────────────────
 
     /// Get the current scope's positional parameters.

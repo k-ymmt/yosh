@@ -421,3 +421,38 @@ fn test_umask_invalid_octal() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(stdout.trim(), "1");
 }
+
+// =============================================================================
+// Category 5: return outside function error
+// =============================================================================
+
+#[test]
+fn test_return_outside_function_error() {
+    let out = kish_exec("return 0 2>/dev/null; echo $?");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.trim(), "1");
+}
+
+#[test]
+fn test_return_outside_function_in_subshell() {
+    let out = kish_exec("(return 0 2>/dev/null; echo $?)");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.trim(), "1");
+}
+
+#[test]
+fn test_return_in_function_still_works() {
+    let out = kish_exec("f() { return 42; }; f; echo $?");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "42");
+}
+
+#[test]
+fn test_return_in_dot_script() {
+    let out = kish_exec("echo 'return 0; echo unreachable' > /tmp/kish-return-test-$$.sh; . /tmp/kish-return-test-$$.sh; echo $?; rm -f /tmp/kish-return-test-$$.sh");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.trim(), "0");
+}
