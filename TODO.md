@@ -1,16 +1,9 @@
 # TODO
 
-## Phase 6: Known Limitations
-
-- [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
-- [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
-
 ## Phase 7: Known Limitations
 
 - [ ] `wait` signal interruption — if multiple signals arrive simultaneously during `wait`, only the first is used for the return status
 - [ ] `kill 0` in pipeline subshell sends to pipeline's process group, not the shell's
-- [ ] `-m` (monitor) flag is settable but job control is not implemented — deferred to future phase
-- [ ] `-b` (notify) flag is settable but has no effect — depends on `-m`
 
 ## Phase 8: Known Limitations
 
@@ -18,6 +11,14 @@
 - [ ] `exec N>file` fd persistence not implemented — `exec` builtin restores redirects, so `test_fd_inheritance` is ignored (`tests/subshell.rs`, `src/builtin/special.rs`)
 - [ ] `test_umask_isolation` may pass incidentally due to fork isolation, not because umask is correctly set/read (`tests/subshell.rs`)
 - [ ] `return` outside function in subshell error test not implemented — POSIX requires error, untested (`tests/subshell.rs`)
+
+## Job Control: Known Limitations
+
+- [ ] `%string` / `%?string` job specifiers — prefix/substring matching not implemented
+- [ ] `disown` builtin — not implemented (non-POSIX extension)
+- [ ] `suspend` builtin — not implemented
+- [ ] Terminal state save/restore (tcgetattr/tcsetattr) — jobs that modify terminal settings may leave terminal in bad state
+- [ ] Pipeline command display in `jobs` output uses placeholder format — improve to reconstruct shell syntax
 
 ## Future: Interactive Mode Enhancements
 
@@ -28,7 +29,6 @@
 - [ ] `~/.kishrc` startup file — ENV variable support for interactive initialization
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
-- [ ] Job control — `-m` flag, fg/bg/jobs builtins, process group management, SIGTSTP/SIGCONT
 - [ ] Prompt width — accurate column width calculation for control characters and escape sequences
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
