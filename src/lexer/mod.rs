@@ -2,7 +2,7 @@ pub mod token;
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{self, ShellError, ShellErrorKind};
+use crate::error::{self, ShellError, ParseErrorKind};
 use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 use token::{Span, SpannedToken, Token};
 
@@ -165,8 +165,8 @@ impl Lexer {
         let mut body = String::new();
         loop {
             if self.at_end() {
-                return Err(ShellError::new(
-                    ShellErrorKind::InvalidHereDoc,
+                return Err(ShellError::parse(
+                    ParseErrorKind::InvalidHereDoc,
                     self.line,
                     self.column,
                     format!("here-document delimited by '{}' was not closed", hd.delimiter),
@@ -635,8 +635,8 @@ impl Lexer {
         let mut content = String::new();
         loop {
             if self.at_end() {
-                return Err(ShellError::new(
-                    ShellErrorKind::UnterminatedSingleQuote,
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnterminatedSingleQuote,
                     span.line,
                     span.column,
                     "unterminated single quote",
@@ -658,8 +658,8 @@ impl Lexer {
         self.advance(); // consume opening "
         let inner = self.read_word_parts(true, None)?;
         if self.at_end() {
-            return Err(ShellError::new(
-                ShellErrorKind::UnterminatedDoubleQuote,
+            return Err(ShellError::parse(
+                ParseErrorKind::UnterminatedDoubleQuote,
                 span.line,
                 span.column,
                 "unterminated double quote",
@@ -721,8 +721,8 @@ impl Lexer {
         let mut content = String::new();
         loop {
             if self.at_end() {
-                return Err(ShellError::new(
-                    ShellErrorKind::UnterminatedDollarSingleQuote,
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnterminatedDollarSingleQuote,
                     span.line,
                     span.column,
                     "unterminated $'...' quote",
@@ -865,8 +865,8 @@ impl Lexer {
     /// Reads the parameter name inside braces (after `${`).
     fn read_param_name(&mut self, span: Span) -> error::Result<String> {
         if self.at_end() {
-            return Err(ShellError::new(
-                ShellErrorKind::UnterminatedParamExpansion,
+            return Err(ShellError::parse(
+                ParseErrorKind::UnterminatedParamExpansion,
                 span.line,
                 span.column,
                 "unterminated parameter expansion",
@@ -889,8 +889,8 @@ impl Lexer {
             c if is_name_start(c) => {
                 Ok(self.read_name())
             }
-            _ => Err(ShellError::new(
-                ShellErrorKind::UnterminatedParamExpansion,
+            _ => Err(ShellError::parse(
+                ParseErrorKind::UnterminatedParamExpansion,
                 span.line,
                 span.column,
                 format!("invalid parameter name character: '{}'", ch as char),
@@ -908,8 +908,8 @@ impl Lexer {
     /// Expects the given byte at current position, consuming it on success.
     fn expect_byte(&mut self, expected: u8, span: Span) -> error::Result<()> {
         if self.at_end() || self.current_byte() != expected {
-            return Err(ShellError::new(
-                ShellErrorKind::UnterminatedParamExpansion,
+            return Err(ShellError::parse(
+                ParseErrorKind::UnterminatedParamExpansion,
                 span.line,
                 span.column,
                 format!("expected '{}'", expected as char),
@@ -962,8 +962,8 @@ impl Lexer {
     /// After reading the param name inside `${`, read optional operator and closing `}`.
     fn read_param_operator(&mut self, span: Span, name: String) -> error::Result<WordPart> {
         if self.at_end() {
-            return Err(ShellError::new(
-                ShellErrorKind::UnterminatedParamExpansion,
+            return Err(ShellError::parse(
+                ParseErrorKind::UnterminatedParamExpansion,
                 span.line,
                 span.column,
                 "unterminated parameter expansion",
@@ -1005,8 +1005,8 @@ impl Lexer {
             b'-' | b'=' | b'?' | b'+' => {
                 self.read_conditional_param(span, name, false)
             }
-            _ => Err(ShellError::new(
-                ShellErrorKind::UnterminatedParamExpansion,
+            _ => Err(ShellError::parse(
+                ParseErrorKind::UnterminatedParamExpansion,
                 span.line,
                 span.column,
                 format!("unexpected character in parameter expansion: '{}'", ch as char),
@@ -1017,8 +1017,8 @@ impl Lexer {
     /// Reads the conditional operator (`-`, `=`, `?`, `+`) and its word argument.
     fn read_conditional_param(&mut self, span: Span, name: String, null_check: bool) -> error::Result<WordPart> {
         if self.at_end() {
-            return Err(ShellError::new(
-                ShellErrorKind::UnterminatedParamExpansion,
+            return Err(ShellError::parse(
+                ParseErrorKind::UnterminatedParamExpansion,
                 span.line,
                 span.column,
                 "unterminated parameter expansion",
@@ -1037,8 +1037,8 @@ impl Lexer {
             b'=' => ParamExpr::Assign { name, word, null_check },
             b'?' => ParamExpr::Error { name, word, null_check },
             b'+' => ParamExpr::Alt { name, word, null_check },
-            _ => return Err(ShellError::new(
-                ShellErrorKind::UnterminatedParamExpansion,
+            _ => return Err(ShellError::parse(
+                ParseErrorKind::UnterminatedParamExpansion,
                 span.line,
                 span.column,
                 format!("unknown parameter operator: '{}'", op as char),
@@ -1067,8 +1067,8 @@ impl Lexer {
 
         loop {
             if self.at_end() {
-                return Err(ShellError::new(
-                    ShellErrorKind::UnterminatedArithSub,
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnterminatedArithSub,
                     span.line,
                     span.column,
                     "unterminated arithmetic expansion",
@@ -1086,8 +1086,8 @@ impl Lexer {
                         // check for closing '))'
                         self.advance(); // consume first ')'
                         if self.at_end() || self.current_byte() != b')' {
-                            return Err(ShellError::new(
-                                ShellErrorKind::UnterminatedArithSub,
+                            return Err(ShellError::parse(
+                                ParseErrorKind::UnterminatedArithSub,
                                 span.line,
                                 span.column,
                                 "expected '))'",
@@ -1120,8 +1120,8 @@ impl Lexer {
 
         loop {
             if self.at_end() {
-                return Err(ShellError::new(
-                    ShellErrorKind::UnterminatedCommandSub,
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnterminatedCommandSub,
                     span.line,
                     span.column,
                     "unterminated command substitution",
@@ -1149,8 +1149,8 @@ impl Lexer {
                     self.advance();
                     loop {
                         if self.at_end() {
-                            return Err(ShellError::new(
-                                ShellErrorKind::UnterminatedCommandSub,
+                            return Err(ShellError::parse(
+                                ParseErrorKind::UnterminatedCommandSub,
                                 span.line,
                                 span.column,
                                 "unterminated single quote in command substitution",
@@ -1170,8 +1170,8 @@ impl Lexer {
                     self.advance();
                     loop {
                         if self.at_end() {
-                            return Err(ShellError::new(
-                                ShellErrorKind::UnterminatedCommandSub,
+                            return Err(ShellError::parse(
+                                ParseErrorKind::UnterminatedCommandSub,
                                 span.line,
                                 span.column,
                                 "unterminated double quote in command substitution",
@@ -1279,8 +1279,8 @@ impl Lexer {
 
         loop {
             if self.at_end() {
-                return Err(ShellError::new(
-                    ShellErrorKind::UnterminatedBacktick,
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnterminatedBacktick,
                     span.line,
                     span.column,
                     "unterminated backtick command substitution",
@@ -1328,8 +1328,8 @@ impl Lexer {
         let span = self.current_span();
         let parts = self.read_word_parts(false, None)?;
         if parts.is_empty() {
-            return Err(ShellError::new(
-                ShellErrorKind::UnexpectedToken,
+            return Err(ShellError::parse(
+                ParseErrorKind::UnexpectedToken,
                 span.line,
                 span.column,
                 format!("unexpected character: '{}'", self.current_byte() as char),
@@ -1561,7 +1561,7 @@ mod tests {
         let mut lexer = Lexer::new("echo 'hello");
         let _ = lexer.next_token().unwrap();
         let err = lexer.next_token().unwrap_err();
-        assert_eq!(err.kind, ShellErrorKind::UnterminatedSingleQuote);
+        assert_eq!(err.kind, crate::error::ShellErrorKind::Parse(ParseErrorKind::UnterminatedSingleQuote));
     }
 
     #[test]
@@ -1569,7 +1569,7 @@ mod tests {
         let mut lexer = Lexer::new("echo \"hello");
         let _ = lexer.next_token().unwrap();
         let err = lexer.next_token().unwrap_err();
-        assert_eq!(err.kind, ShellErrorKind::UnterminatedDoubleQuote);
+        assert_eq!(err.kind, crate::error::ShellErrorKind::Parse(ParseErrorKind::UnterminatedDoubleQuote));
     }
 
     // ---- Task 6 tests ----

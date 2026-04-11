@@ -1,5 +1,5 @@
 use crate::env::aliases::AliasStore;
-use crate::error::ShellErrorKind;
+use crate::error::{ShellErrorKind, ParseErrorKind};
 use crate::parser::Parser;
 use crate::parser::ast::CompleteCommand;
 
@@ -79,7 +79,7 @@ pub fn classify_parse(input: &str, aliases: &AliasStore) -> ParseStatus {
                 // `fi`) or truly invalid.  We probe by appending closing
                 // keywords and re-parsing; if any probe succeeds the input
                 // was merely incomplete.
-                if e.kind == ShellErrorKind::UnexpectedToken && parser.is_at_end() {
+                if e.kind == ShellErrorKind::Parse(ParseErrorKind::UnexpectedToken) && parser.is_at_end() {
                     if is_completable(input, aliases) {
                         return ParseStatus::Incomplete;
                     }
@@ -114,13 +114,13 @@ fn is_completable(input: &str, aliases: &AliasStore) -> bool {
 fn is_incomplete_error(kind: &ShellErrorKind) -> bool {
     matches!(
         kind,
-        ShellErrorKind::UnterminatedSingleQuote
-            | ShellErrorKind::UnterminatedDoubleQuote
-            | ShellErrorKind::UnterminatedCommandSub
-            | ShellErrorKind::UnterminatedArithSub
-            | ShellErrorKind::UnterminatedParamExpansion
-            | ShellErrorKind::UnterminatedBacktick
-            | ShellErrorKind::UnterminatedDollarSingleQuote
-            | ShellErrorKind::UnexpectedEof
+        ShellErrorKind::Parse(ParseErrorKind::UnterminatedSingleQuote)
+            | ShellErrorKind::Parse(ParseErrorKind::UnterminatedDoubleQuote)
+            | ShellErrorKind::Parse(ParseErrorKind::UnterminatedCommandSub)
+            | ShellErrorKind::Parse(ParseErrorKind::UnterminatedArithSub)
+            | ShellErrorKind::Parse(ParseErrorKind::UnterminatedParamExpansion)
+            | ShellErrorKind::Parse(ParseErrorKind::UnterminatedBacktick)
+            | ShellErrorKind::Parse(ParseErrorKind::UnterminatedDollarSingleQuote)
+            | ShellErrorKind::Parse(ParseErrorKind::UnexpectedEof)
     )
 }

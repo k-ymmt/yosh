@@ -1,7 +1,7 @@
 pub mod ast;
 
 use std::rc::Rc;
-use crate::error::{self, ShellError, ShellErrorKind};
+use crate::error::{self, ShellError, ParseErrorKind};
 use crate::lexer::Lexer;
 use crate::lexer::token::{Span, SpannedToken, Token};
 use ast::{
@@ -75,8 +75,8 @@ impl Parser {
             Ok(())
         } else {
             let span = self.current_span();
-            Err(ShellError::new(
-                ShellErrorKind::UnexpectedToken,
+            Err(ShellError::parse(
+                ParseErrorKind::UnexpectedToken,
                 span.line,
                 span.column,
                 format!("expected '{}', got unexpected token", keyword),
@@ -389,8 +389,8 @@ impl Parser {
             self.parse_subshell()?
         } else {
             let span = self.current_span();
-            return Err(ShellError::new(
-                ShellErrorKind::UnexpectedToken,
+            return Err(ShellError::parse(
+                ParseErrorKind::UnexpectedToken,
                 span.line,
                 span.column,
                 "expected compound command",
@@ -456,8 +456,8 @@ impl Parser {
             Token::Word(word) => {
                 let name = word.as_literal().ok_or_else(|| {
                     let span = self.current_span();
-                    ShellError::new(
-                        ShellErrorKind::UnexpectedToken,
+                    ShellError::parse(
+                        ParseErrorKind::UnexpectedToken,
                         span.line,
                         span.column,
                         "expected valid variable name after 'for'",
@@ -465,8 +465,8 @@ impl Parser {
                 })?;
                 if !is_valid_name(name) {
                     let span = self.current_span();
-                    return Err(ShellError::new(
-                        ShellErrorKind::UnexpectedToken,
+                    return Err(ShellError::parse(
+                        ParseErrorKind::UnexpectedToken,
                         span.line,
                         span.column,
                         format!("'{}' is not a valid variable name", name),
@@ -478,8 +478,8 @@ impl Parser {
             }
             _ => {
                 let span = self.current_span();
-                return Err(ShellError::new(
-                    ShellErrorKind::UnexpectedToken,
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnexpectedToken,
                     span.line,
                     span.column,
                     "expected variable name after 'for'",
@@ -578,8 +578,8 @@ impl Parser {
             // Expect )
             if !self.eat(&Token::RParen)? {
                 let span = self.current_span();
-                return Err(ShellError::new(
-                    ShellErrorKind::UnexpectedToken,
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnexpectedToken,
                     span.line,
                     span.column,
                     "expected ')' after case pattern",
@@ -638,8 +638,8 @@ impl Parser {
         let body = self.parse_compound_list()?;
         if !self.eat(&Token::RParen)? {
             let span = self.current_span();
-            return Err(ShellError::new(
-                ShellErrorKind::UnexpectedToken,
+            return Err(ShellError::parse(
+                ParseErrorKind::UnexpectedToken,
                 span.line,
                 span.column,
                 "expected ')' to close subshell",
@@ -781,8 +781,8 @@ impl Parser {
             }
             _ => {
                 if fd.is_some() {
-                    return Err(ShellError::new(
-                        ShellErrorKind::InvalidRedirect,
+                    return Err(ShellError::parse(
+                        ParseErrorKind::InvalidRedirect,
                         span.line,
                         span.column,
                         "expected redirect operator after IO number",
@@ -849,8 +849,8 @@ impl Parser {
             Ok(word)
         } else {
             let span = self.current_span();
-            Err(ShellError::new(
-                ShellErrorKind::UnexpectedToken,
+            Err(ShellError::parse(
+                ParseErrorKind::UnexpectedToken,
                 span.line,
                 span.column,
                 format!("expected word for {}", context),
