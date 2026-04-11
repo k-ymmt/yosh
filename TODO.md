@@ -19,6 +19,7 @@
 - [ ] `suspend` builtin — not implemented
 - [ ] Terminal state save/restore (tcgetattr/tcsetattr) — jobs that modify terminal settings may leave terminal in bad state
 - [ ] Pipeline command display in `jobs` output uses placeholder format — improve to reconstruct shell syntax
+- [ ] `reset_job_control_signals` is unused — should be called when `set +m` disables monitor mode at runtime (`src/signal.rs`)
 
 ## Future: Interactive Mode Enhancements
 
