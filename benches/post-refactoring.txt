@@ -1,0 +1,763 @@
+   Compiling kish v0.1.0 (/Users/kazukiyamamoto/Projects/rust/kish)
+warning: methods `current_job`, `previous_job`, `previous_id`, `is_empty`, `find_by_pgid`, and `find_by_pgid_mut` are never used
+   --> src/env/jobs.rs:125:12
+    |
+ 47 | impl JobTable {
+    | ------------- methods in this implementation
+...
+125 |     pub fn current_job(&self) -> Option<&Job> {
+    |            ^^^^^^^^^^^
+...
+130 |     pub fn previous_job(&self) -> Option<&Job> {
+    |            ^^^^^^^^^^^^
+...
+140 |     pub fn previous_id(&self) -> Option<JobId> {
+    |            ^^^^^^^^^^^
+...
+145 |     pub fn is_empty(&self) -> bool {
+    |            ^^^^^^^^
+...
+163 |     pub fn find_by_pgid(&self, pgid: Pid) -> Option<&Job> {
+    |            ^^^^^^^^^^^^
+...
+168 |     pub fn find_by_pgid_mut(&mut self, pgid: Pid) -> Option<&mut Job> {
+    |            ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Runtime` is never constructed
+  --> src/error.rs:20:5
+   |
+17 | pub enum ShellErrorKind {
+   |          -------------- variant in this enum
+...
+20 |     Runtime(RuntimeErrorKind),
+   |     ^^^^^^^
+   |
+   = note: `ShellErrorKind` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `UnexpectedEof` and `InvalidFunctionName` are never constructed
+  --> src/error.rs:33:5
+   |
+24 | pub enum ParseErrorKind {
+   |          -------------- variants in this enum
+...
+33 |     UnexpectedEof,
+   |     ^^^^^^^^^^^^^
+34 |     InvalidRedirect,
+35 |     InvalidFunctionName,
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ParseErrorKind` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated function `runtime` is never used
+  --> src/error.rs:86:12
+   |
+69 | impl ShellError {
+   | --------------- associated function in this implementation
+...
+86 |     pub fn runtime(kind: RuntimeErrorKind, message: impl Into<String>) -> Self {
+   |            ^^^^^^^
+
+warning: function `reset_job_control_signals` is never used
+   --> src/signal.rs:232:8
+    |
+232 | pub fn reset_job_control_signals() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `cursor` is never used
+  --> src/interactive/line_editor.rs:32:12
+   |
+20 | impl LineEditor {
+   | --------------- method in this implementation
+...
+32 |     pub fn cursor(&self) -> usize {
+   |            ^^^^^^
+
+warning: method `find_by_pgid_mut` is never used
+   --> src/env/jobs.rs:168:12
+    |
+ 47 | impl JobTable {
+    | ------------- method in this implementation
+...
+168 |     pub fn find_by_pgid_mut(&mut self, pgid: Pid) -> Option<&mut Job> {
+    |            ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kish` (bin "kish" test) generated 3 warnings (2 duplicates)
+warning: `kish` (bin "kish") generated 6 warnings
+    Finished `bench` profile [optimized] target(s) in 14.79s
+     Running unittests src/lib.rs (target/release/deps/kish-2cdf1917cb63de3f)
+
+running 289 tests
+test builtin::tests::test_alias_unalias ... ignored
+test builtin::tests::test_classify_builtin ... ignored
+test builtin::tests::test_classify_fg_bg_jobs ... ignored
+test builtin::tests::test_echo_dash_n ... ignored
+test builtin::tests::test_true_false ... ignored
+test builtin::tests::test_unalias_all ... ignored
+test env::aliases::tests::test_alias_clear ... ignored
+test env::aliases::tests::test_alias_overwrite ... ignored
+test env::aliases::tests::test_alias_remove ... ignored
+test env::aliases::tests::test_alias_set_get ... ignored
+test env::aliases::tests::test_alias_sorted_iter ... ignored
+test env::jobs::tests::test_add_job_assigns_incrementing_ids ... ignored
+test env::jobs::tests::test_add_job_updates_current_previous ... ignored
+test env::jobs::tests::test_all_jobs_sorted_by_id ... ignored
+test env::jobs::tests::test_current_job_previous_job ... ignored
+test env::jobs::tests::test_default_is_empty ... ignored
+test env::jobs::tests::test_find_by_pgid ... ignored
+test env::jobs::tests::test_format_job_done ... ignored
+test env::jobs::tests::test_format_job_nonexistent ... ignored
+test env::jobs::tests::test_format_job_running ... ignored
+test env::jobs::tests::test_get_mut_modifies_job ... ignored
+test env::jobs::tests::test_get_returns_correct_job ... ignored
+test env::jobs::tests::test_get_returns_none_for_nonexistent ... ignored
+test env::jobs::tests::test_job_status_equality ... ignored
+test env::jobs::tests::test_last_bg_pid_none_when_all_foreground ... ignored
+test env::jobs::tests::test_last_bg_pid_none_when_empty ... ignored
+test env::jobs::tests::test_last_bg_pid_returns_most_recent_bg_job ... ignored
+test env::jobs::tests::test_mark_notified_clears_pending ... ignored
+test env::jobs::tests::test_pending_notifications_empty_when_running ... ignored
+test env::jobs::tests::test_pending_notifications_non_empty_when_done ... ignored
+test env::jobs::tests::test_pending_notifications_sorted ... ignored
+test env::jobs::tests::test_remove_job_updates_current_previous ... ignored
+test env::jobs::tests::test_remove_non_current_job ... ignored
+test env::jobs::tests::test_resolve_job_spec_invalid ... ignored
+test env::jobs::tests::test_resolve_job_spec_minus ... ignored
+test env::jobs::tests::test_resolve_job_spec_numeric ... ignored
+test env::jobs::tests::test_resolve_job_spec_percent_percent ... ignored
+test env::jobs::tests::test_resolve_job_spec_plus ... ignored
+test env::jobs::tests::test_terminal_functions_compile ... ignored
+test env::jobs::tests::test_update_status_by_pid ... ignored
+test env::jobs::tests::test_update_status_unknown_pid_is_noop ... ignored
+test env::shell_mode::tests::test_shell_options_default ... ignored
+test env::shell_mode::tests::test_shell_options_set_by_char ... ignored
+test env::shell_mode::tests::test_shell_options_set_by_name ... ignored
+test env::tests::test_jobs_table ... ignored
+test env::tests::test_shell_env_construction ... ignored
+test env::tests::test_shell_pgid ... ignored
+test env::traps::tests::test_trap_store_default ... ignored
+test env::traps::tests::test_trap_store_get_signal_trap ... ignored
+test env::traps::tests::test_trap_store_remove ... ignored
+test env::traps::tests::test_trap_store_reset_non_ignored ... ignored
+test env::traps::tests::test_trap_store_set_exit ... ignored
+test env::traps::tests::test_trap_store_set_signal ... ignored
+test env::traps::tests::test_trap_store_signal_name_to_number ... ignored
+test env::vars::tests::test_export ... ignored
+test env::vars::tests::test_from_environ ... ignored
+test env::vars::tests::test_get_set ... ignored
+test env::vars::tests::test_push_pop_scope_positional_params ... ignored
+test env::vars::tests::test_readonly_prevents_set ... ignored
+test env::vars::tests::test_readonly_prevents_unset ... ignored
+test env::vars::tests::test_scope_export_across_scopes ... ignored
+test env::vars::tests::test_scope_new_variable_goes_to_global ... ignored
+test env::vars::tests::test_scope_readonly_across_scopes ... ignored
+test env::vars::tests::test_scope_unset_across_scopes ... ignored
+test env::vars::tests::test_scope_variable_lookup_walks_chain ... ignored
+test env::vars::tests::test_to_environ_excludes_unexported ... ignored
+test env::vars::tests::test_unset ... ignored
+test error::tests::test_error_display_with_location ... ignored
+test error::tests::test_error_display_without_location ... ignored
+test exec::command::tests::find_in_path_finds_sh ... ignored
+test exec::command::tests::find_in_path_returns_none_for_nonexistent ... ignored
+test exec::redirect::tests::test_redirect_input ... ignored
+test exec::redirect::tests::test_redirect_output_and_restore ... ignored
+test exec::tests::assignment_only_sets_var ... ignored
+test exec::tests::exec_builtin_false_returns_1 ... ignored
+test exec::tests::exec_builtin_true_returns_0 ... ignored
+test exec::tests::exec_external_true_returns_0 ... ignored
+test exec::tests::exit_status_tracked ... ignored
+test exec::tests::test_and_list_all_succeed ... ignored
+test exec::tests::test_and_list_first_fails ... ignored
+test exec::tests::test_exec_program_sequential ... ignored
+test exec::tests::test_negated_pipeline ... ignored
+test exec::tests::test_or_list_first_fails ... ignored
+test exec::tests::test_or_list_first_succeeds ... ignored
+test exec::tests::test_should_errexit_default_off ... ignored
+test exec::tests::test_should_errexit_enabled ... ignored
+test exec::tests::test_single_command_pipeline ... ignored
+test exec::tests::test_with_errexit_suppressed ... ignored
+test exec::tests::test_with_errexit_suppressed_nested ... ignored
+test expand::arith::tests::test_addition ... ignored
+test expand::arith::tests::test_bitwise ... ignored
+test expand::arith::tests::test_braced_positional_param_in_arith ... ignored
+test expand::arith::tests::test_comparison ... ignored
+test expand::arith::tests::test_dollar_variable ... ignored
+test expand::arith::tests::test_hex ... ignored
+test expand::arith::tests::test_logical ... ignored
+test expand::arith::tests::test_octal ... ignored
+test expand::arith::tests::test_parens ... ignored
+test expand::arith::tests::test_positional_param_in_arith ... ignored
+test expand::arith::tests::test_positional_param_zero ... ignored
+test expand::arith::tests::test_precedence ... ignored
+test expand::arith::tests::test_simple_number ... ignored
+test expand::arith::tests::test_special_param_hash_in_arith ... ignored
+test expand::arith::tests::test_special_param_question_in_arith ... ignored
+test expand::arith::tests::test_ternary ... ignored
+test expand::arith::tests::test_unary_minus ... ignored
+test expand::arith::tests::test_unset_positional_param_defaults_to_zero ... ignored
+test expand::arith::tests::test_variable ... ignored
+test expand::arith::tests::test_variable_assign ... ignored
+test expand::field_split::tests::test_colon_with_surrounding_whitespace_absorbed ... ignored
+test expand::field_split::tests::test_consecutive_whitespace ... ignored
+test expand::field_split::tests::test_double_colon_empty_field ... ignored
+test expand::field_split::tests::test_empty_ifs_drops_empty_fields ... ignored
+test expand::field_split::tests::test_empty_ifs_no_split ... ignored
+test expand::field_split::tests::test_mixed_quoted_unquoted ... ignored
+test expand::field_split::tests::test_split_colon_delimiter ... ignored
+test expand::field_split::tests::test_split_quoted_not_split ... ignored
+test expand::field_split::tests::test_split_spaces ... ignored
+test expand::field_split::tests::test_unset_ifs_default ... ignored
+test expand::param::tests::test_alt_set_returns_word ... ignored
+test expand::param::tests::test_alt_unset_returns_empty ... ignored
+test expand::param::tests::test_assign_null_check_empty_assigns ... ignored
+test expand::param::tests::test_assign_set_keeps_and_returns ... ignored
+test expand::param::tests::test_assign_unset_assigns_and_returns ... ignored
+test expand::param::tests::test_error_set_returns_value ... ignored
+test expand::param::tests::test_error_unset_returns_empty ... ignored
+test expand::param::tests::test_length ... ignored
+test expand::param::tests::test_length_unset ... ignored
+test expand::param::tests::test_simple_set ... ignored
+test expand::param::tests::test_simple_unset ... ignored
+test expand::param::tests::test_special_at_joins ... ignored
+test expand::param::tests::test_special_question ... ignored
+test expand::param::tests::test_strip_long_prefix ... ignored
+test expand::param::tests::test_strip_short_prefix ... ignored
+test expand::param::tests::test_strip_short_suffix ... ignored
+test expand::param::tests::test_strip_short_suffix_no_match ... ignored
+test expand::pathname::tests::test_glob_src_files ... ignored
+test expand::pathname::tests::test_has_unquoted_glob_chars_false_no_meta ... ignored
+test expand::pathname::tests::test_has_unquoted_glob_chars_false_quoted ... ignored
+test expand::pathname::tests::test_has_unquoted_glob_chars_true ... ignored
+test expand::pathname::tests::test_no_glob_passthrough ... ignored
+test expand::pathname::tests::test_no_match_keeps_pattern ... ignored
+test expand::pathname::tests::test_quoted_glob_not_expanded ... ignored
+test expand::pathname::tests::test_star_does_not_match_dotfiles ... ignored
+test expand::pattern::tests::test_backslash_literal_char ... ignored
+test expand::pattern::tests::test_backslash_literal_star ... ignored
+test expand::pattern::tests::test_bracket_negated ... ignored
+test expand::pattern::tests::test_bracket_negated_range ... ignored
+test expand::pattern::tests::test_bracket_range ... ignored
+test expand::pattern::tests::test_bracket_set ... ignored
+test expand::pattern::tests::test_complex_pattern ... ignored
+test expand::pattern::tests::test_double_star ... ignored
+test expand::pattern::tests::test_empty_pattern_empty_string ... ignored
+test expand::pattern::tests::test_empty_pattern_nonempty_string ... ignored
+test expand::pattern::tests::test_literal_match ... ignored
+test expand::pattern::tests::test_literal_no_match ... ignored
+test expand::pattern::tests::test_question_in_middle ... ignored
+test expand::pattern::tests::test_question_single_char ... ignored
+test expand::pattern::tests::test_star_matches_any ... ignored
+test expand::pattern::tests::test_star_matches_empty ... ignored
+test expand::pattern::tests::test_star_prefix ... ignored
+test expand::pattern::tests::test_star_question_combined ... ignored
+test expand::pattern::tests::test_star_suffix ... ignored
+test expand::tests::test_dollar_at_empty_params_produces_nothing ... ignored
+test expand::tests::test_dollar_at_in_double_quotes_splits ... ignored
+test expand::tests::test_dollar_in_double_quote ... ignored
+test expand::tests::test_dollar_single_quoted ... ignored
+test expand::tests::test_dollar_star_in_double_quotes_joins ... ignored
+test expand::tests::test_double_quoted_literal ... ignored
+test expand::tests::test_expand_heredoc_body_literal ... ignored
+test expand::tests::test_expand_heredoc_body_quoted_no_expansion ... ignored
+test expand::tests::test_expand_heredoc_body_unquoted_expands ... ignored
+test expand::tests::test_expand_word_basic ... ignored
+test expand::tests::test_expand_words_basic ... ignored
+test expand::tests::test_literal ... ignored
+test expand::tests::test_mixed_parts ... ignored
+test expand::tests::test_param_default ... ignored
+test expand::tests::test_param_default_null_check ... ignored
+test expand::tests::test_positional_out_of_range ... ignored
+test expand::tests::test_positional_param ... ignored
+test expand::tests::test_simple_param ... ignored
+test expand::tests::test_single_quoted ... ignored
+test expand::tests::test_special_dollar ... ignored
+test expand::tests::test_special_hash ... ignored
+test expand::tests::test_special_question ... ignored
+test expand::tests::test_special_zero ... ignored
+test expand::tests::test_tilde_none ... ignored
+test expand::tests::test_tilde_none_no_home ... ignored
+test expand::tests::test_tilde_root_starts_with_slash ... ignored
+test expand::tests::test_unquoted_dollar_at_empty_produces_nothing ... ignored
+test expand::tests::test_unquoted_dollar_at_splits_per_param ... ignored
+test expand::tests::test_unset_param ... ignored
+test lexer::tests::test_arith_expansion ... ignored
+test lexer::tests::test_backslash_escape ... ignored
+test lexer::tests::test_backtick_command_sub ... ignored
+test lexer::tests::test_command_sub_dollar_paren ... ignored
+test lexer::tests::test_comment_ignored ... ignored
+test lexer::tests::test_digits_not_followed_by_redirect ... ignored
+test lexer::tests::test_dollar_in_double_quotes ... ignored
+test lexer::tests::test_dollar_single_quote ... ignored
+test lexer::tests::test_dollar_single_quote_escapes ... ignored
+test lexer::tests::test_double_quoted_word ... ignored
+test lexer::tests::test_empty_input ... ignored
+test lexer::tests::test_fd_dup ... ignored
+test lexer::tests::test_heredoc_operators ... ignored
+test lexer::tests::test_io_number_input ... ignored
+test lexer::tests::test_io_number_redirect ... ignored
+test lexer::tests::test_line_continuation ... ignored
+test lexer::tests::test_mixed_quoting_in_word ... ignored
+test lexer::tests::test_multi_char_operators ... ignored
+test lexer::tests::test_newline ... ignored
+test lexer::tests::test_param_default ... ignored
+test lexer::tests::test_param_default_no_colon ... ignored
+test lexer::tests::test_param_in_word ... ignored
+test lexer::tests::test_param_length ... ignored
+test lexer::tests::test_param_strip_long_prefix ... ignored
+test lexer::tests::test_param_strip_suffix ... ignored
+test lexer::tests::test_positional_param ... ignored
+test lexer::tests::test_redirect_operators ... ignored
+test lexer::tests::test_simple_param ... ignored
+test lexer::tests::test_single_char_operators ... ignored
+test lexer::tests::test_single_quoted_word ... ignored
+test lexer::tests::test_special_params ... ignored
+test lexer::tests::test_unquoted_words ... ignored
+test lexer::tests::test_unterminated_double_quote ... ignored
+test lexer::tests::test_unterminated_single_quote ... ignored
+test lexer::tests::test_whitespace_only ... ignored
+test lexer::token::tests::test_is_reserved_word_literal ... ignored
+test lexer::token::tests::test_is_reserved_word_non_word_token ... ignored
+test lexer::token::tests::test_is_reserved_word_quoted_not_reserved ... ignored
+test parser::ast::tests::test_simple_command_construction ... ignored
+test parser::ast::tests::test_word_literal ... ignored
+test parser::ast::tests::test_word_non_literal ... ignored
+test parser::tests::test_and_or_list ... ignored
+test parser::tests::test_append_redirect ... ignored
+test parser::tests::test_assignment_empty_value ... ignored
+test parser::tests::test_assignment_only ... ignored
+test parser::tests::test_assignment_with_command ... ignored
+test parser::tests::test_async_command ... ignored
+test parser::tests::test_brace_group ... ignored
+test parser::tests::test_case_basic ... ignored
+test parser::tests::test_case_empty ... ignored
+test parser::tests::test_case_fallthrough ... ignored
+test parser::tests::test_case_multiple_patterns ... ignored
+test parser::tests::test_clobber_redirect ... ignored
+test parser::tests::test_dup_output ... ignored
+test parser::tests::test_empty_program ... ignored
+test parser::tests::test_fd_redirect ... ignored
+test parser::tests::test_for_loop_with_do_on_newline ... ignored
+test parser::tests::test_for_loop_with_words ... ignored
+test parser::tests::test_for_loop_without_in ... ignored
+test parser::tests::test_function_def ... ignored
+test parser::tests::test_function_def_with_redirect ... ignored
+test parser::tests::test_heredoc_body ... ignored
+test parser::tests::test_heredoc_quoted_delimiter ... ignored
+test parser::tests::test_heredoc_redirect ... ignored
+test parser::tests::test_heredoc_strip_tabs ... ignored
+test parser::tests::test_heredoc_with_command_after ... ignored
+test parser::tests::test_if_elif ... ignored
+test parser::tests::test_if_else ... ignored
+test parser::tests::test_if_then_fi ... ignored
+test parser::tests::test_input_redirect ... ignored
+test parser::tests::test_multiple_newlines ... ignored
+test parser::tests::test_multiple_redirects ... ignored
+test parser::tests::test_negated_pipeline ... ignored
+test parser::tests::test_output_redirect ... ignored
+test parser::tests::test_pipeline ... ignored
+test parser::tests::test_read_write_redirect ... ignored
+test parser::tests::test_semicolon_list ... ignored
+test parser::tests::test_simple_command ... ignored
+test parser::tests::test_subshell ... ignored
+test parser::tests::test_until_loop ... ignored
+test parser::tests::test_while_loop ... ignored
+test signal::tests::test_drain_pending_signals_empty ... ignored
+test signal::tests::test_handled_signals_are_in_signal_table ... ignored
+test signal::tests::test_init_signal_handling ... ignored
+test signal::tests::test_job_control_signal_functions_exist ... ignored
+test signal::tests::test_signal_name_to_number_case_insensitive ... ignored
+test signal::tests::test_signal_name_to_number_int ... ignored
+test signal::tests::test_signal_name_to_number_invalid ... ignored
+test signal::tests::test_signal_name_to_number_kill ... ignored
+test signal::tests::test_signal_name_to_number_sigint ... ignored
+test signal::tests::test_signal_name_to_number_term ... ignored
+test signal::tests::test_signal_number_to_name_15 ... ignored
+test signal::tests::test_signal_number_to_name_2 ... ignored
+test signal::tests::test_signal_number_to_name_9 ... ignored
+test signal::tests::test_signal_number_to_name_999 ... ignored
+test signal::tests::test_signal_number_to_name_job_control ... ignored
+test signal::tests::test_signal_table_has_job_control_signals ... ignored
+
+test result: ok. 0 passed; 0 failed; 289 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/release/deps/kish-31a9ee7f661fd1fe)
+
+running 289 tests
+test builtin::tests::test_alias_unalias ... ignored
+test builtin::tests::test_classify_builtin ... ignored
+test builtin::tests::test_classify_fg_bg_jobs ... ignored
+test builtin::tests::test_echo_dash_n ... ignored
+test builtin::tests::test_true_false ... ignored
+test builtin::tests::test_unalias_all ... ignored
+test env::aliases::tests::test_alias_clear ... ignored
+test env::aliases::tests::test_alias_overwrite ... ignored
+test env::aliases::tests::test_alias_remove ... ignored
+test env::aliases::tests::test_alias_set_get ... ignored
+test env::aliases::tests::test_alias_sorted_iter ... ignored
+test env::jobs::tests::test_add_job_assigns_incrementing_ids ... ignored
+test env::jobs::tests::test_add_job_updates_current_previous ... ignored
+test env::jobs::tests::test_all_jobs_sorted_by_id ... ignored
+test env::jobs::tests::test_current_job_previous_job ... ignored
+test env::jobs::tests::test_default_is_empty ... ignored
+test env::jobs::tests::test_find_by_pgid ... ignored
+test env::jobs::tests::test_format_job_done ... ignored
+test env::jobs::tests::test_format_job_nonexistent ... ignored
+test env::jobs::tests::test_format_job_running ... ignored
+test env::jobs::tests::test_get_mut_modifies_job ... ignored
+test env::jobs::tests::test_get_returns_correct_job ... ignored
+test env::jobs::tests::test_get_returns_none_for_nonexistent ... ignored
+test env::jobs::tests::test_job_status_equality ... ignored
+test env::jobs::tests::test_last_bg_pid_none_when_all_foreground ... ignored
+test env::jobs::tests::test_last_bg_pid_none_when_empty ... ignored
+test env::jobs::tests::test_last_bg_pid_returns_most_recent_bg_job ... ignored
+test env::jobs::tests::test_mark_notified_clears_pending ... ignored
+test env::jobs::tests::test_pending_notifications_empty_when_running ... ignored
+test env::jobs::tests::test_pending_notifications_non_empty_when_done ... ignored
+test env::jobs::tests::test_pending_notifications_sorted ... ignored
+test env::jobs::tests::test_remove_job_updates_current_previous ... ignored
+test env::jobs::tests::test_remove_non_current_job ... ignored
+test env::jobs::tests::test_resolve_job_spec_invalid ... ignored
+test env::jobs::tests::test_resolve_job_spec_minus ... ignored
+test env::jobs::tests::test_resolve_job_spec_numeric ... ignored
+test env::jobs::tests::test_resolve_job_spec_percent_percent ... ignored
+test env::jobs::tests::test_resolve_job_spec_plus ... ignored
+test env::jobs::tests::test_terminal_functions_compile ... ignored
+test env::jobs::tests::test_update_status_by_pid ... ignored
+test env::jobs::tests::test_update_status_unknown_pid_is_noop ... ignored
+test env::shell_mode::tests::test_shell_options_default ... ignored
+test env::shell_mode::tests::test_shell_options_set_by_char ... ignored
+test env::shell_mode::tests::test_shell_options_set_by_name ... ignored
+test env::tests::test_jobs_table ... ignored
+test env::tests::test_shell_env_construction ... ignored
+test env::tests::test_shell_pgid ... ignored
+test env::traps::tests::test_trap_store_default ... ignored
+test env::traps::tests::test_trap_store_get_signal_trap ... ignored
+test env::traps::tests::test_trap_store_remove ... ignored
+test env::traps::tests::test_trap_store_reset_non_ignored ... ignored
+test env::traps::tests::test_trap_store_set_exit ... ignored
+test env::traps::tests::test_trap_store_set_signal ... ignored
+test env::traps::tests::test_trap_store_signal_name_to_number ... ignored
+test env::vars::tests::test_export ... ignored
+test env::vars::tests::test_from_environ ... ignored
+test env::vars::tests::test_get_set ... ignored
+test env::vars::tests::test_push_pop_scope_positional_params ... ignored
+test env::vars::tests::test_readonly_prevents_set ... ignored
+test env::vars::tests::test_readonly_prevents_unset ... ignored
+test env::vars::tests::test_scope_export_across_scopes ... ignored
+test env::vars::tests::test_scope_new_variable_goes_to_global ... ignored
+test env::vars::tests::test_scope_readonly_across_scopes ... ignored
+test env::vars::tests::test_scope_unset_across_scopes ... ignored
+test env::vars::tests::test_scope_variable_lookup_walks_chain ... ignored
+test env::vars::tests::test_to_environ_excludes_unexported ... ignored
+test env::vars::tests::test_unset ... ignored
+test error::tests::test_error_display_with_location ... ignored
+test error::tests::test_error_display_without_location ... ignored
+test exec::command::tests::find_in_path_finds_sh ... ignored
+test exec::command::tests::find_in_path_returns_none_for_nonexistent ... ignored
+test exec::redirect::tests::test_redirect_input ... ignored
+test exec::redirect::tests::test_redirect_output_and_restore ... ignored
+test exec::tests::assignment_only_sets_var ... ignored
+test exec::tests::exec_builtin_false_returns_1 ... ignored
+test exec::tests::exec_builtin_true_returns_0 ... ignored
+test exec::tests::exec_external_true_returns_0 ... ignored
+test exec::tests::exit_status_tracked ... ignored
+test exec::tests::test_and_list_all_succeed ... ignored
+test exec::tests::test_and_list_first_fails ... ignored
+test exec::tests::test_exec_program_sequential ... ignored
+test exec::tests::test_negated_pipeline ... ignored
+test exec::tests::test_or_list_first_fails ... ignored
+test exec::tests::test_or_list_first_succeeds ... ignored
+test exec::tests::test_should_errexit_default_off ... ignored
+test exec::tests::test_should_errexit_enabled ... ignored
+test exec::tests::test_single_command_pipeline ... ignored
+test exec::tests::test_with_errexit_suppressed ... ignored
+test exec::tests::test_with_errexit_suppressed_nested ... ignored
+test expand::arith::tests::test_addition ... ignored
+test expand::arith::tests::test_bitwise ... ignored
+test expand::arith::tests::test_braced_positional_param_in_arith ... ignored
+test expand::arith::tests::test_comparison ... ignored
+test expand::arith::tests::test_dollar_variable ... ignored
+test expand::arith::tests::test_hex ... ignored
+test expand::arith::tests::test_logical ... ignored
+test expand::arith::tests::test_octal ... ignored
+test expand::arith::tests::test_parens ... ignored
+test expand::arith::tests::test_positional_param_in_arith ... ignored
+test expand::arith::tests::test_positional_param_zero ... ignored
+test expand::arith::tests::test_precedence ... ignored
+test expand::arith::tests::test_simple_number ... ignored
+test expand::arith::tests::test_special_param_hash_in_arith ... ignored
+test expand::arith::tests::test_special_param_question_in_arith ... ignored
+test expand::arith::tests::test_ternary ... ignored
+test expand::arith::tests::test_unary_minus ... ignored
+test expand::arith::tests::test_unset_positional_param_defaults_to_zero ... ignored
+test expand::arith::tests::test_variable ... ignored
+test expand::arith::tests::test_variable_assign ... ignored
+test expand::field_split::tests::test_colon_with_surrounding_whitespace_absorbed ... ignored
+test expand::field_split::tests::test_consecutive_whitespace ... ignored
+test expand::field_split::tests::test_double_colon_empty_field ... ignored
+test expand::field_split::tests::test_empty_ifs_drops_empty_fields ... ignored
+test expand::field_split::tests::test_empty_ifs_no_split ... ignored
+test expand::field_split::tests::test_mixed_quoted_unquoted ... ignored
+test expand::field_split::tests::test_split_colon_delimiter ... ignored
+test expand::field_split::tests::test_split_quoted_not_split ... ignored
+test expand::field_split::tests::test_split_spaces ... ignored
+test expand::field_split::tests::test_unset_ifs_default ... ignored
+test expand::param::tests::test_alt_set_returns_word ... ignored
+test expand::param::tests::test_alt_unset_returns_empty ... ignored
+test expand::param::tests::test_assign_null_check_empty_assigns ... ignored
+test expand::param::tests::test_assign_set_keeps_and_returns ... ignored
+test expand::param::tests::test_assign_unset_assigns_and_returns ... ignored
+test expand::param::tests::test_error_set_returns_value ... ignored
+test expand::param::tests::test_error_unset_returns_empty ... ignored
+test expand::param::tests::test_length ... ignored
+test expand::param::tests::test_length_unset ... ignored
+test expand::param::tests::test_simple_set ... ignored
+test expand::param::tests::test_simple_unset ... ignored
+test expand::param::tests::test_special_at_joins ... ignored
+test expand::param::tests::test_special_question ... ignored
+test expand::param::tests::test_strip_long_prefix ... ignored
+test expand::param::tests::test_strip_short_prefix ... ignored
+test expand::param::tests::test_strip_short_suffix ... ignored
+test expand::param::tests::test_strip_short_suffix_no_match ... ignored
+test expand::pathname::tests::test_glob_src_files ... ignored
+test expand::pathname::tests::test_has_unquoted_glob_chars_false_no_meta ... ignored
+test expand::pathname::tests::test_has_unquoted_glob_chars_false_quoted ... ignored
+test expand::pathname::tests::test_has_unquoted_glob_chars_true ... ignored
+test expand::pathname::tests::test_no_glob_passthrough ... ignored
+test expand::pathname::tests::test_no_match_keeps_pattern ... ignored
+test expand::pathname::tests::test_quoted_glob_not_expanded ... ignored
+test expand::pathname::tests::test_star_does_not_match_dotfiles ... ignored
+test expand::pattern::tests::test_backslash_literal_char ... ignored
+test expand::pattern::tests::test_backslash_literal_star ... ignored
+test expand::pattern::tests::test_bracket_negated ... ignored
+test expand::pattern::tests::test_bracket_negated_range ... ignored
+test expand::pattern::tests::test_bracket_range ... ignored
+test expand::pattern::tests::test_bracket_set ... ignored
+test expand::pattern::tests::test_complex_pattern ... ignored
+test expand::pattern::tests::test_double_star ... ignored
+test expand::pattern::tests::test_empty_pattern_empty_string ... ignored
+test expand::pattern::tests::test_empty_pattern_nonempty_string ... ignored
+test expand::pattern::tests::test_literal_match ... ignored
+test expand::pattern::tests::test_literal_no_match ... ignored
+test expand::pattern::tests::test_question_in_middle ... ignored
+test expand::pattern::tests::test_question_single_char ... ignored
+test expand::pattern::tests::test_star_matches_any ... ignored
+test expand::pattern::tests::test_star_matches_empty ... ignored
+test expand::pattern::tests::test_star_prefix ... ignored
+test expand::pattern::tests::test_star_question_combined ... ignored
+test expand::pattern::tests::test_star_suffix ... ignored
+test expand::tests::test_dollar_at_empty_params_produces_nothing ... ignored
+test expand::tests::test_dollar_at_in_double_quotes_splits ... ignored
+test expand::tests::test_dollar_in_double_quote ... ignored
+test expand::tests::test_dollar_single_quoted ... ignored
+test expand::tests::test_dollar_star_in_double_quotes_joins ... ignored
+test expand::tests::test_double_quoted_literal ... ignored
+test expand::tests::test_expand_heredoc_body_literal ... ignored
+test expand::tests::test_expand_heredoc_body_quoted_no_expansion ... ignored
+test expand::tests::test_expand_heredoc_body_unquoted_expands ... ignored
+test expand::tests::test_expand_word_basic ... ignored
+test expand::tests::test_expand_words_basic ... ignored
+test expand::tests::test_literal ... ignored
+test expand::tests::test_mixed_parts ... ignored
+test expand::tests::test_param_default ... ignored
+test expand::tests::test_param_default_null_check ... ignored
+test expand::tests::test_positional_out_of_range ... ignored
+test expand::tests::test_positional_param ... ignored
+test expand::tests::test_simple_param ... ignored
+test expand::tests::test_single_quoted ... ignored
+test expand::tests::test_special_dollar ... ignored
+test expand::tests::test_special_hash ... ignored
+test expand::tests::test_special_question ... ignored
+test expand::tests::test_special_zero ... ignored
+test expand::tests::test_tilde_none ... ignored
+test expand::tests::test_tilde_none_no_home ... ignored
+test expand::tests::test_tilde_root_starts_with_slash ... ignored
+test expand::tests::test_unquoted_dollar_at_empty_produces_nothing ... ignored
+test expand::tests::test_unquoted_dollar_at_splits_per_param ... ignored
+test expand::tests::test_unset_param ... ignored
+test lexer::tests::test_arith_expansion ... ignored
+test lexer::tests::test_backslash_escape ... ignored
+test lexer::tests::test_backtick_command_sub ... ignored
+test lexer::tests::test_command_sub_dollar_paren ... ignored
+test lexer::tests::test_comment_ignored ... ignored
+test lexer::tests::test_digits_not_followed_by_redirect ... ignored
+test lexer::tests::test_dollar_in_double_quotes ... ignored
+test lexer::tests::test_dollar_single_quote ... ignored
+test lexer::tests::test_dollar_single_quote_escapes ... ignored
+test lexer::tests::test_double_quoted_word ... ignored
+test lexer::tests::test_empty_input ... ignored
+test lexer::tests::test_fd_dup ... ignored
+test lexer::tests::test_heredoc_operators ... ignored
+test lexer::tests::test_io_number_input ... ignored
+test lexer::tests::test_io_number_redirect ... ignored
+test lexer::tests::test_line_continuation ... ignored
+test lexer::tests::test_mixed_quoting_in_word ... ignored
+test lexer::tests::test_multi_char_operators ... ignored
+test lexer::tests::test_newline ... ignored
+test lexer::tests::test_param_default ... ignored
+test lexer::tests::test_param_default_no_colon ... ignored
+test lexer::tests::test_param_in_word ... ignored
+test lexer::tests::test_param_length ... ignored
+test lexer::tests::test_param_strip_long_prefix ... ignored
+test lexer::tests::test_param_strip_suffix ... ignored
+test lexer::tests::test_positional_param ... ignored
+test lexer::tests::test_redirect_operators ... ignored
+test lexer::tests::test_simple_param ... ignored
+test lexer::tests::test_single_char_operators ... ignored
+test lexer::tests::test_single_quoted_word ... ignored
+test lexer::tests::test_special_params ... ignored
+test lexer::tests::test_unquoted_words ... ignored
+test lexer::tests::test_unterminated_double_quote ... ignored
+test lexer::tests::test_unterminated_single_quote ... ignored
+test lexer::tests::test_whitespace_only ... ignored
+test lexer::token::tests::test_is_reserved_word_literal ... ignored
+test lexer::token::tests::test_is_reserved_word_non_word_token ... ignored
+test lexer::token::tests::test_is_reserved_word_quoted_not_reserved ... ignored
+test parser::ast::tests::test_simple_command_construction ... ignored
+test parser::ast::tests::test_word_literal ... ignored
+test parser::ast::tests::test_word_non_literal ... ignored
+test parser::tests::test_and_or_list ... ignored
+test parser::tests::test_append_redirect ... ignored
+test parser::tests::test_assignment_empty_value ... ignored
+test parser::tests::test_assignment_only ... ignored
+test parser::tests::test_assignment_with_command ... ignored
+test parser::tests::test_async_command ... ignored
+test parser::tests::test_brace_group ... ignored
+test parser::tests::test_case_basic ... ignored
+test parser::tests::test_case_empty ... ignored
+test parser::tests::test_case_fallthrough ... ignored
+test parser::tests::test_case_multiple_patterns ... ignored
+test parser::tests::test_clobber_redirect ... ignored
+test parser::tests::test_dup_output ... ignored
+test parser::tests::test_empty_program ... ignored
+test parser::tests::test_fd_redirect ... ignored
+test parser::tests::test_for_loop_with_do_on_newline ... ignored
+test parser::tests::test_for_loop_with_words ... ignored
+test parser::tests::test_for_loop_without_in ... ignored
+test parser::tests::test_function_def ... ignored
+test parser::tests::test_function_def_with_redirect ... ignored
+test parser::tests::test_heredoc_body ... ignored
+test parser::tests::test_heredoc_quoted_delimiter ... ignored
+test parser::tests::test_heredoc_redirect ... ignored
+test parser::tests::test_heredoc_strip_tabs ... ignored
+test parser::tests::test_heredoc_with_command_after ... ignored
+test parser::tests::test_if_elif ... ignored
+test parser::tests::test_if_else ... ignored
+test parser::tests::test_if_then_fi ... ignored
+test parser::tests::test_input_redirect ... ignored
+test parser::tests::test_multiple_newlines ... ignored
+test parser::tests::test_multiple_redirects ... ignored
+test parser::tests::test_negated_pipeline ... ignored
+test parser::tests::test_output_redirect ... ignored
+test parser::tests::test_pipeline ... ignored
+test parser::tests::test_read_write_redirect ... ignored
+test parser::tests::test_semicolon_list ... ignored
+test parser::tests::test_simple_command ... ignored
+test parser::tests::test_subshell ... ignored
+test parser::tests::test_until_loop ... ignored
+test parser::tests::test_while_loop ... ignored
+test signal::tests::test_drain_pending_signals_empty ... ignored
+test signal::tests::test_handled_signals_are_in_signal_table ... ignored
+test signal::tests::test_init_signal_handling ... ignored
+test signal::tests::test_job_control_signal_functions_exist ... ignored
+test signal::tests::test_signal_name_to_number_case_insensitive ... ignored
+test signal::tests::test_signal_name_to_number_int ... ignored
+test signal::tests::test_signal_name_to_number_invalid ... ignored
+test signal::tests::test_signal_name_to_number_kill ... ignored
+test signal::tests::test_signal_name_to_number_sigint ... ignored
+test signal::tests::test_signal_name_to_number_term ... ignored
+test signal::tests::test_signal_number_to_name_15 ... ignored
+test signal::tests::test_signal_number_to_name_2 ... ignored
+test signal::tests::test_signal_number_to_name_9 ... ignored
+test signal::tests::test_signal_number_to_name_999 ... ignored
+test signal::tests::test_signal_number_to_name_job_control ... ignored
+test signal::tests::test_signal_table_has_job_control_signals ... ignored
+
+test result: ok. 0 passed; 0 failed; 289 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running benches/expand_bench.rs (target/release/deps/expand_bench-75a255fab166f0c6)
+Gnuplot not found, using plotters backend
+Benchmarking expand_param_default
+Benchmarking expand_param_default: Warming up for 3.0000 s
+Benchmarking expand_param_default: Collecting 100 samples in estimated 6.2005 s (10k iterations)
+Benchmarking expand_param_default: Analyzing
+expand_param_default    time:   [579.16 µs 586.30 µs 593.82 µs]
+                        change: [-1.1756% +0.4080% +2.2539%] (p = 0.64 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+
+Benchmarking expand_field_split
+Benchmarking expand_field_split: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 9.7s, enable flat sampling, or reduce sample count to 50.
+Benchmarking expand_field_split: Collecting 100 samples in estimated 9.6740 s (5050 iterations)
+Benchmarking expand_field_split: Analyzing
+expand_field_split      time:   [1.8701 ms 1.9023 ms 1.9415 ms]
+                        change: [+0.8253% +2.6350% +4.4467%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking expand_literal_words
+Benchmarking expand_literal_words: Warming up for 3.0000 s
+Benchmarking expand_literal_words: Collecting 100 samples in estimated 5.1101 s (81k iterations)
+Benchmarking expand_literal_words: Analyzing
+expand_literal_words    time:   [61.577 µs 62.765 µs 64.180 µs]
+                        change: [-2.9870% -0.6453% +1.7662%] (p = 0.61 > 0.05)
+                        No change in performance detected.
+Found 8 outliers among 100 measurements (8.00%)
+  7 (7.00%) high mild
+  1 (1.00%) high severe
+
+     Running benches/lexer_bench.rs (target/release/deps/lexer_bench-819bc13538942669)
+Gnuplot not found, using plotters backend
+Benchmarking lex_small
+Benchmarking lex_small: Warming up for 3.0000 s
+Benchmarking lex_small: Collecting 100 samples in estimated 5.0126 s (1.1M iterations)
+Benchmarking lex_small: Analyzing
+lex_small               time:   [4.5308 µs 4.6367 µs 4.7462 µs]
+                        change: [-4.1703% -2.5372% -0.9263%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 7 outliers among 100 measurements (7.00%)
+  5 (5.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking lex_large
+Benchmarking lex_large: Warming up for 3.0000 s
+Benchmarking lex_large: Collecting 100 samples in estimated 5.3089 s (71k iterations)
+Benchmarking lex_large: Analyzing
+lex_large               time:   [73.279 µs 74.538 µs 75.840 µs]
+                        change: [-7.7622% -6.2625% -4.6375%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 16 outliers among 100 measurements (16.00%)
+  7 (7.00%) high mild
+  9 (9.00%) high severe
+
+     Running benches/parser_bench.rs (target/release/deps/parser_bench-73239e6a59209d7e)
+Gnuplot not found, using plotters backend
+Benchmarking parse_small
+Benchmarking parse_small: Warming up for 3.0000 s
+Benchmarking parse_small: Collecting 100 samples in estimated 5.0124 s (348k iterations)
+Benchmarking parse_small: Analyzing
+parse_small             time:   [14.216 µs 14.516 µs 14.845 µs]
+                        change: [-3.7704% -2.0519% -0.1894%] (p = 0.03 < 0.05)
+                        Change within noise threshold.
+Found 8 outliers among 100 measurements (8.00%)
+  5 (5.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking parse_large
+Benchmarking parse_large: Warming up for 3.0000 s
+Benchmarking parse_large: Collecting 100 samples in estimated 5.0568 s (50k iterations)
+Benchmarking parse_large: Analyzing
+parse_large             time:   [95.407 µs 98.010 µs 101.21 µs]
+                        change: [-6.2462% -4.0449% -1.6730%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 7 outliers among 100 measurements (7.00%)
+  5 (5.00%) high mild
+  2 (2.00%) high severe
+
