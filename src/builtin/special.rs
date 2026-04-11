@@ -53,7 +53,7 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> i32 {
 fn builtin_export(args: &[String], env: &mut ShellEnv) -> i32 {
     if args.is_empty() || args[0] == "-p" {
         // Print all exported variables in POSIX re-input format
-        let mut exported: Vec<(String, String)> = env.vars.to_environ();
+        let mut exported: Vec<(String, String)> = env.vars.to_environ().to_vec();
         exported.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in exported {
             println!("export {}=\"{}\"", name, value);
@@ -98,7 +98,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> i32 {
             .vars
             .vars_iter()
             .filter(|(_, v)| v.readonly)
-            .map(|(k, v)| (k.clone(), v.value.clone()))
+            .map(|(k, v)| (k.to_string(), v.value.clone()))
             .collect();
         let mut sorted = readonly_vars;
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
@@ -194,7 +194,7 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
     if args.is_empty() {
         // Display all variables sorted
         let mut vars: Vec<(String, String)> = env.vars.vars_iter()
-            .map(|(k, v)| (k.clone(), v.value.clone()))
+            .map(|(k, v)| (k.to_string(), v.value.clone()))
             .collect();
         vars.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in vars {

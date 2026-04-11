@@ -630,7 +630,7 @@ impl Executor {
 
     /// Merge exported shell variables with command-specific assignments.
     pub fn build_env_vars(&mut self, assignments: &[Assignment]) -> crate::error::Result<Vec<(String, String)>> {
-        let mut vars = self.env.vars.to_environ();
+        let mut vars = self.env.vars.to_environ().to_vec();
         for assign in assignments {
             let value = match assign.value.as_ref() {
                 Some(w) => crate::expand::expand_word_to_string(&mut self.env, w)?,

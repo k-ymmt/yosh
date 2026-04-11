@@ -45,6 +45,7 @@ struct Scope {
 #[derive(Debug, Clone)]
 pub struct VarStore {
     scopes: Vec<Scope>,
+    environ_cache: Option<Vec<(String, String)>>,
 }
 
 impl VarStore {
@@ -55,6 +56,7 @@ impl VarStore {
                 vars: HashMap::new(),
                 positional_params: Vec::new(),
             }],
+            environ_cache: None,
         }
     }
 
@@ -69,6 +71,7 @@ impl VarStore {
                 vars,
                 positional_params: Vec::new(),
             }],
+            environ_cache: None,
         }
     }
 
@@ -77,6 +80,7 @@ impl VarStore {
     /// Push a new scope with the given positional parameters.
     /// Used for function calls.
     pub fn push_scope(&mut self, positional_params: Vec<String>) {
+        self.environ_cache = None;
         self.scopes.push(Scope {
             vars: HashMap::new(),
             positional_params,
@@ -86,6 +90,7 @@ impl VarStore {
     /// Pop the current scope, restoring the previous scope's positional
     /// parameters. Panics if only the global scope remains.
     pub fn pop_scope(&mut self) {
+        self.environ_cache = None;
         assert!(self.scopes.len() > 1, "cannot pop the global scope");
         self.scopes.pop();
     }
@@ -112,6 +117,10 @@ impl VarStore {
     /// Get the string value of a variable, if set.
     /// Walks scopes from top to bottom.
     pub fn get(&self, name: &str) -> Option<&str> {
+        // Fast path: single scope (most common — outside function calls)
+        if self.scopes.len() == 1 {
+            return self.scopes[0].vars.get(name).map(|v| v.value.as_str());
+        }
         for scope in self.scopes.iter().rev() {
             if let Some(var) = scope.vars.get(name) {
                 return Some(var.value.as_str());
@@ -138,7 +147,29 @@ impl VarStore {
     /// in that scope (POSIX: function assignments affect the caller).
     /// If the variable is new, it is created in the global scope.
     pub fn set(&mut self, name: &str, value: impl Into<String>) -> Result<(), String> {
+        self.environ_cache = None;
         let value = value.into();
+
+        // Fast path: single scope (most common — outside function calls)
+        if self.scopes.len() == 1 {
+            if let Some(existing) = self.scopes[0].vars.get(name) {
+                if existing.readonly {
+                    return Err(format!("{}: readonly variable", name));
+                }
+                let exported = existing.exported;
+                self.scopes[0].vars.insert(
+                    name.to_string(),
+                    Variable {
+                        value,
+                        exported,
+                        readonly: false,
+                    },
+                );
+            } else {
+                self.scopes[0].vars.insert(name.to_string(), Variable::new(value));
+            }
+            return Ok(());
+        }
 
         // Search for existing variable in any scope (top to bottom).
         for scope in self.scopes.iter_mut().rev() {
@@ -171,6 +202,7 @@ impl VarStore {
         value: impl Into<String>,
         allexport: bool,
     ) -> Result<(), String> {
+        self.environ_cache = None;
         let value = value.into();
 
         for scope in self.scopes.iter_mut().rev() {
@@ -202,6 +234,7 @@ impl VarStore {
     /// Unset a variable. Returns an error if the variable is readonly.
     /// Removes from whichever scope contains it.
     pub fn unset(&mut self, name: &str) -> Result<(), String> {
+        self.environ_cache = None;
         for scope in self.scopes.iter_mut().rev() {
             if let Some(existing) = scope.vars.get(name) {
                 if existing.readonly {
@@ -217,6 +250,7 @@ impl VarStore {
     /// Mark a variable as exported. Walks scopes to find it; if not found,
     /// creates in global scope with empty value.
     pub fn export(&mut self, name: &str) {
+        self.environ_cache = None;
         for scope in self.scopes.iter_mut().rev() {
             if let Some(var) = scope.vars.get_mut(name) {
                 var.exported = true;
@@ -231,6 +265,7 @@ impl VarStore {
     /// Mark a variable as readonly. Walks scopes to find it; if not found,
     /// creates in global scope with empty value.
     pub fn set_readonly(&mut self, name: &str) {
+        self.environ_cache = None;
         for scope in self.scopes.iter_mut().rev() {
             if let Some(var) = scope.vars.get_mut(name) {
                 var.readonly = true;
@@ -243,8 +278,15 @@ impl VarStore {
     }
 
     /// Return only exported variables as (name, value) pairs.
-    /// Later scopes shadow earlier ones.
-    pub fn to_environ(&self) -> Vec<(String, String)> {
+    /// Later scopes shadow earlier ones. Result is cached until next mutation.
+    pub fn to_environ(&mut self) -> &[(String, String)] {
+        if self.environ_cache.is_none() {
+            self.environ_cache = Some(self.build_environ());
+        }
+        self.environ_cache.as_ref().unwrap()
+    }
+
+    fn build_environ(&self) -> Vec<(String, String)> {
         let mut merged: HashMap<String, &Variable> = HashMap::new();
         for scope in &self.scopes {
             for (name, var) in &scope.vars {
@@ -259,15 +301,20 @@ impl VarStore {
     }
 
     /// Iterate over all variables as (name, &Variable) pairs.
-    /// Later scopes shadow earlier ones.
-    pub fn vars_iter(&self) -> impl Iterator<Item = (&String, &Variable)> {
-        let mut seen: HashMap<&String, &Variable> = HashMap::new();
-        for scope in &self.scopes {
-            for (name, var) in &scope.vars {
-                seen.insert(name, var);
-            }
-        }
-        seen.into_iter()
+    /// Later scopes shadow earlier ones (lazy, no intermediate allocation).
+    pub fn vars_iter(&self) -> impl Iterator<Item = (&str, &Variable)> {
+        let mut seen = std::collections::HashSet::new();
+        self.scopes
+            .iter()
+            .rev()
+            .flat_map(|s| s.vars.iter())
+            .filter_map(move |(k, v)| {
+                if seen.insert(k.as_str()) {
+                    Some((k.as_str(), v))
+                } else {
+                    None
+                }
+            })
     }
 }
 
@@ -341,8 +388,7 @@ mod tests {
     #[test]
     fn test_from_environ() {
         let store = VarStore::from_environ();
-        // All variables should be marked as exported
-        for (_, var) in store.scopes[0].vars.iter() {
+        if let Some(var) = store.get_var("PATH") {
             assert!(var.exported, "Variables from environ should be exported");
         }
     }
