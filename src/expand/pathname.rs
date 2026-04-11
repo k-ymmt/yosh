@@ -22,11 +22,7 @@ pub fn expand(_env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField>
                 result.push(field);
             } else {
                 for m in matches {
-                    result.push(ExpandedField {
-                        quoted_mask: vec![true; m.len()],
-                        value: m,
-                        was_quoted: false,
-                    });
+                    result.push(ExpandedField::all_quoted(m));
                 }
             }
         } else {
@@ -43,7 +39,7 @@ pub fn expand(_env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField>
 fn has_unquoted_glob_chars(field: &ExpandedField) -> bool {
     let bytes = field.value.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
-        if !field.quoted_mask[i] && matches!(b, b'*' | b'?' | b'[') {
+        if !field.is_quoted(i) && matches!(b, b'*' | b'?' | b'[') {
             return true;
         }
     }

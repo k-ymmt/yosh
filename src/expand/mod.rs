@@ -11,14 +11,14 @@ use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 // ─── ExpandedField ──────────────────────────────────────────────────────────
 
 /// A word that has been through parameter/command/arithmetic expansion.
-/// Each byte has a corresponding `quoted_mask` entry:
-///   `true`  = came from a quoted context → protected from field splitting and glob.
-///   `false` = unquoted → subject to field splitting and pathname expansion.
+/// Each byte has a corresponding bit in `quoted_mask`:
+///   bit set   = came from a quoted context → protected from field splitting and glob.
+///   bit clear = unquoted → subject to field splitting and pathname expansion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpandedField {
     pub value: String,
-    /// One bool per *byte* (not char) of `value`.
-    pub quoted_mask: Vec<bool>,
+    /// Packed bitset: 1 bit per byte of `value`. Bit set = quoted (protected).
+    quoted_mask: Vec<u64>,
     /// True if any quoting context was applied to this field (even if value is empty).
     /// POSIX requires that quoted empty strings like `''` and `""` produce a
     /// zero-length field rather than being removed.
@@ -34,23 +34,59 @@ impl ExpandedField {
         }
     }
 
+    /// Check if byte at `byte_index` is quoted (protected from splitting/glob).
+    pub fn is_quoted(&self, byte_index: usize) -> bool {
+        let word = byte_index / 64;
+        let bit = byte_index % 64;
+        self.quoted_mask
+            .get(word)
+            .map_or(false, |w| w & (1u64 << bit) != 0)
+    }
+
     /// Append `s` marking each byte as **quoted** (protected).
     pub fn push_quoted(&mut self, s: &str) {
-        self.was_quoted = true;
+        let start = self.value.len();
         self.value.push_str(s);
-        self.quoted_mask
-            .extend(std::iter::repeat_n(true, s.len()));
+        self.set_range(start, s.len(), true);
+        self.was_quoted = true;
     }
 
     /// Append `s` marking each byte as **unquoted** (splittable/globbable).
     pub fn push_unquoted(&mut self, s: &str) {
+        let start = self.value.len();
         self.value.push_str(s);
-        self.quoted_mask
-            .extend(std::iter::repeat_n(false, s.len()));
+        self.set_range(start, s.len(), false);
     }
 
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
+    }
+
+    /// Create a field with all bytes marked as quoted.
+    pub fn all_quoted(value: String) -> Self {
+        let len = value.len();
+        let needed_words = (len + 63) / 64;
+        let mask = vec![u64::MAX; needed_words];
+        Self {
+            value,
+            quoted_mask: mask,
+            was_quoted: false,
+        }
+    }
+
+    fn set_range(&mut self, start: usize, len: usize, quoted: bool) {
+        if len == 0 {
+            return;
+        }
+        let end = start + len;
+        let needed_words = (end + 63) / 64;
+        self.quoted_mask.resize(needed_words, 0);
+        if quoted {
+            for i in start..end {
+                self.quoted_mask[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        // unquoted: bits are already 0 from resize
     }
 }
 
@@ -576,9 +612,9 @@ mod tests {
         assert_eq!(fields[1].value, "b");
         assert_eq!(fields[2].value, "c");
         // All bytes should be unquoted (subject to IFS splitting)
-        assert!(fields[0].quoted_mask.iter().all(|&q| !q));
-        assert!(fields[1].quoted_mask.iter().all(|&q| !q));
-        assert!(fields[2].quoted_mask.iter().all(|&q| !q));
+        assert!((0..fields[0].value.len()).all(|i| !fields[0].is_quoted(i)));
+        assert!((0..fields[1].value.len()).all(|i| !fields[1].is_quoted(i)));
+        assert!((0..fields[2].value.len()).all(|i| !fields[2].is_quoted(i)));
     }
 
     #[test]

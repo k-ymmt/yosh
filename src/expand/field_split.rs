@@ -72,7 +72,6 @@ fn split_field(
     }
 
     let bytes = field.value.as_bytes();
-    let mask = &field.quoted_mask;
     let len = bytes.len();
 
     // A quoted empty field (e.g. '' or "") should be preserved as-is.
@@ -87,7 +86,7 @@ fn split_field(
     let mut i = 0;
     while i < len {
         let b = bytes[i];
-        let quoted = mask[i];
+        let quoted = field.is_quoted(i);
 
         let is_ws = !quoted && ifs_ws.contains(&b);
         let is_nws = !quoted && ifs_nws.contains(&b);
@@ -164,7 +163,7 @@ fn split_field(
 #[inline]
 fn append_byte(dest: &mut ExpandedField, source: &ExpandedField, i: usize) {
     let ch = &source.value[i..i + 1];
-    if source.quoted_mask[i] {
+    if source.is_quoted(i) {
         dest.push_quoted(ch);
     } else {
         dest.push_unquoted(ch);
