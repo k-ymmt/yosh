@@ -443,6 +443,7 @@ mod tests {
         assert!(matches!(classify_builtin("false"), BuiltinKind::Regular));
         assert!(matches!(classify_builtin("alias"), BuiltinKind::Regular));
         assert!(matches!(classify_builtin("unalias"), BuiltinKind::Regular));
+        assert!(matches!(classify_builtin("umask"), BuiltinKind::Regular));
         assert!(matches!(classify_builtin("ls"), BuiltinKind::NotBuiltin));
     }
 
