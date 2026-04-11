@@ -302,7 +302,6 @@ fn test_subshell_errexit_inherited() {
 }
 
 #[test]
-#[ignore = "umask builtin not yet implemented in kish"]
 fn test_umask_inheritance() {
     let out = kish_exec("umask 027; (umask)");
     assert!(out.status.success());
@@ -361,4 +360,18 @@ fn test_background_command_trap_reset() {
     // Parent's trap should still be set (background didn't affect it)
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("echo trapped"));
+}
+
+#[test]
+fn test_umask_octal_display() {
+    let out = kish_exec("umask 027; umask");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0027");
+}
+
+#[test]
+fn test_umask_set_octal() {
+    let out = kish_exec("umask 077; umask");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0077");
 }

@@ -23,7 +23,7 @@ pub fn classify_builtin(name: &str) -> BuiltinKind {
             BuiltinKind::Special
         }
         "cd" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait"
-        | "fg" | "bg" | "jobs" => BuiltinKind::Regular,
+        | "fg" | "bg" | "jobs" | "umask" => BuiltinKind::Regular,
         _ => BuiltinKind::NotBuiltin,
     }
 }
@@ -35,6 +35,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "true" => 0,
         "false" => 1,
         "echo" => builtin_echo(args),
+        "umask" => builtin_umask(args),
         "alias" => builtin_alias(args, env),
         "unalias" => builtin_unalias(args, env),
         "kill" => builtin_kill(args, env.shell_pgid),
@@ -267,6 +268,146 @@ fn kill_list(args: &[String]) -> i32 {
             }
         }
     }
+    0
+}
+
+fn builtin_umask(args: &[String]) -> i32 {
+    if args.is_empty() {
+        let current = unsafe { libc::umask(0) };
+        unsafe { libc::umask(current) };
+        println!("{:04o}", current);
+        return 0;
+    }
+
+    if args[0] == "-S" {
+        let current = unsafe { libc::umask(0) };
+        unsafe { libc::umask(current) };
+        println!("{}", umask_to_symbolic(current));
+        return 0;
+    }
+
+    // Try octal parse first
+    if args[0].chars().all(|c| c.is_ascii_digit()) {
+        return umask_set_octal(&args[0]);
+    }
+
+    // Try symbolic parse
+    umask_set_symbolic(&args[0])
+}
+
+fn umask_to_symbolic(mask: libc::mode_t) -> String {
+    let perms = 0o777 & !mask;
+    let fmt = |bits: libc::mode_t| -> String {
+        let mut s = String::new();
+        if bits & 4 != 0 { s.push('r'); }
+        if bits & 2 != 0 { s.push('w'); }
+        if bits & 1 != 0 { s.push('x'); }
+        s
+    };
+    format!(
+        "u={},g={},o={}",
+        fmt((perms >> 6) & 7),
+        fmt((perms >> 3) & 7),
+        fmt(perms & 7),
+    )
+}
+
+fn umask_set_octal(s: &str) -> i32 {
+    for c in s.chars() {
+        if !('0'..='7').contains(&c) {
+            eprintln!("kish: umask: {}: invalid octal number", s);
+            return 1;
+        }
+    }
+    match libc::mode_t::from_str_radix(s, 8) {
+        Ok(mode) => {
+            unsafe { libc::umask(mode) };
+            0
+        }
+        Err(_) => {
+            eprintln!("kish: umask: {}: invalid octal number", s);
+            1
+        }
+    }
+}
+
+fn umask_set_symbolic(s: &str) -> i32 {
+    let current = unsafe { libc::umask(0) };
+    unsafe { libc::umask(current) };
+
+    let mut mask = current;
+
+    for clause in s.split(',') {
+        let bytes = clause.as_bytes();
+        if bytes.is_empty() {
+            eprintln!("kish: umask: {}: invalid symbolic mode", s);
+            return 1;
+        }
+
+        let mut i = 0;
+        let mut who_mask: libc::mode_t = 0;
+
+        // Parse who (u/g/o/a)
+        while i < bytes.len() && matches!(bytes[i], b'u' | b'g' | b'o' | b'a') {
+            match bytes[i] {
+                b'u' => who_mask |= 0o700,
+                b'g' => who_mask |= 0o070,
+                b'o' => who_mask |= 0o007,
+                b'a' => who_mask |= 0o777,
+                _ => unreachable!(),
+            }
+            i += 1;
+        }
+
+        // Default to 'a' if no who specified
+        if who_mask == 0 {
+            who_mask = 0o777;
+        }
+
+        // Parse operator (=, +, -)
+        if i >= bytes.len() || !matches!(bytes[i], b'=' | b'+' | b'-') {
+            eprintln!("kish: umask: {}: invalid symbolic mode", s);
+            return 1;
+        }
+        let op = bytes[i] as char;
+        i += 1;
+
+        // Parse permissions (r/w/x)
+        let mut perm_bits: libc::mode_t = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'r' => perm_bits |= 0o444,
+                b'w' => perm_bits |= 0o222,
+                b'x' => perm_bits |= 0o111,
+                _ => {
+                    eprintln!("kish: umask: {}: invalid symbolic mode", s);
+                    return 1;
+                }
+            }
+            i += 1;
+        }
+
+        // Apply within the who mask
+        let effective_perms = perm_bits & who_mask;
+
+        match op {
+            '=' => {
+                // Clear who bits, then set umask to deny everything NOT in perm
+                mask = (mask & !who_mask) | (who_mask & !effective_perms);
+            }
+            '+' => {
+                // Adding permissions = clearing umask bits
+                mask &= !effective_perms;
+            }
+            '-' => {
+                // Removing permissions = setting umask bits
+                mask |= effective_perms;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    unsafe { libc::umask(mask) };
     0
 }
 
