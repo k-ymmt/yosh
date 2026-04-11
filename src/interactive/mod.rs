@@ -21,6 +21,10 @@ impl Repl {
         signal::init_signal_handling();
         let mut executor = Executor::new(shell_name, vec![]);
         executor.env.is_interactive = true;
+        executor.env.options.monitor = true;
+        signal::init_job_control_signals();
+        // Ensure shell has terminal
+        crate::env::jobs::take_terminal(executor.env.shell_pgid).ok();
         Self {
             executor,
             line_editor: LineEditor::new(),
@@ -32,6 +36,10 @@ impl Repl {
         let mut input_buffer = String::new();
 
         loop {
+            // Reap zombies and display job notifications before prompt
+            self.executor.reap_zombies();
+            self.executor.display_job_notifications();
+
             // Choose PS1 or PS2
             let prompt_var = if input_buffer.is_empty() { "PS1" } else { "PS2" };
             let prompt = expand_prompt(&mut self.executor.env, prompt_var);

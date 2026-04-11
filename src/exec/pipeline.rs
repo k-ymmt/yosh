@@ -1,6 +1,6 @@
 use std::os::unix::io::RawFd;
 
-use nix::sys::wait::{waitpid, WaitStatus};
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{fork, setpgid, ForkResult, Pid};
 
 use crate::parser::ast::Pipeline;
@@ -66,7 +66,11 @@ impl Executor {
                     }
                     let ignored = self.env.traps.ignored_signals();
                     self.env.traps.reset_non_ignored();
-                    signal::reset_child_signals(&ignored);
+                    if self.env.options.monitor {
+                        signal::setup_foreground_child_signals(&ignored);
+                    } else {
+                        signal::reset_child_signals(&ignored);
+                    }
 
                     // Set up stdin from previous pipe's read end (if not first)
                     if i > 0 {
@@ -103,25 +107,93 @@ impl Executor {
         // Parent: close all pipe fds
         close_all_pipes(&pipes);
 
-        // Parent: wait for all children, return last child's exit status
-        // POSIX: pipeline exit status = exit status of last command
-        // With pipefail: return the last non-zero status (or zero if all succeeded)
-        let mut last_status = 0;
-        let mut max_nonzero = 0;
-        for (idx, child) in children.into_iter().enumerate() {
-            let status = wait_for_child(child);
-            if status != 0 {
-                max_nonzero = status;
+        if self.env.options.monitor {
+            // Monitor mode: register as foreground job and use WUNTRACED wait
+            let cmd_str = "(pipeline)".to_string();
+            let job_id = self.env.jobs.add_job(pgid, children.clone(), cmd_str, true);
+            crate::env::jobs::give_terminal(pgid).ok();
+            let status = self.wait_for_foreground_pipeline(job_id, &children, n);
+            crate::env::jobs::take_terminal(self.env.shell_pgid).ok();
+            status
+        } else {
+            // Non-monitor mode: simple wait loop (existing behavior)
+            let mut last_status = 0;
+            let mut max_nonzero = 0;
+            for (idx, child) in children.into_iter().enumerate() {
+                let status = wait_for_child(child);
+                if status != 0 {
+                    max_nonzero = status;
+                }
+                if idx == n - 1 {
+                    last_status = status;
+                }
             }
-            if idx == n - 1 {
-                last_status = status;
+
+            if self.env.options.pipefail {
+                max_nonzero
+            } else {
+                last_status
+            }
+        }
+    }
+
+    fn wait_for_foreground_pipeline(&mut self, job_id: crate::env::jobs::JobId, children: &[Pid], n: usize) -> i32 {
+        use crate::env::jobs::JobStatus;
+
+        let pgid = match self.env.jobs.get(job_id) {
+            Some(j) => j.pgid,
+            None => return 1,
+        };
+
+        let mut statuses = vec![0i32; n];
+        let mut remaining = n;
+
+        loop {
+            if remaining == 0 {
+                break;
+            }
+
+            match waitpid(Pid::from_raw(-pgid.as_raw()), Some(WaitPidFlag::WUNTRACED)) {
+                Ok(WaitStatus::Exited(pid, code)) => {
+                    if let Some(idx) = children.iter().position(|&c| c == pid) {
+                        statuses[idx] = code;
+                        remaining -= 1;
+                    }
+                    self.env.jobs.update_status(pid, JobStatus::Done(code));
+                }
+                Ok(WaitStatus::Signaled(pid, sig, _)) => {
+                    let code = 128 + sig as i32;
+                    if let Some(idx) = children.iter().position(|&c| c == pid) {
+                        statuses[idx] = code;
+                        remaining -= 1;
+                    }
+                    self.env.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
+                }
+                Ok(WaitStatus::Stopped(pid, sig)) => {
+                    self.env.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
+                    if let Some(job) = self.env.jobs.get_mut(job_id) {
+                        job.status = JobStatus::Stopped(sig as i32);
+                        job.foreground = false;
+                    }
+                    if let Some(line) = self.env.jobs.format_job(job_id) {
+                        eprintln!("{}", line);
+                    }
+                    return 128 + sig as i32;
+                }
+                Err(nix::errno::Errno::ECHILD) => break,
+                Err(nix::errno::Errno::EINTR) => continue,
+                _ => break,
             }
         }
 
+        // All children done — remove job
+        self.env.jobs.mark_notified(job_id);
+        self.env.jobs.remove_job(job_id);
+
         if self.env.options.pipefail {
-            max_nonzero
+            statuses.iter().rev().find(|&&s| s != 0).copied().unwrap_or(0)
         } else {
-            last_status
+            statuses.last().copied().unwrap_or(0)
         }
     }
 }

@@ -709,16 +709,17 @@ impl Executor {
                 1
             }
             Ok(ForkResult::Child) => {
-                // Reset signals immediately after fork to minimize the window
-                // where the parent's self-pipe handler is active. This avoids
-                // a race where the parent sends a signal (e.g., kill -s INT $!)
-                // before the child has finished signal setup.
-                let ignored = self.env.traps.ignored_signals();
-                self.env.traps.reset_non_ignored();
-                signal::reset_child_signals(&ignored);
-
+                // Set process group BEFORE signal setup to ensure proper isolation.
                 let pid = nix::unistd::getpid();
                 nix::unistd::setpgid(pid, pid).ok();
+
+                let ignored = self.env.traps.ignored_signals();
+                self.env.traps.reset_non_ignored();
+                if self.env.options.monitor {
+                    signal::setup_background_child_signals(&ignored);
+                } else {
+                    signal::reset_child_signals(&ignored);
+                }
 
                 // Note: we do NOT call ignore_signal(SIGINT/SIGQUIT) here.
                 // setpgid already isolates this process from keyboard signals,
@@ -739,6 +740,11 @@ impl Executor {
     pub fn exec_complete_command(&mut self, cmd: &CompleteCommand) -> i32 {
         // Reap any finished background children before forking new ones
         self.reap_zombies();
+
+        // -b flag: immediate job notification
+        if self.env.options.notify {
+            self.display_job_notifications();
+        }
 
         let mut status = 0;
 
