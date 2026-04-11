@@ -1,12 +1,13 @@
 pub mod token;
+mod alias;
+mod heredoc;
 mod scanner;
 mod word;
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{self, ShellError, ParseErrorKind};
 use crate::parser::ast::WordPart;
-use token::{SpannedToken, Token};
+use token::SpannedToken;
 
 pub struct LexerState {
     pub pos: usize,
@@ -96,173 +97,13 @@ impl Lexer {
         self.check_alias = state.check_alias;
         self.expanding_aliases = state.expanding_aliases;
     }
-
-    pub fn register_heredoc(&mut self, delimiter: String, quoted: bool, strip_tabs: bool) {
-        self.pending_heredocs.push(PendingHereDoc { delimiter, quoted, strip_tabs });
-    }
-
-    pub fn take_heredoc_body(&mut self) -> Option<Vec<WordPart>> {
-        if self.heredoc_bodies.is_empty() {
-            None
-        } else {
-            Some(self.heredoc_bodies.remove(0))
-        }
-    }
-
-    pub fn process_pending_heredocs(&mut self) -> error::Result<()> {
-        let pending: Vec<PendingHereDoc> = self.pending_heredocs.drain(..).collect();
-        for hd in pending {
-            let body = self.read_heredoc_body(&hd)?;
-            self.heredoc_bodies.push(body);
-        }
-        Ok(())
-    }
-
-    pub fn has_pending_heredocs(&self) -> bool {
-        !self.pending_heredocs.is_empty()
-    }
-
-    fn read_heredoc_body(&mut self, hd: &PendingHereDoc) -> error::Result<Vec<WordPart>> {
-        let mut body = String::new();
-        loop {
-            if self.at_end() {
-                return Err(ShellError::parse(
-                    ParseErrorKind::InvalidHereDoc,
-                    self.line,
-                    self.column,
-                    format!("here-document delimited by '{}' was not closed", hd.delimiter),
-                ));
-            }
-            // Read a line
-            let mut line = String::new();
-            while !self.at_end() && self.current_byte() != b'\n' {
-                line.push(self.current_byte() as char);
-                self.advance();
-            }
-            if !self.at_end() {
-                self.advance(); // consume newline
-            }
-
-            // Strip leading tabs if <<-
-            let check_line = if hd.strip_tabs {
-                line.trim_start_matches('\t').to_string()
-            } else {
-                line.clone()
-            };
-
-            // Check if this is the delimiter line
-            if check_line == hd.delimiter {
-                break;
-            }
-
-            // Add line to body (with tab stripping if applicable)
-            if hd.strip_tabs {
-                body.push_str(line.trim_start_matches('\t'));
-            } else {
-                body.push_str(&line);
-            }
-            body.push('\n');
-        }
-        Ok(vec![WordPart::Literal(body)])
-    }
-
-    pub fn next_token(&mut self) -> error::Result<SpannedToken> {
-        // Return queued tokens from alias expansion first
-        if let Some(tok) = self.alias_token_queue.first().cloned() {
-            self.alias_token_queue.remove(0);
-            // Update check_alias based on this queued token
-            self.update_check_alias_after(&tok.token);
-            return Ok(tok);
-        }
-
-        let tok = self.next_token_raw()?;
-
-        // Check for alias expansion on Word tokens when check_alias is set
-        if self.check_alias
-            && let Token::Word(ref word) = tok.token
-            && let Some(word_text) = word.as_literal()
-            && !self.expanding_aliases.contains(word_text)
-            && let Some(alias_value) = self.aliases.get(word_text).cloned()
-        {
-            let word_text = word_text.to_string();
-            // Mark as expanding to prevent recursion
-            self.expanding_aliases.insert(word_text);
-
-            // Check if alias value ends with whitespace —
-            // if so, the next word after the expansion should also be alias-checked
-            let trailing_space = alias_value.ends_with(' ')
-                || alias_value.ends_with('\t');
-
-            // Tokenize the alias value into a separate token stream
-            let mut alias_lexer = Lexer::new(&alias_value);
-            // Copy aliases and expanding_aliases to the sub-lexer
-            alias_lexer.aliases = self.aliases.clone();
-            alias_lexer.expanding_aliases = self.expanding_aliases.clone();
-            alias_lexer.check_alias = true;
-
-            let mut tokens = Vec::new();
-            loop {
-                let t = alias_lexer.next_token()?;
-                if t.token == Token::Eof {
-                    break;
-                }
-                tokens.push(t);
-            }
-
-            // Merge back any recursion-prevention state
-            self.expanding_aliases = alias_lexer.expanding_aliases;
-
-            if tokens.is_empty() {
-                // Alias expanded to nothing, get next token
-                if trailing_space {
-                    self.check_alias = true;
-                }
-                return self.next_token();
-            }
-
-            // Return the first token, queue the rest
-            let first = tokens.remove(0);
-            self.alias_token_queue = tokens;
-            self.update_check_alias_after(&first.token);
-
-            // If alias value ends with space/tab, force next
-            // word to be alias-checked (overrides normal behavior)
-            if trailing_space {
-                self.check_alias = true;
-            }
-
-            return Ok(first);
-        }
-
-        // After producing a token, decide if next word should be alias-checked
-        self.update_check_alias_after(&tok.token);
-
-        Ok(tok)
-    }
-
-    fn update_check_alias_after(&mut self, token: &Token) {
-        match token {
-            Token::Semi | Token::Newline | Token::Pipe | Token::AndIf | Token::OrIf
-            | Token::LParen | Token::Amp | Token::DSemi => {
-                self.check_alias = true;
-            }
-            Token::Word(_) => {
-                // After first word in command position, stop alias-expanding
-                // (unless a previous alias ended with space, already handled above)
-                if self.check_alias {
-                    self.check_alias = false;
-                }
-            }
-            _ => {
-                // For other tokens (redirects, etc.), don't change check_alias
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::token::Token;
+    use crate::error::ParseErrorKind;
     use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 
     fn tokenize(input: &str) -> Vec<Token> {
