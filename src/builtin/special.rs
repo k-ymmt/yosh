@@ -35,7 +35,7 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
 
 fn builtin_exit(args: &[String], executor: &mut Executor) -> i32 {
     let code = if args.is_empty() {
-        executor.env.last_exit_status
+        executor.env.exec.last_exit_status
     } else {
         match args[0].parse::<i32>() {
             Ok(n) => n & 0xFF,
@@ -127,12 +127,12 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> i32 {
 }
 
 fn builtin_return(args: &[String], env: &mut ShellEnv) -> i32 {
-    if env.vars.scope_depth() <= 1 && !env.in_dot_script {
+    if env.vars.scope_depth() <= 1 && !env.mode.in_dot_script {
         eprintln!("kish: return: can only return from a function or sourced script");
         return 1;
     }
     let code = if args.is_empty() {
-        env.last_exit_status & 0xFF
+        env.exec.last_exit_status & 0xFF
     } else {
         match args[0].parse::<i32>() {
             Ok(n) => n & 0xFF,
@@ -142,7 +142,7 @@ fn builtin_return(args: &[String], env: &mut ShellEnv) -> i32 {
             }
         }
     };
-    env.flow_control = Some(FlowControl::Return(code));
+    env.exec.flow_control = Some(FlowControl::Return(code));
     code
 }
 
@@ -162,7 +162,7 @@ fn builtin_break(args: &[String], env: &mut ShellEnv) -> i32 {
             }
         }
     };
-    env.flow_control = Some(FlowControl::Break(n));
+    env.exec.flow_control = Some(FlowControl::Break(n));
     0
 }
 
@@ -182,7 +182,7 @@ fn builtin_continue(args: &[String], env: &mut ShellEnv) -> i32 {
             }
         }
     };
-    env.flow_control = Some(FlowControl::Continue(n));
+    env.exec.flow_control = Some(FlowControl::Continue(n));
     0
 }
 
@@ -211,8 +211,8 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
             return 0;
         }
         if arg == "-" {
-            env.options.xtrace = false;
-            env.options.verbose = false;
+            env.mode.options.xtrace = false;
+            env.mode.options.verbose = false;
             if i + 1 < args.len() {
                 env.vars.set_positional_params(args[i + 1..].to_vec());
             }
@@ -222,10 +222,10 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
             let on = arg.starts_with('-');
             i += 1;
             if i >= args.len() {
-                if on { env.options.display_all(); } else { env.options.display_restorable(); }
+                if on { env.mode.options.display_all(); } else { env.mode.options.display_restorable(); }
                 return 0;
             }
-            if let Err(e) = env.options.set_by_name(&args[i], on) {
+            if let Err(e) = env.mode.options.set_by_name(&args[i], on) {
                 eprintln!("kish: {}", e);
                 return 1;
             }
@@ -235,7 +235,7 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
         if arg.starts_with('-') || arg.starts_with('+') {
             let on = arg.starts_with('-');
             for c in arg[1..].chars() {
-                if let Err(e) = env.options.set_by_char(c, on) {
+                if let Err(e) = env.mode.options.set_by_char(c, on) {
                     eprintln!("kish: {}", e);
                     return 1;
                 }
@@ -359,16 +359,16 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
         Ok(c) => c,
         Err(e) => { eprintln!("kish: .: {}: {}", path.display(), e); return 1; }
     };
-    let prev_dot_script = executor.env.in_dot_script;
-    executor.env.in_dot_script = true;
+    let prev_dot_script = executor.env.mode.in_dot_script;
+    executor.env.mode.in_dot_script = true;
     let status = match crate::parser::Parser::new_with_aliases(&content, &executor.env.aliases).parse_program() {
         Ok(program) => executor.exec_program(&program),
         Err(e) => { eprintln!("kish: .: {}", e); 2 }
     };
-    executor.env.in_dot_script = prev_dot_script;
+    executor.env.mode.in_dot_script = prev_dot_script;
     // If the sourced script used `return`, consume the FlowControl and use its status.
-    if let Some(FlowControl::Return(code)) = executor.env.flow_control {
-        executor.env.flow_control = None;
+    if let Some(FlowControl::Return(code)) = executor.env.exec.flow_control {
+        executor.env.exec.flow_control = None;
         return code;
     }
     status

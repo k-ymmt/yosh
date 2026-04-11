@@ -54,7 +54,7 @@ impl Executor {
 
     /// Check if errexit is active and not suppressed.
     pub fn should_errexit(&self) -> bool {
-        self.env.options.errexit && self.errexit_suppressed_depth == 0
+        self.env.mode.options.errexit && self.errexit_suppressed_depth == 0
     }
 
     /// Errexit check after command execution.
@@ -109,14 +109,14 @@ impl Executor {
 
     /// Print the line if verbose mode is enabled.
     pub fn verbose_print(&self, line: &str) {
-        if self.env.options.verbose {
+        if self.env.mode.options.verbose {
             eprintln!("{}", line);
         }
     }
 
     /// Dispatch a `Command` to the appropriate execution path.
     pub fn exec_command(&mut self, cmd: &Command) -> i32 {
-        if self.env.options.noexec {
+        if self.env.mode.options.noexec {
             return 0;
         }
         match cmd {
@@ -142,7 +142,7 @@ impl Executor {
         let mut redirect_state = RedirectState::new();
         if let Err(e) = redirect_state.apply(redirects, &mut self.env, true) {
             eprintln!("kish: {}", e);
-            self.env.last_exit_status = 1;
+            self.env.exec.last_exit_status = 1;
             return 1;
         }
 
@@ -168,7 +168,7 @@ impl Executor {
         };
 
         redirect_state.restore();
-        self.env.last_exit_status = status;
+        self.env.exec.last_exit_status = status;
         status
     }
 
@@ -178,7 +178,7 @@ impl Executor {
         let mut status = 0;
         for cmd in body {
             status = self.exec_complete_command(cmd);
-            if self.env.flow_control.is_some() {
+            if self.env.exec.flow_control.is_some() {
                 break;
             }
             self.check_errexit(status);
@@ -214,7 +214,7 @@ impl Executor {
         else_part: &Option<Vec<CompleteCommand>>,
     ) -> i32 {
         let cond_status = self.with_errexit_suppressed(|e| e.exec_body(condition));
-        if self.env.flow_control.is_some() {
+        if self.env.exec.flow_control.is_some() {
             return cond_status;
         }
 
@@ -224,7 +224,7 @@ impl Executor {
 
         for (elif_cond, elif_body) in elif_parts {
             let cond_status = self.with_errexit_suppressed(|e| e.exec_body(elif_cond));
-            if self.env.flow_control.is_some() {
+            if self.env.exec.flow_control.is_some() {
                 return cond_status;
             }
             if cond_status == 0 {
@@ -250,7 +250,7 @@ impl Executor {
         let mut status = 0;
         loop {
             let cond_status = self.with_errexit_suppressed(|e| e.exec_body(condition));
-            if self.env.flow_control.is_some() {
+            if self.env.exec.flow_control.is_some() {
                 return cond_status;
             }
             let should_run = if until {
@@ -264,22 +264,22 @@ impl Executor {
 
             status = self.exec_body(body);
 
-            match self.env.flow_control.take() {
+            match self.env.exec.flow_control.take() {
                 Some(FlowControl::Break(n)) => {
                     if n > 1 {
-                        self.env.flow_control = Some(FlowControl::Break(n - 1));
+                        self.env.exec.flow_control = Some(FlowControl::Break(n - 1));
                     }
                     break;
                 }
                 Some(FlowControl::Continue(n)) => {
                     if n > 1 {
-                        self.env.flow_control = Some(FlowControl::Continue(n - 1));
+                        self.env.exec.flow_control = Some(FlowControl::Continue(n - 1));
                         break;
                     }
                     // n <= 1: continue this loop (re-evaluate condition)
                 }
                 Some(other) => {
-                    self.env.flow_control = Some(other);
+                    self.env.exec.flow_control = Some(other);
                     break;
                 }
                 None => {}
@@ -298,7 +298,7 @@ impl Executor {
                 Ok(words) => words,
                 Err(e) => {
                     eprintln!("{}", e);
-                    self.env.last_exit_status = 1;
+                    self.env.exec.last_exit_status = 1;
                     return 1;
                 }
             },
@@ -314,22 +314,22 @@ impl Executor {
 
             status = self.exec_body(body);
 
-            match self.env.flow_control.take() {
+            match self.env.exec.flow_control.take() {
                 Some(FlowControl::Break(n)) => {
                     if n > 1 {
-                        self.env.flow_control = Some(FlowControl::Break(n - 1));
+                        self.env.exec.flow_control = Some(FlowControl::Break(n - 1));
                     }
                     break;
                 }
                 Some(FlowControl::Continue(n)) => {
                     if n > 1 {
-                        self.env.flow_control = Some(FlowControl::Continue(n - 1));
+                        self.env.exec.flow_control = Some(FlowControl::Continue(n - 1));
                         break;
                     }
                     // n <= 1: continue this loop
                 }
                 Some(other) => {
-                    self.env.flow_control = Some(other);
+                    self.env.exec.flow_control = Some(other);
                     break;
                 }
                 None => {}
@@ -342,7 +342,7 @@ impl Executor {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("{}", e);
-                self.env.last_exit_status = 1;
+                self.env.exec.last_exit_status = 1;
                 return 1;
             }
         };
@@ -357,7 +357,7 @@ impl Executor {
                         Ok(p) => p,
                         Err(e) => {
                             eprintln!("{}", e);
-                            self.env.last_exit_status = 1;
+                            self.env.exec.last_exit_status = 1;
                             return 1;
                         }
                     };
@@ -372,7 +372,7 @@ impl Executor {
             }
 
             status = self.exec_body(&item.body);
-            if self.env.flow_control.is_some() {
+            if self.env.exec.flow_control.is_some() {
                 break;
             }
 
@@ -395,17 +395,17 @@ impl Executor {
             self.exec_compound_command(&func_def.body, &func_def.redirects);
 
         // Handle return flow control
-        let final_status = match self.env.flow_control.take() {
+        let final_status = match self.env.exec.flow_control.take() {
             Some(FlowControl::Return(s)) => s,
             Some(other) => {
-                self.env.flow_control = Some(other);
+                self.env.exec.flow_control = Some(other);
                 status
             }
             None => status,
         };
 
         self.env.vars.pop_scope();
-        self.env.last_exit_status = final_status;
+        self.env.exec.last_exit_status = final_status;
         final_status
     }
 
@@ -416,14 +416,14 @@ impl Executor {
             Ok(words) => words,
             Err(e) => {
                 eprintln!("{}", e);
-                self.env.last_exit_status = 1;
+                self.env.exec.last_exit_status = 1;
                 return 1;
             }
         };
 
         // Check if expansion triggered a flow control signal (e.g., nounset error)
-        if self.env.flow_control.is_some() {
-            self.env.last_exit_status = 1;
+        if self.env.exec.flow_control.is_some() {
+            self.env.exec.last_exit_status = 1;
             return 1;
         }
 
@@ -435,31 +435,31 @@ impl Executor {
             let mut last_cmd_sub_status = 0i32;
             for assignment in &cmd.assignments {
                 // Reset before each expansion so we can capture per-assignment status
-                self.env.last_exit_status = 0;
+                self.env.exec.last_exit_status = 0;
                 let value = match assignment.value.as_ref() {
                     Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
                         Ok(v) => v,
                         Err(e) => {
                             eprintln!("{}", e);
-                            self.env.last_exit_status = 1;
+                            self.env.exec.last_exit_status = 1;
                             return 1;
                         }
                     },
                     None => String::new(),
                 };
                 // Capture the status set by any command substitution during expansion
-                last_cmd_sub_status = self.env.last_exit_status;
-                if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.options.allexport) {
+                last_cmd_sub_status = self.env.exec.last_exit_status;
+                if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.mode.options.allexport) {
                     eprintln!("kish: {}", e);
-                    self.env.last_exit_status = 1;
+                    self.env.exec.last_exit_status = 1;
                     return 1;
                 }
             }
-            self.env.last_exit_status = last_cmd_sub_status;
+            self.env.exec.last_exit_status = last_cmd_sub_status;
             return last_cmd_sub_status;
         }
 
-        if self.env.options.xtrace && !expanded.is_empty() {
+        if self.env.mode.options.xtrace && !expanded.is_empty() {
             eprintln!("+ {}", expanded.join(" "));
         }
 
@@ -472,7 +472,7 @@ impl Executor {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("{}", e);
-                    self.env.last_exit_status = 1;
+                    self.env.exec.last_exit_status = 1;
                     return 1;
                 }
             };
@@ -480,13 +480,13 @@ impl Executor {
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 eprintln!("kish: {}", e);
                 self.restore_assignments(saved);
-                self.env.last_exit_status = 1;
+                self.env.exec.last_exit_status = 1;
                 return 1;
             }
             let status = self.exec_function_call(&func_def, &args);
             redirect_state.restore();
             self.restore_assignments(saved);
-            self.env.last_exit_status = status;
+            self.env.exec.last_exit_status = status;
             return status;
         }
 
@@ -496,7 +496,7 @@ impl Executor {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("{}", e);
-                    self.env.last_exit_status = 1;
+                    self.env.exec.last_exit_status = 1;
                     return 1;
                 }
             };
@@ -504,13 +504,13 @@ impl Executor {
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 eprintln!("kish: {}", e);
                 self.restore_assignments(saved);
-                self.env.last_exit_status = 1;
+                self.env.exec.last_exit_status = 1;
                 return 1;
             }
             let status = self.builtin_wait(&args);
             redirect_state.restore();
             self.restore_assignments(saved);
-            self.env.last_exit_status = status;
+            self.env.exec.last_exit_status = status;
             return status;
         }
 
@@ -520,7 +520,7 @@ impl Executor {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("{}", e);
-                    self.env.last_exit_status = 1;
+                    self.env.exec.last_exit_status = 1;
                     return 1;
                 }
             };
@@ -528,7 +528,7 @@ impl Executor {
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 eprintln!("kish: {}", e);
                 self.restore_assignments(saved);
-                self.env.last_exit_status = 1;
+                self.env.exec.last_exit_status = 1;
                 return 1;
             }
             let status = match command_name.as_str() {
@@ -539,7 +539,7 @@ impl Executor {
             };
             redirect_state.restore();
             self.restore_assignments(saved);
-            self.env.last_exit_status = status;
+            self.env.exec.last_exit_status = status;
             return status;
         }
 
@@ -552,15 +552,15 @@ impl Executor {
                             Ok(v) => v,
                             Err(e) => {
                                 eprintln!("{}", e);
-                                self.env.last_exit_status = 1;
+                                self.env.exec.last_exit_status = 1;
                                 return 1;
                             }
                         },
                         None => String::new(),
                     };
-                    if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.options.allexport) {
+                    if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.mode.options.allexport) {
                         eprintln!("kish: {}", e);
-                        self.env.last_exit_status = 1;
+                        self.env.exec.last_exit_status = 1;
                         return 1;
                     }
                 }
@@ -569,22 +569,22 @@ impl Executor {
                     let mut redirect_state = RedirectState::new();
                     if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, false) {
                         eprintln!("kish: {}", e);
-                        self.env.last_exit_status = 1;
+                        self.env.exec.last_exit_status = 1;
                         return 1;
                     }
-                    self.env.last_exit_status = 0;
+                    self.env.exec.last_exit_status = 0;
                     return 0;
                 }
 
                 let mut redirect_state = RedirectState::new();
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                     eprintln!("kish: {}", e);
-                    self.env.last_exit_status = 1;
+                    self.env.exec.last_exit_status = 1;
                     return 1;
                 }
                 let status = exec_special_builtin(&command_name, &args, self);
                 redirect_state.restore();
-                self.env.last_exit_status = status;
+                self.env.exec.last_exit_status = status;
                 status
             }
             BuiltinKind::Regular => {
@@ -593,7 +593,7 @@ impl Executor {
                     Ok(s) => s,
                     Err(e) => {
                         eprintln!("{}", e);
-                        self.env.last_exit_status = 1;
+                        self.env.exec.last_exit_status = 1;
                         return 1;
                     }
                 };
@@ -601,13 +601,13 @@ impl Executor {
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                     eprintln!("kish: {}", e);
                     self.restore_assignments(saved);
-                    self.env.last_exit_status = 1;
+                    self.env.exec.last_exit_status = 1;
                     return 1;
                 }
                 let status = exec_regular_builtin(&command_name, &args, &mut self.env);
                 redirect_state.restore();
                 self.restore_assignments(saved);
-                self.env.last_exit_status = status;
+                self.env.exec.last_exit_status = status;
                 status
             }
             BuiltinKind::NotBuiltin => {
@@ -615,14 +615,14 @@ impl Executor {
                     Ok(v) => v,
                     Err(e) => {
                         eprintln!("{}", e);
-                        self.env.last_exit_status = 1;
+                        self.env.exec.last_exit_status = 1;
                         return 1;
                     }
                 };
                 let status = self.exec_external_with_redirects(
                     &command_name, &args, &env_vars, &cmd.redirects,
                 );
-                self.env.last_exit_status = status;
+                self.env.exec.last_exit_status = status;
                 status
             }
         }
@@ -727,7 +727,7 @@ impl Executor {
             self.exec_pipeline(&and_or.first)
         };
 
-        if self.env.flow_control.is_some() {
+        if self.env.exec.flow_control.is_some() {
             return status;
         }
 
@@ -747,12 +747,12 @@ impl Executor {
                 self.exec_pipeline(pipeline)
             };
 
-            if self.env.flow_control.is_some() {
+            if self.env.exec.flow_control.is_some() {
                 break;
             }
         }
 
-        self.env.last_exit_status = status;
+        self.env.exec.last_exit_status = status;
         status
     }
 
@@ -765,13 +765,13 @@ impl Executor {
                 Some(nix::sys::wait::WaitPidFlag::WNOHANG | nix::sys::wait::WaitPidFlag::WUNTRACED),
             ) {
                 Ok(nix::sys::wait::WaitStatus::Exited(pid, code)) => {
-                    self.env.jobs.update_status(pid, JobStatus::Done(code));
+                    self.env.process.jobs.update_status(pid, JobStatus::Done(code));
                 }
                 Ok(nix::sys::wait::WaitStatus::Signaled(pid, sig, _)) => {
-                    self.env.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
+                    self.env.process.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
                 }
                 Ok(nix::sys::wait::WaitStatus::Stopped(pid, sig)) => {
-                    self.env.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
+                    self.env.process.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
                 }
                 Ok(nix::sys::wait::WaitStatus::StillAlive) => break,
                 Ok(_) => continue,
@@ -794,7 +794,7 @@ impl Executor {
 
                 let ignored = self.env.traps.ignored_signals();
                 self.env.traps.reset_non_ignored();
-                if self.env.options.monitor {
+                if self.env.mode.options.monitor {
                     signal::setup_background_child_signals(&ignored);
                 } else {
                     signal::reset_child_signals(&ignored);
@@ -808,7 +808,7 @@ impl Executor {
             }
             Ok(ForkResult::Parent { child }) => {
                 nix::unistd::setpgid(child, child).ok();
-                let job_id = self.env.jobs.add_job(child, vec![child], "(background)", false);
+                let job_id = self.env.process.jobs.add_job(child, vec![child], "(background)", false);
                 eprintln!("[{}] {}", job_id, child.as_raw());
                 0
             }
@@ -821,7 +821,7 @@ impl Executor {
         self.reap_zombies();
 
         // -b flag: immediate job notification
-        if self.env.options.notify {
+        if self.env.mode.options.notify {
             self.display_job_notifications();
         }
 
@@ -834,13 +834,13 @@ impl Executor {
                 // Sequential execution
                 status = self.exec_and_or(and_or);
             }
-            if self.env.flow_control.is_some() {
+            if self.env.exec.flow_control.is_some() {
                 break;
             }
             self.check_errexit(status);
         }
 
-        self.env.last_exit_status = status;
+        self.env.exec.last_exit_status = status;
         status
     }
 
@@ -850,7 +850,7 @@ impl Executor {
         for cmd in &program.commands {
             status = self.exec_complete_command(cmd);
         }
-        self.env.last_exit_status = status;
+        self.env.exec.last_exit_status = status;
         status
     }
 
@@ -894,7 +894,7 @@ impl Executor {
 
         let target_pids: Vec<Pid> = if args.is_empty() {
             self.env
-                .jobs
+                .process.jobs
                 .all_jobs()
                 .filter(|j| j.status == JobStatus::Running)
                 .map(|j| j.pgid)
@@ -902,8 +902,8 @@ impl Executor {
         } else {
             let mut pids = Vec::new();
             for arg in args {
-                if let Some(job_id) = self.env.jobs.resolve_job_spec(arg) {
-                    if let Some(job) = self.env.jobs.get(job_id) {
+                if let Some(job_id) = self.env.process.jobs.resolve_job_spec(arg) {
+                    if let Some(job) = self.env.process.jobs.get(job_id) {
                         pids.push(job.pgid);
                     } else {
                         eprintln!("kish: wait: {}: no such job", arg);
@@ -923,14 +923,14 @@ impl Executor {
         };
 
         if target_pids.is_empty() {
-            return self.env.last_exit_status;
+            return self.env.exec.last_exit_status;
         }
 
         let mut last_status = 0;
 
         for pid in &target_pids {
             // Check if already completed in jobs table
-            let already_done = self.env.jobs.all_jobs().find(|j| j.pgid == *pid).map(|j| {
+            let already_done = self.env.process.jobs.all_jobs().find(|j| j.pgid == *pid).map(|j| {
                 match j.status {
                     JobStatus::Done(code) => Some(code),
                     JobStatus::Terminated(sig) => Some(128 + sig),
@@ -945,13 +945,13 @@ impl Executor {
             loop {
                 match waitpid(*pid, Some(WaitPidFlag::WNOHANG)) {
                     Ok(WaitStatus::Exited(p, code)) => {
-                        self.env.jobs.update_status(p, JobStatus::Done(code));
+                        self.env.process.jobs.update_status(p, JobStatus::Done(code));
                         last_status = code;
                         break;
                     }
                     Ok(WaitStatus::Signaled(p, sig, _)) => {
                         let code = 128 + sig as i32;
-                        self.env.jobs.update_status(p, JobStatus::Terminated(sig as i32));
+                        self.env.process.jobs.update_status(p, JobStatus::Terminated(sig as i32));
                         last_status = code;
                         break;
                     }
@@ -1002,26 +1002,26 @@ impl Executor {
         let pgid_only = args.contains(&"-p".to_string());
 
         // Collect job IDs first to avoid borrow issues
-        let job_ids: Vec<crate::env::jobs::JobId> = self.env.jobs.all_jobs().map(|j| j.id).collect();
+        let job_ids: Vec<crate::env::jobs::JobId> = self.env.process.jobs.all_jobs().map(|j| j.id).collect();
 
         for id in &job_ids {
             if pgid_only {
-                if let Some(job) = self.env.jobs.get(*id) {
+                if let Some(job) = self.env.process.jobs.get(*id) {
                     println!("{}", job.pgid.as_raw());
                 }
             } else if long_format {
-                if let Some(line) = self.env.jobs.format_job_long(*id) {
+                if let Some(line) = self.env.process.jobs.format_job_long(*id) {
                     println!("{}", line);
                 }
-            } else if let Some(line) = self.env.jobs.format_job(*id) {
+            } else if let Some(line) = self.env.process.jobs.format_job(*id) {
                 println!("{}", line);
             }
         }
 
         // Mark done/terminated jobs as notified
-        let pending = self.env.jobs.pending_notifications();
+        let pending = self.env.process.jobs.pending_notifications();
         for id in pending {
-            self.env.jobs.mark_notified(id);
+            self.env.process.jobs.mark_notified(id);
         }
 
         0
@@ -1030,13 +1030,13 @@ impl Executor {
     fn builtin_fg(&mut self, args: &[String]) -> i32 {
         use crate::env::jobs::{self, JobStatus};
 
-        if !self.env.options.monitor {
+        if !self.env.mode.options.monitor {
             eprintln!("kish: fg: no job control");
             return 1;
         }
 
         let job_id = if args.is_empty() {
-            match self.env.jobs.current_id() {
+            match self.env.process.jobs.current_id() {
                 Some(id) => id,
                 None => {
                     eprintln!("kish: fg: no current job");
@@ -1044,7 +1044,7 @@ impl Executor {
                 }
             }
         } else {
-            match self.env.jobs.resolve_job_spec(&args[0]) {
+            match self.env.process.jobs.resolve_job_spec(&args[0]) {
                 Some(id) => id,
                 None => {
                     eprintln!("kish: fg: {}: no such job", args[0]);
@@ -1054,7 +1054,7 @@ impl Executor {
         };
 
         let (pgid, command) = {
-            let job = match self.env.jobs.get(job_id) {
+            let job = match self.env.process.jobs.get(job_id) {
                 Some(j) => j,
                 None => {
                     eprintln!("kish: fg: job not found");
@@ -1068,7 +1068,7 @@ impl Executor {
         eprintln!("{}", command);
 
         // Update job state
-        if let Some(job) = self.env.jobs.get_mut(job_id) {
+        if let Some(job) = self.env.process.jobs.get_mut(job_id) {
             job.foreground = true;
             if matches!(job.status, JobStatus::Stopped(_)) {
                 job.status = JobStatus::Running;
@@ -1085,7 +1085,7 @@ impl Executor {
         let status = self.wait_for_foreground_job(job_id);
 
         // Take terminal back
-        jobs::take_terminal(self.env.shell_pgid).ok();
+        jobs::take_terminal(self.env.process.shell_pgid).ok();
 
         status
     }
@@ -1093,13 +1093,13 @@ impl Executor {
     fn builtin_bg(&mut self, args: &[String]) -> i32 {
         use crate::env::jobs::JobStatus;
 
-        if !self.env.options.monitor {
+        if !self.env.mode.options.monitor {
             eprintln!("kish: bg: no job control");
             return 1;
         }
 
         let job_id = if args.is_empty() {
-            match self.env.jobs.current_id() {
+            match self.env.process.jobs.current_id() {
                 Some(id) => id,
                 None => {
                     eprintln!("kish: bg: no current job");
@@ -1107,7 +1107,7 @@ impl Executor {
                 }
             }
         } else {
-            match self.env.jobs.resolve_job_spec(&args[0]) {
+            match self.env.process.jobs.resolve_job_spec(&args[0]) {
                 Some(id) => id,
                 None => {
                     eprintln!("kish: bg: {}: no such job", args[0]);
@@ -1117,7 +1117,7 @@ impl Executor {
         };
 
         let pgid = {
-            let job = match self.env.jobs.get(job_id) {
+            let job = match self.env.process.jobs.get(job_id) {
                 Some(j) => j,
                 None => {
                     eprintln!("kish: bg: job not found");
@@ -1132,7 +1132,7 @@ impl Executor {
         };
 
         // Update job state
-        if let Some(job) = self.env.jobs.get_mut(job_id) {
+        if let Some(job) = self.env.process.jobs.get_mut(job_id) {
             job.status = JobStatus::Running;
             job.foreground = false;
             eprintln!("[{}]+ {} &", job.id, job.command);
@@ -1149,7 +1149,7 @@ impl Executor {
         use crate::env::jobs::JobStatus;
         use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 
-        let pgid = match self.env.jobs.get(job_id) {
+        let pgid = match self.env.process.jobs.get(job_id) {
             Some(j) => j.pgid,
             None => return 1,
         };
@@ -1159,35 +1159,35 @@ impl Executor {
         loop {
             match waitpid(nix::unistd::Pid::from_raw(-pgid.as_raw()), Some(WaitPidFlag::WUNTRACED)) {
                 Ok(WaitStatus::Exited(pid, code)) => {
-                    self.env.jobs.update_status(pid, JobStatus::Done(code));
+                    self.env.process.jobs.update_status(pid, JobStatus::Done(code));
                     last_status = code;
                     // Check if job is done
                     if self.all_job_processes_done(job_id) {
-                        self.env.jobs.mark_notified(job_id);
-                        self.env.jobs.remove_job(job_id);
+                        self.env.process.jobs.mark_notified(job_id);
+                        self.env.process.jobs.remove_job(job_id);
                         break;
                     }
                 }
                 Ok(WaitStatus::Signaled(pid, sig, _)) => {
                     let code = 128 + sig as i32;
-                    self.env.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
+                    self.env.process.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
                     last_status = code;
                     if self.all_job_processes_done(job_id) {
-                        self.env.jobs.mark_notified(job_id);
-                        self.env.jobs.remove_job(job_id);
+                        self.env.process.jobs.mark_notified(job_id);
+                        self.env.process.jobs.remove_job(job_id);
                         break;
                     }
                 }
                 Ok(WaitStatus::Stopped(pid, sig)) => {
-                    self.env.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
-                    if let Some(line) = self.env.jobs.format_job(job_id) {
+                    self.env.process.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
+                    if let Some(line) = self.env.process.jobs.format_job(job_id) {
                         eprintln!("{}", line);
                     }
                     last_status = 128 + sig as i32;
                     break;
                 }
                 Err(nix::errno::Errno::ECHILD) => {
-                    self.env.jobs.remove_job(job_id);
+                    self.env.process.jobs.remove_job(job_id);
                     break;
                 }
                 Err(nix::errno::Errno::EINTR) => {
@@ -1204,7 +1204,7 @@ impl Executor {
     /// Check if all processes in a job have finished (Done or Terminated).
     fn all_job_processes_done(&self, job_id: crate::env::jobs::JobId) -> bool {
         use crate::env::jobs::JobStatus;
-        match self.env.jobs.get(job_id) {
+        match self.env.process.jobs.get(job_id) {
             Some(job) => matches!(job.status, JobStatus::Done(_) | JobStatus::Terminated(_)),
             None => true,
         }
@@ -1212,14 +1212,14 @@ impl Executor {
 
     /// Display pending job notifications and clean up completed jobs.
     pub fn display_job_notifications(&mut self) {
-        let pending = self.env.jobs.pending_notifications();
+        let pending = self.env.process.jobs.pending_notifications();
         for id in &pending {
-            if let Some(line) = self.env.jobs.format_job(*id) {
+            if let Some(line) = self.env.process.jobs.format_job(*id) {
                 eprintln!("{}", line);
             }
-            self.env.jobs.mark_notified(*id);
+            self.env.process.jobs.mark_notified(*id);
         }
-        self.env.jobs.cleanup_notified();
+        self.env.process.jobs.cleanup_notified();
     }
 }
 
@@ -1244,7 +1244,7 @@ mod tests {
         let mut exec = Executor::new("kish", vec![]);
         let cmd = make_simple_cmd(&["true"]);
         assert_eq!(exec.exec_simple_command(&cmd), 0);
-        assert_eq!(exec.env.last_exit_status, 0);
+        assert_eq!(exec.env.exec.last_exit_status, 0);
     }
 
     #[test]
@@ -1252,7 +1252,7 @@ mod tests {
         let mut exec = Executor::new("kish", vec![]);
         let cmd = make_simple_cmd(&["false"]);
         assert_eq!(exec.exec_simple_command(&cmd), 1);
-        assert_eq!(exec.env.last_exit_status, 1);
+        assert_eq!(exec.env.exec.last_exit_status, 1);
     }
 
     #[test]
@@ -1285,12 +1285,12 @@ mod tests {
         // false sets last_exit_status to 1
         let false_cmd = make_simple_cmd(&["false"]);
         exec.exec_simple_command(&false_cmd);
-        assert_eq!(exec.env.last_exit_status, 1);
+        assert_eq!(exec.env.exec.last_exit_status, 1);
 
         // true resets it to 0
         let true_cmd = make_simple_cmd(&["true"]);
         exec.exec_simple_command(&true_cmd);
-        assert_eq!(exec.env.last_exit_status, 0);
+        assert_eq!(exec.env.exec.last_exit_status, 0);
     }
 
     #[test]
@@ -1414,14 +1414,14 @@ mod tests {
     #[test]
     fn test_should_errexit_enabled() {
         let mut exec = Executor::new("kish", vec![]);
-        exec.env.options.errexit = true;
+        exec.env.mode.options.errexit = true;
         assert!(exec.should_errexit());
     }
 
     #[test]
     fn test_with_errexit_suppressed() {
         let mut exec = Executor::new("kish", vec![]);
-        exec.env.options.errexit = true;
+        exec.env.mode.options.errexit = true;
         assert!(exec.should_errexit());
         let result = exec.with_errexit_suppressed(|e| {
             assert!(!e.should_errexit());
@@ -1434,7 +1434,7 @@ mod tests {
     #[test]
     fn test_with_errexit_suppressed_nested() {
         let mut exec = Executor::new("kish", vec![]);
-        exec.env.options.errexit = true;
+        exec.env.mode.options.errexit = true;
         exec.with_errexit_suppressed(|e| {
             assert!(!e.should_errexit());
             e.with_errexit_suppressed(|e2| {

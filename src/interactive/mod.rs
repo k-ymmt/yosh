@@ -20,11 +20,11 @@ impl Repl {
     pub fn new(shell_name: String) -> Self {
         signal::init_signal_handling();
         let mut executor = Executor::new(shell_name, vec![]);
-        executor.env.is_interactive = true;
-        executor.env.options.monitor = true;
+        executor.env.mode.is_interactive = true;
+        executor.env.mode.options.monitor = true;
         signal::init_job_control_signals();
         // Ensure shell has terminal
-        crate::env::jobs::take_terminal(executor.env.shell_pgid).ok();
+        crate::env::jobs::take_terminal(executor.env.process.shell_pgid).ok();
         Self {
             executor,
             line_editor: LineEditor::new(),
@@ -54,7 +54,7 @@ impl Repl {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     // EOF (Ctrl+D)
-                    if self.executor.env.options.ignoreeof {
+                    if self.executor.env.mode.options.ignoreeof {
                         eprintln!("\r\nkish: Use \"exit\" to leave the shell.");
                         input_buffer.clear();
                         continue;
@@ -91,7 +91,7 @@ impl Repl {
                 ParseStatus::Complete(commands) => {
                     for cmd in &commands {
                         let status = self.executor.exec_complete_command(cmd);
-                        self.executor.env.last_exit_status = status;
+                        self.executor.env.exec.last_exit_status = status;
                         // Note: errexit (set -e) is intentionally not checked here.
                         // Most POSIX shells do not exit on errexit in interactive mode.
                     }
@@ -116,6 +116,6 @@ impl Repl {
 
         self.executor.process_pending_signals();
         self.executor.execute_exit_trap();
-        self.executor.env.last_exit_status
+        self.executor.env.exec.last_exit_status
     }
 }

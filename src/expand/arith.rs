@@ -47,13 +47,13 @@ fn arith_var_lookup(env: &ShellEnv, name: &str) -> String {
     if name.len() == 1 {
         match name.as_bytes()[0] {
             b'#' => return env.vars.positional_params().len().to_string(),
-            b'?' => return env.last_exit_status.to_string(),
+            b'?' => return env.exec.last_exit_status.to_string(),
             b'-' => {
-                let s = env.options.to_flag_string();
+                let s = env.mode.options.to_flag_string();
                 return if s.is_empty() { "0".to_string() } else { s };
             }
-            b'!' => return env.jobs.last_bg_pid().map(|p| p.as_raw().to_string()).unwrap_or_else(|| "0".to_string()),
-            b'$' => return env.shell_pid.as_raw().to_string(),
+            b'!' => return env.process.jobs.last_bg_pid().map(|p| p.as_raw().to_string()).unwrap_or_else(|| "0".to_string()),
+            b'$' => return env.process.shell_pid.as_raw().to_string(),
             _ => {}
         }
     }
@@ -780,7 +780,7 @@ mod tests {
     #[test]
     fn test_special_param_question_in_arith() {
         let mut e = env();
-        e.last_exit_status = 42;
+        e.exec.last_exit_status = 42;
         assert_eq!(evaluate(&mut e, "$?"), Ok("42".to_string()));
     }
 

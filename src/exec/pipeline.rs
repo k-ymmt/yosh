@@ -24,7 +24,7 @@ impl Executor {
             status
         };
 
-        self.env.last_exit_status = final_status;
+        self.env.exec.last_exit_status = final_status;
         final_status
     }
 
@@ -66,7 +66,7 @@ impl Executor {
                     }
                     let ignored = self.env.traps.ignored_signals();
                     self.env.traps.reset_non_ignored();
-                    if self.env.options.monitor {
+                    if self.env.mode.options.monitor {
                         signal::setup_foreground_child_signals(&ignored);
                     } else {
                         signal::reset_child_signals(&ignored);
@@ -107,13 +107,13 @@ impl Executor {
         // Parent: close all pipe fds
         close_all_pipes(&pipes);
 
-        if self.env.options.monitor {
+        if self.env.mode.options.monitor {
             // Monitor mode: register as foreground job and use WUNTRACED wait
             let cmd_str = "(pipeline)".to_string();
-            let job_id = self.env.jobs.add_job(pgid, children.clone(), cmd_str, true);
+            let job_id = self.env.process.jobs.add_job(pgid, children.clone(), cmd_str, true);
             crate::env::jobs::give_terminal(pgid).ok();
             let status = self.wait_for_foreground_pipeline(job_id, &children, n);
-            crate::env::jobs::take_terminal(self.env.shell_pgid).ok();
+            crate::env::jobs::take_terminal(self.env.process.shell_pgid).ok();
             status
         } else {
             // Non-monitor mode: simple wait loop (existing behavior)
@@ -129,7 +129,7 @@ impl Executor {
                 }
             }
 
-            if self.env.options.pipefail {
+            if self.env.mode.options.pipefail {
                 max_nonzero
             } else {
                 last_status
@@ -140,7 +140,7 @@ impl Executor {
     fn wait_for_foreground_pipeline(&mut self, job_id: crate::env::jobs::JobId, children: &[Pid], n: usize) -> i32 {
         use crate::env::jobs::JobStatus;
 
-        let pgid = match self.env.jobs.get(job_id) {
+        let pgid = match self.env.process.jobs.get(job_id) {
             Some(j) => j.pgid,
             None => return 1,
         };
@@ -159,7 +159,7 @@ impl Executor {
                         statuses[idx] = code;
                         remaining -= 1;
                     }
-                    self.env.jobs.update_status(pid, JobStatus::Done(code));
+                    self.env.process.jobs.update_status(pid, JobStatus::Done(code));
                 }
                 Ok(WaitStatus::Signaled(pid, sig, _)) => {
                     let code = 128 + sig as i32;
@@ -167,15 +167,15 @@ impl Executor {
                         statuses[idx] = code;
                         remaining -= 1;
                     }
-                    self.env.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
+                    self.env.process.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
                 }
                 Ok(WaitStatus::Stopped(pid, sig)) => {
-                    self.env.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
-                    if let Some(job) = self.env.jobs.get_mut(job_id) {
+                    self.env.process.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
+                    if let Some(job) = self.env.process.jobs.get_mut(job_id) {
                         job.status = JobStatus::Stopped(sig as i32);
                         job.foreground = false;
                     }
-                    if let Some(line) = self.env.jobs.format_job(job_id) {
+                    if let Some(line) = self.env.process.jobs.format_job(job_id) {
                         eprintln!("{}", line);
                     }
                     return 128 + sig as i32;
@@ -187,10 +187,10 @@ impl Executor {
         }
 
         // All children done — remove job
-        self.env.jobs.mark_notified(job_id);
-        self.env.jobs.remove_job(job_id);
+        self.env.process.jobs.mark_notified(job_id);
+        self.env.process.jobs.remove_job(job_id);
 
-        if self.env.options.pipefail {
+        if self.env.mode.options.pipefail {
             statuses.iter().rev().find(|&&s| s != 0).copied().unwrap_or(0)
         } else {
             statuses.last().copied().unwrap_or(0)

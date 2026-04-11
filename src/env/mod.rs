@@ -278,24 +278,40 @@ impl ShellOptions {
     }
 }
 
+/// Execution-related state.
+#[derive(Debug, Clone)]
+pub struct ExecState {
+    pub last_exit_status: i32,
+    pub flow_control: Option<FlowControl>,
+}
+
+/// Process and job management state.
+#[derive(Debug, Clone)]
+pub struct ProcessState {
+    pub shell_pid: Pid,
+    pub shell_pgid: Pid,
+    pub jobs: JobTable,
+}
+
+/// Shell mode and option flags.
+#[derive(Debug, Clone)]
+pub struct ShellMode {
+    pub options: ShellOptions,
+    pub is_interactive: bool,
+    pub in_dot_script: bool,
+}
+
 /// The complete shell environment.
 #[derive(Debug, Clone)]
 pub struct ShellEnv {
     pub vars: VarStore,
-    pub last_exit_status: i32,
-    pub shell_pid: Pid,
-    pub shell_name: String,
+    pub exec: ExecState,
+    pub process: ProcessState,
+    pub mode: ShellMode,
     pub functions: HashMap<String, FunctionDef>,
-    pub flow_control: Option<FlowControl>,
-    pub options: ShellOptions,
     pub traps: TrapStore,
     pub aliases: AliasStore,
-    pub jobs: JobTable,
-    pub shell_pgid: Pid,
-    /// True when running as an interactive shell (stdin is a TTY).
-    pub is_interactive: bool,
-    /// True when executing inside a dot script (`. file` / `source file`).
-    pub in_dot_script: bool,
+    pub shell_name: String,
 }
 
 impl ShellEnv {
@@ -307,18 +323,24 @@ impl ShellEnv {
         vars.set_positional_params(args);
         ShellEnv {
             vars,
-            last_exit_status: 0,
-            shell_pid: getpid(),
+            exec: ExecState {
+                last_exit_status: 0,
+                flow_control: None,
+            },
+            process: ProcessState {
+                shell_pid: getpid(),
+                shell_pgid: nix::unistd::getpgrp(),
+                jobs: JobTable::default(),
+            },
+            mode: ShellMode {
+                options: ShellOptions::default(),
+                is_interactive: false,
+                in_dot_script: false,
+            },
             shell_name: shell_name.into(),
             functions: HashMap::new(),
-            flow_control: None,
-            options: ShellOptions::default(),
             traps: TrapStore::default(),
             aliases: AliasStore::default(),
-            jobs: JobTable::default(),
-            shell_pgid: nix::unistd::getpgrp(),
-            is_interactive: false,
-            in_dot_script: false,
         }
     }
 }
@@ -332,9 +354,9 @@ mod tests {
         let env = ShellEnv::new("kish", vec!["arg1".to_string(), "arg2".to_string()]);
         assert_eq!(env.shell_name, "kish");
         assert_eq!(env.vars.positional_params(), &["arg1", "arg2"]);
-        assert_eq!(env.last_exit_status, 0);
+        assert_eq!(env.exec.last_exit_status, 0);
         // PID should be a positive number
-        assert!(env.shell_pid.as_raw() > 0);
+        assert!(env.process.shell_pid.as_raw() > 0);
     }
 
     #[test]
@@ -445,12 +467,12 @@ mod tests {
     #[test]
     fn test_jobs_table() {
         let env = ShellEnv::new("kish", vec![]);
-        assert!(env.jobs.is_empty());
+        assert!(env.process.jobs.is_empty());
     }
 
     #[test]
     fn test_shell_pgid() {
         let env = ShellEnv::new("kish", vec![]);
-        assert!(env.shell_pgid.as_raw() > 0);
+        assert!(env.process.shell_pgid.as_raw() > 0);
     }
 }

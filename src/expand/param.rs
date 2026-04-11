@@ -10,10 +10,10 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             match env.vars.get(name) {
                 Some(val) => Ok(val.to_string()),
                 None => {
-                    if env.options.nounset {
+                    if env.mode.options.nounset {
                         eprintln!("kish: {}: parameter not set", name);
-                        env.last_exit_status = 1;
-                        env.flow_control = Some(crate::env::FlowControl::Return(1));
+                        env.exec.last_exit_status = 1;
+                        env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
                     }
                     Ok(String::new())
                 }
@@ -79,8 +79,8 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                 };
                 eprintln!("kish: {}", msg);
                 // POSIX: non-interactive shell shall exit with non-zero status
-                env.last_exit_status = 1;
-                env.flow_control = Some(crate::env::FlowControl::Return(1));
+                env.exec.last_exit_status = 1;
+                env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
                 Ok(String::new())
             } else {
                 Ok(val.unwrap_or_default())
@@ -145,13 +145,13 @@ fn is_unset_or_null_inner(val: &Option<String>, null_check: bool) -> bool {
 
 fn expand_special(env: &ShellEnv, sp: &SpecialParam) -> String {
     match sp {
-        SpecialParam::Question => env.last_exit_status.to_string(),
-        SpecialParam::Dollar => env.shell_pid.as_raw().to_string(),
+        SpecialParam::Question => env.exec.last_exit_status.to_string(),
+        SpecialParam::Dollar => env.process.shell_pid.as_raw().to_string(),
         SpecialParam::Zero => env.shell_name.clone(),
         SpecialParam::Hash => env.vars.positional_params().len().to_string(),
         SpecialParam::At | SpecialParam::Star => env.vars.positional_params().join(" "),
-        SpecialParam::Bang => env.jobs.last_bg_pid().map(|p| p.as_raw().to_string()).unwrap_or_default(),
-        SpecialParam::Dash => env.options.to_flag_string(),
+        SpecialParam::Bang => env.process.jobs.last_bg_pid().map(|p| p.as_raw().to_string()).unwrap_or_default(),
+        SpecialParam::Dash => env.mode.options.to_flag_string(),
     }
 }
 
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn test_special_question() {
         let mut env = make_env();
-        env.last_exit_status = 42;
+        env.exec.last_exit_status = 42;
         let result = expand(&mut env, &ParamExpr::Special(SpecialParam::Question)).unwrap();
         assert_eq!(result, "42");
     }

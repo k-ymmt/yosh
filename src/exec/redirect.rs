@@ -66,7 +66,7 @@ impl RedirectState {
                 let target_fd = redirect.fd.unwrap_or(1);
                 let path = expand_word_to_string(env, word)
                     .map_err(|e| e.to_string())?;
-                if env.options.noclobber && std::path::Path::new(&path).exists() {
+                if env.mode.options.noclobber && std::path::Path::new(&path).exists() {
                     return Err(format!("{}: cannot overwrite existing file", path));
                 }
                 let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;

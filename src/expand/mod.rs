@@ -106,7 +106,7 @@ impl Default for ExpandedField {
 pub fn expand_word(env: &mut ShellEnv, word: &Word) -> crate::error::Result<Vec<String>> {
     let fields = expand_word_to_fields(env, word)?;
     let fields = field_split::split(env, fields);
-    let fields = if env.options.noglob {
+    let fields = if env.mode.options.noglob {
         fields
     } else {
         pathname::expand(env, fields)
@@ -215,7 +215,7 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                             Ok(val) => result.push_str(&val),
                             Err(msg) => {
                                 eprintln!("kish: arithmetic: {}", msg);
-                                env.last_exit_status = 1;
+                                env.exec.last_exit_status = 1;
                                 result.push_str("0");
                             }
                         }
@@ -324,7 +324,7 @@ fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
                 Ok(val) => out.push_str(&val),
                 Err(msg) => {
                     eprintln!("kish: arithmetic: {}", msg);
-                    env.last_exit_status = 1;
+                    env.exec.last_exit_status = 1;
                     out.push_str("0");
                 }
             }
@@ -728,7 +728,7 @@ mod tests {
     #[test]
     fn test_special_question() {
         let mut env = make_env();
-        env.last_exit_status = 42;
+        env.exec.last_exit_status = 42;
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Special(
                 SpecialParam::Question,

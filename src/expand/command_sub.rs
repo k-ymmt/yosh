@@ -44,18 +44,24 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
             // Create a new executor with a clone of the parent's environment
             let mut child_env = ShellEnv {
                 vars: env.vars.clone(),
-                last_exit_status: env.last_exit_status,
-                shell_pid: env.shell_pid,
+                exec: crate::env::ExecState {
+                    last_exit_status: env.exec.last_exit_status,
+                    flow_control: None,
+                },
+                process: crate::env::ProcessState {
+                    shell_pid: env.process.shell_pid,
+                    shell_pgid: env.process.shell_pgid,
+                    jobs: env.process.jobs.clone(),
+                },
+                mode: crate::env::ShellMode {
+                    options: env.mode.options.clone(),
+                    is_interactive: false,
+                    in_dot_script: false,
+                },
                 shell_name: env.shell_name.clone(),
                 functions: env.functions.clone(),
-                flow_control: None,
-                options: env.options.clone(),
                 traps: env.traps.clone(),
                 aliases: env.aliases.clone(),
-                jobs: env.jobs.clone(),
-                shell_pgid: env.shell_pgid,
-                is_interactive: false,
-                in_dot_script: false,
             };
             child_env.traps.reset_for_command_sub();
             let mut executor = Executor::from_env(child_env);
@@ -78,10 +84,10 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
             // Wait for the child to finish
             match waitpid(child, None) {
                 Ok(WaitStatus::Exited(_, code)) => {
-                    env.last_exit_status = code;
+                    env.exec.last_exit_status = code;
                 }
                 Ok(WaitStatus::Signaled(_, signal, _)) => {
-                    env.last_exit_status = 128 + signal as i32;
+                    env.exec.last_exit_status = 128 + signal as i32;
                 }
                 Ok(_) => {}
                 Err(e) => {

@@ -77,7 +77,7 @@ fn main() {
 fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_string: bool) -> i32 {
     signal::init_signal_handling();
     let mut executor = Executor::new(shell_name, positional);
-    executor.env.options.cmd_string = cmd_string;
+    executor.env.mode.options.cmd_string = cmd_string;
     executor.verbose_print(input);
 
     // Parse and execute one complete command at a time so that aliases
@@ -110,7 +110,7 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_stri
                 drop(p);
                 status = executor.exec_complete_command(&cmd);
                 // Check for flow control (exit handled by std::process::exit in builtin)
-                if executor.env.flow_control.is_some() {
+                if executor.env.exec.flow_control.is_some() {
                     break;
                 }
                 executor.check_errexit(status);

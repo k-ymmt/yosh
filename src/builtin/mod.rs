@@ -38,7 +38,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "umask" => builtin_umask(args),
         "alias" => builtin_alias(args, env),
         "unalias" => builtin_unalias(args, env),
-        "kill" => builtin_kill(args, env.shell_pgid),
+        "kill" => builtin_kill(args, env.process.shell_pgid),
         "wait" => {
             // Handled in Executor::exec_simple_command — should not reach here
             eprintln!("kish: wait: internal error");
