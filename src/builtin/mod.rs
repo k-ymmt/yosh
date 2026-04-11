@@ -1,6 +1,7 @@
 pub mod special;
 
 use crate::env::ShellEnv;
+use nix::unistd::Pid;
 
 /// Classification of a command name as a POSIX builtin kind.
 #[derive(Debug, PartialEq)]
@@ -36,7 +37,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "echo" => builtin_echo(args),
         "alias" => builtin_alias(args, env),
         "unalias" => builtin_unalias(args, env),
-        "kill" => builtin_kill(args),
+        "kill" => builtin_kill(args, env.shell_pgid),
         "wait" => {
             // Handled in Executor::exec_simple_command — should not reach here
             eprintln!("kish: wait: internal error");
@@ -162,7 +163,7 @@ fn builtin_unalias(args: &[String], env: &mut ShellEnv) -> i32 {
     status
 }
 
-fn builtin_kill(args: &[String]) -> i32 {
+fn builtin_kill(args: &[String], shell_pgid: Pid) -> i32 {
     if args.is_empty() {
         eprintln!("kish: kill: usage: kill [-s sigspec | -signum] pid...");
         return 2;
@@ -190,8 +191,22 @@ fn builtin_kill(args: &[String]) -> i32 {
                 continue;
             }
         };
+        // PID 0 means "caller's process group" to the kernel, but in a pipeline
+        // subshell the caller's group is the pipeline's group. Substitute the
+        // shell's original process group so kill 0 behaves as POSIX expects.
+        let target = if pid == 0 {
+            let gpid = shell_pgid.as_raw();
+            if gpid <= 1 {
+                eprintln!("kish: kill: invalid shell process group");
+                status = 1;
+                continue;
+            }
+            Pid::from_raw(-gpid)
+        } else {
+            Pid::from_raw(pid)
+        };
         if let Err(e) = nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(pid),
+            target,
             nix::sys::signal::Signal::try_from(sig_num).ok(),
         ) {
             eprintln!("kish: kill: ({}) - {}", pid_str, e);

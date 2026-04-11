@@ -189,6 +189,23 @@ fn test_wait_nonexistent_pid() {
     assert_eq!(out.status.code(), Some(127));
 }
 
+#[test]
+fn test_kill_0_targets_shell_pgid() {
+    // In a pipeline, `kill 0` should target the shell's process group,
+    // not the pipeline's process group. We verify by using a trap + kill 0 in
+    // a pipeline command — if kill 0 incorrectly targets only the pipeline group,
+    // the trap on the shell won't fire.
+    let (stdout, _stderr, code) = kish_exec_timeout(
+        "trap 'echo trapped' TERM; true | kill -TERM 0; echo after",
+        5,
+    );
+    assert_eq!(code, Some(0));
+    let stdout_str = stdout.trim();
+    // The trap should fire because kill 0 targets the shell's process group
+    assert!(stdout_str.contains("trapped"), "expected trap to fire, got: {}", stdout_str);
+    assert!(stdout_str.contains("after"), "expected execution to continue, got: {}", stdout_str);
+}
+
 // Background job tracking
 
 #[test]
