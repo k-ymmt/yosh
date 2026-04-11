@@ -146,7 +146,7 @@ fn expand_special(env: &ShellEnv, sp: &SpecialParam) -> String {
         SpecialParam::Zero => env.shell_name.clone(),
         SpecialParam::Hash => env.vars.positional_params().len().to_string(),
         SpecialParam::At | SpecialParam::Star => env.vars.positional_params().join(" "),
-        SpecialParam::Bang => env.last_bg_pid.map(|p| p.to_string()).unwrap_or_default(),
+        SpecialParam::Bang => env.jobs.last_bg_pid().map(|p| p.as_raw().to_string()).unwrap_or_default(),
         SpecialParam::Dash => env.options.to_flag_string(),
     }
 }

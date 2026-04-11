@@ -656,21 +656,21 @@ impl Executor {
     }
 
     /// Reap any zombie background children without blocking.
-    fn reap_zombies(&mut self) {
+    pub(crate) fn reap_zombies(&mut self) {
+        use crate::env::jobs::JobStatus;
         loop {
             match nix::sys::wait::waitpid(
                 nix::unistd::Pid::from_raw(-1),
-                Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG | nix::sys::wait::WaitPidFlag::WUNTRACED),
             ) {
                 Ok(nix::sys::wait::WaitStatus::Exited(pid, code)) => {
-                    if let Some(job) = self.env.bg_jobs.iter_mut().find(|j| j.pid == pid) {
-                        job.status = Some(code);
-                    }
+                    self.env.jobs.update_status(pid, JobStatus::Done(code));
                 }
                 Ok(nix::sys::wait::WaitStatus::Signaled(pid, sig, _)) => {
-                    if let Some(job) = self.env.bg_jobs.iter_mut().find(|j| j.pid == pid) {
-                        job.status = Some(128 + sig as i32);
-                    }
+                    self.env.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
+                }
+                Ok(nix::sys::wait::WaitStatus::Stopped(pid, sig)) => {
+                    self.env.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
                 }
                 Ok(nix::sys::wait::WaitStatus::StillAlive) => break,
                 Ok(_) => continue,
@@ -706,11 +706,8 @@ impl Executor {
             }
             Ok(ForkResult::Parent { child }) => {
                 nix::unistd::setpgid(child, child).ok();
-                self.env.bg_jobs.push(crate::env::BgJob {
-                    pid: child,
-                    status: None,
-                });
-                self.env.last_bg_pid = Some(child.as_raw());
+                let job_id = self.env.jobs.add_job(child, vec![child], "(background)", false);
+                eprintln!("[{}] {}", job_id, child.as_raw());
                 0
             }
         }
@@ -787,22 +784,32 @@ impl Executor {
     fn builtin_wait(&mut self, args: &[String]) -> i32 {
         use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
         use nix::unistd::Pid;
+        use crate::env::jobs::JobStatus;
 
         let target_pids: Vec<Pid> = if args.is_empty() {
             self.env
-                .bg_jobs
-                .iter()
-                .filter(|j| j.status.is_none())
-                .map(|j| j.pid)
+                .jobs
+                .all_jobs()
+                .filter(|j| j.status == JobStatus::Running)
+                .map(|j| j.pgid)
                 .collect()
         } else {
             let mut pids = Vec::new();
             for arg in args {
-                match arg.parse::<i32>() {
-                    Ok(n) => pids.push(Pid::from_raw(n)),
-                    Err(_) => {
-                        eprintln!("kish: wait: {}: not a pid", arg);
-                        return 2;
+                if let Some(job_id) = self.env.jobs.resolve_job_spec(arg) {
+                    if let Some(job) = self.env.jobs.get(job_id) {
+                        pids.push(job.pgid);
+                    } else {
+                        eprintln!("kish: wait: {}: no such job", arg);
+                        return 127;
+                    }
+                } else {
+                    match arg.parse::<i32>() {
+                        Ok(n) => pids.push(Pid::from_raw(n)),
+                        Err(_) => {
+                            eprintln!("kish: wait: {}: not a pid or valid job spec", arg);
+                            return 2;
+                        }
                     }
                 }
             }
@@ -816,32 +823,29 @@ impl Executor {
         let mut last_status = 0;
 
         for pid in &target_pids {
-            // Check if already reaped
-            if let Some(job) = self.env.bg_jobs.iter().find(|j| j.pid == *pid)
-                && let Some(s) = job.status
-            {
+            // Check if already completed in jobs table
+            let already_done = self.env.jobs.all_jobs().find(|j| j.pgid == *pid).map(|j| {
+                match j.status {
+                    JobStatus::Done(code) => Some(code),
+                    JobStatus::Terminated(sig) => Some(128 + sig),
+                    _ => None,
+                }
+            }).flatten();
+            if let Some(s) = already_done {
                 last_status = s;
                 continue;
             }
 
             loop {
                 match waitpid(*pid, Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::Exited(_, code)) => {
-                        if let Some(job) =
-                            self.env.bg_jobs.iter_mut().find(|j| j.pid == *pid)
-                        {
-                            job.status = Some(code);
-                        }
+                    Ok(WaitStatus::Exited(p, code)) => {
+                        self.env.jobs.update_status(p, JobStatus::Done(code));
                         last_status = code;
                         break;
                     }
-                    Ok(WaitStatus::Signaled(_, sig, _)) => {
+                    Ok(WaitStatus::Signaled(p, sig, _)) => {
                         let code = 128 + sig as i32;
-                        if let Some(job) =
-                            self.env.bg_jobs.iter_mut().find(|j| j.pid == *pid)
-                        {
-                            job.status = Some(code);
-                        }
+                        self.env.jobs.update_status(p, JobStatus::Terminated(sig as i32));
                         last_status = code;
                         break;
                     }

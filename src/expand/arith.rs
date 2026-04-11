@@ -52,7 +52,7 @@ fn arith_var_lookup(env: &ShellEnv, name: &str) -> String {
                 let s = env.options.to_flag_string();
                 return if s.is_empty() { "0".to_string() } else { s };
             }
-            b'!' => return env.last_bg_pid.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string()),
+            b'!' => return env.jobs.last_bg_pid().map(|p| p.as_raw().to_string()).unwrap_or_else(|| "0".to_string()),
             b'$' => return env.shell_pid.as_raw().to_string(),
             _ => {}
         }

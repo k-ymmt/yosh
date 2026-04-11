@@ -5,6 +5,7 @@ pub mod vars;
 use std::collections::HashMap;
 
 use nix::unistd::{Pid, getpid};
+use jobs::JobTable;
 use aliases::AliasStore;
 use vars::VarStore;
 
@@ -277,13 +278,6 @@ impl ShellOptions {
     }
 }
 
-/// A background job tracked by the shell.
-#[derive(Debug, Clone)]
-pub struct BgJob {
-    pub pid: Pid,
-    pub status: Option<i32>,
-}
-
 /// The complete shell environment.
 #[derive(Debug, Clone)]
 pub struct ShellEnv {
@@ -291,14 +285,13 @@ pub struct ShellEnv {
     pub last_exit_status: i32,
     pub shell_pid: Pid,
     pub shell_name: String,
-    /// PID of the most recently started background job ($!)
-    pub last_bg_pid: Option<i32>,
     pub functions: HashMap<String, FunctionDef>,
     pub flow_control: Option<FlowControl>,
     pub options: ShellOptions,
     pub traps: TrapStore,
     pub aliases: AliasStore,
-    pub bg_jobs: Vec<BgJob>,
+    pub jobs: JobTable,
+    pub shell_pgid: Pid,
     /// Set during word expansion when an arithmetic error occurs.
     /// Aborts the current simple command but does NOT prevent subsequent commands.
     pub expansion_error: bool,
@@ -318,13 +311,13 @@ impl ShellEnv {
             last_exit_status: 0,
             shell_pid: getpid(),
             shell_name: shell_name.into(),
-            last_bg_pid: None,
             functions: HashMap::new(),
             flow_control: None,
             options: ShellOptions::default(),
             traps: TrapStore::default(),
             aliases: AliasStore::default(),
-            bg_jobs: Vec::new(),
+            jobs: JobTable::default(),
+            shell_pgid: nix::unistd::getpgrp(),
             expansion_error: false,
             is_interactive: false,
         }
@@ -451,13 +444,14 @@ mod tests {
     }
 
     #[test]
-    fn test_bg_jobs() {
-        let mut env = ShellEnv::new("kish", vec![]);
-        assert!(env.bg_jobs.is_empty());
-        env.bg_jobs.push(BgJob { pid: Pid::from_raw(1234), status: None });
-        assert_eq!(env.bg_jobs.len(), 1);
-        assert!(env.bg_jobs[0].status.is_none());
-        env.bg_jobs[0].status = Some(0);
-        assert_eq!(env.bg_jobs[0].status, Some(0));
+    fn test_jobs_table() {
+        let env = ShellEnv::new("kish", vec![]);
+        assert!(env.jobs.is_empty());
+    }
+
+    #[test]
+    fn test_shell_pgid() {
+        let env = ShellEnv::new("kish", vec![]);
+        assert!(env.shell_pgid.as_raw() > 0);
     }
 }

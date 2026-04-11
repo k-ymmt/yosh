@@ -15,6 +15,12 @@ pub const SIGNAL_TABLE: &[(i32, &str)] = &[
     (13, "PIPE"),
     (14, "ALRM"),
     (15, "TERM"),
+    (17, "CHLD"),
+    (18, "CONT"),
+    (19, "STOP"),
+    (20, "TSTP"),
+    (21, "TTIN"),
+    (22, "TTOU"),
 ];
 
 /// Signals for which the shell registers handlers.
@@ -195,6 +201,52 @@ pub fn reset_child_signals(ignored: &[i32]) {
     }
 }
 
+/// Set up job control signals for the shell process itself.
+/// Ignores SIGTSTP, SIGTTIN, SIGTTOU so the shell is not stopped.
+/// Adds SIGCHLD to the self-pipe handler.
+pub fn init_job_control_signals() {
+    ignore_signal(libc::SIGTSTP);
+    ignore_signal(libc::SIGTTIN);
+    ignore_signal(libc::SIGTTOU);
+
+    // Register SIGCHLD handler via self-pipe
+    let sa = SigAction::new(
+        SigHandler::Handler(signal_handler),
+        SaFlags::SA_RESTART,
+        SigSet::empty(),
+    );
+    let sig = Signal::try_from(libc::SIGCHLD).expect("SIGCHLD is valid");
+    unsafe {
+        sigaction(sig, &sa).expect("sigaction(SIGCHLD) failed");
+    }
+}
+
+/// Reset job control signals to defaults.
+pub fn reset_job_control_signals() {
+    default_signal(libc::SIGTSTP);
+    default_signal(libc::SIGTTIN);
+    default_signal(libc::SIGTTOU);
+    default_signal(libc::SIGCHLD);
+}
+
+/// Set up signals for a foreground child process.
+/// Restores SIGTSTP, SIGTTIN, SIGTTOU to SIG_DFL so the child can be stopped.
+pub fn setup_foreground_child_signals(ignored: &[i32]) {
+    reset_child_signals(ignored);
+    if !ignored.contains(&libc::SIGTSTP) { default_signal(libc::SIGTSTP); }
+    if !ignored.contains(&libc::SIGTTIN) { default_signal(libc::SIGTTIN); }
+    if !ignored.contains(&libc::SIGTTOU) { default_signal(libc::SIGTTOU); }
+}
+
+/// Set up signals for a background child process.
+/// Ignores SIGTTIN to prevent background reads from stopping.
+pub fn setup_background_child_signals(ignored: &[i32]) {
+    reset_child_signals(ignored);
+    ignore_signal(libc::SIGTTIN);
+    if !ignored.contains(&libc::SIGTSTP) { default_signal(libc::SIGTSTP); }
+    if !ignored.contains(&libc::SIGTTOU) { default_signal(libc::SIGTTOU); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +341,29 @@ mod tests {
             signals.is_empty(),
             "expected no pending signals, got: {signals:?}"
         );
+    }
+
+    #[test]
+    fn test_signal_table_has_job_control_signals() {
+        assert_eq!(signal_name_to_number("CHLD").unwrap(), 17);
+        assert_eq!(signal_name_to_number("CONT").unwrap(), 18);
+        assert_eq!(signal_name_to_number("STOP").unwrap(), 19);
+        assert_eq!(signal_name_to_number("TSTP").unwrap(), 20);
+        assert_eq!(signal_name_to_number("TTIN").unwrap(), 21);
+        assert_eq!(signal_name_to_number("TTOU").unwrap(), 22);
+    }
+
+    #[test]
+    fn test_signal_number_to_name_job_control() {
+        assert_eq!(signal_number_to_name(17), Some("CHLD"));
+        assert_eq!(signal_number_to_name(20), Some("TSTP"));
+    }
+
+    #[test]
+    fn test_job_control_signal_functions_exist() {
+        let _ = init_job_control_signals as fn();
+        let _ = reset_job_control_signals as fn();
+        let _ = setup_foreground_child_signals as fn(&[i32]);
+        let _ = setup_background_child_signals as fn(&[i32]);
     }
 }
