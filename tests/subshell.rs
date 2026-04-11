@@ -375,3 +375,42 @@ fn test_umask_set_octal() {
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0077");
 }
+
+#[test]
+fn test_umask_symbolic_display() {
+    let out = kish_exec("umask 027; umask -S");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "u=rwx,g=rx,o=");
+}
+
+#[test]
+fn test_umask_set_symbolic() {
+    let out = kish_exec("umask u=rwx,g=rx,o=rx; umask");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0022");
+}
+
+#[test]
+fn test_umask_symbolic_add_remove() {
+    // Start with 077, add group read => 037
+    let out = kish_exec("umask 077; umask g+r; umask");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0037");
+}
+
+#[test]
+fn test_umask_symbolic_minus() {
+    // Start with 022, remove user write permission => 0222 ... no.
+    // umask 022 means deny g=w,o=w. Remove user read => add u-r to umask => 0422
+    let out = kish_exec("umask 022; umask u-r; umask");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0422");
+}
+
+#[test]
+fn test_umask_invalid_octal() {
+    let out = kish_exec("umask 089; echo $?");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.trim(), "1");
+}
