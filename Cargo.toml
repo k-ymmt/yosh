@@ -7,3 +7,18 @@ edition = "2024"
 nix = { version = "0.31", features = ["signal", "process", "fs", "poll", "term"] }
 libc = "0.2"
 crossterm = "0.29"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "lexer_bench"
+harness = false
+
+[[bench]]
+name = "parser_bench"
+harness = false
+
+[[bench]]
+name = "expand_bench"
+harness = false
