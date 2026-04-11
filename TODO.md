@@ -32,6 +32,9 @@
 - [ ] Prompt width — accurate column width calculation for control characters and escape sequences
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
+- [ ] Terminal resize handling — `Event::Resize` not processed in `read_line`, prompt display may break after resize (`src/interactive/line_editor.rs`)
+- [ ] Ctrl+C / empty-Enter type distinction — both return `Ok(Some(""))` from `read_line`; introduce a dedicated variant for clearer intent (`src/interactive/line_editor.rs`, `src/interactive/mod.rs`)
+- [ ] Parse status edge-case tests — `||` continuation, `for...do` incomplete, nested structures, unterminated here-document (`tests/interactive.rs`)
 
 ## Future: Arithmetic Expansion Edge Cases
 
