@@ -4,6 +4,9 @@ pub struct Program {
     pub commands: Vec<CompleteCommand>,
 }
 
+/// A list of complete commands — used as the body of compound commands.
+pub type CommandList = Vec<CompleteCommand>;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompleteCommand {
     pub items: Vec<(AndOrList, Option<SeparatorOp>)>,
@@ -61,29 +64,29 @@ pub struct CompoundCommand {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompoundCommandKind {
     BraceGroup {
-        body: Vec<CompleteCommand>,
+        body: CommandList,
     },
     Subshell {
-        body: Vec<CompleteCommand>,
+        body: CommandList,
     },
     If {
-        condition: Vec<CompleteCommand>,
-        then_part: Vec<CompleteCommand>,
-        elif_parts: Vec<(Vec<CompleteCommand>, Vec<CompleteCommand>)>,
-        else_part: Option<Vec<CompleteCommand>>,
+        condition: CommandList,
+        then_part: CommandList,
+        elif_parts: Vec<(CommandList, CommandList)>,
+        else_part: Option<CommandList>,
     },
     For {
         var: String,
         words: Option<Vec<Word>>,
-        body: Vec<CompleteCommand>,
+        body: CommandList,
     },
     While {
-        condition: Vec<CompleteCommand>,
-        body: Vec<CompleteCommand>,
+        condition: CommandList,
+        body: CommandList,
     },
     Until {
-        condition: Vec<CompleteCommand>,
-        body: Vec<CompleteCommand>,
+        condition: CommandList,
+        body: CommandList,
     },
     Case {
         word: Word,
@@ -94,7 +97,7 @@ pub enum CompoundCommandKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaseItem {
     pub patterns: Vec<Word>,
-    pub body: Vec<CompleteCommand>,
+    pub body: CommandList,
     pub terminator: CaseTerminator,
 }
 
