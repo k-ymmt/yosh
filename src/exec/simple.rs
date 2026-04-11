@@ -67,8 +67,9 @@ impl Executor {
             eprintln!("+ {}", expanded.join(" "));
         }
 
-        let command_name = expanded[0].clone();
-        let args: Vec<String> = expanded[1..].to_vec();
+        let mut expanded_iter = expanded.into_iter();
+        let command_name = expanded_iter.next().unwrap();
+        let args: Vec<String> = expanded_iter.collect();
 
         // Check for function call (before builtins, matching POSIX lookup order)
         if let Some(func_def) = self.env.functions.get(&command_name).cloned() {
