@@ -1,10 +1,5 @@
 # TODO
 
-## Phase 7: Known Limitations
-
-- [ ] `wait` signal interruption — if multiple signals arrive simultaneously during `wait`, only the first is used for the return status
-- [ ] `kill 0` in pipeline subshell sends to pipeline's process group, not the shell's
-
 ## Phase 8: Known Limitations
 
 - [ ] `umask` builtin not implemented — `test_umask_inheritance` is ignored; umask inheritance cannot be verified (`tests/subshell.rs`)
