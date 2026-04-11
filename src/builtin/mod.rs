@@ -21,7 +21,8 @@ pub fn classify_builtin(name: &str) -> BuiltinKind {
         | "readonly" | "return" | "set" | "shift" | "times" | "trap" | "unset" => {
             BuiltinKind::Special
         }
-        "cd" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait" => BuiltinKind::Regular,
+        "cd" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait"
+        | "fg" | "bg" | "jobs" => BuiltinKind::Regular,
         _ => BuiltinKind::NotBuiltin,
     }
 }
@@ -39,6 +40,11 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "wait" => {
             // Handled in Executor::exec_simple_command — should not reach here
             eprintln!("kish: wait: internal error");
+            1
+        }
+        "fg" | "bg" | "jobs" => {
+            // Handled in Executor::exec_simple_command
+            eprintln!("kish: {}: internal error", name);
             1
         }
         _ => {
@@ -310,6 +316,13 @@ mod tests {
         let args = vec!["-a".to_string()];
         assert_eq!(exec_regular_builtin("unalias", &args, &mut env), 0);
         assert!(env.aliases.is_empty());
+    }
+
+    #[test]
+    fn test_classify_fg_bg_jobs() {
+        assert!(matches!(classify_builtin("fg"), BuiltinKind::Regular));
+        assert!(matches!(classify_builtin("bg"), BuiltinKind::Regular));
+        assert!(matches!(classify_builtin("jobs"), BuiltinKind::Regular));
     }
 
     #[test]
