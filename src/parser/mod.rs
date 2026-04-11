@@ -1,5 +1,6 @@
 pub mod ast;
 
+use std::rc::Rc;
 use crate::error::{self, ShellError, ShellErrorKind};
 use crate::lexer::Lexer;
 use crate::lexer::token::{Span, SpannedToken, Token};
@@ -701,7 +702,7 @@ impl Parser {
 
         Ok(Some(FunctionDef {
             name,
-            body,
+            body: Rc::new(body),
             redirects,
         }))
     }

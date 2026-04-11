@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 /// Top-level program
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
@@ -110,7 +112,7 @@ pub enum CaseTerminator {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDef {
     pub name: String,
-    pub body: CompoundCommand,
+    pub body: Rc<CompoundCommand>,
     pub redirects: Vec<Redirect>,
 }
 
