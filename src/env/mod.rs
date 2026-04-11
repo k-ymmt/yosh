@@ -1,4 +1,5 @@
 pub mod aliases;
+pub mod jobs;
 pub mod vars;
 
 use std::collections::HashMap;
