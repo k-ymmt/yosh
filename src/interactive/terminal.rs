@@ -2,7 +2,7 @@ use std::io::{self, Stdout, Write, stdout};
 use crossterm::{
     cursor,
     event::{self, Event},
-    style::{Attribute, SetAttribute},
+    style::{Attribute, Color, SetAttribute, SetForegroundColor},
     terminal::{self, ClearType},
     ExecutableCommand,
 };
@@ -41,6 +41,21 @@ pub trait Terminal {
 
     /// Set dim (faint) text attribute on/off.
     fn set_dim(&mut self, on: bool) -> io::Result<()>;
+
+    /// Set foreground color.
+    fn set_fg_color(&mut self, color: Color) -> io::Result<()>;
+
+    /// Reset all text styling (color, bold, dim, underline, reverse).
+    fn reset_style(&mut self) -> io::Result<()>;
+
+    /// Set bold text attribute on/off.
+    fn set_bold(&mut self, on: bool) -> io::Result<()>;
+
+    /// Set underline text attribute on/off.
+    fn set_underline(&mut self, on: bool) -> io::Result<()>;
+
+    /// Write a single character to the terminal.
+    fn write_char(&mut self, ch: char) -> io::Result<()>;
 
     /// Hide the text cursor.
     fn hide_cursor(&mut self) -> io::Result<()>;
@@ -115,7 +130,7 @@ impl Terminal for CrosstermTerminal {
         if on {
             self.stdout.execute(SetAttribute(Attribute::Reverse))?;
         } else {
-            self.stdout.execute(SetAttribute(Attribute::Reset))?;
+            self.stdout.execute(SetAttribute(Attribute::NoReverse))?;
         }
         Ok(())
     }
@@ -124,8 +139,41 @@ impl Terminal for CrosstermTerminal {
         if on {
             self.stdout.execute(SetAttribute(Attribute::Dim))?;
         } else {
-            self.stdout.execute(SetAttribute(Attribute::Reset))?;
+            self.stdout.execute(SetAttribute(Attribute::NormalIntensity))?;
         }
+        Ok(())
+    }
+
+    fn set_fg_color(&mut self, color: Color) -> io::Result<()> {
+        self.stdout.execute(SetForegroundColor(color))?;
+        Ok(())
+    }
+
+    fn reset_style(&mut self) -> io::Result<()> {
+        self.stdout.execute(SetAttribute(Attribute::Reset))?;
+        Ok(())
+    }
+
+    fn set_bold(&mut self, on: bool) -> io::Result<()> {
+        if on {
+            self.stdout.execute(SetAttribute(Attribute::Bold))?;
+        } else {
+            self.stdout.execute(SetAttribute(Attribute::NormalIntensity))?;
+        }
+        Ok(())
+    }
+
+    fn set_underline(&mut self, on: bool) -> io::Result<()> {
+        if on {
+            self.stdout.execute(SetAttribute(Attribute::Underlined))?;
+        } else {
+            self.stdout.execute(SetAttribute(Attribute::NoUnderline))?;
+        }
+        Ok(())
+    }
+
+    fn write_char(&mut self, ch: char) -> io::Result<()> {
+        write!(self.stdout, "{}", ch)?;
         Ok(())
     }
 

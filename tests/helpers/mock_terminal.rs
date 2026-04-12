@@ -13,6 +13,9 @@ pub struct MockTerminal {
     /// each move_up(n) decrements by n.  Starts at 0.
     cursor_row: i32,
     dim: bool,
+    bold: bool,
+    underline: bool,
+    fg_color: Option<String>,
 }
 
 impl MockTerminal {
@@ -23,6 +26,9 @@ impl MockTerminal {
             output: Vec::new(),
             cursor_row: 0,
             dim: false,
+            bold: false,
+            underline: false,
+            fg_color: None,
         }
     }
 
@@ -102,6 +108,47 @@ impl Terminal for MockTerminal {
         } else {
             self.output.push("[/DIM]".to_string());
         }
+        Ok(())
+    }
+
+    fn set_fg_color(&mut self, color: crossterm::style::Color) -> io::Result<()> {
+        let name = format!("{:?}", color);
+        self.fg_color = Some(name.clone());
+        self.output.push(format!("[FG:{}]", name));
+        Ok(())
+    }
+
+    fn reset_style(&mut self) -> io::Result<()> {
+        self.dim = false;
+        self.bold = false;
+        self.underline = false;
+        self.fg_color = None;
+        self.output.push("[RESET]".to_string());
+        Ok(())
+    }
+
+    fn set_bold(&mut self, on: bool) -> io::Result<()> {
+        self.bold = on;
+        if on {
+            self.output.push("[BOLD]".to_string());
+        } else {
+            self.output.push("[/BOLD]".to_string());
+        }
+        Ok(())
+    }
+
+    fn set_underline(&mut self, on: bool) -> io::Result<()> {
+        self.underline = on;
+        if on {
+            self.output.push("[UL]".to_string());
+        } else {
+            self.output.push("[/UL]".to_string());
+        }
+        Ok(())
+    }
+
+    fn write_char(&mut self, ch: char) -> io::Result<()> {
+        self.output.push(ch.to_string());
         Ok(())
     }
 
