@@ -13,10 +13,12 @@ use crate::signal;
 use line_editor::LineEditor;
 use parse_status::{ParseStatus, classify_parse};
 use prompt::expand_prompt;
+use terminal::CrosstermTerminal;
 
 pub struct Repl {
     executor: Executor,
     line_editor: LineEditor,
+    terminal: CrosstermTerminal,
 }
 
 impl Repl {
@@ -43,6 +45,7 @@ impl Repl {
         Self {
             executor,
             line_editor: LineEditor::new(),
+            terminal: CrosstermTerminal::new(),
         }
     }
 
@@ -65,7 +68,7 @@ impl Repl {
             io::stderr().flush().ok();
 
             // Read a line
-            let line = match self.line_editor.read_line(prompt_width, &mut self.executor.env.history) {
+            let line = match self.line_editor.read_line(prompt_width, &mut self.executor.env.history, &mut self.terminal) {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     // EOF (Ctrl+D)

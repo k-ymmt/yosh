@@ -89,16 +89,11 @@ pub fn filter_and_sort(query: &str, entries: &[String]) -> Vec<(i64, String)> {
 // Fuzzy search UI (Ctrl+R)
 // ---------------------------------------------------------------------------
 
-use std::io::{self, Write, Stdout, stdout};
-use crossterm::{
-    cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    style::{Attribute, SetAttribute},
-    terminal::{self, ClearType},
-    ExecutableCommand,
-};
+use std::io;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use super::history::History;
+use super::terminal::Terminal;
 
 pub struct FuzzySearchUI {
     query: Vec<char>,
@@ -109,13 +104,13 @@ pub struct FuzzySearchUI {
 }
 
 impl FuzzySearchUI {
-    pub fn run(history: &History) -> io::Result<Option<String>> {
+    pub fn run<T: Terminal>(history: &History, term: &mut T) -> io::Result<Option<String>> {
         let entries = history.entries();
         if entries.is_empty() {
             return Ok(None);
         }
 
-        let (_, term_height) = terminal::size()?;
+        let (_, term_height) = term.size()?;
         let max_visible = ((term_height as f32) * 0.4).max(3.0) as usize;
 
         let mut ui = FuzzySearchUI {
@@ -127,29 +122,28 @@ impl FuzzySearchUI {
         };
         ui.candidates.reverse(); // newest first
 
-        let mut stdout = stdout();
         let draw_lines = ui.max_visible + 2; // candidates + separator + query
         for _ in 0..draw_lines {
-            write!(stdout, "\r\n")?;
+            term.write_str("\r\n")?;
         }
-        stdout.execute(cursor::MoveUp(draw_lines as u16))?;
-        ui.draw(&mut stdout)?;
+        term.move_up(draw_lines as u16)?;
+        ui.draw(term)?;
 
         loop {
-            stdout.flush()?;
-            if let Event::Key(key_event) = event::read()? {
+            term.flush()?;
+            if let Event::Key(key_event) = term.read_event()? {
                 match ui.handle_key(key_event, entries) {
                     SearchAction::Continue => {}
                     SearchAction::Select(line) => {
-                        ui.clear_ui(&mut stdout, draw_lines)?;
+                        ui.clear_ui(term, draw_lines)?;
                         return Ok(Some(line));
                     }
                     SearchAction::Cancel => {
-                        ui.clear_ui(&mut stdout, draw_lines)?;
+                        ui.clear_ui(term, draw_lines)?;
                         return Ok(None);
                     }
                 }
-                ui.draw(&mut stdout)?;
+                ui.draw(term)?;
             }
         }
     }
@@ -237,11 +231,11 @@ impl FuzzySearchUI {
         }
     }
 
-    fn draw(&self, stdout: &mut Stdout) -> io::Result<()> {
-        let (term_width, _) = terminal::size()?;
+    fn draw<T: Terminal>(&self, term: &mut T) -> io::Result<()> {
+        let (term_width, _) = term.size()?;
         let width = term_width as usize;
 
-        stdout.execute(cursor::MoveToColumn(0))?;
+        term.move_to_column(0)?;
 
         let visible_end = (self.scroll_offset + self.max_visible).min(self.candidates.len());
         let visible_range = self.scroll_offset..visible_end;
@@ -249,51 +243,51 @@ impl FuzzySearchUI {
 
         // Fill empty lines if fewer candidates than max_visible
         for _ in 0..(self.max_visible - visible_count) {
-            stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-            write!(stdout, "\r\n")?;
+            term.clear_current_line()?;
+            term.write_str("\r\n")?;
         }
 
         // Draw candidates in reverse order (highest index = top of UI)
         for i in (visible_range).rev() {
-            stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+            term.clear_current_line()?;
             let (_score, ref line) = self.candidates[i];
             let display: String = line.chars().take(width.saturating_sub(2)).collect();
             if i == self.selected {
-                stdout.execute(SetAttribute(Attribute::Reverse))?;
-                write!(stdout, "> {}", display)?;
-                stdout.execute(SetAttribute(Attribute::Reset))?;
+                term.set_reverse(true)?;
+                term.write_str(&format!("> {}", display))?;
+                term.set_reverse(false)?;
             } else {
-                write!(stdout, "  {}", display)?;
+                term.write_str(&format!("  {}", display))?;
             }
-            write!(stdout, "\r\n")?;
+            term.write_str("\r\n")?;
         }
 
         // Separator
-        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+        term.clear_current_line()?;
         let sep: String = "\u{2500}".repeat(width.min(40));
-        write!(stdout, "  {}\r\n", sep)?;
+        term.write_str(&format!("  {}\r\n", sep))?;
 
         // Query line
-        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+        term.clear_current_line()?;
         let query_str: String = self.query.iter().collect();
         let total = self.candidates.len();
-        write!(stdout, "  {}/{} > {}", total, total, query_str)?;
+        term.write_str(&format!("  {}/{} > {}", total, total, query_str))?;
 
         // Move back to top
         let total_lines = self.max_visible + 2;
-        stdout.execute(cursor::MoveUp(total_lines as u16))?;
-        stdout.flush()?;
+        term.move_up(total_lines as u16)?;
+        term.flush()?;
         Ok(())
     }
 
-    fn clear_ui(&self, stdout: &mut Stdout, draw_lines: usize) -> io::Result<()> {
-        stdout.execute(cursor::MoveToColumn(0))?;
+    fn clear_ui<T: Terminal>(&self, term: &mut T, draw_lines: usize) -> io::Result<()> {
+        term.move_to_column(0)?;
         for _ in 0..draw_lines {
-            stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-            write!(stdout, "\r\n")?;
+            term.clear_current_line()?;
+            term.write_str("\r\n")?;
         }
-        stdout.execute(cursor::MoveUp(draw_lines as u16))?;
-        stdout.flush()?;
+        term.move_up(draw_lines as u16)?;
+        term.flush()?;
         Ok(())
     }
 }

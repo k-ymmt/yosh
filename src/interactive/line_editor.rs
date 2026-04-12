@@ -1,13 +1,9 @@
-use std::io::{self, Write, Stdout, stdout};
-use crossterm::{
-    cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    terminal::{self, ClearType},
-    ExecutableCommand,
-};
+use std::io;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use super::fuzzy_search::FuzzySearchUI;
 use super::history::History;
+use super::terminal::Terminal;
 
 /// A minimal line-editing buffer used by the interactive REPL.
 ///
@@ -110,22 +106,6 @@ impl std::fmt::Display for LineEditor {
 // Terminal I/O support (crossterm)
 // ---------------------------------------------------------------------------
 
-/// RAII guard that enables raw mode on creation and disables it on drop.
-struct RawModeGuard;
-
-impl RawModeGuard {
-    fn new() -> io::Result<Self> {
-        terminal::enable_raw_mode()?;
-        Ok(Self)
-    }
-}
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let _ = terminal::disable_raw_mode();
-    }
-}
-
 /// Result of processing a single key event.
 enum KeyAction {
     Continue,
@@ -139,20 +119,24 @@ impl LineEditor {
     /// Read a line of input from the terminal, handling cursor movement and
     /// editing keys.  Returns `Ok(Some(line))` on Enter, `Ok(None)` on
     /// Ctrl-D with an empty buffer (EOF), or `Ok(Some(""))` on Ctrl-C.
-    pub fn read_line(&mut self, prompt_width: usize, history: &mut History) -> io::Result<Option<String>> {
+    pub fn read_line<T: Terminal>(&mut self, prompt_width: usize, history: &mut History, term: &mut T) -> io::Result<Option<String>> {
         self.clear();
-        let mut _guard = RawModeGuard::new()?;
-        let mut stdout = stdout();
+        term.enable_raw_mode()?;
+        let result = self.read_line_loop(prompt_width, history, term);
+        let _ = term.disable_raw_mode();
+        result
+    }
 
+    fn read_line_loop<T: Terminal>(&mut self, prompt_width: usize, history: &mut History, term: &mut T) -> io::Result<Option<String>> {
         loop {
-            stdout.flush()?;
-            if let Event::Key(key_event) = event::read()? {
+            term.flush()?;
+            if let Event::Key(key_event) = term.read_event()? {
                 match self.handle_key(key_event, history) {
                     KeyAction::Submit => {
                         history.reset_cursor();
-                        stdout.execute(cursor::MoveToColumn(0))?;
-                        write!(stdout, "\r\n")?;
-                        stdout.flush()?;
+                        term.move_to_column(0)?;
+                        term.write_str("\r\n")?;
+                        term.flush()?;
                         return Ok(Some(self.buffer()));
                     }
                     KeyAction::Eof => {
@@ -160,39 +144,39 @@ impl LineEditor {
                     }
                     KeyAction::Interrupt => {
                         history.reset_cursor();
-                        stdout.execute(cursor::MoveToColumn(0))?;
-                        write!(stdout, "\r\n")?;
-                        stdout.flush()?;
+                        term.move_to_column(0)?;
+                        term.write_str("\r\n")?;
+                        term.flush()?;
                         self.clear();
                         return Ok(Some(String::new()));
                     }
                     KeyAction::FuzzySearch => {
-                        drop(_guard);
-                        match FuzzySearchUI::run(history) {
+                        term.disable_raw_mode()?;
+                        match FuzzySearchUI::run(history, term) {
                             Ok(Some(line)) => {
                                 self.buf = line.chars().collect();
                                 self.pos = self.buf.len();
                             }
                             _ => {}
                         }
-                        _guard = RawModeGuard::new()?;
-                        self.redraw(&mut stdout, prompt_width)?;
+                        term.enable_raw_mode()?;
+                        self.redraw(term, prompt_width)?;
                     }
                     KeyAction::Continue => {}
                 }
-                self.redraw(&mut stdout, prompt_width)?;
+                self.redraw(term, prompt_width)?;
             }
         }
     }
 
     /// Redraw the current buffer on screen, positioning the cursor correctly.
-    fn redraw(&self, stdout: &mut Stdout, prompt_width: usize) -> io::Result<()> {
+    fn redraw<T: Terminal>(&self, term: &mut T, prompt_width: usize) -> io::Result<()> {
         let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
-        stdout.execute(cursor::MoveToColumn(col(prompt_width)))?;
-        stdout.execute(terminal::Clear(ClearType::UntilNewLine))?;
-        write!(stdout, "{}", self.buffer())?;
-        stdout.execute(cursor::MoveToColumn(col(prompt_width + self.pos)))?;
-        stdout.flush()?;
+        term.move_to_column(col(prompt_width))?;
+        term.clear_until_newline()?;
+        term.write_str(&self.buffer())?;
+        term.move_to_column(col(prompt_width + self.pos))?;
+        term.flush()?;
         Ok(())
     }
 
