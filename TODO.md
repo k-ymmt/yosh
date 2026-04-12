@@ -11,7 +11,6 @@
 
 ## Future: Interactive Mode Enhancements
 
-- [ ] History — ↑/↓ for history navigation, `~/.kish_history` persistence, Ctrl+R reverse search
 - [ ] Tab completion — file path and command name completion
 - [ ] Multiline editing — visual multiline editing with cursor movement across lines
 - [ ] Emacs keybindings — Ctrl+K (kill to end), Ctrl+U (kill to start), Ctrl+W (kill word), Ctrl+Y (yank)
