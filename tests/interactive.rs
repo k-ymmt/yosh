@@ -8,7 +8,7 @@ use kish::interactive::parse_status::{classify_parse, ParseStatus};
 use kish::interactive::prompt::expand_prompt;
 
 mod helpers;
-use helpers::mock_terminal::{MockTerminal, chars, ctrl, key};
+use helpers::mock_terminal::{MockTerminal, alt, chars, ctrl, key};
 
 #[test]
 fn test_insert_char_at_start() {
@@ -856,6 +856,55 @@ fn test_suggest_cleared_on_history_navigation() {
     let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     // Up replaces buffer with "echo world" (most recent)
     assert_eq!(result, Some("echo world".to_string()));
+}
+
+#[test]
+fn test_suggest_accept_word_with_alt_f() {
+    let mut history = History::new();
+    history.add("git commit -m 'fix'", 500, "");
+
+    // Type "git", Alt+F (accept " commit"), then Enter
+    let mut events = chars("git");
+    events.push(alt('f'));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("git commit".to_string()));
+}
+
+#[test]
+fn test_suggest_accept_word_stepwise() {
+    let mut history = History::new();
+    history.add("git commit -m 'fix'", 500, "");
+
+    // Type "git", Alt+F three times (accept " commit", " -m", " 'fix'"), then Enter
+    let mut events = chars("git");
+    events.push(alt('f')); // accept " commit"
+    events.push(alt('f')); // accept " -m"
+    events.push(alt('f')); // accept " 'fix'"
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("git commit -m 'fix'".to_string()));
+}
+
+#[test]
+fn test_alt_f_noop_without_suggestion() {
+    let mut history = History::new(); // empty history, no suggestions
+
+    // Type "hello", Alt+F (no-op), Enter
+    let mut events = chars("hello");
+    events.push(alt('f'));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("hello".to_string()));
 }
 
 #[test]

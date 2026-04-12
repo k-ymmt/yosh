@@ -130,6 +130,11 @@ pub fn ctrl(ch: char) -> Event {
     Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL))
 }
 
+/// Create an Alt+char key event.
+pub fn alt(ch: char) -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::ALT))
+}
+
 /// Convert a string into a sequence of plain character key events.
 pub fn chars(s: &str) -> Vec<Event> {
     s.chars().map(|c| key(KeyCode::Char(c))).collect()

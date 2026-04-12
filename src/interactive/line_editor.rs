@@ -111,6 +111,30 @@ impl LineEditor {
         }
     }
 
+    /// Accept the next word from the autosuggestion.
+    /// A "word" is defined as: any leading spaces + non-space characters up to the next space.
+    fn accept_word_suggestion(&mut self) {
+        if let Some(suggestion) = self.suggestion.take() {
+            let chars: Vec<char> = suggestion.chars().collect();
+            let mut i = 0;
+            // Skip leading spaces
+            while i < chars.len() && chars[i] == ' ' {
+                i += 1;
+            }
+            // Take non-space characters
+            while i < chars.len() && chars[i] != ' ' {
+                i += 1;
+            }
+            // Append the accepted portion to the buffer
+            self.buf.extend(&chars[..i]);
+            self.pos = self.buf.len();
+            // Keep remaining suggestion, if any
+            if i < chars.len() {
+                self.suggestion = Some(chars[i..].iter().collect());
+            }
+        }
+    }
+
     /// Update the autosuggestion based on the current buffer state.
     /// Only suggests when the cursor is at the end of a non-empty buffer.
     fn update_suggestion(&mut self, history: &History) {
@@ -296,6 +320,14 @@ impl LineEditor {
             // Delete — delete char at cursor
             (KeyCode::Delete, _) => {
                 self.delete();
+                KeyAction::Continue
+            }
+
+            // Alt+F — accept next word from suggestion
+            (KeyCode::Char('f'), m) if m.contains(KeyModifiers::ALT) => {
+                if self.suggestion.is_some() {
+                    self.accept_word_suggestion();
+                }
                 KeyAction::Continue
             }
 
