@@ -30,6 +30,9 @@
 - [ ] Terminal resize handling — `Event::Resize` not processed in `read_line`, prompt display may break after resize (`src/interactive/line_editor.rs`)
 - [ ] Ctrl+C / empty-Enter type distinction — both return `Ok(Some(""))` from `read_line`; introduce a dedicated variant for clearer intent (`src/interactive/line_editor.rs`, `src/interactive/mod.rs`)
 - [ ] Parse status edge-case tests — `||` continuation, `for...do` incomplete, nested structures, unterminated here-document (`tests/interactive.rs`)
+- [ ] Tab completion: command name completion — complete executable names from PATH in command position (`src/interactive/completion.rs`)
+- [ ] Tab completion: `CompletionUI`/`FuzzySearchUI` filtered/total display — both UIs show `N/N` instead of `filtered/total` because original count is not tracked (`src/interactive/completion.rs`, `src/interactive/fuzzy_search.rs`)
+- [ ] Tab completion: unify `read_line` and `read_line_with_completion` — `read_line` is now only used by tests; consider merging into a single method (`src/interactive/line_editor.rs`)
 
 ## Future: Arithmetic Expansion Edge Cases
 
