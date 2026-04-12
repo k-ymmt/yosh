@@ -1704,4 +1704,53 @@ mod tests {
         assert_span(&spans, 0, 0, 2, HighlightStyle::CommandValid);
         assert_span(&spans, 1, 3, 4, HighlightStyle::Tilde);
     }
+
+    // ── Incremental cache tests ──────────────────────────────────
+
+    #[test]
+    fn test_incremental_append() {
+        let mut scanner = test_scanner();
+        let spans1 = scan_input(&mut scanner, "ech");
+        assert_span(&spans1, 0, 0, 3, HighlightStyle::CommandInvalid);
+
+        let spans2 = scan_input(&mut scanner, "echo");
+        assert_span(&spans2, 0, 0, 4, HighlightStyle::CommandValid);
+    }
+
+    #[test]
+    fn test_incremental_backspace() {
+        let mut scanner = test_scanner();
+        let spans1 = scan_input(&mut scanner, "echo hello");
+        assert_eq!(spans1.len(), 2);
+
+        let spans2 = scan_input(&mut scanner, "echo hell");
+        assert_eq!(spans2.len(), 2);
+        assert_span(&spans2, 0, 0, 4, HighlightStyle::CommandValid);
+        assert_span(&spans2, 1, 5, 9, HighlightStyle::Default);
+    }
+
+    #[test]
+    fn test_incremental_full_rescan_on_history() {
+        let mut scanner = test_scanner();
+        let _spans1 = scan_input(&mut scanner, "echo hello");
+
+        let spans2 = scan_input(&mut scanner, "ls -la");
+        assert_span(&spans2, 0, 0, 2, HighlightStyle::CommandValid);
+    }
+
+    #[test]
+    fn test_cache_cleared_on_empty() {
+        let mut scanner = test_scanner();
+        let _spans1 = scan_input(&mut scanner, "echo");
+        let spans2 = scan_input(&mut scanner, "");
+        assert!(spans2.is_empty());
+    }
+
+    #[test]
+    fn test_accumulated_state_cached() {
+        let mut scanner = test_scanner();
+        let spans1 = scan_ps2(&mut scanner, "echo 'hello\n", "world'");
+        let spans2 = scan_ps2(&mut scanner, "echo 'hello\n", "world'");
+        assert_eq!(spans1, spans2);
+    }
 }
