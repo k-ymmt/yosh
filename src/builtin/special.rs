@@ -445,7 +445,7 @@ fn builtin_fc(args: &[String], executor: &mut Executor) -> i32 {
                 return 1;
             }
             editor = Some(args[i].clone());
-        } else if arg.starts_with('-') && arg.len() > 1 && arg.chars().nth(1).map_or(false, |c| c.is_ascii_alphabetic()) {
+        } else if arg.starts_with('-') && arg.len() > 1 && arg.chars().nth(1).is_some_and(|c| c.is_ascii_alphabetic()) {
             for ch in arg[1..].chars() {
                 match ch {
                     'l' => list_mode = true,

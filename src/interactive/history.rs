@@ -26,10 +26,12 @@ impl History {
         &self.entries
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -119,7 +121,7 @@ impl History {
             Err(_) => return,
         };
         let reader = BufReader::new(file);
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             if !line.is_empty() {
                 self.entries.push(line);
             }

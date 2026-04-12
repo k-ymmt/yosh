@@ -57,9 +57,15 @@ pub struct CrosstermTerminal {
     stdout: Stdout,
 }
 
+impl Default for CrosstermTerminal {
+    fn default() -> Self {
+        Self { stdout: stdout() }
+    }
+}
+
 impl CrosstermTerminal {
     pub fn new() -> Self {
-        Self { stdout: stdout() }
+        Self::default()
     }
 }
 

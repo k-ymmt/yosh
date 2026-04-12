@@ -204,12 +204,9 @@ impl LineEditor {
                     KeyAction::FuzzySearch => {
                         self.suggestion = None;
                         term.disable_raw_mode()?;
-                        match FuzzySearchUI::run(history, term) {
-                            Ok(Some(line)) => {
-                                self.buf = line.chars().collect();
-                                self.pos = self.buf.len();
-                            }
-                            _ => {}
+                        if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
+                            self.buf = line.chars().collect();
+                            self.pos = self.buf.len();
                         }
                         term.enable_raw_mode()?;
                         term.move_to_column(0)?;
@@ -232,12 +229,12 @@ impl LineEditor {
         term.clear_until_newline()?;
         term.write_str(&self.buffer())?;
         // Draw suggestion in dim text when cursor is at end of buffer
-        if let Some(ref suggestion) = self.suggestion {
-            if self.pos == self.buf.len() {
-                term.set_dim(true)?;
-                term.write_str(suggestion)?;
-                term.set_dim(false)?;
-            }
+        if let Some(ref suggestion) = self.suggestion
+            && self.pos == self.buf.len()
+        {
+            term.set_dim(true)?;
+            term.write_str(suggestion)?;
+            term.set_dim(false)?;
         }
         term.move_to_column(col(prompt_width + self.pos))?;
         term.flush()?;

@@ -2,6 +2,7 @@
 #[derive(Debug)]
 pub struct FuzzyMatch {
     pub score: i64,
+    #[allow(dead_code)]
     pub positions: Vec<usize>,
 }
 
@@ -25,7 +26,7 @@ pub fn fuzzy_match(query: &str, target: &str) -> Option<FuzzyMatch> {
     let mut qi = 0;
     for &tc in &target_chars {
         if qi < query_chars.len()
-            && tc.to_ascii_lowercase() == query_chars[qi].to_ascii_lowercase()
+            && tc.eq_ignore_ascii_case(&query_chars[qi])
         {
             qi += 1;
         }
@@ -44,7 +45,7 @@ pub fn fuzzy_match(query: &str, target: &str) -> Option<FuzzyMatch> {
         if qi >= query_chars.len() {
             break;
         }
-        if tc.to_ascii_lowercase() == query_chars[qi].to_ascii_lowercase() {
+        if tc.eq_ignore_ascii_case(&query_chars[qi]) {
             positions.push(ti);
             score += SCORE_MATCH;
 
