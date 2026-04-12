@@ -103,6 +103,14 @@ impl LineEditor {
         self.suggestion.as_deref()
     }
 
+    /// Accept the full autosuggestion, appending it to the buffer.
+    fn accept_full_suggestion(&mut self) {
+        if let Some(suggestion) = self.suggestion.take() {
+            self.buf.extend(suggestion.chars());
+            self.pos = self.buf.len();
+        }
+    }
+
     /// Update the autosuggestion based on the current buffer state.
     /// Only suggests when the cursor is at the end of a non-empty buffer.
     fn update_suggestion(&mut self, history: &History) {
@@ -238,13 +246,21 @@ impl LineEditor {
                 KeyAction::Continue
             }
 
-            // Ctrl+F / Right — move cursor right
+            // Ctrl+F / Right — move cursor right, or accept suggestion at end
             (KeyCode::Char('f'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.move_cursor_right();
+                if self.pos == self.buf.len() && self.suggestion.is_some() {
+                    self.accept_full_suggestion();
+                } else {
+                    self.move_cursor_right();
+                }
                 KeyAction::Continue
             }
             (KeyCode::Right, _) => {
-                self.move_cursor_right();
+                if self.pos == self.buf.len() && self.suggestion.is_some() {
+                    self.accept_full_suggestion();
+                } else {
+                    self.move_cursor_right();
+                }
                 KeyAction::Continue
             }
 

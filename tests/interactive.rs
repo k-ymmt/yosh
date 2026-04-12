@@ -740,6 +740,55 @@ fn test_fuzzy_search_select_no_cursor_drift() {
 // ── Autosuggestion tests ────────────────────────────────────────────────
 
 #[test]
+fn test_suggest_accept_full_with_right_arrow() {
+    let mut history = History::new();
+    history.add("git commit -m 'fix'", 500, "");
+
+    // Type "git c", then Right (accept suggestion), then Enter
+    let mut events = chars("git c");
+    events.push(key(KeyCode::Right));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("git commit -m 'fix'".to_string()));
+}
+
+#[test]
+fn test_suggest_accept_full_with_ctrl_f() {
+    let mut history = History::new();
+    history.add("cargo test --release", 500, "");
+
+    // Type "cargo t", then Ctrl+F (accept suggestion), then Enter
+    let mut events = chars("cargo t");
+    events.push(ctrl('f'));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("cargo test --release".to_string()));
+}
+
+#[test]
+fn test_right_arrow_normal_when_no_suggestion() {
+    let mut history = History::new();
+    history.add("git commit", 500, "");
+
+    // Type "abc", Left, Right (normal cursor move), Enter
+    let mut events = chars("abc");
+    events.push(key(KeyCode::Left));
+    events.push(key(KeyCode::Right));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("abc".to_string()));
+}
+
+#[test]
 fn test_suggest_appears_on_typing() {
     let mut history = History::new();
     history.add("git commit -m 'fix'", 500, "");
