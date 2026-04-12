@@ -279,7 +279,7 @@ impl VarStore {
 
     /// Return only exported variables as (name, value) pairs.
     /// Later scopes shadow earlier ones. Result is cached until next mutation.
-    pub fn to_environ(&mut self) -> &[(String, String)] {
+    pub fn environ(&mut self) -> &[(String, String)] {
         if self.environ_cache.is_none() {
             self.environ_cache = Some(self.build_environ());
         }
@@ -375,12 +375,12 @@ mod tests {
     }
 
     #[test]
-    fn test_to_environ_excludes_unexported() {
+    fn test_environ_excludes_unexported() {
         let mut store = VarStore::new();
         store.set("FOO", "bar").unwrap();
         store.set("BAZ", "qux").unwrap();
         store.export("FOO");
-        let env = store.to_environ();
+        let env = store.environ();
         assert_eq!(env.len(), 1);
         assert_eq!(env[0], ("FOO".to_string(), "bar".to_string()));
     }

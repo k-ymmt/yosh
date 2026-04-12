@@ -96,7 +96,7 @@ fn expand_vars(env: &mut ShellEnv, expr: &str) -> String {
                     // Default to "0" if the output is empty
                     result.push_str(if trimmed.is_empty() { "0" } else { trimmed });
                 } else {
-                    result.push_str("0");
+                    result.push('0');
                 }
             } else if bytes[i + 1] == b'{' {
                 // ${VAR}

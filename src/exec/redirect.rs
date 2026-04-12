@@ -19,6 +19,7 @@ fn raw_dup2(oldfd: RawFd, newfd: RawFd) -> nix::Result<()> {
 
 
 /// Tracks saved file descriptors so they can be restored after a builtin runs.
+#[derive(Default)]
 pub struct RedirectState {
     /// (original_fd, saved_copy_fd) — used for restore
     saved_fds: Vec<(RawFd, RawFd)>,
@@ -26,9 +27,7 @@ pub struct RedirectState {
 
 impl RedirectState {
     pub fn new() -> Self {
-        RedirectState {
-            saved_fds: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Apply a list of redirects.

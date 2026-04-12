@@ -8,13 +8,15 @@ pub enum TrapAction {
     Command(String),
 }
 
+/// Saved parent traps for display in subshells (POSIX: $(trap) shows parent traps).
+type SavedTraps = (Option<TrapAction>, HashMap<i32, TrapAction>);
+
 /// Storage for shell trap settings.
 #[derive(Debug, Clone, Default)]
 pub struct TrapStore {
     pub exit_trap: Option<TrapAction>,
     pub signal_traps: HashMap<i32, TrapAction>,
-    /// Saved parent traps for display in subshells (POSIX: $(trap) shows parent traps).
-    saved_traps: Option<Box<(Option<TrapAction>, HashMap<i32, TrapAction>)>>,
+    saved_traps: Option<Box<SavedTraps>>,
 }
 
 impl TrapStore {

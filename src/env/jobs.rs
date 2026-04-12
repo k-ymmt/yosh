@@ -122,11 +122,13 @@ impl JobTable {
     }
 
     /// Return a reference to the current (most recent) job.
+    #[allow(dead_code)] // tested; will be used by `fg`/`bg` builtins
     pub fn current_job(&self) -> Option<&Job> {
         self.current.and_then(|id| self.jobs.get(&id))
     }
 
     /// Return a reference to the previous job.
+    #[allow(dead_code)] // tested; will be used by `fg`/`bg` builtins
     pub fn previous_job(&self) -> Option<&Job> {
         self.previous.and_then(|id| self.jobs.get(&id))
     }
@@ -137,11 +139,13 @@ impl JobTable {
     }
 
     /// Return the id of the previous job.
+    #[allow(dead_code)] // tested; will be used by `fg`/`bg` builtins
     pub fn previous_id(&self) -> Option<JobId> {
         self.previous
     }
 
     /// Return true if no jobs are tracked.
+    #[allow(dead_code)] // tested; standard container API
     pub fn is_empty(&self) -> bool {
         self.jobs.is_empty()
     }
@@ -160,11 +164,13 @@ impl JobTable {
     }
 
     /// Find a job by its process group id (shared reference).
+    #[allow(dead_code)] // tested; will be used by job specifier lookups
     pub fn find_by_pgid(&self, pgid: Pid) -> Option<&Job> {
         self.jobs.values().find(|j| j.pgid == pgid)
     }
 
     /// Find a job by its process group id (mutable reference).
+    #[allow(dead_code)] // tested; will be used by job specifier lookups
     pub fn find_by_pgid_mut(&mut self, pgid: Pid) -> Option<&mut Job> {
         self.jobs.values_mut().find(|j| j.pgid == pgid)
     }

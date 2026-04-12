@@ -229,6 +229,7 @@ pub fn init_job_control_signals() {
 }
 
 /// Reset job control signals to defaults.
+#[allow(dead_code)] // TODO: call when `set +m` disables monitor mode
 pub fn reset_job_control_signals() {
     default_signal(libc::SIGTSTP);
     default_signal(libc::SIGTTIN);

@@ -307,13 +307,13 @@ impl Executor {
 
         for pid in &target_pids {
             // Check if already completed in jobs table
-            let already_done = self.env.process.jobs.all_jobs().find(|j| j.pgid == *pid).map(|j| {
+            let already_done = self.env.process.jobs.all_jobs().find(|j| j.pgid == *pid).and_then(|j| {
                 match j.status {
                     JobStatus::Done(code) => Some(code),
                     JobStatus::Terminated(sig) => Some(128 + sig),
                     _ => None,
                 }
-            }).flatten();
+            });
             if let Some(s) = already_done {
                 last_status = s;
                 continue;

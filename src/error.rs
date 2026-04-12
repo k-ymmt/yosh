@@ -17,6 +17,7 @@ pub struct SourceLocation {
 pub enum ShellErrorKind {
     Parse(ParseErrorKind),
     Expansion(ExpansionErrorKind),
+    #[allow(dead_code)] // planned: runtime error migration (see TODO.md)
     Runtime(RuntimeErrorKind),
 }
 
@@ -30,8 +31,10 @@ pub enum ParseErrorKind {
     UnterminatedBacktick,
     UnterminatedDollarSingleQuote,
     UnexpectedToken,
+    #[allow(dead_code)] // matched in parse_status; will be constructed by parser enhancements
     UnexpectedEof,
     InvalidRedirect,
+    #[allow(dead_code)] // will be constructed by function definition parsing
     InvalidFunctionName,
     InvalidHereDoc,
 }
@@ -83,6 +86,7 @@ impl ShellError {
         }
     }
 
+    #[allow(dead_code)] // planned: runtime error migration (see TODO.md)
     pub fn runtime(kind: RuntimeErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind: ShellErrorKind::Runtime(kind),

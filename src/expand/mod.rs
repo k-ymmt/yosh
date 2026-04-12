@@ -40,7 +40,7 @@ impl ExpandedField {
         let bit = byte_index % 64;
         self.quoted_mask
             .get(word)
-            .map_or(false, |w| w & (1u64 << bit) != 0)
+            .is_some_and(|w| w & (1u64 << bit) != 0)
     }
 
     /// Append `s` marking each byte as **quoted** (protected).
@@ -65,7 +65,7 @@ impl ExpandedField {
     /// Create a field with all bytes marked as quoted.
     pub fn all_quoted(value: String) -> Self {
         let len = value.len();
-        let needed_words = (len + 63) / 64;
+        let needed_words = len.div_ceil(64);
         let mask = vec![u64::MAX; needed_words];
         Self {
             value,
@@ -79,7 +79,7 @@ impl ExpandedField {
             return;
         }
         let end = start + len;
-        let needed_words = (end + 63) / 64;
+        let needed_words = end.div_ceil(64);
         self.quoted_mask.resize(needed_words, 0);
         if quoted {
             for i in start..end {
@@ -216,7 +216,7 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                             Err(msg) => {
                                 eprintln!("kish: arithmetic: {}", msg);
                                 env.exec.last_exit_status = 1;
-                                result.push_str("0");
+                                result.push('0');
                             }
                         }
                     } else {
@@ -325,7 +325,7 @@ fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
                 Err(msg) => {
                     eprintln!("kish: arithmetic: {}", msg);
                     env.exec.last_exit_status = 1;
-                    out.push_str("0");
+                    out.push('0');
                 }
             }
         }

@@ -79,10 +79,11 @@ pub fn classify_parse(input: &str, aliases: &AliasStore) -> ParseStatus {
                 // `fi`) or truly invalid.  We probe by appending closing
                 // keywords and re-parsing; if any probe succeeds the input
                 // was merely incomplete.
-                if e.kind == ShellErrorKind::Parse(ParseErrorKind::UnexpectedToken) && parser.is_at_end() {
-                    if is_completable(input, aliases) {
-                        return ParseStatus::Incomplete;
-                    }
+                if e.kind == ShellErrorKind::Parse(ParseErrorKind::UnexpectedToken)
+                    && parser.is_at_end()
+                    && is_completable(input, aliases)
+                {
+                    return ParseStatus::Incomplete;
                 }
                 return ParseStatus::Error(e.message);
             }
