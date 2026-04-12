@@ -1,7 +1,7 @@
-/// Path completion for interactive tab-completion.
-///
-/// This module provides the core logic for completing file and directory
-/// paths when the user presses Tab in interactive mode.
+//! Path completion for interactive tab-completion.
+//!
+//! This module provides the core logic for completing file and directory
+//! paths when the user presses Tab in interactive mode.
 
 use std::fs;
 use std::path::PathBuf;
@@ -40,10 +40,10 @@ pub fn extract_completion_word(buf: &str, cursor: usize) -> (usize, &str) {
                 in_single_quote = !in_single_quote;
             }
             b'"' if !in_single_quote => {
-                if !in_double_quote {
-                    if i == 0 || is_unquoted_delimiter(bytes[i - 1]) {
-                        word_start = i;
-                    }
+                if !in_double_quote
+                    && (i == 0 || is_unquoted_delimiter(bytes[i - 1]))
+                {
+                    word_start = i;
                 }
                 in_double_quote = !in_double_quote;
             }
@@ -84,8 +84,8 @@ pub fn split_path<'a>(word: &'a str, home: &str) -> (String, &'a str) {
             let dir_part = &stripped[..=pos]; // includes the '/'
             let prefix = &stripped[pos + 1..];
             // Expand tilde
-            let dir_expanded = if dir_part.starts_with('~') {
-                format!("{}{}", home, &dir_part[1..])
+            let dir_expanded = if let Some(rest) = dir_part.strip_prefix('~') {
+                format!("{}{}", home, rest)
             } else {
                 dir_part.to_string()
             };
