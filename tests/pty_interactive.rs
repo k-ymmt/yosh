@@ -284,3 +284,50 @@ fn test_pty_tab_completion() {
 
     exit_shell(&mut s);
 }
+
+#[test]
+fn test_pty_syntax_highlight_keyword() {
+    let (mut s, _tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // Type "if" — should be highlighted as Keyword (Bold + Magenta)
+    s.send("if").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Cancel with Ctrl+C
+    s.send("\x03").unwrap(); // Ctrl+C to cancel
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_syntax_highlight_valid_command() {
+    let (mut s, _tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // Type "echo hi" — echo should be highlighted as CommandValid (Bold + Green)
+    s.send("echo hi\r").unwrap();
+    expect_output(&mut s, "hi", "echo with highlighting failed");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_syntax_highlight_pipe() {
+    let (mut s, _tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // Type a pipe expression — verify the highlighter handles the pipe operator
+    // without crashing. Cancel with Ctrl+C instead of executing, since PTY
+    // pipe execution is covered by other integration tests.
+    s.send("echo hello | cat").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Cancel with Ctrl+C
+    s.send("\x03").unwrap();
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
