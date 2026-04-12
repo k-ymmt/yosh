@@ -6,7 +6,7 @@ use std::path::Path;
 ///
 /// Stores commands in chronological order (oldest first) and supports
 /// cursor-based navigation for ↑/↓ arrow key traversal.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct History {
     entries: Vec<String>,
     cursor: Option<usize>,
@@ -28,6 +28,10 @@ impl History {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     pub fn add(&mut self, line: &str, histsize: usize, histcontrol: &str) {
@@ -102,11 +106,9 @@ impl History {
             Err(_) => return,
         };
         let reader = BufReader::new(file);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if !line.is_empty() {
-                    self.entries.push(line);
-                }
+        for line in reader.lines().flatten() {
+            if !line.is_empty() {
+                self.entries.push(line);
             }
         }
     }
@@ -270,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_trims_whitespace() {
+    fn test_load_skips_empty_lines() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history");
         let mut f = std::fs::File::create(&path).unwrap();
