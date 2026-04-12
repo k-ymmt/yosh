@@ -1058,3 +1058,35 @@ fn test_tab_no_match_does_nothing() {
         .unwrap();
     assert_eq!(result, Some("xyz".to_string()));
 }
+
+#[test]
+fn test_double_tab_opens_completion_ui() {
+    let dir = std::env::temp_dir().join(format!("kish-tab-test5-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("file_alpha.rs"), "").unwrap();
+    fs::write(dir.join("file_beta.rs"), "").unwrap();
+
+    let ctx = kish::interactive::completion::CompletionContext {
+        cwd: dir.to_str().unwrap().to_string(),
+        home: "/tmp".to_string(),
+        show_dotfiles: false,
+    };
+
+    // Type "file_", Tab (common prefix already complete, no change),
+    // Tab again (opens CompletionUI), Up (select file_beta.rs), Enter (confirm), Enter (submit)
+    let mut events = chars("file_");
+    events.push(key(KeyCode::Tab));     // first tab: completes common prefix (already "file_")
+    events.push(key(KeyCode::Tab));     // second tab: opens CompletionUI
+    events.push(key(KeyCode::Up));      // select file_beta.rs
+    events.push(key(KeyCode::Enter));   // confirm selection in UI
+    events.push(key(KeyCode::Enter));   // submit line
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor.read_line_with_completion("$ ", &mut history, &mut term, &ctx).unwrap();
+    assert_eq!(result, Some("file_beta.rs ".to_string()));
+
+    let _ = fs::remove_dir_all(&dir);
+}
