@@ -58,10 +58,19 @@ fn spawn_kish() -> (OsSession, TempDir) {
 
 fn wait_for_prompt(session: &mut OsSession) {
     session.expect("$ ").expect("prompt not found");
-    // Brief pause to let kish finish enable_raw_mode() before the next send.
-    // Without this, input sent immediately after the prompt may arrive while
-    // kish is still transitioning from canonical to raw mode, causing the PTY
-    // line discipline to buffer or transform input unexpectedly.
+    wait_for_raw_mode();
+}
+
+fn wait_for_ps2(session: &mut OsSession) {
+    session.expect("> ").expect("PS2 prompt not found");
+    wait_for_raw_mode();
+}
+
+/// Brief pause to let kish finish enable_raw_mode() before the next send.
+/// Without this, input sent immediately after the prompt may arrive while
+/// kish is still transitioning from canonical to raw mode, causing the PTY
+/// line discipline to buffer or transform input unexpectedly.
+fn wait_for_raw_mode() {
     std::thread::sleep(Duration::from_millis(50));
 }
 
@@ -168,11 +177,11 @@ fn test_pty_ps2_continuation() {
 
     // Incomplete command: if true; then
     s.send("if true; then\r").unwrap();
-    s.expect("> ").expect("PS2 prompt not shown");
+    wait_for_ps2(&mut s);
 
-    // Complete the command
+    // Body — still incomplete (needs fi)
     s.send("echo continued\r").unwrap();
-    s.expect("> ").expect("PS2 prompt not shown after body");
+    wait_for_ps2(&mut s);
 
     s.send("fi\r").unwrap();
     expect_output(&mut s, "continued", "if-then-fi output not found");
@@ -199,6 +208,8 @@ fn test_pty_ctrl_r_history_search() {
     s.send("\x12").unwrap(); // Ctrl+R
     // Wait for the search UI query line to appear
     s.expect("2/2 > ").expect("Ctrl+R search UI did not appear");
+    // FuzzySearchUI::run() draws UI then enables raw mode — wait for transition
+    wait_for_raw_mode();
 
     // Type "echo alpha" to uniquely select it
     s.send("echo alpha").unwrap();
@@ -206,6 +217,8 @@ fn test_pty_ctrl_r_history_search() {
     s.expect("1/1 > ").expect("search query did not filter to unique match");
 
     s.send("\r").unwrap(); // Select from search
+    // After selection, FuzzySearchUI exits and LineEditor re-enables raw mode
+    wait_for_raw_mode();
     s.send("\r").unwrap(); // Execute
     expect_output(&mut s, "alpha", "Ctrl+R history search failed");
     wait_for_prompt(&mut s);
