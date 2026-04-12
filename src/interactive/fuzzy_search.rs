@@ -129,21 +129,36 @@ impl FuzzySearchUI {
         term.move_up(draw_lines as u16)?;
         ui.draw(term)?;
 
+        // Enable raw mode for character-by-character input in the search UI.
+        // The caller (read_line_loop) disabled raw mode before invoking us.
+        term.enable_raw_mode()?;
+        let result = ui.run_loop(term, entries, draw_lines);
+        // Disable raw mode regardless of result so the caller can re-enable.
+        let _ = term.disable_raw_mode();
+        result
+    }
+
+    fn run_loop<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        entries: &[String],
+        draw_lines: usize,
+    ) -> io::Result<Option<String>> {
         loop {
             term.flush()?;
             if let Event::Key(key_event) = term.read_event()? {
-                match ui.handle_key(key_event, entries) {
+                match self.handle_key(key_event, entries) {
                     SearchAction::Continue => {}
                     SearchAction::Select(line) => {
-                        ui.clear_ui(term, draw_lines)?;
+                        self.clear_ui(term, draw_lines)?;
                         return Ok(Some(line));
                     }
                     SearchAction::Cancel => {
-                        ui.clear_ui(term, draw_lines)?;
+                        self.clear_ui(term, draw_lines)?;
                         return Ok(None);
                     }
                 }
-                ui.draw(term)?;
+                self.draw(term)?;
             }
         }
     }

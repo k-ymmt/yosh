@@ -12,6 +12,7 @@ crossterm = "0.29"
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
 crossterm = "0.29"
+expectrl = "0.8"
 
 [[bench]]
 name = "lexer_bench"
