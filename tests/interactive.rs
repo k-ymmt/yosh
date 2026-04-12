@@ -1,8 +1,13 @@
+use crossterm::event::KeyCode;
 use kish::env::ShellEnv;
 use kish::env::aliases::AliasStore;
+use kish::interactive::history::History;
 use kish::interactive::line_editor::LineEditor;
 use kish::interactive::parse_status::{classify_parse, ParseStatus};
 use kish::interactive::prompt::expand_prompt;
+
+mod helpers;
+use helpers::mock_terminal::{MockTerminal, chars, ctrl, key};
 
 #[test]
 fn test_insert_char_at_start() {
@@ -308,4 +313,218 @@ fn test_classify_multiple_commands() {
         ParseStatus::Complete(_) => {}
         other => panic!("expected Complete, got {:?}", other),
     }
+}
+
+// ── MockTerminal-based LineEditor tests ─────────────────────────────────
+
+#[test]
+fn test_mock_basic_input() {
+    let mut events = chars("hello");
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("hello".to_string()));
+}
+
+#[test]
+fn test_mock_ctrl_c_returns_empty() {
+    let events = vec![
+        key(KeyCode::Char('a')),
+        key(KeyCode::Char('b')),
+        ctrl('c'),
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some(String::new()));
+}
+
+#[test]
+fn test_mock_ctrl_d_empty_returns_none() {
+    let events = vec![ctrl('d')];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, None);
+}
+
+#[test]
+fn test_mock_ctrl_d_nonempty_deletes_char() {
+    // Type "ab", move left, Ctrl+D deletes 'b', Enter submits "a"
+    let events = vec![
+        key(KeyCode::Char('a')),
+        key(KeyCode::Char('b')),
+        key(KeyCode::Left),
+        ctrl('d'),
+        key(KeyCode::Enter),
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("a".to_string()));
+}
+
+#[test]
+fn test_mock_ctrl_a_and_ctrl_e() {
+    // Type "abc", Ctrl+A (start), type "x", Ctrl+E (end), type "y"
+    let events = vec![
+        key(KeyCode::Char('a')),
+        key(KeyCode::Char('b')),
+        key(KeyCode::Char('c')),
+        ctrl('a'),
+        key(KeyCode::Char('x')),
+        ctrl('e'),
+        key(KeyCode::Char('y')),
+        key(KeyCode::Enter),
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("xabcy".to_string()));
+}
+
+#[test]
+fn test_mock_ctrl_b_and_ctrl_f() {
+    // Type "abc", Ctrl+B twice (back to pos 1), type "x", Ctrl+F (forward), type "y"
+    let events = vec![
+        key(KeyCode::Char('a')),
+        key(KeyCode::Char('b')),
+        key(KeyCode::Char('c')),
+        ctrl('b'),
+        ctrl('b'),
+        key(KeyCode::Char('x')),
+        ctrl('f'),
+        key(KeyCode::Char('y')),
+        key(KeyCode::Enter),
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("axbyc".to_string()));
+}
+
+#[test]
+fn test_mock_home_end_keys() {
+    // Type "abc", Home, type "x", End, type "y"
+    let events = vec![
+        key(KeyCode::Char('a')),
+        key(KeyCode::Char('b')),
+        key(KeyCode::Char('c')),
+        key(KeyCode::Home),
+        key(KeyCode::Char('x')),
+        key(KeyCode::End),
+        key(KeyCode::Char('y')),
+        key(KeyCode::Enter),
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("xabcy".to_string()));
+}
+
+#[test]
+fn test_mock_backspace() {
+    // Type "abc", Backspace twice, Enter
+    let events = vec![
+        key(KeyCode::Char('a')),
+        key(KeyCode::Char('b')),
+        key(KeyCode::Char('c')),
+        key(KeyCode::Backspace),
+        key(KeyCode::Backspace),
+        key(KeyCode::Enter),
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("a".to_string()));
+}
+
+#[test]
+fn test_mock_delete_key() {
+    // Type "abc", Home, Delete, Enter -> "bc"
+    let events = vec![
+        key(KeyCode::Char('a')),
+        key(KeyCode::Char('b')),
+        key(KeyCode::Char('c')),
+        key(KeyCode::Home),
+        key(KeyCode::Delete),
+        key(KeyCode::Enter),
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("bc".to_string()));
+}
+
+#[test]
+fn test_mock_history_up_down() {
+    let mut history = History::new();
+    history.add("first", 500, "");
+    history.add("second", 500, "");
+
+    // Up (second), Up (first), Down (second), Enter
+    let events = vec![
+        key(KeyCode::Up),
+        key(KeyCode::Up),
+        key(KeyCode::Down),
+        key(KeyCode::Enter),
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("second".to_string()));
+}
+
+#[test]
+fn test_mock_history_up_and_edit() {
+    let mut history = History::new();
+    history.add("echo old", 500, "");
+
+    // Up (recall "echo old"), Backspace x3 (remove "old"), type "new", Enter
+    let mut events = vec![key(KeyCode::Up)];
+    events.extend(vec![key(KeyCode::Backspace); 3]);
+    events.extend(chars("new"));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("echo new".to_string()));
+}
+
+#[test]
+fn test_mock_history_preserves_typed_text() {
+    let mut history = History::new();
+    history.add("old", 500, "");
+
+    // Type "partial", Up (recall "old"), Down (back to "partial"), Enter
+    let mut events = chars("partial");
+    events.push(key(KeyCode::Up));
+    events.push(key(KeyCode::Down));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("partial".to_string()));
 }
