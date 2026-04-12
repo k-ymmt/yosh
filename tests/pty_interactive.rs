@@ -253,3 +253,34 @@ fn test_pty_autosuggest_accept_with_right_arrow() {
 
     exit_shell(&mut s);
 }
+
+#[test]
+fn test_pty_tab_completion() {
+    let (mut s, tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // Create a uniquely named file in the temp HOME directory
+    let test_file = tmpdir.path().join("kish_tab_test_unique.txt");
+    std::fs::write(&test_file, "hello").unwrap();
+
+    // cd to HOME (which is tmpdir)
+    s.send("cd\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    // Type "echo kish_tab" then Tab to complete the filename
+    s.send("echo kish_tab").unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    s.send("\t").unwrap(); // Tab
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Press Enter to execute — echo will print the completed filename
+    s.send("\r").unwrap();
+    expect_output(
+        &mut s,
+        "kish_tab_test_unique.txt",
+        "Tab completion failed to complete and execute",
+    );
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
