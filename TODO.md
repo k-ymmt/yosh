@@ -9,6 +9,13 @@
 - [ ] Pipeline command display in `jobs` output uses placeholder format — improve to reconstruct shell syntax
 - [ ] `reset_job_control_signals` is unused — should be called when `set +m` disables monitor mode at runtime (`src/signal.rs`)
 
+## History: Known Limitations
+
+- [ ] `HISTCONTROL` colon-separated values — bash supports `ignoredups:ignorespace` but current implementation only accepts single values like `ignoreboth` (`src/interactive/history.rs`)
+- [ ] SIGHUP history save — verify history is saved before exit on SIGHUP; if `handle_default_signal` calls `std::process::exit()` directly, history may be lost (`src/exec/mod.rs`, `src/interactive/mod.rs`)
+- [ ] Ctrl+R double redraw — `FuzzySearch` arm in `read_line` redraws, then the `Continue` path redraws again; harmless but wasteful (`src/interactive/line_editor.rs`)
+- [ ] `history.save()` silently ignores write errors — disk-full or permission errors are swallowed (`src/interactive/history.rs`)
+
 ## Future: Interactive Mode Enhancements
 
 - [ ] Tab completion — file path and command name completion
