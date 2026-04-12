@@ -6,6 +6,7 @@ use crossterm::{
     ExecutableCommand,
 };
 
+use super::fuzzy_search::FuzzySearchUI;
 use super::history::History;
 
 /// A minimal line-editing buffer used by the interactive REPL.
@@ -131,6 +132,7 @@ enum KeyAction {
     Submit,
     Eof,
     Interrupt,
+    FuzzySearch,
 }
 
 impl LineEditor {
@@ -139,7 +141,7 @@ impl LineEditor {
     /// Ctrl-D with an empty buffer (EOF), or `Ok(Some(""))` on Ctrl-C.
     pub fn read_line(&mut self, prompt_width: usize, history: &mut History) -> io::Result<Option<String>> {
         self.clear();
-        let _guard = RawModeGuard::new()?;
+        let mut _guard = RawModeGuard::new()?;
         let mut stdout = stdout();
 
         loop {
@@ -163,6 +165,18 @@ impl LineEditor {
                         stdout.flush()?;
                         self.clear();
                         return Ok(Some(String::new()));
+                    }
+                    KeyAction::FuzzySearch => {
+                        drop(_guard);
+                        match FuzzySearchUI::run(history) {
+                            Ok(Some(line)) => {
+                                self.buf = line.chars().collect();
+                                self.pos = self.buf.len();
+                            }
+                            _ => {}
+                        }
+                        _guard = RawModeGuard::new()?;
+                        self.redraw(&mut stdout, prompt_width)?;
                     }
                     KeyAction::Continue => {}
                 }
@@ -257,6 +271,11 @@ impl LineEditor {
             (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
                 self.insert_char(ch);
                 KeyAction::Continue
+            }
+
+            // Ctrl+R — fuzzy history search
+            (KeyCode::Char('r'), m) if m.contains(KeyModifiers::CONTROL) => {
+                KeyAction::FuzzySearch
             }
 
             // Up — navigate history backward
