@@ -813,6 +813,24 @@ mod tests {
         fn set_dim(&mut self, _on: bool) -> std::io::Result<()> {
             Ok(())
         }
+        fn set_fg_color(&mut self, _color: crossterm::style::Color) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn reset_style(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn set_bold(&mut self, _on: bool) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn set_underline(&mut self, _on: bool) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn write_char(&mut self, ch: char) -> std::io::Result<()> {
+            if ch == '\n' {
+                self.cursor_row += 1;
+            }
+            Ok(())
+        }
         fn hide_cursor(&mut self) -> std::io::Result<()> {
             Ok(())
         }

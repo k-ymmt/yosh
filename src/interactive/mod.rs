@@ -1,5 +1,6 @@
 pub mod completion;
 pub mod fuzzy_search;
+pub mod highlight;
 pub mod history;
 pub mod line_editor;
 pub mod parse_status;
