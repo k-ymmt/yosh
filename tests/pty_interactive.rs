@@ -225,3 +225,31 @@ fn test_pty_ctrl_r_history_search() {
 
     exit_shell(&mut s);
 }
+
+#[test]
+fn test_pty_autosuggest_accept_with_right_arrow() {
+    let (mut s, _tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // Execute a command to populate history
+    s.send("echo autosuggest_test_value\r").unwrap();
+    expect_output(&mut s, "autosuggest_test_value", "initial echo failed");
+    wait_for_prompt(&mut s);
+
+    // Type prefix "echo auto" — suggestion should appear
+    s.send("echo auto").unwrap();
+    // Brief pause for suggestion to render
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Press Right arrow to accept the suggestion
+    s.send("\x1b[C").unwrap(); // Right arrow (ANSI escape)
+    // Brief pause for acceptance
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Press Enter to execute
+    s.send("\r").unwrap();
+    expect_output(&mut s, "autosuggest_test_value", "autosuggest acceptance failed");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
