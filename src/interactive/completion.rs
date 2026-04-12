@@ -4,7 +4,13 @@
 //! paths when the user presses Tab in interactive mode.
 
 use std::fs;
+use std::io;
 use std::path::PathBuf;
+
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+use super::fuzzy_search::filter_and_sort;
+use super::terminal::Terminal;
 
 /// Scan leftward from `cursor` to find the start of the completion word.
 ///
@@ -233,6 +239,223 @@ pub fn complete(buf: &str, cursor: usize, ctx: &CompletionContext) -> Completion
         common_prefix,
         word_start,
         dir_prefix: user_dir_prefix,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Completion UI (interactive candidate selection)
+// ---------------------------------------------------------------------------
+
+enum CompletionAction {
+    Continue,
+    Select(String),
+    Cancel,
+}
+
+pub struct CompletionUI {
+    query: Vec<char>,
+    selected: usize,
+    scroll_offset: usize,
+    candidates: Vec<(i64, String)>,
+    max_visible: usize,
+}
+
+impl CompletionUI {
+    /// Show an interactive fuzzy-filter UI for selecting a completion candidate.
+    ///
+    /// Returns `Some(selected)` or `None` on cancel.
+    pub fn run<T: Terminal>(candidates: &[String], term: &mut T) -> io::Result<Option<String>> {
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+
+        let (_, term_height) = term.size()?;
+        let max_visible = ((term_height as f32) * 0.4).max(3.0) as usize;
+
+        let mut ui = CompletionUI {
+            query: Vec::new(),
+            selected: 0,
+            scroll_offset: 0,
+            candidates: candidates.iter().cloned().map(|c| (0, c)).collect(),
+            max_visible,
+        };
+
+        let draw_lines = ui.max_visible + 2; // candidates + separator + query
+        term.hide_cursor()?;
+        for _ in 0..draw_lines {
+            term.write_str("\r\n")?;
+        }
+        term.move_up(draw_lines as u16)?;
+        ui.draw(term)?;
+
+        term.enable_raw_mode()?;
+        let result = ui.run_loop(term, candidates, draw_lines);
+        let _ = term.disable_raw_mode();
+        let _ = term.show_cursor();
+        result
+    }
+
+    fn run_loop<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        all_candidates: &[String],
+        draw_lines: usize,
+    ) -> io::Result<Option<String>> {
+        loop {
+            term.flush()?;
+            if let Event::Key(key_event) = term.read_event()? {
+                match self.handle_key(key_event, all_candidates) {
+                    CompletionAction::Continue => {}
+                    CompletionAction::Select(value) => {
+                        self.clear_ui(term, draw_lines)?;
+                        return Ok(Some(value));
+                    }
+                    CompletionAction::Cancel => {
+                        self.clear_ui(term, draw_lines)?;
+                        return Ok(None);
+                    }
+                }
+                self.draw(term)?;
+            }
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, all_candidates: &[String]) -> CompletionAction {
+        match (key.code, key.modifiers) {
+            (KeyCode::Enter, _) | (KeyCode::Tab, _) => {
+                if let Some((_score, value)) = self.candidates.get(self.selected) {
+                    CompletionAction::Select(value.clone())
+                } else {
+                    CompletionAction::Cancel
+                }
+            }
+            (KeyCode::Esc, _) => CompletionAction::Cancel,
+            (KeyCode::Char('g'), m) if m.contains(KeyModifiers::CONTROL) => {
+                CompletionAction::Cancel
+            }
+            (KeyCode::Up, _) => {
+                if self.selected + 1 < self.candidates.len() {
+                    self.selected += 1;
+                    self.adjust_scroll();
+                }
+                CompletionAction::Continue
+            }
+            (KeyCode::Char('p'), m) if m.contains(KeyModifiers::CONTROL) => {
+                if self.selected + 1 < self.candidates.len() {
+                    self.selected += 1;
+                    self.adjust_scroll();
+                }
+                CompletionAction::Continue
+            }
+            (KeyCode::Down, _) => {
+                if self.selected > 0 {
+                    self.selected -= 1;
+                    self.adjust_scroll();
+                }
+                CompletionAction::Continue
+            }
+            (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => {
+                if self.selected > 0 {
+                    self.selected -= 1;
+                    self.adjust_scroll();
+                }
+                CompletionAction::Continue
+            }
+            (KeyCode::Backspace, _) => {
+                if !self.query.is_empty() {
+                    self.query.pop();
+                    self.update_candidates(all_candidates);
+                }
+                CompletionAction::Continue
+            }
+            (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
+                self.query.push(ch);
+                self.update_candidates(all_candidates);
+                CompletionAction::Continue
+            }
+            _ => CompletionAction::Continue,
+        }
+    }
+
+    fn update_candidates(&mut self, all_candidates: &[String]) {
+        let query: String = self.query.iter().collect();
+        if query.is_empty() {
+            self.candidates = all_candidates.iter().cloned().map(|c| (0, c)).collect();
+        } else {
+            self.candidates = filter_and_sort(&query, all_candidates);
+        }
+        self.selected = 0;
+        self.scroll_offset = 0;
+    }
+
+    fn adjust_scroll(&mut self) {
+        if self.selected >= self.scroll_offset + self.max_visible {
+            self.scroll_offset = self.selected - self.max_visible + 1;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        }
+    }
+
+    fn draw<T: Terminal>(&self, term: &mut T) -> io::Result<()> {
+        let (term_width, _) = term.size()?;
+        let width = term_width as usize;
+
+        term.move_to_column(0)?;
+
+        let visible_end = (self.scroll_offset + self.max_visible).min(self.candidates.len());
+        let visible_range = self.scroll_offset..visible_end;
+        let visible_count = visible_range.len();
+
+        // Fill empty lines if fewer candidates than max_visible
+        for _ in 0..(self.max_visible - visible_count) {
+            term.clear_current_line()?;
+            term.write_str("\r\n")?;
+        }
+
+        // Draw candidates in reverse order (highest index = top of UI)
+        for i in (visible_range).rev() {
+            term.clear_current_line()?;
+            let (_score, ref line) = self.candidates[i];
+            let display: String = line.chars().take(width.saturating_sub(2)).collect();
+            if i == self.selected {
+                term.set_reverse(true)?;
+                term.write_str(&format!("> {}", display))?;
+                term.set_reverse(false)?;
+            } else {
+                term.write_str(&format!("  {}", display))?;
+            }
+            term.write_str("\r\n")?;
+        }
+
+        // Separator
+        term.clear_current_line()?;
+        let sep: String = "\u{2500}".repeat(width.min(40));
+        term.write_str(&format!("  {}\r\n", sep))?;
+
+        // Query line
+        term.clear_current_line()?;
+        let query_str: String = self.query.iter().collect();
+        let filtered = self.candidates.len();
+        let total = self.candidates.len();
+        term.write_str(&format!("  {}/{} > {}", filtered, total, query_str))?;
+
+        // Move back to top of the UI area.
+        let total_lines = self.max_visible + 1;
+        term.move_up(total_lines as u16)?;
+        term.flush()?;
+        Ok(())
+    }
+
+    fn clear_ui<T: Terminal>(&self, term: &mut T, draw_lines: usize) -> io::Result<()> {
+        term.move_to_column(0)?;
+        for _ in 0..draw_lines {
+            term.clear_current_line()?;
+            term.write_str("\r\n")?;
+        }
+        term.move_up(draw_lines as u16)?;
+        term.flush()?;
+        Ok(())
     }
 }
 
@@ -525,5 +748,168 @@ mod tests {
         assert!(result.candidates.is_empty());
         assert_eq!(result.common_prefix, "");
         assert_eq!(result.word_start, 3);
+    }
+
+    // ── CompletionUI ───────────────────────────────────────────────
+
+    use super::super::terminal::Terminal as TerminalTrait;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use std::collections::VecDeque;
+
+    /// Minimal mock terminal for CompletionUI tests.
+    struct MockTerm {
+        events: VecDeque<Event>,
+        cursor_row: i32,
+    }
+
+    impl MockTerm {
+        fn new(events: Vec<Event>) -> Self {
+            Self {
+                events: VecDeque::from(events),
+                cursor_row: 0,
+            }
+        }
+
+        fn mk_key(code: KeyCode) -> Event {
+            Event::Key(KeyEvent::new(code, KeyModifiers::empty()))
+        }
+    }
+
+    impl TerminalTrait for MockTerm {
+        fn read_event(&mut self) -> std::io::Result<Event> {
+            self.events.pop_front().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "no events")
+            })
+        }
+        fn size(&self) -> std::io::Result<(u16, u16)> {
+            Ok((80, 24))
+        }
+        fn enable_raw_mode(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn disable_raw_mode(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn move_to_column(&mut self, _col: u16) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn move_up(&mut self, n: u16) -> std::io::Result<()> {
+            self.cursor_row -= n as i32;
+            Ok(())
+        }
+        fn clear_current_line(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn clear_until_newline(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn write_str(&mut self, s: &str) -> std::io::Result<()> {
+            self.cursor_row += s.chars().filter(|&c| c == '\n').count() as i32;
+            Ok(())
+        }
+        fn set_reverse(&mut self, _on: bool) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn set_dim(&mut self, _on: bool) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn hide_cursor(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn show_cursor(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_completion_ui_select_first() {
+        let candidates = vec![
+            "file_a.rs".to_string(),
+            "file_b.rs".to_string(),
+            "file_c.rs".to_string(),
+        ];
+        let events = vec![MockTerm::mk_key(KeyCode::Enter)];
+        let mut term = MockTerm::new(events);
+        let result = CompletionUI::run(&candidates, &mut term).unwrap();
+        assert_eq!(result, Some("file_a.rs".to_string()));
+    }
+
+    #[test]
+    fn test_completion_ui_navigate_and_select() {
+        let candidates = vec![
+            "file_a.rs".to_string(),
+            "file_b.rs".to_string(),
+            "file_c.rs".to_string(),
+        ];
+        let events = vec![
+            MockTerm::mk_key(KeyCode::Up),
+            MockTerm::mk_key(KeyCode::Enter),
+        ];
+        let mut term = MockTerm::new(events);
+        let result = CompletionUI::run(&candidates, &mut term).unwrap();
+        assert_eq!(result, Some("file_b.rs".to_string()));
+    }
+
+    #[test]
+    fn test_completion_ui_cancel() {
+        let candidates = vec![
+            "file_a.rs".to_string(),
+            "file_b.rs".to_string(),
+        ];
+        let events = vec![MockTerm::mk_key(KeyCode::Esc)];
+        let mut term = MockTerm::new(events);
+        let result = CompletionUI::run(&candidates, &mut term).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_completion_ui_tab_confirms() {
+        let candidates = vec![
+            "file_a.rs".to_string(),
+            "file_b.rs".to_string(),
+        ];
+        let events = vec![MockTerm::mk_key(KeyCode::Tab)];
+        let mut term = MockTerm::new(events);
+        let result = CompletionUI::run(&candidates, &mut term).unwrap();
+        assert_eq!(result, Some("file_a.rs".to_string()));
+    }
+
+    #[test]
+    fn test_completion_ui_fuzzy_filter() {
+        let candidates = vec![
+            "apple.txt".to_string(),
+            "banana.txt".to_string(),
+            "cherry.txt".to_string(),
+        ];
+        let events = vec![
+            MockTerm::mk_key(KeyCode::Char('b')),
+            MockTerm::mk_key(KeyCode::Char('a')),
+            MockTerm::mk_key(KeyCode::Char('n')),
+            MockTerm::mk_key(KeyCode::Enter),
+        ];
+        let mut term = MockTerm::new(events);
+        let result = CompletionUI::run(&candidates, &mut term).unwrap();
+        assert_eq!(result, Some("banana.txt".to_string()));
+    }
+
+    #[test]
+    fn test_completion_ui_no_cursor_drift() {
+        let candidates = vec![
+            "file_a.rs".to_string(),
+            "file_b.rs".to_string(),
+            "file_c.rs".to_string(),
+        ];
+        let events = vec![
+            MockTerm::mk_key(KeyCode::Up),
+            MockTerm::mk_key(KeyCode::Up),
+            MockTerm::mk_key(KeyCode::Down),
+            MockTerm::mk_key(KeyCode::Esc),
+        ];
+        let mut term = MockTerm::new(events);
+        let _result = CompletionUI::run(&candidates, &mut term).unwrap();
+        assert_eq!(term.cursor_row, 0);
     }
 }
