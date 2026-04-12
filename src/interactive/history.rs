@@ -34,6 +34,19 @@ impl History {
         self.entries.is_empty()
     }
 
+    /// Return the suffix of the most recent history entry that starts with `prefix`.
+    /// Returns `None` if `prefix` is empty, no entry matches, or only exact matches exist.
+    pub fn suggest(&self, prefix: &str) -> Option<String> {
+        if prefix.is_empty() {
+            return None;
+        }
+        self.entries
+            .iter()
+            .rev()
+            .find(|entry| entry.starts_with(prefix) && entry.as_str() != prefix)
+            .map(|entry| entry[prefix.len()..].to_string())
+    }
+
     pub fn add(&mut self, line: &str, histsize: usize, histcontrol: &str) {
         if line.is_empty() {
             return;
@@ -282,5 +295,51 @@ mod tests {
         let mut h = History::new();
         h.load(&path);
         assert_eq!(h.entries(), &["cmd1", "cmd2"]);
+    }
+
+    #[test]
+    fn test_suggest_prefix_match() {
+        let mut h = History::new();
+        h.add("git commit -m 'fix'", 500, "");
+        h.add("git push origin main", 500, "");
+        // "git c" matches "git commit -m 'fix'" — returns the suffix
+        assert_eq!(h.suggest("git c"), Some("ommit -m 'fix'".to_string()));
+    }
+
+    #[test]
+    fn test_suggest_most_recent_wins() {
+        let mut h = History::new();
+        h.add("echo first", 500, "");
+        h.add("echo second", 500, "");
+        // Both match "echo ", but most recent ("echo second") wins
+        assert_eq!(h.suggest("echo "), Some("second".to_string()));
+    }
+
+    #[test]
+    fn test_suggest_exact_match_excluded() {
+        let mut h = History::new();
+        h.add("ls -la", 500, "");
+        // Exact match returns None (nothing to suggest)
+        assert_eq!(h.suggest("ls -la"), None);
+    }
+
+    #[test]
+    fn test_suggest_empty_prefix_returns_none() {
+        let mut h = History::new();
+        h.add("some command", 500, "");
+        assert_eq!(h.suggest(""), None);
+    }
+
+    #[test]
+    fn test_suggest_no_match_returns_none() {
+        let mut h = History::new();
+        h.add("git commit", 500, "");
+        assert_eq!(h.suggest("cargo"), None);
+    }
+
+    #[test]
+    fn test_suggest_empty_history_returns_none() {
+        let h = History::new();
+        assert_eq!(h.suggest("git"), None);
     }
 }
