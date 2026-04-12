@@ -19,7 +19,8 @@ pub enum BuiltinKind {
 pub fn classify_builtin(name: &str) -> BuiltinKind {
     match name {
         "break" | ":" | "continue" | "." | "eval" | "exec" | "exit" | "export"
-        | "readonly" | "return" | "set" | "shift" | "times" | "trap" | "unset" => {
+        | "readonly" | "return" | "set" | "shift" | "times" | "trap" | "unset"
+        | "fc" => {
             BuiltinKind::Special
         }
         "cd" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait"
@@ -118,6 +119,11 @@ mod tests {
         let args = vec!["-a".to_string()];
         assert_eq!(exec_regular_builtin("unalias", &args, &mut env), 0);
         assert!(env.aliases.is_empty());
+    }
+
+    #[test]
+    fn test_classify_fc() {
+        assert!(matches!(classify_builtin("fc"), BuiltinKind::Special));
     }
 
     #[test]

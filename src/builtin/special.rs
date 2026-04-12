@@ -1,4 +1,5 @@
 use std::ffi::CString;
+use std::io::Write;
 
 use nix::unistd::execvp;
 
@@ -22,6 +23,7 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
         "." => builtin_source(args, executor),
         "shift" => builtin_shift(args, &mut executor.env),
         "times" => builtin_times(),
+        "fc" => builtin_fc(args, executor),
         _ => {
             eprintln!("kish: {}: not a special builtin", name);
             1
@@ -53,7 +55,7 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> i32 {
 fn builtin_export(args: &[String], env: &mut ShellEnv) -> i32 {
     if args.is_empty() || args[0] == "-p" {
         // Print all exported variables in POSIX re-input format
-        let mut exported: Vec<(String, String)> = env.vars.to_environ().to_vec();
+        let mut exported: Vec<(String, String)> = env.vars.environ().to_vec();
         exported.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in exported {
             println!("export {}=\"{}\"", name, value);
@@ -414,4 +416,231 @@ fn builtin_times() -> i32 {
     println!("{} {}", fmt(tms.tms_utime), fmt(tms.tms_stime));
     println!("{} {}", fmt(tms.tms_cutime), fmt(tms.tms_cstime));
     0
+}
+
+// ---------------------------------------------------------------------------
+// fc built-in
+// ---------------------------------------------------------------------------
+
+fn builtin_fc(args: &[String], executor: &mut Executor) -> i32 {
+    if executor.env.history.entries().is_empty() {
+        eprintln!("kish: fc: history is empty");
+        return 1;
+    }
+
+    let mut list_mode = false;
+    let mut suppress_numbers = false;
+    let mut reverse = false;
+    let mut substitute_mode = false;
+    let mut editor: Option<String> = None;
+    let mut operands: Vec<String> = Vec::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "-e" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("kish: fc: -e: option requires an argument");
+                return 1;
+            }
+            editor = Some(args[i].clone());
+        } else if arg.starts_with('-') && arg.len() > 1 && arg.chars().nth(1).map_or(false, |c| c.is_ascii_alphabetic()) {
+            for ch in arg[1..].chars() {
+                match ch {
+                    'l' => list_mode = true,
+                    'n' => suppress_numbers = true,
+                    'r' => reverse = true,
+                    's' => substitute_mode = true,
+                    _ => {
+                        eprintln!("kish: fc: -{}: invalid option", ch);
+                        return 2;
+                    }
+                }
+            }
+        } else {
+            operands.push(arg.clone());
+        }
+        i += 1;
+    }
+
+    if substitute_mode {
+        return fc_substitute(&operands, executor);
+    }
+
+    // Clone history entries to release the immutable borrow on executor,
+    // allowing fc_edit to take &mut Executor.
+    let entries: Vec<String> = executor.env.history.entries().to_vec();
+    let hist_len = entries.len();
+    let (start, end) = fc_resolve_range(&operands, hist_len, list_mode, &entries);
+
+    if list_mode {
+        fc_list(&entries, start, end, suppress_numbers, reverse);
+        0
+    } else {
+        fc_edit(&entries, start, end, reverse, editor, executor)
+    }
+}
+
+fn fc_resolve_one(spec: &str, default: usize, entries: &[String]) -> usize {
+    if let Ok(n) = spec.parse::<i64>() {
+        if n > 0 {
+            ((n - 1) as usize).min(entries.len().saturating_sub(1))
+        } else {
+            entries.len().saturating_sub((-n) as usize)
+        }
+    } else {
+        (0..entries.len()).rev()
+            .find(|&i| entries[i].starts_with(spec))
+            .unwrap_or(default)
+    }
+}
+
+fn fc_resolve_range(operands: &[String], hist_len: usize, is_list: bool, entries: &[String]) -> (usize, usize) {
+    match operands.len() {
+        0 => {
+            if is_list {
+                (hist_len.saturating_sub(16), hist_len.saturating_sub(1))
+            } else {
+                let last = hist_len.saturating_sub(1);
+                (last, last)
+            }
+        }
+        1 => {
+            let idx = fc_resolve_one(&operands[0], hist_len.saturating_sub(1), entries);
+            if is_list {
+                (idx, hist_len.saturating_sub(1))
+            } else {
+                (idx, idx)
+            }
+        }
+        _ => {
+            let s = fc_resolve_one(&operands[0], hist_len.saturating_sub(1), entries);
+            let e = fc_resolve_one(&operands[1], hist_len.saturating_sub(1), entries);
+            (s, e)
+        }
+    }
+}
+
+fn fc_list(entries: &[String], start: usize, end: usize, suppress_numbers: bool, reverse: bool) {
+    let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
+    let range: Vec<usize> = if reverse ^ (start > end) {
+        (lo..=hi).rev().collect()
+    } else {
+        (lo..=hi).collect()
+    };
+    for i in range {
+        if suppress_numbers {
+            println!("\t{}", entries[i]);
+        } else {
+            println!("{}\t{}", i + 1, entries[i]);
+        }
+    }
+}
+
+fn fc_edit(
+    entries: &[String],
+    start: usize,
+    end: usize,
+    reverse: bool,
+    editor: Option<String>,
+    executor: &mut Executor,
+) -> i32 {
+    let editor_cmd = editor
+        .or_else(|| executor.env.vars.get("FCEDIT").map(|s| s.to_string()))
+        .or_else(|| executor.env.vars.get("EDITOR").map(|s| s.to_string()))
+        .unwrap_or_else(|| "/bin/ed".to_string());
+
+    let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
+    let mut commands: Vec<&str> = (lo..=hi).map(|i| entries[i].as_str()).collect();
+    if reverse {
+        commands.reverse();
+    }
+
+    let tmp_path = format!("/tmp/kish_fc_{}", std::process::id());
+    {
+        let mut file = match std::fs::File::create(&tmp_path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("kish: fc: cannot create temp file: {}", e);
+                return 1;
+            }
+        };
+        for cmd in &commands {
+            let _ = writeln!(file, "{}", cmd);
+        }
+    }
+
+    use std::process::Command;
+    let status = Command::new(&editor_cmd).arg(&tmp_path).status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return s.code().unwrap_or(1);
+        }
+        Err(e) => {
+            eprintln!("kish: fc: {}: {}", editor_cmd, e);
+            let _ = std::fs::remove_file(&tmp_path);
+            return 127;
+        }
+    }
+
+    let content = match std::fs::read_to_string(&tmp_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("kish: fc: cannot read temp file: {}", e);
+            let _ = std::fs::remove_file(&tmp_path);
+            return 1;
+        }
+    };
+    let _ = std::fs::remove_file(&tmp_path);
+
+    if content.trim().is_empty() {
+        return 0;
+    }
+
+    executor.eval_string(&content);
+    executor.env.exec.last_exit_status
+}
+
+fn fc_substitute(operands: &[String], executor: &mut Executor) -> i32 {
+    let entries = executor.env.history.entries();
+    if entries.is_empty() {
+        eprintln!("kish: fc: history is empty");
+        return 1;
+    }
+
+    let mut replacement: Option<(&str, &str)> = None;
+    let mut target_spec: Option<&str> = None;
+
+    for op in operands {
+        if let Some(eq_pos) = op.find('=') {
+            replacement = Some((&op[..eq_pos], &op[eq_pos + 1..]));
+        } else {
+            target_spec = Some(op.as_str());
+        }
+    }
+
+    let idx = if let Some(spec) = target_spec {
+        fc_resolve_one(spec, entries.len().saturating_sub(1), entries)
+    } else {
+        entries.len().saturating_sub(1)
+    };
+
+    let mut cmd = entries[idx].clone();
+    if let Some((old, new)) = replacement {
+        cmd = cmd.replacen(old, new, 1);
+    }
+
+    eprintln!("{}", cmd);
+
+    let histsize: usize = executor.env.vars.get("HISTSIZE")
+        .and_then(|s| s.parse().ok()).unwrap_or(500);
+    let histcontrol = executor.env.vars.get("HISTCONTROL")
+        .unwrap_or("ignoreboth").to_string();
+    executor.env.history.add(&cmd, histsize, &histcontrol);
+
+    executor.eval_string(&cmd);
+    executor.env.exec.last_exit_status
 }
