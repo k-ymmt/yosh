@@ -3,6 +3,7 @@ pub mod history;
 pub mod line_editor;
 pub mod parse_status;
 pub mod prompt;
+pub mod terminal;
 
 use std::io::{self, Write};
 
