@@ -1602,4 +1602,106 @@ mod tests {
         assert_span(&spans, 1, 6, 7, HighlightStyle::Default);
         assert_span(&spans, 2, 8, 9, HighlightStyle::Operator);
     }
+
+    // ── Error and PS2 tests ──────────────────────────────────────
+
+    fn scan_ps2(scanner: &mut HighlightScanner, accumulated: &str, current: &str) -> Vec<ColorSpan> {
+        let (path, aliases) = test_env();
+        let env = CheckerEnv { path: &path, aliases: &aliases };
+        let chars: Vec<char> = current.chars().collect();
+        scanner.scan(accumulated, &chars, &env)
+    }
+
+    #[test]
+    fn test_scan_unclosed_single_quote_ps1() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "echo 'hello");
+        let error_span = spans.iter().find(|s| s.style == HighlightStyle::Error);
+        assert!(error_span.is_some(), "expected Error span for unclosed quote. Spans: {:?}", spans);
+        let es = error_span.unwrap();
+        assert_eq!(es.start, 5);
+        assert_eq!(es.end, 11);
+    }
+
+    #[test]
+    fn test_scan_unclosed_double_quote_ps1() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "echo \"hello");
+        let error_span = spans.iter().find(|s| s.style == HighlightStyle::Error);
+        assert!(error_span.is_some(), "expected Error span for unclosed double quote. Spans: {:?}", spans);
+    }
+
+    #[test]
+    fn test_scan_unclosed_quote_ps2_not_error() {
+        let mut scanner = test_scanner();
+        let spans = scan_ps2(&mut scanner, "echo 'hello\n", "world'");
+        let error_span = spans.iter().find(|s| s.style == HighlightStyle::Error);
+        assert!(error_span.is_none(), "PS2 continuation should not show Error. Spans: {:?}", spans);
+        let string_span = spans.iter().find(|s| s.style == HighlightStyle::String);
+        assert!(string_span.is_some(), "expected String span in PS2. Spans: {:?}", spans);
+    }
+
+    #[test]
+    fn test_scan_single_quoted_string() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "echo 'hello world'");
+        assert_span(&spans, 0, 0, 4, HighlightStyle::CommandValid);
+        assert_span(&spans, 1, 5, 18, HighlightStyle::String);
+    }
+
+    #[test]
+    fn test_scan_double_quoted_string() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "echo \"hello\"");
+        assert_span(&spans, 0, 0, 4, HighlightStyle::CommandValid);
+        assert_span(&spans, 1, 5, 12, HighlightStyle::DoubleString);
+    }
+
+    #[test]
+    fn test_scan_variable_in_double_quote() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "echo \"hi $USER\"");
+        let var_span = spans.iter().find(|s| s.style == HighlightStyle::Variable);
+        assert!(var_span.is_some(), "expected Variable span. Spans: {:?}", spans);
+    }
+
+    #[test]
+    fn test_scan_variable_expansion() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "echo $HOME");
+        assert_span(&spans, 0, 0, 4, HighlightStyle::CommandValid);
+        assert_span(&spans, 1, 5, 10, HighlightStyle::Variable);
+    }
+
+    #[test]
+    fn test_scan_braced_variable() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "echo ${USER}");
+        assert_span(&spans, 0, 0, 4, HighlightStyle::CommandValid);
+        assert_span(&spans, 1, 5, 12, HighlightStyle::Variable);
+    }
+
+    #[test]
+    fn test_scan_command_substitution() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "echo $(ls)");
+        let cs_spans: Vec<_> = spans.iter().filter(|s| s.style == HighlightStyle::CommandSub).collect();
+        assert!(!cs_spans.is_empty(), "expected CommandSub spans. Spans: {:?}", spans);
+    }
+
+    #[test]
+    fn test_scan_arith_sub() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "echo $((1+2))");
+        let arith_spans: Vec<_> = spans.iter().filter(|s| s.style == HighlightStyle::ArithSub).collect();
+        assert!(!arith_spans.is_empty(), "expected ArithSub spans. Spans: {:?}", spans);
+    }
+
+    #[test]
+    fn test_scan_tilde() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "cd ~/projects");
+        assert_span(&spans, 0, 0, 2, HighlightStyle::CommandValid);
+        assert_span(&spans, 1, 3, 4, HighlightStyle::Tilde);
+    }
 }
