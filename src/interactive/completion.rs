@@ -4,6 +4,7 @@
 /// paths when the user presses Tab in interactive mode.
 
 use std::fs;
+use std::path::PathBuf;
 
 /// Scan leftward from `cursor` to find the start of the completion word.
 ///
@@ -163,6 +164,76 @@ pub fn generate_candidates(dir: &str, prefix: &str, show_dotfiles: bool) -> Vec<
 
     results.sort();
     results
+}
+
+/// Settings for path completion.
+pub struct CompletionContext {
+    /// Current working directory.
+    pub cwd: String,
+    /// User's home directory (for tilde expansion).
+    pub home: String,
+    /// Whether to show dotfiles even when prefix does not start with `.`.
+    pub show_dotfiles: bool,
+}
+
+/// Result of a tab-completion attempt.
+pub struct CompletionResult {
+    /// All matching candidate names (file/dir names, not full paths).
+    pub candidates: Vec<String>,
+    /// Longest common prefix among all candidates.
+    pub common_prefix: String,
+    /// Byte offset in the input buffer where the completion word starts.
+    pub word_start: usize,
+    /// The directory prefix string (as the user typed it, before expansion),
+    /// used to reconstruct the replacement text.
+    pub dir_prefix: String,
+}
+
+/// Perform path completion on the current input buffer at the given cursor
+/// position.
+///
+/// Combines `extract_completion_word`, `split_path`, directory resolution,
+/// `generate_candidates`, and `longest_common_prefix` into a single call.
+pub fn complete(buf: &str, cursor: usize, ctx: &CompletionContext) -> CompletionResult {
+    let (word_start, word) = extract_completion_word(buf, cursor);
+    let (dir_part, prefix) = split_path(word, &ctx.home);
+
+    // Resolve the actual directory to scan.
+    let resolved_dir = if dir_part.is_empty() {
+        ctx.cwd.clone()
+    } else if dir_part.starts_with('/') {
+        dir_part.clone()
+    } else {
+        // Relative path: join with CWD.
+        let mut path = PathBuf::from(&ctx.cwd);
+        path.push(&dir_part);
+        path.to_string_lossy().into_owned()
+    };
+
+    let candidates = generate_candidates(&resolved_dir, prefix, ctx.show_dotfiles);
+    let common_prefix = longest_common_prefix(&candidates);
+
+    // Compute the dir_prefix as the user typed it (before tilde expansion),
+    // so the caller can reconstruct the replacement text.
+    let user_dir_prefix = if word.starts_with('\'') || word.starts_with('"') {
+        let stripped = &word[1..];
+        match stripped.rfind('/') {
+            Some(pos) => stripped[..=pos].to_string(),
+            None => String::new(),
+        }
+    } else {
+        match word.rfind('/') {
+            Some(pos) => word[..=pos].to_string(),
+            None => String::new(),
+        }
+    };
+
+    CompletionResult {
+        candidates,
+        common_prefix,
+        word_start,
+        dir_prefix: user_dir_prefix,
+    }
 }
 
 #[cfg(test)]
@@ -383,5 +454,76 @@ mod tests {
         let dir = tmp.path().to_str().unwrap();
         let candidates = generate_candidates(dir, "sub", false);
         assert_eq!(candidates, vec!["subdir/"]);
+    }
+
+    // ── complete ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_complete_single_candidate() {
+        let tmp = setup_temp_dir();
+        let cwd = tmp.path().to_str().unwrap().to_string();
+        let ctx = CompletionContext {
+            cwd: cwd.clone(),
+            home: "/home/user".to_string(),
+            show_dotfiles: false,
+        };
+        let result = complete("ls bet", 6, &ctx);
+        assert_eq!(result.candidates, vec!["beta.rs"]);
+        assert_eq!(result.common_prefix, "beta.rs");
+        assert_eq!(result.word_start, 3);
+        assert_eq!(result.dir_prefix, "");
+    }
+
+    #[test]
+    fn test_complete_multiple_candidates() {
+        let tmp = setup_temp_dir();
+        let cwd = tmp.path().to_str().unwrap().to_string();
+        let ctx = CompletionContext {
+            cwd: cwd.clone(),
+            home: "/home/user".to_string(),
+            show_dotfiles: false,
+        };
+        let result = complete("ls alpha", 8, &ctx);
+        assert_eq!(result.candidates.len(), 3);
+        assert!(result.candidates.contains(&"alpha.txt".to_string()));
+        assert!(result.candidates.contains(&"alpha_two.txt".to_string()));
+        assert!(result.candidates.contains(&"alpha_dir/".to_string()));
+        assert_eq!(result.common_prefix, "alpha");
+        assert_eq!(result.word_start, 3);
+    }
+
+    #[test]
+    fn test_complete_with_directory_prefix() {
+        let tmp = setup_temp_dir();
+        let cwd = tmp.path().to_str().unwrap().to_string();
+        // Create a nested file
+        fs::create_dir_all(tmp.path().join("subdir")).ok();
+        File::create(tmp.path().join("subdir").join("nested.txt")).unwrap();
+
+        let ctx = CompletionContext {
+            cwd: cwd.clone(),
+            home: "/home/user".to_string(),
+            show_dotfiles: false,
+        };
+        let result = complete("cat subdir/nes", 14, &ctx);
+        assert_eq!(result.candidates, vec!["nested.txt"]);
+        assert_eq!(result.common_prefix, "nested.txt");
+        assert_eq!(result.word_start, 4);
+        assert_eq!(result.dir_prefix, "subdir/");
+    }
+
+    #[test]
+    fn test_complete_no_matches() {
+        let tmp = setup_temp_dir();
+        let cwd = tmp.path().to_str().unwrap().to_string();
+        let ctx = CompletionContext {
+            cwd: cwd.clone(),
+            home: "/home/user".to_string(),
+            show_dotfiles: false,
+        };
+        let result = complete("ls zzz", 6, &ctx);
+        assert!(result.candidates.is_empty());
+        assert_eq!(result.common_prefix, "");
+        assert_eq!(result.word_start, 3);
     }
 }
