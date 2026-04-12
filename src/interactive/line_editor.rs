@@ -14,6 +14,7 @@ use super::terminal::Terminal;
 pub struct LineEditor {
     buf: Vec<char>,
     pos: usize,
+    suggestion: Option<String>,
 }
 
 impl LineEditor {
@@ -42,6 +43,7 @@ impl LineEditor {
     pub fn clear(&mut self) {
         self.buf.clear();
         self.pos = 0;
+        self.suggestion = None;
     }
 
     /// Insert a character at the current cursor position and advance
@@ -93,6 +95,22 @@ impl LineEditor {
     /// Move the cursor to the end of the buffer.
     pub fn move_to_end(&mut self) {
         self.pos = self.buf.len();
+    }
+
+    /// Return the current suggestion text, if any.
+    #[allow(dead_code)]
+    pub fn suggestion(&self) -> Option<&str> {
+        self.suggestion.as_deref()
+    }
+
+    /// Update the autosuggestion based on the current buffer state.
+    /// Only suggests when the cursor is at the end of a non-empty buffer.
+    fn update_suggestion(&mut self, history: &History) {
+        if self.pos == self.buf.len() && !self.buf.is_empty() {
+            self.suggestion = history.suggest(&self.buffer());
+        } else {
+            self.suggestion = None;
+        }
     }
 }
 
@@ -152,6 +170,7 @@ impl LineEditor {
                         return Ok(Some(String::new()));
                     }
                     KeyAction::FuzzySearch => {
+                        self.suggestion = None;
                         term.disable_raw_mode()?;
                         match FuzzySearchUI::run(history, term) {
                             Ok(Some(line)) => {
@@ -161,7 +180,6 @@ impl LineEditor {
                             _ => {}
                         }
                         term.enable_raw_mode()?;
-                        // Redraw prompt since fuzzy search cleared the line.
                         term.move_to_column(0)?;
                         term.clear_current_line()?;
                         term.write_str(prompt)?;
@@ -169,6 +187,7 @@ impl LineEditor {
                     }
                     KeyAction::Continue => {}
                 }
+                self.update_suggestion(history);
                 self.redraw(term, prompt_width)?;
             }
         }
@@ -180,6 +199,14 @@ impl LineEditor {
         term.move_to_column(col(prompt_width))?;
         term.clear_until_newline()?;
         term.write_str(&self.buffer())?;
+        // Draw suggestion in dim text when cursor is at end of buffer
+        if let Some(ref suggestion) = self.suggestion {
+            if self.pos == self.buf.len() {
+                term.set_dim(true)?;
+                term.write_str(suggestion)?;
+                term.set_dim(false)?;
+            }
+        }
         term.move_to_column(col(prompt_width + self.pos))?;
         term.flush()?;
         Ok(())
@@ -273,6 +300,7 @@ impl LineEditor {
                     self.buf = line.chars().collect();
                     self.pos = self.buf.len();
                 }
+                self.suggestion = None;
                 KeyAction::Continue
             }
 
@@ -282,6 +310,7 @@ impl LineEditor {
                     self.buf = line.chars().collect();
                     self.pos = self.buf.len();
                 }
+                self.suggestion = None;
                 KeyAction::Continue
             }
 

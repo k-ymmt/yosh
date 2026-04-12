@@ -737,6 +737,78 @@ fn test_fuzzy_search_select_no_cursor_drift() {
     );
 }
 
+// ── Autosuggestion tests ────────────────────────────────────────────────
+
+#[test]
+fn test_suggest_appears_on_typing() {
+    let mut history = History::new();
+    history.add("git commit -m 'fix'", 500, "");
+
+    // Type "git c" then Enter
+    let mut events = chars("git c");
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("git c".to_string()));
+
+    // Check that dim suggestion text was rendered
+    let output = term.output().join("");
+    assert!(
+        output.contains("[DIM]"),
+        "suggestion should trigger dim rendering"
+    );
+    assert!(
+        output.contains("ommit -m 'fix'"),
+        "suggestion text should appear in output"
+    );
+}
+
+#[test]
+fn test_suggest_hidden_when_cursor_not_at_end() {
+    let mut history = History::new();
+    history.add("echo hello world", 500, "");
+
+    // Type "echo h", Left (cursor no longer at end), then Enter
+    let mut events = chars("echo h");
+    events.push(key(KeyCode::Left));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let _ = editor.read_line("$ ", &mut history, &mut term).unwrap();
+
+    let output_parts = term.output();
+    let last_outputs = output_parts.iter().rev().take(10).collect::<Vec<_>>();
+    let last_chunk: String = last_outputs.iter().rev().map(|s| s.as_str()).collect();
+    let last_dim_pos = last_chunk.rfind("[DIM]");
+    let last_nodim_pos = last_chunk.rfind("[/DIM]");
+    match (last_dim_pos, last_nodim_pos) {
+        (Some(d), Some(nd)) => assert!(d < nd, "suggestion should not be active after cursor moved left"),
+        (None, _) => {}
+        (Some(_), None) => panic!("unclosed [DIM] in output"),
+    }
+}
+
+#[test]
+fn test_suggest_cleared_on_history_navigation() {
+    let mut history = History::new();
+    history.add("echo hello", 500, "");
+    history.add("echo world", 500, "");
+
+    // Type "echo " (suggestion active), then Up (history nav clears suggestion), Enter
+    let mut events = chars("echo ");
+    events.push(key(KeyCode::Up));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
+    // Up replaces buffer with "echo world" (most recent)
+    assert_eq!(result, Some("echo world".to_string()));
+}
+
 #[test]
 fn test_ctrl_r_redraws_prompt_after_selection() {
     // After selecting from Ctrl+R, the prompt (PS1) must be redrawn because
