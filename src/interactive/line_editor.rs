@@ -119,15 +119,16 @@ impl LineEditor {
     /// Read a line of input from the terminal, handling cursor movement and
     /// editing keys.  Returns `Ok(Some(line))` on Enter, `Ok(None)` on
     /// Ctrl-D with an empty buffer (EOF), or `Ok(Some(""))` on Ctrl-C.
-    pub fn read_line<T: Terminal>(&mut self, prompt_width: usize, history: &mut History, term: &mut T) -> io::Result<Option<String>> {
+    pub fn read_line<T: Terminal>(&mut self, prompt: &str, history: &mut History, term: &mut T) -> io::Result<Option<String>> {
         self.clear();
         term.enable_raw_mode()?;
-        let result = self.read_line_loop(prompt_width, history, term);
+        let result = self.read_line_loop(prompt, history, term);
         let _ = term.disable_raw_mode();
         result
     }
 
-    fn read_line_loop<T: Terminal>(&mut self, prompt_width: usize, history: &mut History, term: &mut T) -> io::Result<Option<String>> {
+    fn read_line_loop<T: Terminal>(&mut self, prompt: &str, history: &mut History, term: &mut T) -> io::Result<Option<String>> {
+        let prompt_width = prompt.chars().count();
         loop {
             term.flush()?;
             if let Event::Key(key_event) = term.read_event()? {
@@ -160,6 +161,10 @@ impl LineEditor {
                             _ => {}
                         }
                         term.enable_raw_mode()?;
+                        // Redraw prompt since fuzzy search cleared the line.
+                        term.move_to_column(0)?;
+                        term.clear_current_line()?;
+                        term.write_str(prompt)?;
                         self.redraw(term, prompt_width)?;
                     }
                     KeyAction::Continue => {}

@@ -123,6 +123,7 @@ impl FuzzySearchUI {
         ui.candidates.reverse(); // newest first
 
         let draw_lines = ui.max_visible + 2; // candidates + separator + query
+        term.hide_cursor()?;
         for _ in 0..draw_lines {
             term.write_str("\r\n")?;
         }
@@ -135,6 +136,7 @@ impl FuzzySearchUI {
         let result = ui.run_loop(term, entries, draw_lines);
         // Disable raw mode regardless of result so the caller can re-enable.
         let _ = term.disable_raw_mode();
+        let _ = term.show_cursor();
         result
     }
 

@@ -326,7 +326,7 @@ fn test_mock_basic_input() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("hello".to_string()));
 }
 
@@ -341,7 +341,7 @@ fn test_mock_ctrl_c_returns_empty() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some(String::new()));
 }
 
@@ -352,7 +352,7 @@ fn test_mock_ctrl_d_empty_returns_none() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, None);
 }
 
@@ -370,7 +370,7 @@ fn test_mock_ctrl_d_nonempty_deletes_char() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("a".to_string()));
 }
 
@@ -391,7 +391,7 @@ fn test_mock_ctrl_a_and_ctrl_e() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("xabcy".to_string()));
 }
 
@@ -413,7 +413,7 @@ fn test_mock_ctrl_b_and_ctrl_f() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("axbyc".to_string()));
 }
 
@@ -434,7 +434,7 @@ fn test_mock_home_end_keys() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("xabcy".to_string()));
 }
 
@@ -453,7 +453,7 @@ fn test_mock_backspace() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("a".to_string()));
 }
 
@@ -472,7 +472,7 @@ fn test_mock_delete_key() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("bc".to_string()));
 }
 
@@ -492,7 +492,7 @@ fn test_mock_history_up_down() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("second".to_string()));
 }
 
@@ -509,7 +509,7 @@ fn test_mock_history_up_and_edit() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("echo new".to_string()));
 }
 
@@ -526,7 +526,7 @@ fn test_mock_history_preserves_typed_text() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("partial".to_string()));
 }
 
@@ -547,7 +547,7 @@ fn test_mock_ctrl_r_selects_matching_entry() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("git commit -m 'fix'".to_string()));
 }
 
@@ -566,7 +566,7 @@ fn test_mock_ctrl_r_cancel_with_esc() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     // After Esc, buffer should retain pre-search content "hello"
     assert_eq!(result, Some("hello".to_string()));
 }
@@ -590,7 +590,7 @@ fn test_mock_ctrl_r_navigate_up() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("echo second".to_string()));
 }
 
@@ -615,7 +615,7 @@ fn test_mock_ctrl_r_backspace_updates_candidates() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("cargo test".to_string()));
 }
 
@@ -670,7 +670,7 @@ fn test_mock_ctrl_r_with_ctrl_g_cancel() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     // Buffer is empty since Ctrl+R was triggered from empty state and cancelled
     assert_eq!(result, Some(String::new()));
 }
@@ -734,5 +734,33 @@ fn test_fuzzy_search_select_no_cursor_drift() {
         0,
         "cursor drifted {} rows from origin after selection in fuzzy search",
         term.cursor_row()
+    );
+}
+
+#[test]
+fn test_ctrl_r_redraws_prompt_after_selection() {
+    // After selecting from Ctrl+R, the prompt (PS1) must be redrawn because
+    // the fuzzy search UI overwrites it.
+    let mut history = History::new();
+    history.add("echo hello", 500, "");
+
+    let events = vec![
+        ctrl('r'),
+        key(KeyCode::Enter), // select "echo hello"
+        key(KeyCode::Enter), // submit
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line("mysh$ ", &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("echo hello".to_string()));
+
+    // The prompt "mysh$ " must appear in the terminal output after
+    // the fuzzy search UI was cleared.
+    let output = term.output().join("");
+    // Find the LAST occurrence of the prompt — that's the redraw after Ctrl+R.
+    assert!(
+        output.contains("mysh$ "),
+        "prompt was not redrawn after Ctrl+R selection"
     );
 }

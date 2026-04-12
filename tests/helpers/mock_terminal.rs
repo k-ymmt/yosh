@@ -88,6 +88,14 @@ impl Terminal for MockTerminal {
         Ok(())
     }
 
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }

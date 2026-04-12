@@ -39,6 +39,12 @@ pub trait Terminal {
     /// Set reverse video on/off.
     fn set_reverse(&mut self, on: bool) -> io::Result<()>;
 
+    /// Hide the text cursor.
+    fn hide_cursor(&mut self) -> io::Result<()>;
+
+    /// Show the text cursor.
+    fn show_cursor(&mut self) -> io::Result<()>;
+
     /// Flush output.
     fn flush(&mut self) -> io::Result<()>;
 }
@@ -102,6 +108,16 @@ impl Terminal for CrosstermTerminal {
         } else {
             self.stdout.execute(SetAttribute(Attribute::Reset))?;
         }
+        Ok(())
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.stdout.execute(cursor::Hide)?;
+        Ok(())
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.stdout.execute(cursor::Show)?;
         Ok(())
     }
 

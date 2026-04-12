@@ -61,14 +61,13 @@ impl Repl {
             // Choose PS1 or PS2
             let prompt_var = if input_buffer.is_empty() { "PS1" } else { "PS2" };
             let prompt = expand_prompt(&mut self.executor.env, prompt_var);
-            let prompt_width = prompt.chars().count();
 
             // Display prompt on stderr
             eprint!("{}", prompt);
             io::stderr().flush().ok();
 
             // Read a line
-            let line = match self.line_editor.read_line(prompt_width, &mut self.executor.env.history, &mut self.terminal) {
+            let line = match self.line_editor.read_line(&prompt, &mut self.executor.env.history, &mut self.terminal) {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     // EOF (Ctrl+D)
