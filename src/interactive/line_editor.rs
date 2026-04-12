@@ -3,6 +3,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use super::completion::{self, CompletionContext, CompletionUI};
 use super::fuzzy_search::FuzzySearchUI;
+use super::highlight::{HighlightScanner, HighlightStyle, ColorSpan, CheckerEnv, apply_style};
 use super::history::History;
 use super::terminal::Terminal;
 
@@ -221,17 +222,41 @@ impl LineEditor {
                     KeyAction::TabComplete | KeyAction::Continue => {}
                 }
                 self.update_suggestion(history);
-                self.redraw(term, prompt_width)?;
+                self.redraw(term, prompt_width, &[])?;
             }
         }
     }
 
     /// Redraw the current buffer on screen, positioning the cursor correctly.
-    fn redraw<T: Terminal>(&self, term: &mut T, prompt_width: usize) -> io::Result<()> {
+    fn redraw<T: Terminal>(&self, term: &mut T, prompt_width: usize, spans: &[ColorSpan]) -> io::Result<()> {
         let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
         term.move_to_column(col(prompt_width))?;
         term.clear_until_newline()?;
-        term.write_str(&self.buffer())?;
+        if spans.is_empty() {
+            // No highlighting: plain write
+            term.write_str(&self.buffer())?;
+        } else {
+            // Highlighted write: iterate chars and apply styles
+            let mut current_style = HighlightStyle::Default;
+            for (i, ch) in self.buf.iter().enumerate() {
+                // Find the style for char at position i
+                let new_style = spans.iter()
+                    .find(|sp| sp.start <= i && i < sp.end)
+                    .map(|sp| sp.style)
+                    .unwrap_or(HighlightStyle::Default);
+                if new_style != current_style {
+                    if current_style != HighlightStyle::Default {
+                        term.reset_style()?;
+                    }
+                    apply_style(term, new_style)?;
+                    current_style = new_style;
+                }
+                term.write_char(*ch)?;
+            }
+            if current_style != HighlightStyle::Default {
+                term.reset_style()?;
+            }
+        }
         // Draw suggestion in dim text when cursor is at end of buffer
         if let Some(ref suggestion) = self.suggestion
             && self.pos == self.buf.len()
@@ -389,10 +414,13 @@ impl LineEditor {
         history: &mut History,
         term: &mut T,
         ctx: &CompletionContext,
+        scanner: &mut HighlightScanner,
+        checker_env: &CheckerEnv<'_>,
+        accumulated: &str,
     ) -> io::Result<Option<String>> {
         self.clear();
         term.enable_raw_mode()?;
-        let result = self.read_line_loop_with_completion(prompt, history, term, ctx);
+        let result = self.read_line_loop_with_completion(prompt, history, term, ctx, scanner, checker_env, accumulated);
         let _ = term.disable_raw_mode();
         result
     }
@@ -403,6 +431,9 @@ impl LineEditor {
         history: &mut History,
         term: &mut T,
         ctx: &CompletionContext,
+        scanner: &mut HighlightScanner,
+        checker_env: &CheckerEnv<'_>,
+        accumulated: &str,
     ) -> io::Result<Option<String>> {
         let prompt_width = prompt.chars().count();
         loop {
@@ -411,6 +442,7 @@ impl LineEditor {
                 match self.handle_key(key_event, history) {
                     KeyAction::Submit => {
                         history.reset_cursor();
+                        term.reset_style()?;
                         term.move_to_column(0)?;
                         term.write_str("\r\n")?;
                         term.flush()?;
@@ -421,6 +453,7 @@ impl LineEditor {
                     }
                     KeyAction::Interrupt => {
                         history.reset_cursor();
+                        term.reset_style()?;
                         term.move_to_column(0)?;
                         term.write_str("\r\n")?;
                         term.flush()?;
@@ -429,6 +462,7 @@ impl LineEditor {
                     }
                     KeyAction::FuzzySearch => {
                         self.suggestion = None;
+                        term.reset_style()?;
                         term.disable_raw_mode()?;
                         if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
                             self.buf = line.chars().collect();
@@ -440,12 +474,14 @@ impl LineEditor {
                         term.write_str(prompt)?;
                     }
                     KeyAction::TabComplete => {
+                        term.reset_style()?;
                         self.handle_tab_complete(term, prompt, ctx)?;
                     }
                     KeyAction::Continue => {}
                 }
                 self.update_suggestion(history);
-                self.redraw(term, prompt_width)?;
+                let spans = scanner.scan(accumulated, &self.buf, checker_env);
+                self.redraw(term, prompt_width, &spans)?;
             }
         }
     }

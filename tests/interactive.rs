@@ -4,6 +4,7 @@ use kish::env::ShellEnv;
 use kish::env::aliases::AliasStore;
 use kish::interactive::completion::CompletionContext;
 use kish::interactive::fuzzy_search::FuzzySearchUI;
+use kish::interactive::highlight::{CheckerEnv, HighlightScanner};
 use kish::interactive::history::History;
 use kish::interactive::line_editor::LineEditor;
 use kish::interactive::parse_status::{classify_parse, ParseStatus};
@@ -977,8 +978,11 @@ fn test_tab_completes_single_candidate() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
+    let aliases = AliasStore::default();
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv { path: "", aliases: &aliases };
     let result = editor
-        .read_line_with_completion("$ ", &mut history, &mut term, &ctx)
+        .read_line_with_completion("$ ", &mut history, &mut term, &ctx, &mut scanner, &checker_env, "")
         .unwrap();
     assert_eq!(result, Some("unique_file.txt ".to_string()));
 }
@@ -1003,8 +1007,11 @@ fn test_tab_completes_common_prefix() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
+    let aliases = AliasStore::default();
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv { path: "", aliases: &aliases };
     let result = editor
-        .read_line_with_completion("$ ", &mut history, &mut term, &ctx)
+        .read_line_with_completion("$ ", &mut history, &mut term, &ctx, &mut scanner, &checker_env, "")
         .unwrap();
     assert_eq!(result, Some("file_".to_string()));
 }
@@ -1028,8 +1035,11 @@ fn test_tab_directory_appends_slash() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
+    let aliases = AliasStore::default();
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv { path: "", aliases: &aliases };
     let result = editor
-        .read_line_with_completion("$ ", &mut history, &mut term, &ctx)
+        .read_line_with_completion("$ ", &mut history, &mut term, &ctx, &mut scanner, &checker_env, "")
         .unwrap();
     assert_eq!(result, Some("mydir/".to_string()));
 }
@@ -1053,8 +1063,11 @@ fn test_tab_no_match_does_nothing() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
+    let aliases = AliasStore::default();
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv { path: "", aliases: &aliases };
     let result = editor
-        .read_line_with_completion("$ ", &mut history, &mut term, &ctx)
+        .read_line_with_completion("$ ", &mut history, &mut term, &ctx, &mut scanner, &checker_env, "")
         .unwrap();
     assert_eq!(result, Some("xyz".to_string()));
 }
@@ -1085,7 +1098,10 @@ fn test_double_tab_opens_completion_ui() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line_with_completion("$ ", &mut history, &mut term, &ctx).unwrap();
+    let aliases = AliasStore::default();
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let result = editor.read_line_with_completion("$ ", &mut history, &mut term, &ctx, &mut scanner, &checker_env, "").unwrap();
     assert_eq!(result, Some("file_beta.rs ".to_string()));
 
     let _ = fs::remove_dir_all(&dir);

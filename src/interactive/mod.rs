@@ -13,6 +13,7 @@ use crate::exec::Executor;
 use crate::signal;
 
 use completion::CompletionContext;
+use highlight::{CheckerEnv, HighlightScanner};
 use line_editor::LineEditor;
 use parse_status::{ParseStatus, classify_parse};
 use prompt::expand_prompt;
@@ -22,6 +23,7 @@ pub struct Repl {
     executor: Executor,
     line_editor: LineEditor,
     terminal: CrosstermTerminal,
+    scanner: HighlightScanner,
 }
 
 impl Repl {
@@ -49,6 +51,7 @@ impl Repl {
             executor,
             line_editor: LineEditor::new(),
             terminal: CrosstermTerminal::new(),
+            scanner: HighlightScanner::new(),
         }
     }
 
@@ -79,8 +82,15 @@ impl Repl {
                 .unwrap_or(false);
             let comp_ctx = CompletionContext { cwd, home, show_dotfiles };
 
+            // Build checker env for syntax highlighting
+            let path_val = self.executor.env.vars.get("PATH").unwrap_or("").to_string();
+            let checker_env = CheckerEnv {
+                path: &path_val,
+                aliases: &self.executor.env.aliases,
+            };
+
             // Read a line
-            let line = match self.line_editor.read_line_with_completion(&prompt, &mut self.executor.env.history, &mut self.terminal, &comp_ctx) {
+            let line = match self.line_editor.read_line_with_completion(&prompt, &mut self.executor.env.history, &mut self.terminal, &comp_ctx, &mut self.scanner, &checker_env, &input_buffer) {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     // EOF (Ctrl+D)
