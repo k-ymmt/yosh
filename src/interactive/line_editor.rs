@@ -1,6 +1,7 @@
 use std::io;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
+use super::completion::{self, CompletionContext, CompletionUI};
 use super::fuzzy_search::FuzzySearchUI;
 use super::history::History;
 use super::terminal::Terminal;
@@ -15,6 +16,7 @@ pub struct LineEditor {
     buf: Vec<char>,
     pos: usize,
     suggestion: Option<String>,
+    tab_count: u8,
 }
 
 impl LineEditor {
@@ -44,6 +46,7 @@ impl LineEditor {
         self.buf.clear();
         self.pos = 0;
         self.suggestion = None;
+        self.tab_count = 0;
     }
 
     /// Insert a character at the current cursor position and advance
@@ -163,12 +166,14 @@ enum KeyAction {
     Eof,
     Interrupt,
     FuzzySearch,
+    TabComplete,
 }
 
 impl LineEditor {
     /// Read a line of input from the terminal, handling cursor movement and
     /// editing keys.  Returns `Ok(Some(line))` on Enter, `Ok(None)` on
     /// Ctrl-D with an empty buffer (EOF), or `Ok(Some(""))` on Ctrl-C.
+    #[allow(dead_code)] // Used by tests; production code uses read_line_with_completion
     pub fn read_line<T: Terminal>(&mut self, prompt: &str, history: &mut History, term: &mut T) -> io::Result<Option<String>> {
         self.clear();
         term.enable_raw_mode()?;
@@ -213,7 +218,7 @@ impl LineEditor {
                         term.clear_current_line()?;
                         term.write_str(prompt)?;
                     }
-                    KeyAction::Continue => {}
+                    KeyAction::TabComplete | KeyAction::Continue => {}
                 }
                 self.update_suggestion(history);
                 self.redraw(term, prompt_width)?;
@@ -242,6 +247,9 @@ impl LineEditor {
 
     /// Map a single key event to a [`KeyAction`], mutating the buffer as needed.
     fn handle_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
+        if key.code != KeyCode::Tab {
+            self.tab_count = 0;
+        }
         match (key.code, key.modifiers) {
             // Ctrl+D — EOF when empty, otherwise delete char at cursor
             (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -319,6 +327,12 @@ impl LineEditor {
                 KeyAction::Continue
             }
 
+            // Tab — trigger completion
+            (KeyCode::Tab, _) => {
+                self.tab_count += 1;
+                KeyAction::TabComplete
+            }
+
             // Alt+F — accept next word from suggestion
             (KeyCode::Char('f'), m) if m.contains(KeyModifiers::ALT) => {
                 if self.suggestion.is_some() {
@@ -361,5 +375,146 @@ impl LineEditor {
             // Everything else — ignore
             _ => KeyAction::Continue,
         }
+    }
+
+    // ── Tab completion support ─────────────────────────────────────────
+
+    /// Read a line of input with Tab completion support.
+    ///
+    /// Behaves identically to [`read_line`] but also handles Tab key events
+    /// by invoking the completion engine.
+    pub fn read_line_with_completion<T: Terminal>(
+        &mut self,
+        prompt: &str,
+        history: &mut History,
+        term: &mut T,
+        ctx: &CompletionContext,
+    ) -> io::Result<Option<String>> {
+        self.clear();
+        term.enable_raw_mode()?;
+        let result = self.read_line_loop_with_completion(prompt, history, term, ctx);
+        let _ = term.disable_raw_mode();
+        result
+    }
+
+    fn read_line_loop_with_completion<T: Terminal>(
+        &mut self,
+        prompt: &str,
+        history: &mut History,
+        term: &mut T,
+        ctx: &CompletionContext,
+    ) -> io::Result<Option<String>> {
+        let prompt_width = prompt.chars().count();
+        loop {
+            term.flush()?;
+            if let Event::Key(key_event) = term.read_event()? {
+                match self.handle_key(key_event, history) {
+                    KeyAction::Submit => {
+                        history.reset_cursor();
+                        term.move_to_column(0)?;
+                        term.write_str("\r\n")?;
+                        term.flush()?;
+                        return Ok(Some(self.buffer()));
+                    }
+                    KeyAction::Eof => {
+                        return Ok(None);
+                    }
+                    KeyAction::Interrupt => {
+                        history.reset_cursor();
+                        term.move_to_column(0)?;
+                        term.write_str("\r\n")?;
+                        term.flush()?;
+                        self.clear();
+                        return Ok(Some(String::new()));
+                    }
+                    KeyAction::FuzzySearch => {
+                        self.suggestion = None;
+                        term.disable_raw_mode()?;
+                        if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
+                            self.buf = line.chars().collect();
+                            self.pos = self.buf.len();
+                        }
+                        term.enable_raw_mode()?;
+                        term.move_to_column(0)?;
+                        term.clear_current_line()?;
+                        term.write_str(prompt)?;
+                    }
+                    KeyAction::TabComplete => {
+                        self.handle_tab_complete(term, prompt, ctx)?;
+                    }
+                    KeyAction::Continue => {}
+                }
+                self.update_suggestion(history);
+                self.redraw(term, prompt_width)?;
+            }
+        }
+    }
+
+    fn handle_tab_complete<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        ctx: &CompletionContext,
+    ) -> io::Result<()> {
+        let result = completion::complete(&self.buffer(), self.pos, ctx);
+
+        if result.candidates.is_empty() {
+            return Ok(());
+        }
+
+        if self.tab_count == 1 {
+            if result.candidates.len() == 1 {
+                // Single candidate: replace word with dir_prefix + candidate
+                let candidate = &result.candidates[0];
+                let is_dir = candidate.ends_with('/');
+                let mut replacement = format!("{}{}", result.dir_prefix, candidate);
+                if !is_dir {
+                    replacement.push(' ');
+                }
+                self.replace_word(result.word_start, &replacement);
+            } else {
+                // Multiple candidates: replace with common prefix if longer
+                let current_word = &self.buffer()[result.word_start..self.pos];
+                let new_word = format!("{}{}", result.dir_prefix, result.common_prefix);
+                if new_word.len() > current_word.len() {
+                    self.replace_word(result.word_start, &new_word);
+                }
+            }
+        } else if self.tab_count >= 2 && result.candidates.len() >= 2 {
+            // Show interactive completion UI
+            self.suggestion = None;
+            term.disable_raw_mode()?;
+            let selected = CompletionUI::run(&result.candidates, term)?;
+            if let Some(sel) = selected {
+                let is_dir = sel.ends_with('/');
+                let mut replacement = format!("{}{}", result.dir_prefix, sel);
+                if !is_dir {
+                    replacement.push(' ');
+                }
+                self.replace_word(result.word_start, &replacement);
+            }
+            term.enable_raw_mode()?;
+            term.move_to_column(0)?;
+            term.clear_current_line()?;
+            term.write_str(prompt)?;
+        }
+
+        Ok(())
+    }
+
+    /// Replace the word starting at byte offset `word_start` with `replacement`.
+    fn replace_word(&mut self, word_start: usize, replacement: &str) {
+        // Convert byte offset to char index
+        let char_start = self.buffer()[..word_start].chars().count();
+        // Drain chars from char_start to current pos
+        let drain_end = self.pos;
+        self.buf.drain(char_start..drain_end);
+        // Insert replacement chars at char_start
+        let rep_chars: Vec<char> = replacement.chars().collect();
+        let rep_len = rep_chars.len();
+        for (i, ch) in rep_chars.into_iter().enumerate() {
+            self.buf.insert(char_start + i, ch);
+        }
+        self.pos = char_start + rep_len;
     }
 }

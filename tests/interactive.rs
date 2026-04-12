@@ -1,6 +1,8 @@
+use std::fs;
 use crossterm::event::KeyCode;
 use kish::env::ShellEnv;
 use kish::env::aliases::AliasStore;
+use kish::interactive::completion::CompletionContext;
 use kish::interactive::fuzzy_search::FuzzySearchUI;
 use kish::interactive::history::History;
 use kish::interactive::line_editor::LineEditor;
@@ -952,4 +954,107 @@ fn test_suggest_updates_on_backspace() {
     let mut editor = LineEditor::new();
     let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
     assert_eq!(result, Some("echo world".to_string()));
+}
+
+// ── Tab completion tests ───────────────────────────────────────────────
+
+#[test]
+fn test_tab_completes_single_candidate() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    fs::File::create(tmp.path().join("unique_file.txt")).unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+
+    // Type "uni" + Tab + Enter
+    let mut events = chars("uni");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor
+        .read_line_with_completion("$ ", &mut history, &mut term, &ctx)
+        .unwrap();
+    assert_eq!(result, Some("unique_file.txt ".to_string()));
+}
+
+#[test]
+fn test_tab_completes_common_prefix() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    fs::File::create(tmp.path().join("file_alpha.rs")).unwrap();
+    fs::File::create(tmp.path().join("file_beta.rs")).unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+
+    // Type "file" + Tab + Enter
+    let mut events = chars("file");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor
+        .read_line_with_completion("$ ", &mut history, &mut term, &ctx)
+        .unwrap();
+    assert_eq!(result, Some("file_".to_string()));
+}
+
+#[test]
+fn test_tab_directory_appends_slash() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join("mydir")).unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+
+    // Type "my" + Tab + Enter
+    let mut events = chars("my");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor
+        .read_line_with_completion("$ ", &mut history, &mut term, &ctx)
+        .unwrap();
+    assert_eq!(result, Some("mydir/".to_string()));
+}
+
+#[test]
+fn test_tab_no_match_does_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    fs::File::create(tmp.path().join("abc.txt")).unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+
+    // Type "xyz" + Tab + Enter
+    let mut events = chars("xyz");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let result = editor
+        .read_line_with_completion("$ ", &mut history, &mut term, &ctx)
+        .unwrap();
+    assert_eq!(result, Some("xyz".to_string()));
 }

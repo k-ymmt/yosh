@@ -11,6 +11,7 @@ use std::io::{self, Write};
 use crate::exec::Executor;
 use crate::signal;
 
+use completion::CompletionContext;
 use line_editor::LineEditor;
 use parse_status::{ParseStatus, classify_parse};
 use prompt::expand_prompt;
@@ -67,8 +68,18 @@ impl Repl {
             eprint!("{}", prompt);
             io::stderr().flush().ok();
 
+            // Build completion context
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| self.executor.env.vars.get("PWD").unwrap_or(".").to_string());
+            let home = self.executor.env.vars.get("HOME").unwrap_or("").to_string();
+            let show_dotfiles = self.executor.env.vars.get("KISH_SHOW_DOTFILES")
+                .map(|v| v == "1")
+                .unwrap_or(false);
+            let comp_ctx = CompletionContext { cwd, home, show_dotfiles };
+
             // Read a line
-            let line = match self.line_editor.read_line(&prompt, &mut self.executor.env.history, &mut self.terminal) {
+            let line = match self.line_editor.read_line_with_completion(&prompt, &mut self.executor.env.history, &mut self.terminal, &comp_ctx) {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     // EOF (Ctrl+D)
