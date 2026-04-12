@@ -13,8 +13,8 @@
 
 - [ ] `HISTCONTROL` colon-separated values — bash supports `ignoredups:ignorespace` but current implementation only accepts single values like `ignoreboth` (`src/interactive/history.rs`)
 - [ ] SIGHUP history save — verify history is saved before exit on SIGHUP; if `handle_default_signal` calls `std::process::exit()` directly, history may be lost (`src/exec/mod.rs`, `src/interactive/mod.rs`)
-- [ ] Ctrl+R double redraw — `FuzzySearch` arm in `read_line` redraws, then the `Continue` path redraws again; harmless but wasteful (`src/interactive/line_editor.rs`)
 - [ ] `history.save()` silently ignores write errors — disk-full or permission errors are swallowed (`src/interactive/history.rs`)
+- [ ] `suggest()` linear scan performance — iterates all history entries on each keystroke; acceptable for HISTSIZE ≤ 500, may need caching or indexing for larger histories (`src/interactive/history.rs`)
 
 ## Future: Interactive Mode Enhancements
 
@@ -24,6 +24,7 @@
 - [ ] `~/.kishrc` startup file — ENV variable support for interactive initialization
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
+- [ ] `set_dim`/`set_reverse` use `Attribute::Reset` — resets all text attributes, not just the targeted one; may interfere with future colored prompt support; consider `Attribute::NoDim`/`Attribute::NoReverse` (`src/interactive/terminal.rs`)
 - [ ] Prompt width — accurate column width calculation for control characters and escape sequences
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
