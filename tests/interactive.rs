@@ -934,3 +934,22 @@ fn test_ctrl_r_redraws_prompt_after_selection() {
         "prompt was not redrawn after Ctrl+R selection"
     );
 }
+
+#[test]
+fn test_suggest_updates_on_backspace() {
+    let mut history = History::new();
+    history.add("echo hello", 500, "");
+    history.add("echo world", 500, "");
+
+    // Type "echo w" (suggests "orld"), Backspace (now "echo " suggests "world"),
+    // Right (accept "world"), Enter
+    let mut events = chars("echo w");
+    events.push(key(KeyCode::Backspace));
+    events.push(key(KeyCode::Right)); // accept "world" (most recent match for "echo ")
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line("$ ", &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("echo world".to_string()));
+}
