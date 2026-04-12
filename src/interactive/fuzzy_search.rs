@@ -288,8 +288,11 @@ impl FuzzySearchUI {
         let total = self.candidates.len();
         term.write_str(&format!("  {}/{} > {}", total, total, query_str))?;
 
-        // Move back to top
-        let total_lines = self.max_visible + 2;
+        // Move back to top of the UI area.
+        // We wrote (max_visible + 1) newlines: max_visible for candidate rows
+        // (including padding) and 1 for the separator.  The query line has no
+        // trailing newline, so the cursor sits on line (max_visible + 1).
+        let total_lines = self.max_visible + 1;
         term.move_up(total_lines as u16)?;
         term.flush()?;
         Ok(())

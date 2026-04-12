@@ -674,3 +674,65 @@ fn test_mock_ctrl_r_with_ctrl_g_cancel() {
     // Buffer is empty since Ctrl+R was triggered from empty state and cancelled
     assert_eq!(result, Some(String::new()));
 }
+
+#[test]
+fn test_fuzzy_search_arrow_keys_no_cursor_drift() {
+    // Regression: pressing ↑/↓ in Ctrl+R caused the UI to drift up by one
+    // line per redraw because draw() used move_up(max_visible + 2) instead of
+    // move_up(max_visible + 1).
+    let mut history = History::new();
+    history.add("echo first", 500, "");
+    history.add("echo second", 500, "");
+    history.add("echo third", 500, "");
+    history.add("echo fourth", 500, "");
+    history.add("echo fifth", 500, "");
+
+    // Navigate up 3 times, down 2 times, then cancel.
+    // Each arrow key triggers a draw() call; with the old bug the cursor would
+    // drift by -(N+1) rows where N = number of Continue events.
+    let events = vec![
+        key(KeyCode::Up),
+        key(KeyCode::Up),
+        key(KeyCode::Up),
+        key(KeyCode::Down),
+        key(KeyCode::Down),
+        key(KeyCode::Esc), // cancel
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let _ = FuzzySearchUI::run(&history, &mut term).unwrap();
+
+    // After run() completes the cursor must be back at its starting row.
+    assert_eq!(
+        term.cursor_row(),
+        0,
+        "cursor drifted {} rows from origin after ↑↓ navigation in fuzzy search",
+        term.cursor_row()
+    );
+}
+
+#[test]
+fn test_fuzzy_search_select_no_cursor_drift() {
+    // Same check but exiting via Enter (Select) instead of Esc (Cancel).
+    let mut history = History::new();
+    history.add("echo first", 500, "");
+    history.add("echo second", 500, "");
+    history.add("echo third", 500, "");
+
+    let events = vec![
+        key(KeyCode::Up),    // select "echo second"
+        key(KeyCode::Up),    // select "echo first"
+        key(KeyCode::Down),  // back to "echo second"
+        key(KeyCode::Enter), // select
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let result = FuzzySearchUI::run(&history, &mut term).unwrap();
+    assert_eq!(result, Some("echo second".to_string()));
+    assert_eq!(
+        term.cursor_row(),
+        0,
+        "cursor drifted {} rows from origin after selection in fuzzy search",
+        term.cursor_row()
+    );
+}

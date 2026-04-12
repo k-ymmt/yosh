@@ -9,6 +9,9 @@ pub struct MockTerminal {
     events: VecDeque<Event>,
     size: (u16, u16),
     output: Vec<String>,
+    /// Tracks vertical cursor movement. Each `\n` in write_str increments,
+    /// each move_up(n) decrements by n.  Starts at 0.
+    cursor_row: i32,
 }
 
 impl MockTerminal {
@@ -17,6 +20,7 @@ impl MockTerminal {
             events: VecDeque::from(events),
             size: (80, 24),
             output: Vec::new(),
+            cursor_row: 0,
         }
     }
 
@@ -28,6 +32,13 @@ impl MockTerminal {
     #[allow(dead_code)]
     pub fn set_size(&mut self, width: u16, height: u16) {
         self.size = (width, height);
+    }
+
+    /// Return the cumulative vertical cursor offset from the start position.
+    /// A value of 0 means the cursor is back where it started.
+    #[allow(dead_code)]
+    pub fn cursor_row(&self) -> i32 {
+        self.cursor_row
     }
 }
 
@@ -54,7 +65,8 @@ impl Terminal for MockTerminal {
         Ok(())
     }
 
-    fn move_up(&mut self, _n: u16) -> io::Result<()> {
+    fn move_up(&mut self, n: u16) -> io::Result<()> {
+        self.cursor_row -= n as i32;
         Ok(())
     }
 
@@ -67,6 +79,7 @@ impl Terminal for MockTerminal {
     }
 
     fn write_str(&mut self, s: &str) -> io::Result<()> {
+        self.cursor_row += s.chars().filter(|&c| c == '\n').count() as i32;
         self.output.push(s.to_string());
         Ok(())
     }
