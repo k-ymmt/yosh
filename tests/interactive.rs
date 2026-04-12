@@ -1,6 +1,7 @@
 use crossterm::event::KeyCode;
 use kish::env::ShellEnv;
 use kish::env::aliases::AliasStore;
+use kish::interactive::fuzzy_search::FuzzySearchUI;
 use kish::interactive::history::History;
 use kish::interactive::line_editor::LineEditor;
 use kish::interactive::parse_status::{classify_parse, ParseStatus};
@@ -527,4 +528,149 @@ fn test_mock_history_preserves_typed_text() {
     let mut editor = LineEditor::new();
     let result = editor.read_line(2, &mut history, &mut term).unwrap();
     assert_eq!(result, Some("partial".to_string()));
+}
+
+// ── Ctrl+R fuzzy search tests ───────────────────────────────────────────
+
+#[test]
+fn test_mock_ctrl_r_selects_matching_entry() {
+    let mut history = History::new();
+    history.add("ls -la", 500, "");
+    history.add("git commit -m 'fix'", 500, "");
+    history.add("cargo test", 500, "");
+
+    // Ctrl+R -> type "git" -> Enter (select) -> Enter (submit)
+    let mut events = vec![ctrl('r')];
+    events.extend(chars("git"));
+    events.push(key(KeyCode::Enter)); // select from search
+    events.push(key(KeyCode::Enter)); // submit in line editor
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("git commit -m 'fix'".to_string()));
+}
+
+#[test]
+fn test_mock_ctrl_r_cancel_with_esc() {
+    let mut history = History::new();
+    history.add("ls -la", 500, "");
+    history.add("git commit", 500, "");
+
+    // Type "hello", Ctrl+R -> type "git" -> Esc (cancel) -> Enter (submit "hello")
+    let mut events = chars("hello");
+    events.push(ctrl('r'));
+    events.extend(chars("git"));
+    events.push(key(KeyCode::Esc)); // cancel search
+    events.push(key(KeyCode::Enter)); // submit whatever is in buffer
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    // After Esc, buffer should retain pre-search content "hello"
+    assert_eq!(result, Some("hello".to_string()));
+}
+
+#[test]
+fn test_mock_ctrl_r_navigate_up() {
+    let mut history = History::new();
+    history.add("echo first", 500, "");
+    history.add("echo second", 500, "");
+    history.add("echo third", 500, "");
+
+    // Ctrl+R (no query, all entries shown, newest first: third=0, second=1, first=2)
+    // Up moves selection from index 0 to 1 (second)
+    // Enter selects "echo second"
+    let events = vec![
+        ctrl('r'),
+        key(KeyCode::Up),     // select "echo second" (index 1)
+        key(KeyCode::Enter),  // select from search
+        key(KeyCode::Enter),  // submit
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("echo second".to_string()));
+}
+
+#[test]
+fn test_mock_ctrl_r_backspace_updates_candidates() {
+    let mut history = History::new();
+    history.add("git log", 500, "");
+    history.add("cargo test", 500, "");
+
+    // Ctrl+R -> type "gi" -> Backspace x2 (clear) -> type "ca" -> Enter (selects "cargo test")
+    let events = vec![
+        ctrl('r'),
+        key(KeyCode::Char('g')),
+        key(KeyCode::Char('i')),
+        key(KeyCode::Backspace),
+        key(KeyCode::Backspace),
+        key(KeyCode::Char('c')),
+        key(KeyCode::Char('a')),
+        key(KeyCode::Enter),  // select from search
+        key(KeyCode::Enter),  // submit
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    assert_eq!(result, Some("cargo test".to_string()));
+}
+
+#[test]
+fn test_mock_fuzzy_search_direct_select() {
+    // Test FuzzySearchUI::run directly (not through LineEditor)
+    let mut history = History::new();
+    history.add("ls -la", 500, "");
+    history.add("git status", 500, "");
+    history.add("cargo build", 500, "");
+
+    // Type "sta" -> Enter (selects "git status" as best match)
+    let mut events = chars("sta");
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let result = FuzzySearchUI::run(&history, &mut term).unwrap();
+    assert_eq!(result, Some("git status".to_string()));
+}
+
+#[test]
+fn test_mock_fuzzy_search_direct_cancel() {
+    let mut history = History::new();
+    history.add("ls -la", 500, "");
+
+    let events = vec![key(KeyCode::Esc)];
+
+    let mut term = MockTerminal::new(events);
+    let result = FuzzySearchUI::run(&history, &mut term).unwrap();
+    assert_eq!(result, None);
+}
+
+#[test]
+fn test_mock_fuzzy_search_empty_history() {
+    let history = History::new();
+    let mut term = MockTerminal::new(vec![]);
+    let result = FuzzySearchUI::run(&history, &mut term).unwrap();
+    assert_eq!(result, None);
+}
+
+#[test]
+fn test_mock_ctrl_r_with_ctrl_g_cancel() {
+    let mut history = History::new();
+    history.add("some command", 500, "");
+
+    // Ctrl+R -> Ctrl+G (cancel) -> Enter (submit empty)
+    let events = vec![
+        ctrl('r'),
+        ctrl('g'),            // cancel search
+        key(KeyCode::Enter),  // submit
+    ];
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let result = editor.read_line(2, &mut history, &mut term).unwrap();
+    // Buffer is empty since Ctrl+R was triggered from empty state and cancelled
+    assert_eq!(result, Some(String::new()));
 }
