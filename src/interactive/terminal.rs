@@ -39,6 +39,9 @@ pub trait Terminal {
     /// Set reverse video on/off.
     fn set_reverse(&mut self, on: bool) -> io::Result<()>;
 
+    /// Set dim (faint) text attribute on/off.
+    fn set_dim(&mut self, on: bool) -> io::Result<()>;
+
     /// Hide the text cursor.
     fn hide_cursor(&mut self) -> io::Result<()>;
 
@@ -105,6 +108,15 @@ impl Terminal for CrosstermTerminal {
     fn set_reverse(&mut self, on: bool) -> io::Result<()> {
         if on {
             self.stdout.execute(SetAttribute(Attribute::Reverse))?;
+        } else {
+            self.stdout.execute(SetAttribute(Attribute::Reset))?;
+        }
+        Ok(())
+    }
+
+    fn set_dim(&mut self, on: bool) -> io::Result<()> {
+        if on {
+            self.stdout.execute(SetAttribute(Attribute::Dim))?;
         } else {
             self.stdout.execute(SetAttribute(Attribute::Reset))?;
         }

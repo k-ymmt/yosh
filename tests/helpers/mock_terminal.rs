@@ -12,6 +12,7 @@ pub struct MockTerminal {
     /// Tracks vertical cursor movement. Each `\n` in write_str increments,
     /// each move_up(n) decrements by n.  Starts at 0.
     cursor_row: i32,
+    dim: bool,
 }
 
 impl MockTerminal {
@@ -21,6 +22,7 @@ impl MockTerminal {
             size: (80, 24),
             output: Vec::new(),
             cursor_row: 0,
+            dim: false,
         }
     }
 
@@ -39,6 +41,11 @@ impl MockTerminal {
     #[allow(dead_code)]
     pub fn cursor_row(&self) -> i32 {
         self.cursor_row
+    }
+
+    #[allow(dead_code)]
+    pub fn dim(&self) -> bool {
+        self.dim
     }
 }
 
@@ -85,6 +92,16 @@ impl Terminal for MockTerminal {
     }
 
     fn set_reverse(&mut self, _on: bool) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn set_dim(&mut self, on: bool) -> io::Result<()> {
+        self.dim = on;
+        if on {
+            self.output.push("[DIM]".to_string());
+        } else {
+            self.output.push("[/DIM]".to_string());
+        }
         Ok(())
     }
 
