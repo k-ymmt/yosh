@@ -294,10 +294,20 @@ impl Executor {
                     std::process::exit(1);
                 }
 
-                // Set environment variables
+                // Set environment variables using libc::setenv directly.
+                // SAFETY: single-threaded child after fork. We must NOT use
+                // std::env::set_var here because it acquires Rust's internal
+                // ENV_LOCK (RwLock). If another thread in the parent held
+                // that lock at fork() time, the child inherits the locked
+                // state and deadlocks — the lock holder thread does not exist
+                // in the child.
                 for (k, v) in env_vars {
-                    // SAFETY: single-threaded child after fork
-                    unsafe { std::env::set_var(k, v) };
+                    if let (Ok(c_key), Ok(c_val)) = (
+                        CString::new(k.as_str()),
+                        CString::new(v.as_str()),
+                    ) {
+                        unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
+                    }
                 }
 
                 let err = execvp(&c_cmd, &c_args).unwrap_err();
