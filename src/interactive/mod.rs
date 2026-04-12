@@ -26,6 +26,18 @@ impl Repl {
         signal::init_job_control_signals();
         // Ensure shell has terminal
         crate::env::jobs::take_terminal(executor.env.process.shell_pgid).ok();
+
+        // Set history variable defaults
+        let home = executor.env.vars.get("HOME").unwrap_or("").to_string();
+        let histfile = format!("{}/.kish_history", home);
+        let _ = executor.env.vars.set("HISTFILE", &histfile);
+        let _ = executor.env.vars.set("HISTSIZE", "500");
+        let _ = executor.env.vars.set("HISTFILESIZE", "500");
+        let _ = executor.env.vars.set("HISTCONTROL", "ignoreboth");
+
+        // Load history from file
+        executor.env.history.load(std::path::Path::new(&histfile));
+
         Self {
             executor,
             line_editor: LineEditor::new(),
@@ -51,7 +63,7 @@ impl Repl {
             io::stderr().flush().ok();
 
             // Read a line
-            let line = match self.line_editor.read_line(prompt_width) {
+            let line = match self.line_editor.read_line(prompt_width, &mut self.executor.env.history) {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     // EOF (Ctrl+D)
@@ -90,11 +102,17 @@ impl Repl {
             // Try to parse
             match classify_parse(&input_buffer, &self.executor.env.aliases) {
                 ParseStatus::Complete(commands) => {
+                    // Add to history before executing
+                    let histsize: usize = self.executor.env.vars.get("HISTSIZE")
+                        .and_then(|s| s.parse().ok()).unwrap_or(500);
+                    let histcontrol = self.executor.env.vars.get("HISTCONTROL")
+                        .unwrap_or("ignoreboth").to_string();
+                    let cmd_text = input_buffer.trim_end().to_string();
+                    self.executor.env.history.add(&cmd_text, histsize, &histcontrol);
+
                     for cmd in &commands {
                         let status = self.executor.exec_complete_command(cmd);
                         self.executor.env.exec.last_exit_status = status;
-                        // Note: errexit (set -e) is intentionally not checked here.
-                        // Most POSIX shells do not exit on errexit in interactive mode.
                     }
                     input_buffer.clear();
                 }
@@ -117,6 +135,15 @@ impl Repl {
 
         self.executor.process_pending_signals();
         self.executor.execute_exit_trap();
+
+        // Save history to file
+        let histfile = self.executor.env.vars.get("HISTFILE").unwrap_or("").to_string();
+        let histfilesize: usize = self.executor.env.vars.get("HISTFILESIZE")
+            .and_then(|s| s.parse().ok()).unwrap_or(500);
+        if !histfile.is_empty() {
+            self.executor.env.history.save(std::path::Path::new(&histfile), histfilesize);
+        }
+
         self.executor.env.exec.last_exit_status
     }
 }

@@ -15,6 +15,7 @@ pub use exec_state::{ExecState, FlowControl};
 pub use shell_mode::{ShellMode, ShellOptions};
 pub use traps::{TrapAction, TrapStore};
 
+use crate::interactive::history::History;
 use crate::parser::ast::FunctionDef;
 
 /// Process and job management state.
@@ -35,6 +36,7 @@ pub struct ShellEnv {
     pub functions: HashMap<String, FunctionDef>,
     pub traps: TrapStore,
     pub aliases: AliasStore,
+    pub history: History,
     pub shell_name: String,
 }
 
@@ -65,6 +67,7 @@ impl ShellEnv {
             functions: HashMap::new(),
             traps: TrapStore::default(),
             aliases: AliasStore::default(),
+            history: History::new(),
         }
     }
 }

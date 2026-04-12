@@ -6,6 +6,8 @@ use crossterm::{
     ExecutableCommand,
 };
 
+use super::history::History;
+
 /// A minimal line-editing buffer used by the interactive REPL.
 ///
 /// The buffer stores characters as a `Vec<char>` so that cursor
@@ -29,6 +31,7 @@ impl LineEditor {
     }
 
     /// Return the current cursor position (0-based character index).
+    #[allow(dead_code)] // public API for interactive mode enhancements
     pub fn cursor(&self) -> usize {
         self.pos
     }
@@ -134,7 +137,7 @@ impl LineEditor {
     /// Read a line of input from the terminal, handling cursor movement and
     /// editing keys.  Returns `Ok(Some(line))` on Enter, `Ok(None)` on
     /// Ctrl-D with an empty buffer (EOF), or `Ok(Some(""))` on Ctrl-C.
-    pub fn read_line(&mut self, prompt_width: usize) -> io::Result<Option<String>> {
+    pub fn read_line(&mut self, prompt_width: usize, history: &mut History) -> io::Result<Option<String>> {
         self.clear();
         let _guard = RawModeGuard::new()?;
         let mut stdout = stdout();
@@ -142,8 +145,9 @@ impl LineEditor {
         loop {
             stdout.flush()?;
             if let Event::Key(key_event) = event::read()? {
-                match self.handle_key(key_event) {
+                match self.handle_key(key_event, history) {
                     KeyAction::Submit => {
+                        history.reset_cursor();
                         stdout.execute(cursor::MoveToColumn(0))?;
                         write!(stdout, "\r\n")?;
                         stdout.flush()?;
@@ -153,6 +157,7 @@ impl LineEditor {
                         return Ok(None);
                     }
                     KeyAction::Interrupt => {
+                        history.reset_cursor();
                         stdout.execute(cursor::MoveToColumn(0))?;
                         write!(stdout, "\r\n")?;
                         stdout.flush()?;
@@ -178,7 +183,7 @@ impl LineEditor {
     }
 
     /// Map a single key event to a [`KeyAction`], mutating the buffer as needed.
-    fn handle_key(&mut self, key: KeyEvent) -> KeyAction {
+    fn handle_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
         match (key.code, key.modifiers) {
             // Ctrl+D — EOF when empty, otherwise delete char at cursor
             (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -251,6 +256,24 @@ impl LineEditor {
             // Printable character (without Ctrl modifier)
             (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
                 self.insert_char(ch);
+                KeyAction::Continue
+            }
+
+            // Up — navigate history backward
+            (KeyCode::Up, _) => {
+                if let Some(line) = history.navigate_up(&self.buffer()) {
+                    self.buf = line.chars().collect();
+                    self.pos = self.buf.len();
+                }
+                KeyAction::Continue
+            }
+
+            // Down — navigate history forward
+            (KeyCode::Down, _) => {
+                if let Some(line) = history.navigate_down() {
+                    self.buf = line.chars().collect();
+                    self.pos = self.buf.len();
+                }
                 KeyAction::Continue
             }
 
