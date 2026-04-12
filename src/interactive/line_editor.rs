@@ -212,7 +212,6 @@ impl LineEditor {
                         term.move_to_column(0)?;
                         term.clear_current_line()?;
                         term.write_str(prompt)?;
-                        self.redraw(term, prompt_width)?;
                     }
                     KeyAction::Continue => {}
                 }
