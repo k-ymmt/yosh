@@ -326,3 +326,41 @@ fn test_pty_syntax_highlight_pipe() {
 
     exit_shell(&mut s);
 }
+
+#[test]
+fn ansi_colored_prompt() {
+    let (mut session, _tmpdir) = spawn_kish();
+    wait_for_prompt(&mut session);
+
+    // Set PS1 to an ANSI-colored prompt using command substitution with printf
+    session.send("PS1=$(printf '\\033[32m$ \\033[0m')\r").unwrap();
+    wait_for_raw_mode();
+
+    // The prompt should render and accept input
+    session.expect("$").expect("colored prompt not found");
+    wait_for_raw_mode();
+
+    session.send("echo hello\r").unwrap();
+    expect_output(&mut session, "hello", "echo after colored prompt");
+
+    exit_shell(&mut session);
+}
+
+#[test]
+fn multi_line_prompt() {
+    let (mut session, _tmpdir) = spawn_kish();
+    wait_for_prompt(&mut session);
+
+    // Set a two-line PS1: info line + prompt char
+    // Use printf to get the newline in the prompt
+    session.send("PS1=$(printf 'info line\\n> ')\r").unwrap();
+    wait_for_raw_mode();
+
+    session.expect(">").expect("multi-line prompt char not found");
+    wait_for_raw_mode();
+
+    session.send("echo works\r").unwrap();
+    expect_output(&mut session, "works", "echo after multi-line prompt");
+
+    exit_shell(&mut session);
+}
