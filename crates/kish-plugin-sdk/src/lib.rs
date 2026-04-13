@@ -10,6 +10,7 @@ pub enum Capability {
     HookPreExec,
     HookPostExec,
     HookOnCd,
+    HookPrePrompt,
 }
 
 impl Capability {
@@ -23,6 +24,7 @@ impl Capability {
             Capability::HookPreExec => ffi::CAP_HOOK_PRE_EXEC,
             Capability::HookPostExec => ffi::CAP_HOOK_POST_EXEC,
             Capability::HookOnCd => ffi::CAP_HOOK_ON_CD,
+            Capability::HookPrePrompt => ffi::CAP_HOOK_PRE_PROMPT,
         }
     }
 }
@@ -61,6 +63,9 @@ pub trait Plugin: Send + Default {
 
     /// Hook: called when the working directory changes.
     fn hook_on_cd(&mut self, _api: &PluginApi, _old_dir: &str, _new_dir: &str) {}
+
+    /// Hook: called before the interactive prompt is displayed.
+    fn hook_pre_prompt(&mut self, _api: &PluginApi) {}
 
     /// Called when the plugin is about to be unloaded.
     fn on_unload(&mut self) {}
@@ -309,6 +314,20 @@ macro_rules! export {
                 let mut plugin = PLUGIN_INSTANCE.lock().unwrap();
                 if let Some(p) = plugin.as_mut() {
                     $crate::Plugin::hook_on_cd(p, &plugin_api, old, new_d);
+                }
+            }));
+        }
+
+        #[allow(unsafe_attr_outside_unsafe)]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn kish_plugin_hook_pre_prompt(
+            api: *const $crate::ffi::HostApi,
+        ) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let plugin_api = unsafe { $crate::PluginApi::from_raw(api) };
+                let mut plugin = PLUGIN_INSTANCE.lock().unwrap();
+                if let Some(p) = plugin.as_mut() {
+                    $crate::Plugin::hook_pre_prompt(p, &plugin_api);
                 }
             }));
         }
