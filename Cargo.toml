@@ -4,6 +4,7 @@ members = [
     "crates/kish-plugin-api",
     "crates/kish-plugin-sdk",
     "crates/kish-plugin-manager",
+    "tests/plugins/test_plugin",
 ]
 
 [package]
