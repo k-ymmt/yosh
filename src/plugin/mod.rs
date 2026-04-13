@@ -16,6 +16,7 @@ struct LoadedPlugin {
     #[allow(dead_code)]
     library: libloading::Library,
     commands: Vec<String>,
+    capabilities: u32,
     has_pre_exec: bool,
     has_post_exec: bool,
     has_on_cd: bool,
@@ -43,20 +44,36 @@ impl PluginManager {
                 continue;
             }
             let path = expand_tilde(&entry.path);
-            if let Err(e) = self.load_plugin(&path, env) {
+            let config_caps = entry
+                .capabilities
+                .as_ref()
+                .map(|strs| config::capabilities_from_strs(strs));
+            if let Err(e) = self.load_plugin_with_capabilities(&path, env, config_caps) {
                 eprintln!("kish: plugin: {}", e);
             }
         }
     }
 
     /// Load a single plugin from a dynamic library path.
+    /// Grants all requested capabilities.
     pub fn load_plugin(&mut self, path: &Path, env: &mut ShellEnv) -> Result<(), String> {
+        self.load_plugin_with_capabilities(path, env, None)
+    }
+
+    /// Load a single plugin with optional capability restrictions.
+    /// `config_capabilities`: None = grant all requested, Some(flags) = intersect with requested.
+    pub fn load_plugin_with_capabilities(
+        &mut self,
+        path: &Path,
+        env: &mut ShellEnv,
+        config_capabilities: Option<u32>,
+    ) -> Result<(), String> {
         // 1. Load library
         let library = unsafe { libloading::Library::new(path) }
             .map_err(|e| format!("{}: {}", path.display(), e))?;
 
         // 2. Get and validate declaration
-        let name = unsafe {
+        let (name, requested_capabilities) = unsafe {
             let decl_fn: libloading::Symbol<extern "C" fn() -> *const PluginDecl> = library
                 .get(b"kish_plugin_decl")
                 .map_err(|_| {
@@ -73,13 +90,27 @@ impl PluginManager {
                 ));
             }
 
-            CStr::from_ptr(decl.name).to_string_lossy().into_owned()
+            let name = CStr::from_ptr(decl.name).to_string_lossy().into_owned();
+            (name, decl.required_capabilities)
         };
 
-        // 3. Initialize plugin
+        // 3. Negotiate capabilities
+        let effective_capabilities = match config_capabilities {
+            None => requested_capabilities,
+            Some(config_caps) => {
+                let effective = requested_capabilities & config_caps;
+                let denied = requested_capabilities & !effective;
+                if denied != 0 {
+                    Self::log_denied_capabilities(&name, denied);
+                }
+                effective
+            }
+        };
+
+        // 4. Initialize plugin with sandboxed API
         {
             let mut ctx = HostContext::new(env, &name);
-            let mut api = build_host_api(kish_plugin_api::CAP_ALL);
+            let mut api = build_host_api(effective_capabilities);
             api.ctx = &mut ctx as *mut HostContext as *mut c_void;
 
             let init_fn: libloading::Symbol<unsafe extern "C" fn(*const HostApi) -> i32> =
@@ -95,7 +126,7 @@ impl PluginManager {
             }
         }
 
-        // 4. Get commands
+        // 5. Get commands
         let commands: Vec<String> = unsafe {
             let cmd_fn: Result<
                 libloading::Symbol<unsafe extern "C" fn(*mut u32) -> *const *const c_char>,
@@ -118,7 +149,7 @@ impl PluginManager {
             }
         };
 
-        // 5. Check for optional hook functions
+        // 6. Check for optional hook functions
         let has_pre_exec =
             unsafe { library.get::<*const ()>(b"kish_plugin_hook_pre_exec").is_ok() };
         let has_post_exec =
@@ -130,12 +161,35 @@ impl PluginManager {
             name,
             library,
             commands,
+            capabilities: effective_capabilities,
             has_pre_exec,
             has_post_exec,
             has_on_cd,
         });
 
         Ok(())
+    }
+
+    /// Log which capabilities were requested but not granted.
+    fn log_denied_capabilities(plugin_name: &str, denied: u32) {
+        use kish_plugin_api::*;
+        let caps = [
+            (CAP_VARIABLES_READ, "variables:read"),
+            (CAP_VARIABLES_WRITE, "variables:write"),
+            (CAP_FILESYSTEM, "filesystem"),
+            (CAP_IO, "io"),
+            (CAP_HOOK_PRE_EXEC, "hooks:pre_exec"),
+            (CAP_HOOK_POST_EXEC, "hooks:post_exec"),
+            (CAP_HOOK_ON_CD, "hooks:on_cd"),
+        ];
+        for (flag, name) in caps {
+            if denied & flag != 0 {
+                eprintln!(
+                    "kish: plugin '{}': capability '{}' requested but not granted",
+                    plugin_name, name
+                );
+            }
+        }
     }
 
     /// Execute a plugin command. Returns Some(exit_status) if a plugin handled
@@ -149,7 +203,7 @@ impl PluginManager {
         let plugin = self.plugins.iter().find(|p| p.commands.iter().any(|c| c == name))?;
 
         let mut ctx = HostContext::new(env, &plugin.name);
-        let mut api = build_host_api(kish_plugin_api::CAP_ALL);
+        let mut api = build_host_api(plugin.capabilities);
         api.ctx = &mut ctx as *mut HostContext as *mut c_void;
 
         let c_name = CString::new(name).ok()?;
@@ -185,8 +239,11 @@ impl PluginManager {
             if !plugin.has_pre_exec {
                 continue;
             }
+            if plugin.capabilities & kish_plugin_api::CAP_HOOK_PRE_EXEC == 0 {
+                continue;
+            }
             let mut ctx = HostContext::new(env, &plugin.name);
-            let mut api = build_host_api(kish_plugin_api::CAP_ALL);
+            let mut api = build_host_api(plugin.capabilities);
             api.ctx = &mut ctx as *mut HostContext as *mut c_void;
             unsafe {
                 if let Ok(hook_fn) = plugin.library.get::<
@@ -209,8 +266,11 @@ impl PluginManager {
             if !plugin.has_post_exec {
                 continue;
             }
+            if plugin.capabilities & kish_plugin_api::CAP_HOOK_POST_EXEC == 0 {
+                continue;
+            }
             let mut ctx = HostContext::new(env, &plugin.name);
-            let mut api = build_host_api(kish_plugin_api::CAP_ALL);
+            let mut api = build_host_api(plugin.capabilities);
             api.ctx = &mut ctx as *mut HostContext as *mut c_void;
             unsafe {
                 if let Ok(hook_fn) = plugin.library.get::<
@@ -237,8 +297,11 @@ impl PluginManager {
             if !plugin.has_on_cd {
                 continue;
             }
+            if plugin.capabilities & kish_plugin_api::CAP_HOOK_ON_CD == 0 {
+                continue;
+            }
             let mut ctx = HostContext::new(env, &plugin.name);
-            let mut api = build_host_api(kish_plugin_api::CAP_ALL);
+            let mut api = build_host_api(plugin.capabilities);
             api.ctx = &mut ctx as *mut HostContext as *mut c_void;
             unsafe {
                 if let Ok(hook_fn) = plugin.library.get::<
