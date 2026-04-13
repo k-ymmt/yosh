@@ -40,7 +40,6 @@
 
 ## Future: Plugin System Enhancements
 
-- [ ] `pre_prompt` hook — fire before prompt display in interactive mode; hook infrastructure is ready (`src/plugin/mod.rs`)
 - [ ] Runtime plugin load/unload — builtin commands `plugin load <path>` / `plugin unload <name>` for dynamic management
 - [ ] GitHub plugin installation — `kish plugin install <repo>` to download pre-built binaries from GitHub Releases
 - [ ] SemVer API version management — replace single `KISH_PLUGIN_API_VERSION` check with semver range compatibility (`crates/kish-plugin-api/`)
