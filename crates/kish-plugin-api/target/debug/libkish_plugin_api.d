@@ -1,0 +1,1 @@
+/Users/kazukiyamamoto/Projects/rust/kish/.worktrees/feat-plugin-system/crates/kish-plugin-api/target/debug/libkish_plugin_api.rlib: /Users/kazukiyamamoto/Projects/rust/kish/.worktrees/feat-plugin-system/crates/kish-plugin-api/src/lib.rs
