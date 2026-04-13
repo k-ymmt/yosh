@@ -3,6 +3,7 @@ pub mod edit_action;
 pub mod fuzzy_search;
 pub mod highlight;
 pub mod history;
+pub mod keymap;
 pub mod kill_ring;
 pub mod line_editor;
 pub mod parse_status;

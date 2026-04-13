@@ -3,9 +3,11 @@ use crossterm::event::KeyCode;
 use kish::env::ShellEnv;
 use kish::env::aliases::AliasStore;
 use kish::interactive::completion::CompletionContext;
+use kish::interactive::edit_action::EditAction;
 use kish::interactive::fuzzy_search::FuzzySearchUI;
 use kish::interactive::highlight::{CheckerEnv, HighlightScanner};
 use kish::interactive::history::History;
+use kish::interactive::keymap::{BufferState, Keymap};
 use kish::interactive::line_editor::LineEditor;
 use kish::interactive::parse_status::{classify_parse, ParseStatus};
 use kish::interactive::prompt::expand_prompt;
@@ -1244,4 +1246,353 @@ fn test_undo_respects_max_size() {
     let (buf, _) = um.undo().unwrap();
     assert_eq!(buf, vec!['a']);
     assert!(um.undo().is_none());
+}
+
+// ── Keymap tests ──────────────────────────────────────────────────────
+
+fn default_state() -> BufferState {
+    BufferState {
+        is_empty: false,
+        at_end: false,
+        has_suggestion: false,
+        last_action: EditAction::Noop,
+    }
+}
+
+fn key_event(code: KeyCode, modifiers: crossterm::event::KeyModifiers) -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(code, modifiers)
+}
+
+#[test]
+fn test_keymap_ctrl_k() {
+    let mut km = Keymap::new();
+    let (action, count) = km.resolve(
+        key_event(KeyCode::Char('k'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::KillToEnd);
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn test_keymap_ctrl_u() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('u'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::KillToStart);
+}
+
+#[test]
+fn test_keymap_ctrl_w() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('w'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::KillBackwardWord);
+}
+
+#[test]
+fn test_keymap_ctrl_y() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('y'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::Yank);
+}
+
+#[test]
+fn test_keymap_alt_y_after_yank() {
+    let mut km = Keymap::new();
+    let state = BufferState {
+        last_action: EditAction::Yank,
+        ..default_state()
+    };
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('y'), crossterm::event::KeyModifiers::ALT),
+        &state,
+    );
+    assert_eq!(action, EditAction::YankPop);
+}
+
+#[test]
+fn test_keymap_alt_y_without_yank() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('y'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::Noop);
+}
+
+#[test]
+fn test_keymap_alt_b() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('b'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::MoveBackwardWord);
+}
+
+#[test]
+fn test_keymap_alt_d() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('d'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::KillForwardWord);
+}
+
+#[test]
+fn test_keymap_ctrl_t() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('t'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::TransposeChars);
+}
+
+#[test]
+fn test_keymap_alt_t() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('t'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::TransposeWords);
+}
+
+#[test]
+fn test_keymap_alt_u() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('u'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::UpcaseWord);
+}
+
+#[test]
+fn test_keymap_alt_l() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('l'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::DowncaseWord);
+}
+
+#[test]
+fn test_keymap_alt_c() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('c'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::CapitalizeWord);
+}
+
+#[test]
+fn test_keymap_ctrl_underscore() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('_'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::Undo);
+}
+
+#[test]
+fn test_keymap_ctrl_l() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('l'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::ClearScreen);
+}
+
+#[test]
+fn test_keymap_ctrl_g_cancel() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('g'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::Cancel);
+}
+
+#[test]
+fn test_keymap_ctrl_d_empty_is_eof() {
+    let mut km = Keymap::new();
+    let state = BufferState { is_empty: true, ..default_state() };
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('d'), crossterm::event::KeyModifiers::CONTROL),
+        &state,
+    );
+    assert_eq!(action, EditAction::Eof);
+}
+
+#[test]
+fn test_keymap_ctrl_d_nonempty_is_delete() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('d'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::DeleteForward);
+}
+
+#[test]
+fn test_keymap_right_with_suggestion_accepts() {
+    let mut km = Keymap::new();
+    let state = BufferState {
+        at_end: true,
+        has_suggestion: true,
+        ..default_state()
+    };
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Right, crossterm::event::KeyModifiers::empty()),
+        &state,
+    );
+    assert_eq!(action, EditAction::AcceptSuggestion);
+}
+
+#[test]
+fn test_keymap_right_without_suggestion_moves() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Right, crossterm::event::KeyModifiers::empty()),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::MoveForward);
+}
+
+#[test]
+fn test_keymap_alt_f_with_suggestion_accepts_word() {
+    let mut km = Keymap::new();
+    let state = BufferState {
+        has_suggestion: true,
+        ..default_state()
+    };
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('f'), crossterm::event::KeyModifiers::ALT),
+        &state,
+    );
+    assert_eq!(action, EditAction::AcceptWordSuggestion);
+}
+
+#[test]
+fn test_keymap_alt_f_without_suggestion_moves_word() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('f'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::MoveForwardWord);
+}
+
+#[test]
+fn test_keymap_numeric_arg() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('3'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::SetNumericArg(3));
+    assert_eq!(km.pending_numeric_arg(), Some(3));
+
+    let (action, count) = km.resolve(
+        key_event(KeyCode::Char('f'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::MoveForward);
+    assert_eq!(count, 3);
+    assert_eq!(km.pending_numeric_arg(), None);
+}
+
+#[test]
+fn test_keymap_numeric_arg_multi_digit() {
+    let mut km = Keymap::new();
+    km.resolve(
+        key_event(KeyCode::Char('1'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    km.resolve(
+        key_event(KeyCode::Char('5'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(km.pending_numeric_arg(), Some(15));
+}
+
+#[test]
+fn test_keymap_ctrl_g_resets_numeric_arg() {
+    let mut km = Keymap::new();
+    km.resolve(
+        key_event(KeyCode::Char('5'), crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(km.pending_numeric_arg(), Some(5));
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Char('g'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::Cancel);
+    assert_eq!(km.pending_numeric_arg(), None);
+}
+
+#[test]
+fn test_keymap_existing_bindings_preserved() {
+    let mut km = Keymap::new();
+    let (a, _) = km.resolve(
+        key_event(KeyCode::Char('a'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(a, EditAction::MoveToStart);
+
+    let (a, _) = km.resolve(
+        key_event(KeyCode::Char('e'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(a, EditAction::MoveToEnd);
+
+    let (a, _) = km.resolve(
+        key_event(KeyCode::Char('b'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(a, EditAction::MoveBackward);
+
+    let (a, _) = km.resolve(
+        key_event(KeyCode::Enter, crossterm::event::KeyModifiers::empty()),
+        &default_state(),
+    );
+    assert_eq!(a, EditAction::Submit);
+
+    let (a, _) = km.resolve(
+        key_event(KeyCode::Char('c'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(a, EditAction::Interrupt);
+
+    let (a, _) = km.resolve(
+        key_event(KeyCode::Char('r'), crossterm::event::KeyModifiers::CONTROL),
+        &default_state(),
+    );
+    assert_eq!(a, EditAction::FuzzySearch);
+}
+
+#[test]
+fn test_keymap_alt_backspace() {
+    let mut km = Keymap::new();
+    let (action, _) = km.resolve(
+        key_event(KeyCode::Backspace, crossterm::event::KeyModifiers::ALT),
+        &default_state(),
+    );
+    assert_eq!(action, EditAction::KillBackwardWord);
 }
