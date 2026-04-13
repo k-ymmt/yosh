@@ -33,6 +33,9 @@ pub trait Terminal {
     /// Clear from cursor to end of line.
     fn clear_until_newline(&mut self) -> io::Result<()>;
 
+    /// Clear the entire screen and move cursor to top-left.
+    fn clear_all(&mut self) -> io::Result<()>;
+
     /// Write a string to the terminal.
     fn write_str(&mut self, s: &str) -> io::Result<()>;
 
@@ -118,6 +121,12 @@ impl Terminal for CrosstermTerminal {
 
     fn clear_until_newline(&mut self) -> io::Result<()> {
         self.stdout.execute(terminal::Clear(ClearType::UntilNewLine))?;
+        Ok(())
+    }
+
+    fn clear_all(&mut self) -> io::Result<()> {
+        self.stdout.execute(terminal::Clear(ClearType::All))?;
+        self.stdout.execute(cursor::MoveTo(0, 0))?;
         Ok(())
     }
 

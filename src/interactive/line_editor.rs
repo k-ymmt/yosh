@@ -451,7 +451,7 @@ impl LineEditor {
                         term.write_str(prompt)?;
                     }
                     KeyAction::ClearScreen => {
-                        term.write_str("\x1b[2J\x1b[H")?;
+                        term.clear_all()?;
                         term.write_str(prompt)?;
                     }
                     KeyAction::TabComplete | KeyAction::Continue => {}
@@ -806,7 +806,7 @@ impl LineEditor {
                         self.handle_tab_complete(term, prompt, ctx)?;
                     }
                     KeyAction::ClearScreen => {
-                        term.write_str("\x1b[2J\x1b[H")?;
+                        term.clear_all()?;
                         term.write_str(prompt)?;
                     }
                     KeyAction::Continue => {}

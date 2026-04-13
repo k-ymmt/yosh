@@ -803,6 +803,9 @@ mod tests {
         fn clear_until_newline(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+        fn clear_all(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
         fn write_str(&mut self, s: &str) -> std::io::Result<()> {
             self.cursor_row += s.chars().filter(|&c| c == '\n').count() as i32;
             Ok(())

@@ -91,6 +91,11 @@ impl Terminal for MockTerminal {
         Ok(())
     }
 
+    fn clear_all(&mut self) -> io::Result<()> {
+        self.output.push("[CLEAR_ALL]".to_string());
+        Ok(())
+    }
+
     fn write_str(&mut self, s: &str) -> io::Result<()> {
         self.cursor_row += s.chars().filter(|&c| c == '\n').count() as i32;
         self.output.push(s.to_string());
