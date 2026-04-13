@@ -66,6 +66,8 @@ fn main() {
                     Ok(ast) => println!("{:#?}", ast),
                     Err(e) => { eprintln!("{}", e); process::exit(2); }
                 }
+            } else if let Some(status) = try_subcommand(&args[1..]) {
+                process::exit(status);
             } else {
                 let positional: Vec<String> = args[2..].to_vec();
                 let status = run_file(&args[1], shell_name, positional);
@@ -73,6 +75,29 @@ fn main() {
             }
         }
     }
+}
+
+/// Try to delegate `kish <sub> [args...]` to `kish-<sub>` binary in PATH.
+/// Returns Some(exit_status) if a matching binary was found and executed.
+fn try_subcommand(args: &[String]) -> Option<i32> {
+    let sub = args.first()?;
+    // Skip anything that looks like a flag or a file path.
+    if sub.starts_with('-') || sub.contains('/') || sub.contains('.') {
+        return None;
+    }
+    let bin_name = format!("kish-{}", sub);
+    let found = std_env::var_os("PATH").and_then(|paths| {
+        std_env::split_paths(&paths).find(|dir| dir.join(&bin_name).is_file())
+    });
+    let bin_path = found?.join(&bin_name);
+    let status = process::Command::new(bin_path)
+        .args(&args[1..])
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("kish: {}: {}", bin_name, e);
+            process::exit(126);
+        });
+    Some(status.code().unwrap_or(1))
 }
 
 fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_string: bool) -> i32 {
