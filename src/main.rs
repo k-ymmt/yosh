@@ -7,6 +7,7 @@ mod lexer;
 mod parser;
 mod signal;
 mod interactive;
+mod plugin;
 
 use std::env as std_env;
 use std::fs;
