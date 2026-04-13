@@ -1,29 +1,55 @@
 use std::io;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyEvent};
 
 use super::completion::{self, CompletionContext, CompletionUI};
+use super::edit_action::EditAction;
 use super::fuzzy_search::FuzzySearchUI;
 use super::highlight::{HighlightScanner, HighlightStyle, ColorSpan, CheckerEnv, apply_style};
 use super::history::History;
+use super::keymap::{BufferState, Keymap};
+use super::kill_ring::KillRing;
 use super::terminal::Terminal;
+use super::undo::UndoManager;
 
 /// A minimal line-editing buffer used by the interactive REPL.
 ///
 /// The buffer stores characters as a `Vec<char>` so that cursor
 /// movement and insertion work correctly with multi-byte UTF-8
 /// characters.
-#[derive(Debug, Default)]
 pub struct LineEditor {
     buf: Vec<char>,
     pos: usize,
     suggestion: Option<String>,
     tab_count: u8,
+    keymap: Keymap,
+    kill_ring: KillRing,
+    undo: UndoManager,
+    yank_state: Option<YankState>,
+    last_action: EditAction,
+    last_was_insert: bool,
+}
+
+#[derive(Debug, Clone)]
+struct YankState {
+    start: usize,
+    len: usize,
 }
 
 impl LineEditor {
     /// Create an empty line editor.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            buf: Vec::new(),
+            pos: 0,
+            suggestion: None,
+            tab_count: 0,
+            keymap: Keymap::new(),
+            kill_ring: KillRing::new(60),
+            undo: UndoManager::new(256),
+            yank_state: None,
+            last_action: EditAction::Noop,
+            last_was_insert: false,
+        }
     }
 
     /// Return the current buffer contents as a `String`.
@@ -48,6 +74,10 @@ impl LineEditor {
         self.pos = 0;
         self.suggestion = None;
         self.tab_count = 0;
+        self.yank_state = None;
+        self.last_action = EditAction::Noop;
+        self.last_was_insert = false;
+        self.undo.clear();
     }
 
     /// Insert a character at the current cursor position and advance
@@ -368,6 +398,7 @@ enum KeyAction {
     Interrupt,
     FuzzySearch,
     TabComplete,
+    ClearScreen,
 }
 
 impl LineEditor {
@@ -417,6 +448,10 @@ impl LineEditor {
                         term.enable_raw_mode()?;
                         term.move_to_column(0)?;
                         term.clear_current_line()?;
+                        term.write_str(prompt)?;
+                    }
+                    KeyAction::ClearScreen => {
+                        term.write_str("\x1b[2J\x1b[H")?;
                         term.write_str(prompt)?;
                     }
                     KeyAction::TabComplete | KeyAction::Continue => {}
@@ -472,133 +507,222 @@ impl LineEditor {
 
     /// Map a single key event to a [`KeyAction`], mutating the buffer as needed.
     fn handle_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
-        if key.code != KeyCode::Tab {
+        let state = BufferState {
+            is_empty: self.is_empty(),
+            at_end: self.pos == self.buf.len(),
+            has_suggestion: self.suggestion.is_some(),
+            last_action: self.last_action,
+        };
+
+        let (action, count) = self.keymap.resolve(key, &state);
+
+        if !matches!(action, EditAction::TabComplete) {
             self.tab_count = 0;
         }
-        match (key.code, key.modifiers) {
-            // Ctrl+D — EOF when empty, otherwise delete char at cursor
-            (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
-                if self.is_empty() {
-                    KeyAction::Eof
-                } else {
-                    self.delete();
-                    KeyAction::Continue
+
+        // Undo snapshot management
+        match action {
+            EditAction::InsertChar(_) => {
+                if !self.last_was_insert {
+                    self.undo.save(&self.buf, self.pos);
                 }
             }
-
-            // Ctrl+C — interrupt
-            (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => KeyAction::Interrupt,
-
-            // Ctrl+B / Left — move cursor left
-            (KeyCode::Char('b'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.move_cursor_left();
-                KeyAction::Continue
+            EditAction::KillToEnd | EditAction::KillToStart
+            | EditAction::KillBackwardWord | EditAction::KillForwardWord
+            | EditAction::DeleteBackward | EditAction::DeleteForward
+            | EditAction::Yank | EditAction::YankPop
+            | EditAction::TransposeChars | EditAction::TransposeWords
+            | EditAction::UpcaseWord | EditAction::DowncaseWord | EditAction::CapitalizeWord => {
+                if self.last_was_insert {
+                    self.undo.save(&self.buf, self.pos);
+                }
+                self.undo.save(&self.buf, self.pos);
             }
-            (KeyCode::Left, _) => {
-                self.move_cursor_left();
-                KeyAction::Continue
+            _ => {
+                if self.last_was_insert {
+                    self.undo.save(&self.buf, self.pos);
+                }
             }
+        }
 
-            // Ctrl+F / Right — move cursor right, or accept suggestion at end
-            (KeyCode::Char('f'), m) if m.contains(KeyModifiers::CONTROL) => {
-                if self.pos == self.buf.len() && self.suggestion.is_some() {
-                    self.accept_full_suggestion();
-                } else {
-                    self.move_cursor_right();
+        // Determine if consecutive kill for append
+        let is_consecutive_kill = action.is_kill() && self.last_action.is_kill();
+
+        // Execute action
+        let key_action = self.execute_action(action, count, history, is_consecutive_kill);
+
+        // Update tracking state
+        self.last_was_insert = matches!(action, EditAction::InsertChar(ch) if ch != ' ');
+        if !matches!(action, EditAction::Yank | EditAction::YankPop) {
+            self.yank_state = None;
+        }
+        self.last_action = action;
+
+        key_action
+    }
+
+    fn execute_action(
+        &mut self,
+        action: EditAction,
+        count: u32,
+        history: &mut History,
+        consecutive_kill: bool,
+    ) -> KeyAction {
+        match action {
+            EditAction::InsertChar(ch) => {
+                for _ in 0..count {
+                    self.insert_char(ch);
                 }
                 KeyAction::Continue
             }
-            (KeyCode::Right, _) => {
-                if self.pos == self.buf.len() && self.suggestion.is_some() {
-                    self.accept_full_suggestion();
-                } else {
-                    self.move_cursor_right();
-                }
+            EditAction::MoveBackward => {
+                for _ in 0..count { self.move_cursor_left(); }
                 KeyAction::Continue
             }
-
-            // Ctrl+A / Home — move to start
-            (KeyCode::Char('a'), m) if m.contains(KeyModifiers::CONTROL) => {
+            EditAction::MoveForward => {
+                for _ in 0..count { self.move_cursor_right(); }
+                KeyAction::Continue
+            }
+            EditAction::MoveToStart => {
                 self.move_to_start();
                 KeyAction::Continue
             }
-            (KeyCode::Home, _) => {
-                self.move_to_start();
-                KeyAction::Continue
-            }
-
-            // Ctrl+E / End — move to end
-            (KeyCode::Char('e'), m) if m.contains(KeyModifiers::CONTROL) => {
+            EditAction::MoveToEnd => {
                 self.move_to_end();
                 KeyAction::Continue
             }
-            (KeyCode::End, _) => {
-                self.move_to_end();
+            EditAction::MoveBackwardWord => {
+                for _ in 0..count { self.move_backward_word(); }
                 KeyAction::Continue
             }
-
-            // Enter — submit
-            (KeyCode::Enter, _) => KeyAction::Submit,
-
-            // Backspace — delete char before cursor
-            (KeyCode::Backspace, _) => {
-                self.backspace();
+            EditAction::MoveForwardWord => {
+                for _ in 0..count { self.move_forward_word(); }
                 KeyAction::Continue
             }
-
-            // Delete — delete char at cursor
-            (KeyCode::Delete, _) => {
-                self.delete();
+            EditAction::DeleteBackward => {
+                for _ in 0..count { self.backspace(); }
                 KeyAction::Continue
             }
-
-            // Tab — trigger completion
-            (KeyCode::Tab, _) => {
+            EditAction::DeleteForward => {
+                for _ in 0..count { self.delete(); }
+                KeyAction::Continue
+            }
+            EditAction::KillToEnd => {
+                let killed = self.kill_to_end();
+                self.kill_ring.kill(&killed, consecutive_kill);
+                KeyAction::Continue
+            }
+            EditAction::KillToStart => {
+                let killed = self.kill_to_start();
+                self.kill_ring.prepend(&killed, consecutive_kill);
+                KeyAction::Continue
+            }
+            EditAction::KillBackwardWord => {
+                for _ in 0..count {
+                    let killed = self.kill_backward_word();
+                    self.kill_ring.prepend(&killed, consecutive_kill);
+                }
+                KeyAction::Continue
+            }
+            EditAction::KillForwardWord => {
+                for _ in 0..count {
+                    let killed = self.kill_forward_word();
+                    self.kill_ring.kill(&killed, consecutive_kill);
+                }
+                KeyAction::Continue
+            }
+            EditAction::Yank => {
+                if let Some(text) = self.kill_ring.yank().map(|s| s.to_string()) {
+                    let (start, len) = self.insert_str(&text);
+                    self.yank_state = Some(YankState { start, len });
+                }
+                KeyAction::Continue
+            }
+            EditAction::YankPop => {
+                if let Some(ys) = self.yank_state.clone() {
+                    self.remove_range(ys.start, ys.len);
+                    if let Some(text) = self.kill_ring.yank_pop().map(|s| s.to_string()) {
+                        let (start, len) = self.insert_str(&text);
+                        self.yank_state = Some(YankState { start, len });
+                    }
+                }
+                KeyAction::Continue
+            }
+            EditAction::TransposeChars => {
+                for _ in 0..count { self.transpose_chars(); }
+                KeyAction::Continue
+            }
+            EditAction::TransposeWords => {
+                for _ in 0..count { self.transpose_words(); }
+                KeyAction::Continue
+            }
+            EditAction::UpcaseWord => {
+                for _ in 0..count { self.upcase_word(); }
+                KeyAction::Continue
+            }
+            EditAction::DowncaseWord => {
+                for _ in 0..count { self.downcase_word(); }
+                KeyAction::Continue
+            }
+            EditAction::CapitalizeWord => {
+                for _ in 0..count { self.capitalize_word(); }
+                KeyAction::Continue
+            }
+            EditAction::Undo => {
+                for _ in 0..count {
+                    if let Some((buf, pos)) = self.undo.undo() {
+                        self.buf = buf;
+                        self.pos = pos;
+                    }
+                }
+                KeyAction::Continue
+            }
+            EditAction::ClearScreen => {
+                KeyAction::ClearScreen
+            }
+            EditAction::Cancel => {
+                KeyAction::Continue
+            }
+            EditAction::AcceptSuggestion => {
+                self.accept_full_suggestion();
+                KeyAction::Continue
+            }
+            EditAction::AcceptWordSuggestion => {
+                self.accept_word_suggestion();
+                KeyAction::Continue
+            }
+            EditAction::SetNumericArg(_) => {
+                KeyAction::Continue
+            }
+            EditAction::Submit => KeyAction::Submit,
+            EditAction::Eof => KeyAction::Eof,
+            EditAction::Interrupt => KeyAction::Interrupt,
+            EditAction::FuzzySearch => KeyAction::FuzzySearch,
+            EditAction::TabComplete => {
                 self.tab_count += 1;
                 KeyAction::TabComplete
             }
-
-            // Alt+F — accept next word from suggestion
-            (KeyCode::Char('f'), m) if m.contains(KeyModifiers::ALT) => {
-                if self.suggestion.is_some() {
-                    self.accept_word_suggestion();
-                }
-                KeyAction::Continue
-            }
-
-            // Printable character (without Ctrl modifier)
-            (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
-                self.insert_char(ch);
-                KeyAction::Continue
-            }
-
-            // Ctrl+R — fuzzy history search
-            (KeyCode::Char('r'), m) if m.contains(KeyModifiers::CONTROL) => {
-                KeyAction::FuzzySearch
-            }
-
-            // Up — navigate history backward
-            (KeyCode::Up, _) => {
-                if let Some(line) = history.navigate_up(&self.buffer()) {
-                    self.buf = line.chars().collect();
-                    self.pos = self.buf.len();
+            EditAction::HistoryPrev => {
+                for _ in 0..count {
+                    if let Some(line) = history.navigate_up(&self.buffer()) {
+                        self.buf = line.chars().collect();
+                        self.pos = self.buf.len();
+                    }
                 }
                 self.suggestion = None;
                 KeyAction::Continue
             }
-
-            // Down — navigate history forward
-            (KeyCode::Down, _) => {
-                if let Some(line) = history.navigate_down() {
-                    self.buf = line.chars().collect();
-                    self.pos = self.buf.len();
+            EditAction::HistoryNext => {
+                for _ in 0..count {
+                    if let Some(line) = history.navigate_down() {
+                        self.buf = line.chars().collect();
+                        self.pos = self.buf.len();
+                    }
                 }
                 self.suggestion = None;
                 KeyAction::Continue
             }
-
-            // Everything else — ignore
-            _ => KeyAction::Continue,
+            EditAction::Noop => KeyAction::Continue,
         }
     }
 
@@ -676,6 +800,10 @@ impl LineEditor {
                     KeyAction::TabComplete => {
                         term.reset_style()?;
                         self.handle_tab_complete(term, prompt, ctx)?;
+                    }
+                    KeyAction::ClearScreen => {
+                        term.write_str("\x1b[2J\x1b[H")?;
+                        term.write_str(prompt)?;
                     }
                     KeyAction::Continue => {}
                 }

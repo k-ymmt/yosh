@@ -1764,3 +1764,158 @@ fn test_transpose_words_cursor_in_middle() {
     assert_eq!(ed.buffer(), "bbb aaa ccc");
     assert_eq!(ed.cursor(), 7);
 }
+
+// ── Integration tests: kill ring via MockTerminal ─────────────────────
+
+#[test]
+fn test_mock_ctrl_k_kills_to_end() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("hello world"),
+        vec![ctrl('a')],
+        vec![key(KeyCode::Right); 5],
+        vec![ctrl('k')],
+        vec![key(KeyCode::Enter)],
+    ].concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "hello");
+}
+
+#[test]
+fn test_mock_ctrl_u_kills_to_start() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("hello world"),
+        vec![ctrl('a')],
+        vec![key(KeyCode::Right); 5],
+        vec![ctrl('u')],
+        vec![key(KeyCode::Enter)],
+    ].concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), " world");
+}
+
+#[test]
+fn test_mock_ctrl_w_kills_backward_word() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("hello world"),
+        vec![ctrl('w')],
+        vec![key(KeyCode::Enter)],
+    ].concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "hello ");
+}
+
+#[test]
+fn test_mock_ctrl_y_yanks() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("hello world"),
+        vec![ctrl('w')],
+        vec![ctrl('a')],
+        vec![ctrl('y')],
+        vec![key(KeyCode::Enter)],
+    ].concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "worldhello ");
+}
+
+#[test]
+fn test_mock_ctrl_underscore_undo() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("hello"),
+        vec![ctrl('a')],
+        vec![ctrl('k')],
+        vec![ctrl('_')],
+        vec![key(KeyCode::Enter)],
+    ].concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "hello");
+}
+
+#[test]
+fn test_mock_alt_b_word_backward() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("hello world"),
+        vec![alt('b')],
+        vec![ctrl('k')],
+        vec![key(KeyCode::Enter)],
+    ].concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "hello ");
+}
+
+#[test]
+fn test_mock_ctrl_l_clears_screen() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("test"),
+        vec![ctrl('l')],
+        vec![key(KeyCode::Enter)],
+    ].concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "test");
+}
+
+#[test]
+fn test_mock_ctrl_t_transpose() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("ab"),
+        vec![ctrl('t')],
+        vec![key(KeyCode::Enter)],
+    ].concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "ba");
+}
+
+#[test]
+fn test_mock_alt_u_upcase() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("hello"),
+        vec![ctrl('a')],
+        vec![alt('u')],
+        vec![key(KeyCode::Enter)],
+    ].concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "HELLO");
+}
+
+#[test]
+fn test_mock_numeric_arg_movement() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("abcdef"),
+        vec![ctrl('a')],
+        vec![alt('3')],
+        vec![ctrl('f')],
+        vec![ctrl('k')],
+        vec![key(KeyCode::Enter)],
+    ].concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "abc");
+}
