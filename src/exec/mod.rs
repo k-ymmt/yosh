@@ -71,6 +71,24 @@ impl Executor {
     pub fn process_pending_signals(&mut self) {
         let signals = signal::drain_pending_signals();
         for sig in signals {
+            // SIGCHLD default action is to ignore (just reap children).
+            // We must not route it through handle_default_signal which
+            // exits the shell.  Reaping is already handled by
+            // reap_zombies() in the interactive loop.
+            if sig == libc::SIGCHLD {
+                match self.env.traps.get_signal_trap(sig).cloned() {
+                    Some(crate::env::TrapAction::Command(cmd)) => {
+                        self.with_errexit_suppressed(|exec| {
+                            exec.eval_string(&cmd);
+                        });
+                    }
+                    // Default and Ignore: just ignore SIGCHLD (reaping
+                    // is done elsewhere).
+                    _ => {}
+                }
+                continue;
+            }
+
             match self.env.traps.get_signal_trap(sig).cloned() {
                 Some(crate::env::TrapAction::Command(cmd)) => {
                     self.with_errexit_suppressed(|exec| {

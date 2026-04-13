@@ -319,14 +319,9 @@ fn test_pty_syntax_highlight_pipe() {
     let (mut s, _tmpdir) = spawn_kish();
     wait_for_prompt(&mut s);
 
-    // Type a pipe expression — verify the highlighter handles the pipe operator
-    // without crashing. Cancel with Ctrl+C instead of executing, since PTY
-    // pipe execution is covered by other integration tests.
-    s.send("echo hello | cat").unwrap();
-    std::thread::sleep(Duration::from_millis(100));
-
-    // Cancel with Ctrl+C
-    s.send("\x03").unwrap();
+    // Execute a pipe command with highlighting active
+    s.send("echo pipe_ok | cat\r").unwrap();
+    expect_output(&mut s, "pipe_ok", "pipe with highlighting failed");
     wait_for_prompt(&mut s);
 
     exit_shell(&mut s);
