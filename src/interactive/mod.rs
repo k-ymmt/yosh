@@ -3,10 +3,12 @@ pub mod edit_action;
 pub mod fuzzy_search;
 pub mod highlight;
 pub mod history;
+pub mod kill_ring;
 pub mod line_editor;
 pub mod parse_status;
 pub mod prompt;
 pub mod terminal;
+pub mod undo;
 
 use std::io::{self, Write};
 

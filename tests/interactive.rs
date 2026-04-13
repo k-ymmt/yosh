@@ -1106,3 +1106,142 @@ fn test_double_tab_opens_completion_ui() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ── Kill ring tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_kill_ring_kill_and_yank() {
+    use kish::interactive::kill_ring::KillRing;
+    let mut kr = KillRing::new(60);
+    kr.kill("hello", false);
+    assert_eq!(kr.yank(), Some("hello"));
+}
+
+#[test]
+fn test_kill_ring_multiple_kills() {
+    use kish::interactive::kill_ring::KillRing;
+    let mut kr = KillRing::new(60);
+    kr.kill("first", false);
+    kr.kill("second", false);
+    assert_eq!(kr.yank(), Some("second"));
+}
+
+#[test]
+fn test_kill_ring_append_forward() {
+    use kish::interactive::kill_ring::KillRing;
+    let mut kr = KillRing::new(60);
+    kr.kill("hello", false);
+    kr.kill(" world", true);
+    assert_eq!(kr.yank(), Some("hello world"));
+}
+
+#[test]
+fn test_kill_ring_yank_pop_cycles() {
+    use kish::interactive::kill_ring::KillRing;
+    let mut kr = KillRing::new(60);
+    kr.kill("first", false);
+    kr.kill("second", false);
+    kr.kill("third", false);
+    assert_eq!(kr.yank(), Some("third"));
+    assert_eq!(kr.yank_pop(), Some("second"));
+    assert_eq!(kr.yank_pop(), Some("first"));
+    // Wraps around
+    assert_eq!(kr.yank_pop(), Some("third"));
+}
+
+#[test]
+fn test_kill_ring_yank_empty() {
+    use kish::interactive::kill_ring::KillRing;
+    let mut kr = KillRing::new(60);
+    assert_eq!(kr.yank(), None);
+}
+
+#[test]
+fn test_kill_ring_yank_pop_empty() {
+    use kish::interactive::kill_ring::KillRing;
+    let mut kr = KillRing::new(60);
+    assert_eq!(kr.yank_pop(), None);
+}
+
+#[test]
+fn test_kill_ring_max_size() {
+    use kish::interactive::kill_ring::KillRing;
+    let mut kr = KillRing::new(3);
+    kr.kill("a", false);
+    kr.kill("b", false);
+    kr.kill("c", false);
+    kr.kill("d", false);
+    // "a" should have been evicted
+    assert_eq!(kr.yank(), Some("d"));
+    assert_eq!(kr.yank_pop(), Some("c"));
+    assert_eq!(kr.yank_pop(), Some("b"));
+    // Wraps: back to "d" (only 3 entries)
+    assert_eq!(kr.yank_pop(), Some("d"));
+}
+
+#[test]
+fn test_kill_ring_prepend() {
+    use kish::interactive::kill_ring::KillRing;
+    let mut kr = KillRing::new(60);
+    kr.kill("world", false);
+    kr.prepend("hello ", true);
+    assert_eq!(kr.yank(), Some("hello world"));
+}
+
+// ── Undo manager tests ────────────────────────────────────────────────
+
+#[test]
+fn test_undo_save_and_restore() {
+    use kish::interactive::undo::UndoManager;
+    let mut um = UndoManager::new(256);
+    um.save(&['h', 'e', 'l', 'l', 'o'], 5);
+    let (buf, pos) = um.undo().unwrap();
+    assert_eq!(buf, vec!['h', 'e', 'l', 'l', 'o']);
+    assert_eq!(pos, 5);
+}
+
+#[test]
+fn test_undo_multiple_states() {
+    use kish::interactive::undo::UndoManager;
+    let mut um = UndoManager::new(256);
+    um.save(&[], 0);
+    um.save(&['a'], 1);
+    let (buf, pos) = um.undo().unwrap();
+    assert_eq!(buf, vec!['a']);
+    assert_eq!(pos, 1);
+    let (buf, pos) = um.undo().unwrap();
+    assert_eq!(buf, vec![]);
+    assert_eq!(pos, 0);
+    assert!(um.undo().is_none());
+}
+
+#[test]
+fn test_undo_empty_returns_none() {
+    use kish::interactive::undo::UndoManager;
+    let mut um = UndoManager::new(256);
+    assert!(um.undo().is_none());
+}
+
+#[test]
+fn test_undo_clear_resets_stack() {
+    use kish::interactive::undo::UndoManager;
+    let mut um = UndoManager::new(256);
+    um.save(&['a'], 1);
+    um.save(&['a', 'b'], 2);
+    um.clear();
+    assert!(um.undo().is_none());
+}
+
+#[test]
+fn test_undo_respects_max_size() {
+    use kish::interactive::undo::UndoManager;
+    let mut um = UndoManager::new(2);
+    um.save(&[], 0);
+    um.save(&['a'], 1);
+    um.save(&['a', 'b'], 2); // evicts ([], 0)
+    let (buf, _) = um.undo().unwrap();
+    assert_eq!(buf, vec!['a', 'b']);
+    let (buf, _) = um.undo().unwrap();
+    assert_eq!(buf, vec!['a']);
+    assert!(um.undo().is_none());
+}
