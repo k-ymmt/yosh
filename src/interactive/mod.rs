@@ -21,7 +21,7 @@ use completion::CompletionContext;
 use highlight::{CheckerEnv, HighlightScanner};
 use line_editor::LineEditor;
 use parse_status::{ParseStatus, classify_parse};
-use prompt::expand_prompt;
+use prompt::{PromptInfo, expand_prompt};
 use terminal::CrosstermTerminal;
 
 pub struct Repl {
@@ -80,9 +80,13 @@ impl Repl {
             // Choose PS1 or PS2
             let prompt_var = if input_buffer.is_empty() { "PS1" } else { "PS2" };
             let prompt = expand_prompt(&mut self.executor.env, prompt_var);
+            let prompt_info = PromptInfo::from_prompt(&prompt);
 
             // Display prompt on stderr
-            eprint!("{}", prompt);
+            for line in &prompt_info.upper_lines {
+                eprint!("{}\r\n", line);
+            }
+            eprint!("{}", prompt_info.last_line);
             io::stderr().flush().ok();
 
             // Build completion context
@@ -103,7 +107,16 @@ impl Repl {
             };
 
             // Read a line
-            let line = match self.line_editor.read_line_with_completion(&prompt, &mut self.executor.env.history, &mut self.terminal, &comp_ctx, &mut self.scanner, &checker_env, &input_buffer) {
+            let line = match self.line_editor.read_line_with_completion(
+                &prompt_info.last_line,
+                &prompt_info.upper_lines,
+                &mut self.executor.env.history,
+                &mut self.terminal,
+                &comp_ctx,
+                &mut self.scanner,
+                &checker_env,
+                &input_buffer,
+            ) {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     // EOF (Ctrl+D)
