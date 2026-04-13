@@ -1,3 +1,4 @@
+use super::display_width::display_width;
 use crate::env::ShellEnv;
 use crate::expand::expand_word_to_string;
 use crate::lexer::Lexer;
@@ -68,4 +69,88 @@ pub fn expand_prompt(env: &mut ShellEnv, var_name: &str) -> String {
     // 4. Expand via expand_word_to_string (no field splitting / glob).
     //    Prompt expansion errors are non-fatal: fall back to the raw value.
     expand_word_to_string(env, &word).unwrap_or(raw)
+}
+
+/// Decomposed prompt for multi-line support.
+pub struct PromptInfo {
+    /// Lines above the editing line (display-only, printed once).
+    pub upper_lines: Vec<String>,
+    /// The final line displayed left of the input buffer.
+    pub last_line: String,
+    /// Display width of `last_line` (ANSI-stripped, Unicode-aware).
+    pub last_line_width: usize,
+}
+
+impl PromptInfo {
+    pub fn from_prompt(prompt: &str) -> Self {
+        let lines: Vec<&str> = prompt.split('\n').collect();
+        if lines.len() <= 1 {
+            let last_line = prompt.to_string();
+            let last_line_width = display_width(&last_line);
+            PromptInfo {
+                upper_lines: Vec::new(),
+                last_line,
+                last_line_width,
+            }
+        } else {
+            let upper_lines: Vec<String> = lines[..lines.len() - 1]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let last_line = lines[lines.len() - 1].to_string();
+            let last_line_width = display_width(&last_line);
+            PromptInfo {
+                upper_lines,
+                last_line,
+                last_line_width,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_line_prompt() {
+        let info = PromptInfo::from_prompt("$ ");
+        assert!(info.upper_lines.is_empty());
+        assert_eq!(info.last_line, "$ ");
+        assert_eq!(info.last_line_width, 2);
+    }
+
+    #[test]
+    fn multi_line_prompt() {
+        let info = PromptInfo::from_prompt("~/proj  main\n❯ ");
+        assert_eq!(info.upper_lines, vec!["~/proj  main"]);
+        assert_eq!(info.last_line, "❯ ");
+        assert_eq!(info.last_line_width, 2); // ❯(1) + space(1)
+    }
+
+    #[test]
+    fn multi_line_with_ansi() {
+        let prompt = "\x1b[34m~/proj\x1b[0m \x1b[32m main\x1b[0m\n\x1b[1;35m❯\x1b[0m ";
+        let info = PromptInfo::from_prompt(prompt);
+        assert_eq!(info.upper_lines.len(), 1);
+        assert_eq!(info.upper_lines[0], "\x1b[34m~/proj\x1b[0m \x1b[32m main\x1b[0m");
+        assert_eq!(info.last_line, "\x1b[1;35m❯\x1b[0m ");
+        assert_eq!(info.last_line_width, 2);
+    }
+
+    #[test]
+    fn three_line_prompt() {
+        let info = PromptInfo::from_prompt("line1\nline2\n$ ");
+        assert_eq!(info.upper_lines, vec!["line1", "line2"]);
+        assert_eq!(info.last_line, "$ ");
+        assert_eq!(info.last_line_width, 2);
+    }
+
+    #[test]
+    fn empty_prompt() {
+        let info = PromptInfo::from_prompt("");
+        assert!(info.upper_lines.is_empty());
+        assert_eq!(info.last_line, "");
+        assert_eq!(info.last_line_width, 0);
+    }
 }
