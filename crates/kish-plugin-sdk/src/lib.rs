@@ -1,11 +1,49 @@
 pub use kish_plugin_api as ffi;
 
+/// Capabilities a plugin can request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capability {
+    VariablesRead,
+    VariablesWrite,
+    Filesystem,
+    Io,
+    HookPreExec,
+    HookPostExec,
+    HookOnCd,
+}
+
+impl Capability {
+    /// Convert to the corresponding FFI bitflag.
+    pub fn to_bitflag(self) -> u32 {
+        match self {
+            Capability::VariablesRead => ffi::CAP_VARIABLES_READ,
+            Capability::VariablesWrite => ffi::CAP_VARIABLES_WRITE,
+            Capability::Filesystem => ffi::CAP_FILESYSTEM,
+            Capability::Io => ffi::CAP_IO,
+            Capability::HookPreExec => ffi::CAP_HOOK_PRE_EXEC,
+            Capability::HookPostExec => ffi::CAP_HOOK_POST_EXEC,
+            Capability::HookOnCd => ffi::CAP_HOOK_ON_CD,
+        }
+    }
+}
+
+/// Convert a slice of capabilities to a combined bitflag.
+pub fn capabilities_to_bitflags(caps: &[Capability]) -> u32 {
+    caps.iter().fold(0u32, |acc, c| acc | c.to_bitflag())
+}
+
 use std::ffi::{CStr, CString, c_char};
 
 /// Trait plugin authors implement. Requires `Default` for the export! macro.
 pub trait Plugin: Send + Default {
     /// Command names this plugin provides.
     fn commands(&self) -> &[&str];
+
+    /// Capabilities this plugin requires. The host may restrict these further
+    /// via user configuration.
+    fn required_capabilities(&self) -> &[Capability] {
+        &[]
+    }
 
     /// Called when the plugin is loaded. Return Err to abort loading.
     fn on_load(&mut self, _api: &PluginApi) -> Result<(), String> {
@@ -151,6 +189,12 @@ macro_rules! export {
                     api_version: $crate::ffi::KISH_PLUGIN_API_VERSION,
                     name: name.as_ptr(),
                     version: version.as_ptr(),
+                    required_capabilities: {
+                        let plugin = <$plugin_type as Default>::default();
+                        $crate::capabilities_to_bitflags(
+                            $crate::Plugin::required_capabilities(&plugin),
+                        )
+                    },
                 }
             })
         }
