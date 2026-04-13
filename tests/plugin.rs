@@ -119,6 +119,18 @@ fn hook_on_cd() {
 }
 
 #[test]
+fn hook_pre_prompt() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let dylib = build_test_plugin();
+    let mut manager = PluginManager::new();
+    let mut env = ShellEnv::new("kish", vec![]);
+    manager.load_plugin(&dylib, &mut env).unwrap();
+
+    manager.call_pre_prompt(&mut env);
+    assert_eq!(env.vars.get("TEST_PRE_PROMPT"), Some("1"));
+}
+
+#[test]
 fn load_nonexistent_plugin_fails() {
     let _guard = TEST_LOCK.lock().unwrap();
     let mut manager = PluginManager::new();

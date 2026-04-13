@@ -20,6 +20,7 @@ struct LoadedPlugin {
     has_pre_exec: bool,
     has_post_exec: bool,
     has_on_cd: bool,
+    has_pre_prompt: bool,
 }
 
 /// Manages loaded plugins and dispatches commands/hooks.
@@ -156,6 +157,8 @@ impl PluginManager {
             unsafe { library.get::<*const ()>(b"kish_plugin_hook_post_exec").is_ok() };
         let has_on_cd =
             unsafe { library.get::<*const ()>(b"kish_plugin_hook_on_cd").is_ok() };
+        let has_pre_prompt =
+            unsafe { library.get::<*const ()>(b"kish_plugin_hook_pre_prompt").is_ok() };
 
         self.plugins.push(LoadedPlugin {
             name,
@@ -165,6 +168,7 @@ impl PluginManager {
             has_pre_exec,
             has_post_exec,
             has_on_cd,
+            has_pre_prompt,
         });
 
         Ok(())
@@ -181,6 +185,7 @@ impl PluginManager {
             (CAP_HOOK_PRE_EXEC, "hooks:pre_exec"),
             (CAP_HOOK_POST_EXEC, "hooks:post_exec"),
             (CAP_HOOK_ON_CD, "hooks:on_cd"),
+            (CAP_HOOK_PRE_PROMPT, "hooks:pre_prompt"),
         ];
         for (flag, name) in caps {
             if denied & flag != 0 {
@@ -309,6 +314,29 @@ impl PluginManager {
                 >(b"kish_plugin_hook_on_cd")
                 {
                     hook_fn(&api, c_old.as_ptr(), c_new.as_ptr());
+                }
+            }
+        }
+    }
+
+    /// Call pre_prompt hook on all plugins that have it.
+    pub fn call_pre_prompt(&self, env: &mut ShellEnv) {
+        for plugin in &self.plugins {
+            if !plugin.has_pre_prompt {
+                continue;
+            }
+            if plugin.capabilities & kish_plugin_api::CAP_HOOK_PRE_PROMPT == 0 {
+                continue;
+            }
+            let mut ctx = HostContext::new(env, &plugin.name);
+            let mut api = build_host_api(plugin.capabilities);
+            api.ctx = &mut ctx as *mut HostContext as *mut c_void;
+            unsafe {
+                if let Ok(hook_fn) = plugin.library.get::<
+                    unsafe extern "C" fn(*const HostApi),
+                >(b"kish_plugin_hook_pre_prompt")
+                {
+                    hook_fn(&api);
                 }
             }
         }
