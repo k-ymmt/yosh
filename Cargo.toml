@@ -1,3 +1,11 @@
+[workspace]
+members = [
+    ".",
+    "crates/kish-plugin-api",
+    "crates/kish-plugin-sdk",
+    "crates/kish-plugin-manager",
+]
+
 [package]
 name = "kish"
 version = "0.1.0"
