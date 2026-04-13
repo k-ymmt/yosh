@@ -23,7 +23,6 @@
 - [ ] `~/.kishrc` startup file — ENV variable support for interactive initialization
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
-- [ ] `set_dim`/`set_reverse` use `Attribute::Reset` — resets all text attributes, not just the targeted one; may interfere with future colored prompt support; consider `Attribute::NoDim`/`Attribute::NoReverse` (`src/interactive/terminal.rs`)
 - [ ] Prompt width — accurate column width calculation for control characters and escape sequences
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
