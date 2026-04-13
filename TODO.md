@@ -42,7 +42,6 @@
 ## Future: Plugin System Enhancements
 
 - [ ] Runtime plugin load/unload — builtin commands `plugin load <path>` / `plugin unload <name>` for dynamic management
-- [ ] GitHub plugin installation — `kish plugin install <repo>` to download pre-built binaries from GitHub Releases
 - [ ] SemVer API version management — replace single `KISH_PLUGIN_API_VERSION` check with semver range compatibility (`crates/kish-plugin-api/`)
 - [ ] `~/.kishrc` plugin loading — load plugins configured in `~/.kishrc` once startup file support is implemented
 - [ ] SDK `export!` macro `unsafe` lint — `#[allow(unsafe_attr_outside_unsafe)]` workaround in generated code; clean up when macro hygiene improves (`crates/kish-plugin-sdk/src/lib.rs`)
