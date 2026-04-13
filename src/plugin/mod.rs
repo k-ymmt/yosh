@@ -311,17 +311,19 @@ impl<'a> HostContext<'a> {
 }
 
 unsafe extern "C" fn host_get_var(ctx: *mut c_void, name: *const c_char) -> *const c_char {
-    let host = &mut *(ctx as *mut HostContext);
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(s) => s,
-        Err(_) => return std::ptr::null(),
-    };
-    match host.env.vars.get(name) {
-        Some(val) => {
-            host.return_buf = CString::new(val).unwrap_or_default();
-            host.return_buf.as_ptr()
+    unsafe {
+        let host = &mut *(ctx as *mut HostContext);
+        let name = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null(),
+        };
+        match host.env.vars.get(name) {
+            Some(val) => {
+                host.return_buf = CString::new(val).unwrap_or_default();
+                host.return_buf.as_ptr()
+            }
+            None => std::ptr::null(),
         }
-        None => std::ptr::null(),
     }
 }
 
@@ -330,18 +332,20 @@ unsafe extern "C" fn host_set_var(
     name: *const c_char,
     value: *const c_char,
 ) -> i32 {
-    let host = &mut *(ctx as *mut HostContext);
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(s) => s,
-        Err(_) => return 1,
-    };
-    let value = match CStr::from_ptr(value).to_str() {
-        Ok(s) => s,
-        Err(_) => return 1,
-    };
-    match host.env.vars.set(name, value) {
-        Ok(()) => 0,
-        Err(_) => 1,
+    unsafe {
+        let host = &mut *(ctx as *mut HostContext);
+        let name = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return 1,
+        };
+        let value = match CStr::from_ptr(value).to_str() {
+            Ok(s) => s,
+            Err(_) => return 1,
+        };
+        match host.env.vars.set(name, value) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        }
     }
 }
 
@@ -350,43 +354,49 @@ unsafe extern "C" fn host_export_var(
     name: *const c_char,
     value: *const c_char,
 ) -> i32 {
-    let host = &mut *(ctx as *mut HostContext);
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(s) => s,
-        Err(_) => return 1,
-    };
-    let value = match CStr::from_ptr(value).to_str() {
-        Ok(s) => s,
-        Err(_) => return 1,
-    };
-    match host.env.vars.set(name, value) {
-        Ok(()) => {
-            host.env.vars.export(name);
-            0
+    unsafe {
+        let host = &mut *(ctx as *mut HostContext);
+        let name = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return 1,
+        };
+        let value = match CStr::from_ptr(value).to_str() {
+            Ok(s) => s,
+            Err(_) => return 1,
+        };
+        match host.env.vars.set(name, value) {
+            Ok(()) => {
+                host.env.vars.export(name);
+                0
+            }
+            Err(_) => 1,
         }
-        Err(_) => 1,
     }
 }
 
 unsafe extern "C" fn host_get_cwd(ctx: *mut c_void) -> *const c_char {
-    let host = &mut *(ctx as *mut HostContext);
-    match std::env::current_dir() {
-        Ok(cwd) => {
-            host.return_buf = CString::new(cwd.to_string_lossy().as_ref()).unwrap_or_default();
-            host.return_buf.as_ptr()
+    unsafe {
+        let host = &mut *(ctx as *mut HostContext);
+        match std::env::current_dir() {
+            Ok(cwd) => {
+                host.return_buf = CString::new(cwd.to_string_lossy().as_ref()).unwrap_or_default();
+                host.return_buf.as_ptr()
+            }
+            Err(_) => std::ptr::null(),
         }
-        Err(_) => std::ptr::null(),
     }
 }
 
 unsafe extern "C" fn host_set_cwd(_ctx: *mut c_void, path: *const c_char) -> i32 {
-    let path = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(_) => return 1,
-    };
-    match std::env::set_current_dir(path) {
-        Ok(()) => 0,
-        Err(_) => 1,
+    unsafe {
+        let path = match CStr::from_ptr(path).to_str() {
+            Ok(s) => s,
+            Err(_) => return 1,
+        };
+        match std::env::set_current_dir(path) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        }
     }
 }
 
@@ -395,10 +405,12 @@ unsafe extern "C" fn host_write_stdout(
     data: *const c_char,
     len: usize,
 ) -> i32 {
-    let slice = std::slice::from_raw_parts(data as *const u8, len);
-    match std::io::stdout().write_all(slice) {
-        Ok(()) => 0,
-        Err(_) => 1,
+    unsafe {
+        let slice = std::slice::from_raw_parts(data as *const u8, len);
+        match std::io::stdout().write_all(slice) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        }
     }
 }
 
@@ -407,9 +419,11 @@ unsafe extern "C" fn host_write_stderr(
     data: *const c_char,
     len: usize,
 ) -> i32 {
-    let slice = std::slice::from_raw_parts(data as *const u8, len);
-    match std::io::stderr().write_all(slice) {
-        Ok(()) => 0,
-        Err(_) => 1,
+    unsafe {
+        let slice = std::slice::from_raw_parts(data as *const u8, len);
+        match std::io::stderr().write_all(slice) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        }
     }
 }
