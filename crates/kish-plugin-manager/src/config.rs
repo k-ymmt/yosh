@@ -59,6 +59,25 @@ pub fn parse_source(s: &str) -> Result<PluginSource, String> {
     }
 }
 
+fn validate_plugin_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("plugin name is empty".to_string());
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(format!(
+            "plugin '{}': name must not contain '/', '\\', or '..'",
+            name
+        ));
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!(
+            "plugin '{}': name must contain only alphanumeric characters, hyphens, or underscores",
+            name
+        ));
+    }
+    Ok(())
+}
+
 pub fn load_config(path: &Path) -> Result<Vec<PluginDecl>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("{}: {}", path.display(), e))?;
@@ -67,6 +86,7 @@ pub fn load_config(path: &Path) -> Result<Vec<PluginDecl>, String> {
     raw.plugin
         .into_iter()
         .map(|entry| {
+            validate_plugin_name(&entry.name)?;
             let source = parse_source(&entry.source)?;
             if matches!(source, PluginSource::GitHub { .. }) && entry.version.is_none() {
                 return Err(format!(
@@ -204,6 +224,39 @@ asset = "myplugin-{{os}}-{{arch}}.{{ext}}"
 [[plugin]]
 name = "bad"
 source = "github:user/repo"
+"#).unwrap();
+        assert!(load_config(f.path()).is_err());
+    }
+
+    #[test]
+    fn reject_path_traversal_in_name() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, r#"
+[[plugin]]
+name = "../../../etc"
+source = "local:/tmp/lib.dylib"
+"#).unwrap();
+        assert!(load_config(f.path()).is_err());
+    }
+
+    #[test]
+    fn reject_slash_in_name() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, r#"
+[[plugin]]
+name = "foo/bar"
+source = "local:/tmp/lib.dylib"
+"#).unwrap();
+        assert!(load_config(f.path()).is_err());
+    }
+
+    #[test]
+    fn reject_empty_name() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, r#"
+[[plugin]]
+name = ""
+source = "local:/tmp/lib.dylib"
 "#).unwrap();
         assert!(load_config(f.path()).is_err());
     }

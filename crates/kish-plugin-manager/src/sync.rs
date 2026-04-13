@@ -36,17 +36,11 @@ pub struct SyncResult {
 }
 
 /// Run the sync flow: read config, diff against lock, download/verify, write lock.
-pub fn sync(prune: bool) -> SyncResult {
+pub fn sync(prune: bool) -> Result<SyncResult, String> {
     let config_path = config_path();
     let lock_path = lock_path();
 
-    let decls = match config::load_config(&config_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("kish-plugin: {}", e);
-            std::process::exit(2);
-        }
-    };
+    let decls = config::load_config(&config_path)?;
 
     let existing_lock = match load_lockfile(&lock_path) {
         Ok(l) => l,
@@ -91,12 +85,9 @@ pub fn sync(prune: bool) -> SyncResult {
     }
 
     let new_lock = LockFile { plugin: new_entries };
-    if let Err(e) = save_lockfile(&lock_path, &new_lock) {
-        eprintln!("kish-plugin: fatal: {}", e);
-        std::process::exit(2);
-    }
+    save_lockfile(&lock_path, &new_lock)?;
 
-    SyncResult { succeeded, failed }
+    Ok(SyncResult { succeeded, failed })
 }
 
 fn sync_one(

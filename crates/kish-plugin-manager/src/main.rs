@@ -23,7 +23,13 @@ fn main() {
 
 fn cmd_sync(args: &[String]) -> i32 {
     let prune = args.iter().any(|a| a == "--prune");
-    let result = sync::sync(prune);
+    let result = match sync::sync(prune) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("kish-plugin: {}", e);
+            return 2;
+        }
+    };
 
     for name in &result.succeeded {
         eprintln!("  ✓ {}", name);

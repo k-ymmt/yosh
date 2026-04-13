@@ -50,6 +50,10 @@
 - [ ] `kish-plugin sync`: suggest `KISH_GITHUB_TOKEN` when GitHub API rate limit (60 req/hour) is hit without auth (`crates/kish-plugin-manager/src/github.rs`)
 - [ ] `kish-plugin sync --prune`: remove empty plugin directories after deleting binaries (`crates/kish-plugin-manager/src/sync.rs`)
 - [ ] Workspace default package: `cargo test` without `-p` or `--workspace` may not find kish tests — document in CLAUDE.md or set `default-members` in workspace config (`Cargo.toml`)
+- [ ] `kish-plugin update`: version replacement uses naive `String::replacen` which may target wrong plugin if two share the same version — consider using `toml_edit` for TOML-preserving edits (`crates/kish-plugin-manager/src/main.rs`)
+- [ ] `plugins.lock` atomic write — current `std::fs::write` can leave truncated file on crash; use write-to-temp + rename (`crates/kish-plugin-manager/src/lockfile.rs`)
+- [ ] `verify.rs` reads entire file into memory for SHA-256 — use streaming `Digest::update()` for large binaries (`crates/kish-plugin-manager/src/verify.rs`)
+- [ ] Integration tests: add checksum mismatch re-download test and partial failure (404) test per spec (`crates/kish-plugin-manager/tests/`)
 
 ## Future: Arithmetic Expansion Edge Cases
 
