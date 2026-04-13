@@ -1,6 +1,7 @@
 use std::process;
 
 mod config;
+mod github;
 mod lockfile;
 mod resolve;
 mod verify;
