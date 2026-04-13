@@ -12,6 +12,7 @@ pub const CAP_IO: u32 = 0x08;
 pub const CAP_HOOK_PRE_EXEC: u32 = 0x10;
 pub const CAP_HOOK_POST_EXEC: u32 = 0x20;
 pub const CAP_HOOK_ON_CD: u32 = 0x40;
+pub const CAP_HOOK_PRE_PROMPT: u32 = 0x80;
 
 /// All capability bits OR'd together.
 pub const CAP_ALL: u32 = CAP_VARIABLES_READ
@@ -20,7 +21,8 @@ pub const CAP_ALL: u32 = CAP_VARIABLES_READ
     | CAP_IO
     | CAP_HOOK_PRE_EXEC
     | CAP_HOOK_POST_EXEC
-    | CAP_HOOK_ON_CD;
+    | CAP_HOOK_ON_CD
+    | CAP_HOOK_PRE_PROMPT;
 
 /// Plugin metadata returned by kish_plugin_decl().
 #[repr(C)]
