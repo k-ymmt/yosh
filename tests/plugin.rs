@@ -264,6 +264,9 @@ fn sandbox_full_capabilities_works_normally() {
 
     manager.call_on_cd(&mut env, "/a", "/b");
     assert_eq!(env.vars.get("TEST_ON_CD"), Some("/a->/b"));
+
+    manager.call_pre_prompt(&mut env);
+    assert_eq!(env.vars.get("TEST_PRE_PROMPT"), Some("1"));
 }
 
 #[test]
