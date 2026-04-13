@@ -15,6 +15,12 @@ pub struct PluginEntry {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 fn default_true() -> bool {

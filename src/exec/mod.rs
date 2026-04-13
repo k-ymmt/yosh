@@ -38,7 +38,7 @@ impl Executor {
         }
     }
 
-    /// Load plugins from the default config path (~/.config/kish/plugins.toml).
+    /// Load plugins from the lock file (~/.config/kish/plugins.lock).
     pub fn load_plugins(&mut self) {
         let config_path = plugin_config_path();
         self.plugins.load_from_config(&config_path, &mut self.env);
@@ -630,7 +630,7 @@ impl Executor {
 
 fn plugin_config_path() -> std::path::PathBuf {
     if let Ok(home) = std::env::var("HOME") {
-        std::path::PathBuf::from(home).join(".config/kish/plugins.toml")
+        std::path::PathBuf::from(home).join(".config/kish/plugins.lock")
     } else {
         std::path::PathBuf::from("/nonexistent")
     }
@@ -856,5 +856,11 @@ mod tests {
             assert!(!e.should_errexit());
         });
         assert!(exec.should_errexit());
+    }
+
+    #[test]
+    fn plugin_config_path_points_to_lock_file() {
+        let path = super::plugin_config_path();
+        assert!(path.to_string_lossy().ends_with("plugins.lock"));
     }
 }
