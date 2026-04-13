@@ -32,6 +32,9 @@
 - [ ] Tab completion: command name completion — complete executable names from PATH in command position (`src/interactive/completion.rs`)
 - [ ] Tab completion: `CompletionUI`/`FuzzySearchUI` filtered/total display — both UIs show `N/N` instead of `filtered/total` because original count is not tracked (`src/interactive/completion.rs`, `src/interactive/fuzzy_search.rs`)
 - [ ] Tab completion: unify `read_line` and `read_line_with_completion` — `read_line` is now only used by tests; consider merging into a single method (`src/interactive/line_editor.rs`)
+- [ ] Syntax highlighting: color palette customization — allow users to override colors via environment variables like `KISH_COLOR_KEYWORD=blue` (`src/interactive/highlight.rs`)
+- [ ] Syntax highlighting: double-quote `$` expansion uses inline scanning — deeply nested cases like `"$(foo "$(bar)")"` may highlight incorrectly; consider mode-stack approach (`src/interactive/highlight.rs`)
+- [ ] Syntax highlighting: `redraw()` ANSI optimization — currently calls `reset_style()` on every style change; could reduce escape sequences with diff-based rendering (`src/interactive/line_editor.rs`)
 
 ## Future: Arithmetic Expansion Edge Cases
 
