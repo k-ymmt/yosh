@@ -570,11 +570,9 @@ unsafe extern "C" fn deny_write_stderr(
     _data: *const c_char,
     _len: usize,
 ) -> i32 {
-    // Cannot log to stderr since write_stderr itself is denied.
-    // Use stdout as fallback for the denial message.
     unsafe {
         let host = &*(ctx as *mut HostContext);
-        println!(
+        eprintln!(
             "kish: plugin '{}': write_stderr denied (missing 'io' capability)",
             host.plugin_name
         );
