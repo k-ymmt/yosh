@@ -17,6 +17,7 @@ impl Plugin for TestPlugin {
             Capability::HookPreExec,
             Capability::HookPostExec,
             Capability::HookOnCd,
+            Capability::HookPrePrompt,
         ]
     }
 
@@ -50,6 +51,10 @@ impl Plugin for TestPlugin {
 
     fn hook_on_cd(&mut self, api: &PluginApi, old_dir: &str, new_dir: &str) {
         let _ = api.set_var("TEST_ON_CD", &format!("{old_dir}->{new_dir}"));
+    }
+
+    fn hook_pre_prompt(&mut self, api: &PluginApi) {
+        let _ = api.set_var("TEST_PRE_PROMPT", "1");
     }
 }
 
