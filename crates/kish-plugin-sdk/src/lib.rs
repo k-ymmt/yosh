@@ -33,6 +33,12 @@ pub struct PluginApi {
     api: *const ffi::HostApi,
 }
 
+/// A Send + Sync wrapper for *const c_char pointers.
+/// SAFETY: These pointers are only used to point to static string data.
+pub struct CCharPtr(pub *const c_char);
+unsafe impl Send for CCharPtr {}
+unsafe impl Sync for CCharPtr {}
+
 impl PluginApi {
     /// # Safety
     /// `api` must point to a valid `HostApi` that outlives this `PluginApi`.
@@ -126,9 +132,13 @@ macro_rules! export {
         static PLUGIN_VERSION_CSTR: OnceLock<CString> = OnceLock::new();
         static PLUGIN_DECL_STATIC: OnceLock<$crate::ffi::PluginDecl> = OnceLock::new();
         static COMMAND_CSTRS: OnceLock<Vec<CString>> = OnceLock::new();
-        static COMMAND_PTRS: OnceLock<Vec<*const c_char>> = OnceLock::new();
+        static COMMAND_PTRS: OnceLock<Vec<CCharPtr>> = OnceLock::new();
 
-        #[no_mangle]
+        // Helper to wrap raw pointers in CCharPtr for static storage
+        use $crate::CCharPtr;
+
+        #[allow(unsafe_attr_outside_unsafe)]
+        #[unsafe(no_mangle)]
         pub extern "C" fn kish_plugin_decl() -> *const $crate::ffi::PluginDecl {
             PLUGIN_DECL_STATIC.get_or_init(|| {
                 let name = PLUGIN_NAME_CSTR.get_or_init(|| {
@@ -145,7 +155,8 @@ macro_rules! export {
             })
         }
 
-        #[no_mangle]
+        #[allow(unsafe_attr_outside_unsafe)]
+        #[unsafe(no_mangle)]
         pub extern "C" fn kish_plugin_init(api: *const $crate::ffi::HostApi) -> i32 {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let plugin_api = unsafe { $crate::PluginApi::from_raw(api) };
@@ -163,7 +174,8 @@ macro_rules! export {
             }
         }
 
-        #[no_mangle]
+        #[allow(unsafe_attr_outside_unsafe)]
+        #[unsafe(no_mangle)]
         pub extern "C" fn kish_plugin_commands(count: *mut u32) -> *const *const c_char {
             let cstrs = COMMAND_CSTRS.get_or_init(|| {
                 let plugin = PLUGIN_INSTANCE.lock().unwrap();
@@ -174,13 +186,15 @@ macro_rules! export {
                     .collect()
             });
             let ptrs = COMMAND_PTRS.get_or_init(|| {
-                cstrs.iter().map(|s| s.as_ptr()).collect()
+                cstrs.iter().map(|s| CCharPtr(s.as_ptr())).collect()
             });
             unsafe { *count = ptrs.len() as u32; }
-            ptrs.as_ptr()
+            // Cast the Vec of CCharPtr to Vec of raw pointers
+            ptrs.as_ptr() as *const *const c_char
         }
 
-        #[no_mangle]
+        #[allow(unsafe_attr_outside_unsafe)]
+        #[unsafe(no_mangle)]
         pub extern "C" fn kish_plugin_exec(
             api: *const $crate::ffi::HostApi,
             name: *const c_char,
@@ -204,7 +218,8 @@ macro_rules! export {
             }
         }
 
-        #[no_mangle]
+        #[allow(unsafe_attr_outside_unsafe)]
+        #[unsafe(no_mangle)]
         pub extern "C" fn kish_plugin_hook_pre_exec(
             api: *const $crate::ffi::HostApi,
             cmd: *const c_char,
@@ -219,7 +234,8 @@ macro_rules! export {
             }));
         }
 
-        #[no_mangle]
+        #[allow(unsafe_attr_outside_unsafe)]
+        #[unsafe(no_mangle)]
         pub extern "C" fn kish_plugin_hook_post_exec(
             api: *const $crate::ffi::HostApi,
             cmd: *const c_char,
@@ -235,7 +251,8 @@ macro_rules! export {
             }));
         }
 
-        #[no_mangle]
+        #[allow(unsafe_attr_outside_unsafe)]
+        #[unsafe(no_mangle)]
         pub extern "C" fn kish_plugin_hook_on_cd(
             api: *const $crate::ffi::HostApi,
             old_dir: *const c_char,
@@ -252,7 +269,8 @@ macro_rules! export {
             }));
         }
 
-        #[no_mangle]
+        #[allow(unsafe_attr_outside_unsafe)]
+        #[unsafe(no_mangle)]
         pub extern "C" fn kish_plugin_destroy() {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut plugin = PLUGIN_INSTANCE.lock().unwrap();

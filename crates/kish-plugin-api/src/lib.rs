@@ -11,6 +11,11 @@ pub struct PluginDecl {
     pub version: *const c_char,
 }
 
+// SAFETY: PluginDecl contains raw pointers to static string data only.
+// These are initialized once and never modified, making the struct safe to share.
+unsafe impl Send for PluginDecl {}
+unsafe impl Sync for PluginDecl {}
+
 /// API callbacks kish provides to plugins.
 ///
 /// `ctx` is an opaque pointer to kish internals. Plugins pass it back to each
