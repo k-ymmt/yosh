@@ -1,4 +1,4 @@
-use kish_plugin_sdk::{Plugin, PluginApi, export};
+use kish_plugin_sdk::{Capability, Plugin, PluginApi, export};
 
 #[derive(Default)]
 struct TestPlugin;
@@ -6,6 +6,18 @@ struct TestPlugin;
 impl Plugin for TestPlugin {
     fn commands(&self) -> &[&str] {
         &["test-hello", "test-set-var"]
+    }
+
+    fn required_capabilities(&self) -> &[Capability] {
+        &[
+            Capability::VariablesRead,
+            Capability::VariablesWrite,
+            Capability::Filesystem,
+            Capability::Io,
+            Capability::HookPreExec,
+            Capability::HookPostExec,
+            Capability::HookOnCd,
+        ]
     }
 
     fn exec(&mut self, api: &PluginApi, command: &str, args: &[&str]) -> i32 {
