@@ -521,6 +521,13 @@ impl LineEditor {
         }
 
         // Undo snapshot management
+        // - Insert group boundary: when transitioning from insert to non-insert, save once
+        // - Destructive ops: always save pre-op state (once)
+        // - Insert start: save when first insert after non-insert
+        if self.last_was_insert && !matches!(action, EditAction::InsertChar(_)) {
+            // Finalize the insert group — save current state as group boundary
+            self.undo.save(&self.buf, self.pos);
+        }
         match action {
             EditAction::InsertChar(_) => {
                 if !self.last_was_insert {
@@ -533,16 +540,13 @@ impl LineEditor {
             | EditAction::Yank | EditAction::YankPop
             | EditAction::TransposeChars | EditAction::TransposeWords
             | EditAction::UpcaseWord | EditAction::DowncaseWord | EditAction::CapitalizeWord => {
-                if self.last_was_insert {
+                if !self.last_was_insert {
+                    // Not transitioning from insert — save pre-op state directly
                     self.undo.save(&self.buf, self.pos);
                 }
-                self.undo.save(&self.buf, self.pos);
+                // If last_was_insert, boundary save above already captured the state
             }
-            _ => {
-                if self.last_was_insert {
-                    self.undo.save(&self.buf, self.pos);
-                }
-            }
+            _ => {}
         }
 
         // Determine if consecutive kill for append
