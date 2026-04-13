@@ -101,6 +101,206 @@ impl LineEditor {
         self.pos = self.buf.len();
     }
 
+    /// Returns true if `ch` is a word character (alphanumeric or underscore).
+    fn is_word_char(ch: char) -> bool {
+        ch.is_alphanumeric() || ch == '_'
+    }
+
+    /// Move cursor backward to the start of the previous word.
+    pub fn move_backward_word(&mut self) {
+        while self.pos > 0 && !Self::is_word_char(self.buf[self.pos - 1]) {
+            self.pos -= 1;
+        }
+        while self.pos > 0 && Self::is_word_char(self.buf[self.pos - 1]) {
+            self.pos -= 1;
+        }
+    }
+
+    /// Move cursor forward to the end of the next word.
+    pub fn move_forward_word(&mut self) {
+        let len = self.buf.len();
+        while self.pos < len && !Self::is_word_char(self.buf[self.pos]) {
+            self.pos += 1;
+        }
+        while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
+            self.pos += 1;
+        }
+    }
+
+    /// Kill from cursor to end of line. Returns the killed text.
+    pub fn kill_to_end(&mut self) -> String {
+        let killed: String = self.buf[self.pos..].iter().collect();
+        self.buf.truncate(self.pos);
+        killed
+    }
+
+    /// Kill from start of line to cursor. Returns the killed text.
+    pub fn kill_to_start(&mut self) -> String {
+        let killed: String = self.buf[..self.pos].iter().collect();
+        self.buf.drain(..self.pos);
+        self.pos = 0;
+        killed
+    }
+
+    /// Kill the word behind the cursor. Returns the killed text.
+    pub fn kill_backward_word(&mut self) -> String {
+        let old_pos = self.pos;
+        self.move_backward_word();
+        let killed: String = self.buf[self.pos..old_pos].iter().collect();
+        self.buf.drain(self.pos..old_pos);
+        killed
+    }
+
+    /// Kill from cursor to end of the next word. Returns the killed text.
+    pub fn kill_forward_word(&mut self) -> String {
+        let old_pos = self.pos;
+        let len = self.buf.len();
+        let mut end = self.pos;
+        while end < len && !Self::is_word_char(self.buf[end]) {
+            end += 1;
+        }
+        while end < len && Self::is_word_char(self.buf[end]) {
+            end += 1;
+        }
+        let killed: String = self.buf[old_pos..end].iter().collect();
+        self.buf.drain(old_pos..end);
+        killed
+    }
+
+    /// Transpose the two characters around the cursor (Ctrl+T).
+    pub fn transpose_chars(&mut self) {
+        if self.buf.len() < 2 {
+            return;
+        }
+        if self.pos == 0 {
+            return;
+        }
+        if self.pos == self.buf.len() {
+            self.buf.swap(self.pos - 2, self.pos - 1);
+        } else {
+            self.buf.swap(self.pos - 1, self.pos);
+            self.pos += 1;
+        }
+    }
+
+    /// Transpose the two words around the cursor (Alt+T).
+    pub fn transpose_words(&mut self) {
+        let len = self.buf.len();
+        if len == 0 { return; }
+
+        let mut p = self.pos;
+        if p == len || !Self::is_word_char(self.buf[p]) {
+            while p > 0 && !Self::is_word_char(self.buf[p - 1]) {
+                p -= 1;
+            }
+        }
+        if p == 0 { return; }
+
+        // Find end of word2
+        let w2e = if self.pos < len && Self::is_word_char(self.buf[self.pos]) {
+            let mut e = self.pos;
+            while e < len && Self::is_word_char(self.buf[e]) { e += 1; }
+            e
+        } else {
+            p
+        };
+
+        // Find start of word2
+        let mut w2s = w2e;
+        while w2s > 0 && Self::is_word_char(self.buf[w2s - 1]) {
+            w2s -= 1;
+        }
+        if w2s == 0 { return; }
+
+        // Find end of word1
+        let mut w1e = w2s;
+        while w1e > 0 && !Self::is_word_char(self.buf[w1e - 1]) {
+            w1e -= 1;
+        }
+        if w1e == 0 { return; }
+
+        // Find start of word1
+        let mut w1s = w1e;
+        while w1s > 0 && Self::is_word_char(self.buf[w1s - 1]) {
+            w1s -= 1;
+        }
+
+        let word1: Vec<char> = self.buf[w1s..w1e].to_vec();
+        let sep: Vec<char> = self.buf[w1e..w2s].to_vec();
+        let word2: Vec<char> = self.buf[w2s..w2e].to_vec();
+
+        let mut replacement = Vec::new();
+        replacement.extend_from_slice(&word2);
+        replacement.extend_from_slice(&sep);
+        replacement.extend_from_slice(&word1);
+
+        self.buf.splice(w1s..w2e, replacement);
+        self.pos = w1s + word2.len() + sep.len() + word1.len();
+    }
+
+    /// Convert the next word to uppercase (Alt+U).
+    pub fn upcase_word(&mut self) {
+        let len = self.buf.len();
+        while self.pos < len && !Self::is_word_char(self.buf[self.pos]) {
+            self.pos += 1;
+        }
+        while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
+            self.buf[self.pos] = self.buf[self.pos].to_uppercase().next().unwrap_or(self.buf[self.pos]);
+            self.pos += 1;
+        }
+    }
+
+    /// Convert the next word to lowercase (Alt+L).
+    pub fn downcase_word(&mut self) {
+        let len = self.buf.len();
+        while self.pos < len && !Self::is_word_char(self.buf[self.pos]) {
+            self.pos += 1;
+        }
+        while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
+            self.buf[self.pos] = self.buf[self.pos].to_lowercase().next().unwrap_or(self.buf[self.pos]);
+            self.pos += 1;
+        }
+    }
+
+    /// Capitalize the next word: first char uppercase, rest lowercase (Alt+C).
+    pub fn capitalize_word(&mut self) {
+        let len = self.buf.len();
+        while self.pos < len && !Self::is_word_char(self.buf[self.pos]) {
+            self.pos += 1;
+        }
+        let mut first = true;
+        while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
+            if first {
+                self.buf[self.pos] = self.buf[self.pos].to_uppercase().next().unwrap_or(self.buf[self.pos]);
+                first = false;
+            } else {
+                self.buf[self.pos] = self.buf[self.pos].to_lowercase().next().unwrap_or(self.buf[self.pos]);
+            }
+            self.pos += 1;
+        }
+    }
+
+    /// Insert text at the current cursor position. Returns (start, len) for yank tracking.
+    pub fn insert_str(&mut self, text: &str) -> (usize, usize) {
+        let start = self.pos;
+        let chars: Vec<char> = text.chars().collect();
+        let len = chars.len();
+        for (i, ch) in chars.into_iter().enumerate() {
+            self.buf.insert(self.pos + i, ch);
+        }
+        self.pos += len;
+        (start, len)
+    }
+
+    /// Remove `len` characters starting at `start`. Used by yank_pop to replace yanked text.
+    pub fn remove_range(&mut self, start: usize, len: usize) {
+        let end = (start + len).min(self.buf.len());
+        self.buf.drain(start..end);
+        if self.pos > start {
+            self.pos = start;
+        }
+    }
+
     /// Return the current suggestion text, if any.
     #[allow(dead_code)]
     pub fn suggestion(&self) -> Option<&str> {

@@ -1596,3 +1596,171 @@ fn test_keymap_alt_backspace() {
     );
     assert_eq!(action, EditAction::KillBackwardWord);
 }
+
+// ── Word boundary tests ───────────────────────────────────────────────
+
+#[test]
+fn test_move_backward_word() {
+    let mut ed = LineEditor::new();
+    for ch in "hello world".chars() { ed.insert_char(ch); }
+    ed.move_backward_word();
+    assert_eq!(ed.cursor(), 6);
+    ed.move_backward_word();
+    assert_eq!(ed.cursor(), 0);
+    ed.move_backward_word();
+    assert_eq!(ed.cursor(), 0);
+}
+
+#[test]
+fn test_move_forward_word() {
+    let mut ed = LineEditor::new();
+    for ch in "hello world".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    ed.move_forward_word();
+    assert_eq!(ed.cursor(), 5);
+    ed.move_forward_word();
+    assert_eq!(ed.cursor(), 11);
+    ed.move_forward_word();
+    assert_eq!(ed.cursor(), 11);
+}
+
+#[test]
+fn test_move_backward_word_with_multiple_spaces() {
+    let mut ed = LineEditor::new();
+    for ch in "foo   bar".chars() { ed.insert_char(ch); }
+    ed.move_backward_word();
+    assert_eq!(ed.cursor(), 6);
+}
+
+#[test]
+fn test_move_forward_word_with_symbols() {
+    let mut ed = LineEditor::new();
+    for ch in "foo--bar".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    ed.move_forward_word();
+    assert_eq!(ed.cursor(), 3);
+    ed.move_forward_word();
+    assert_eq!(ed.cursor(), 8);
+}
+
+#[test]
+fn test_kill_to_end() {
+    let mut ed = LineEditor::new();
+    for ch in "hello world".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    for _ in 0..5 { ed.move_cursor_right(); }
+    let killed = ed.kill_to_end();
+    assert_eq!(ed.buffer(), "hello");
+    assert_eq!(killed, " world");
+}
+
+#[test]
+fn test_kill_to_start() {
+    let mut ed = LineEditor::new();
+    for ch in "hello world".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    for _ in 0..5 { ed.move_cursor_right(); }
+    let killed = ed.kill_to_start();
+    assert_eq!(ed.buffer(), " world");
+    assert_eq!(ed.cursor(), 0);
+    assert_eq!(killed, "hello");
+}
+
+#[test]
+fn test_kill_backward_word() {
+    let mut ed = LineEditor::new();
+    for ch in "hello world".chars() { ed.insert_char(ch); }
+    let killed = ed.kill_backward_word();
+    assert_eq!(ed.buffer(), "hello ");
+    assert_eq!(killed, "world");
+}
+
+#[test]
+fn test_kill_forward_word() {
+    let mut ed = LineEditor::new();
+    for ch in "hello world".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    let killed = ed.kill_forward_word();
+    assert_eq!(ed.buffer(), " world");
+    assert_eq!(killed, "hello");
+}
+
+#[test]
+fn test_transpose_chars_middle() {
+    let mut ed = LineEditor::new();
+    for ch in "abc".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    ed.move_cursor_right();
+    ed.transpose_chars();
+    assert_eq!(ed.buffer(), "bac");
+    assert_eq!(ed.cursor(), 2);
+}
+
+#[test]
+fn test_transpose_chars_at_end() {
+    let mut ed = LineEditor::new();
+    for ch in "abc".chars() { ed.insert_char(ch); }
+    ed.transpose_chars();
+    assert_eq!(ed.buffer(), "acb");
+    assert_eq!(ed.cursor(), 3);
+}
+
+#[test]
+fn test_transpose_chars_at_start_noop() {
+    let mut ed = LineEditor::new();
+    for ch in "abc".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    ed.transpose_chars();
+    assert_eq!(ed.buffer(), "abc");
+    assert_eq!(ed.cursor(), 0);
+}
+
+#[test]
+fn test_upcase_word() {
+    let mut ed = LineEditor::new();
+    for ch in "hello world".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    ed.upcase_word();
+    assert_eq!(ed.buffer(), "HELLO world");
+    assert_eq!(ed.cursor(), 5);
+}
+
+#[test]
+fn test_downcase_word() {
+    let mut ed = LineEditor::new();
+    for ch in "HELLO WORLD".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    ed.downcase_word();
+    assert_eq!(ed.buffer(), "hello WORLD");
+    assert_eq!(ed.cursor(), 5);
+}
+
+#[test]
+fn test_capitalize_word() {
+    let mut ed = LineEditor::new();
+    for ch in "hello world".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    ed.capitalize_word();
+    assert_eq!(ed.buffer(), "Hello world");
+    assert_eq!(ed.cursor(), 5);
+}
+
+#[test]
+fn test_transpose_words() {
+    let mut ed = LineEditor::new();
+    for ch in "hello world".chars() { ed.insert_char(ch); }
+    ed.transpose_words();
+    assert_eq!(ed.buffer(), "world hello");
+    assert_eq!(ed.cursor(), 11);
+}
+
+#[test]
+fn test_transpose_words_cursor_in_middle() {
+    let mut ed = LineEditor::new();
+    for ch in "aaa bbb ccc".chars() { ed.insert_char(ch); }
+    ed.move_to_start();
+    for _ in 0..5 { ed.move_cursor_right(); }
+    ed.transpose_words();
+    assert_eq!(ed.buffer(), "bbb aaa ccc");
+    assert_eq!(ed.cursor(), 7);
+}
