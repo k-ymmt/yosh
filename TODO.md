@@ -38,6 +38,15 @@
 - [ ] Emacs keybindings: undo group boundary on space — spec says space triggers undo group boundary but implementation defers boundary to next non-space char; undo granularity is slightly coarser than readline (`src/interactive/line_editor.rs`)
 - [ ] Emacs keybindings: PTY E2E tests — kill/yank round-trip, undo, word movement, numeric arg scenarios not covered by PTY tests (`tests/pty_interactive.rs`)
 
+## Future: Plugin System Enhancements
+
+- [ ] `pre_prompt` hook — fire before prompt display in interactive mode; hook infrastructure is ready (`src/plugin/mod.rs`)
+- [ ] Runtime plugin load/unload — builtin commands `plugin load <path>` / `plugin unload <name>` for dynamic management
+- [ ] GitHub plugin installation — `kish plugin install <repo>` to download pre-built binaries from GitHub Releases
+- [ ] SemVer API version management — replace single `KISH_PLUGIN_API_VERSION` check with semver range compatibility (`crates/kish-plugin-api/`)
+- [ ] `~/.kishrc` plugin loading — load plugins configured in `~/.kishrc` once startup file support is implemented
+- [ ] SDK `export!` macro `unsafe` lint — `#[allow(unsafe_attr_outside_unsafe)]` workaround in generated code; clean up when macro hygiene improves (`crates/kish-plugin-sdk/src/lib.rs`)
+
 ## Future: Arithmetic Expansion Edge Cases
 
 - [ ] `$(cmd)` inside `$((...))` does not handle quoted `)` — depth counter in `expand_vars` ignores quote context, so `$(echo "3)")` breaks (`src/expand/arith.rs`)
