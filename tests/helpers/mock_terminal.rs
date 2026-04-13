@@ -83,6 +83,11 @@ impl Terminal for MockTerminal {
         Ok(())
     }
 
+    fn move_down(&mut self, n: u16) -> io::Result<()> {
+        self.cursor_row += n as i32;
+        Ok(())
+    }
+
     fn clear_current_line(&mut self) -> io::Result<()> {
         Ok(())
     }
