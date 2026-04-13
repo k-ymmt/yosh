@@ -8,6 +8,7 @@ mod simple;
 use nix::unistd::{fork, ForkResult};
 
 use crate::env::ShellEnv;
+use crate::plugin::PluginManager;
 use crate::signal;
 use crate::parser::ast::{
     AndOrList, AndOrOp, Command, CompleteCommand, Program, SeparatorOp,
@@ -15,6 +16,7 @@ use crate::parser::ast::{
 
 pub struct Executor {
     pub env: ShellEnv,
+    pub plugins: PluginManager,
     errexit_suppressed_depth: usize,
 }
 
@@ -22,6 +24,7 @@ impl Executor {
     pub fn new(shell_name: impl Into<String>, args: Vec<String>) -> Self {
         Executor {
             env: ShellEnv::new(shell_name, args),
+            plugins: PluginManager::new(),
             errexit_suppressed_depth: 0,
         }
     }
@@ -30,8 +33,15 @@ impl Executor {
     pub fn from_env(env: ShellEnv) -> Self {
         Executor {
             env,
+            plugins: PluginManager::new(),
             errexit_suppressed_depth: 0,
         }
+    }
+
+    /// Load plugins from the default config path (~/.config/kish/plugins.toml).
+    pub fn load_plugins(&mut self) {
+        let config_path = plugin_config_path();
+        self.plugins.load_from_config(&config_path, &mut self.env);
     }
 
     /// Execute closure within errexit-suppressed context.
@@ -615,6 +625,14 @@ impl Executor {
             self.env.process.jobs.mark_notified(*id);
         }
         self.env.process.jobs.cleanup_notified();
+    }
+}
+
+fn plugin_config_path() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home).join(".config/kish/plugins.toml")
+    } else {
+        std::path::PathBuf::from("/nonexistent")
     }
 }
 

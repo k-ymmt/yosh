@@ -7,6 +7,7 @@ mod lexer;
 mod parser;
 mod signal;
 mod interactive;
+mod plugin;
 
 use std::env as std_env;
 use std::fs;
@@ -77,6 +78,7 @@ fn main() {
 fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_string: bool) -> i32 {
     signal::init_signal_handling();
     let mut executor = Executor::new(shell_name, positional);
+    executor.load_plugins();
     executor.env.mode.options.cmd_string = cmd_string;
     executor.verbose_print(input);
 

@@ -1,0 +1,10 @@
+[package]
+name = "kish-plugin-sdk"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kish-plugin-api = { path = "../kish-plugin-api" }
+
+[lib]
+crate-type = ["rlib"]

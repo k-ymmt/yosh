@@ -71,6 +71,13 @@ impl Executor {
         let command_name = expanded_iter.next().unwrap();
         let args: Vec<String> = expanded_iter.collect();
 
+        // Build command string for hooks
+        let cmd_str_for_hooks = std::iter::once(command_name.as_str())
+            .chain(args.iter().map(|s| s.as_str()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.plugins.call_pre_exec(&mut self.env, &cmd_str_for_hooks);
+
         // Check for function call (before builtins, matching POSIX lookup order)
         if let Some(func_def) = self.env.functions.get(&command_name).cloned() {
             let saved = match self.apply_temp_assignments(&cmd.assignments) {
@@ -91,6 +98,7 @@ impl Executor {
             let status = self.exec_function_call(&func_def, &args);
             redirect_state.restore();
             self.restore_assignments(saved);
+            self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
             return status;
         }
@@ -115,6 +123,7 @@ impl Executor {
             let status = self.builtin_wait(&args);
             redirect_state.restore();
             self.restore_assignments(saved);
+            self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
             return status;
         }
@@ -144,6 +153,7 @@ impl Executor {
             };
             redirect_state.restore();
             self.restore_assignments(saved);
+            self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
             return status;
         }
@@ -189,6 +199,7 @@ impl Executor {
                 }
                 let status = exec_special_builtin(&command_name, &args, self);
                 redirect_state.restore();
+                self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
                 self.env.exec.last_exit_status = status;
                 status
             }
@@ -209,13 +220,34 @@ impl Executor {
                     self.env.exec.last_exit_status = 1;
                     return 1;
                 }
+                let old_pwd = if command_name == "cd" {
+                    self.env.vars.get("PWD").map(|s| s.to_string())
+                } else {
+                    None
+                };
                 let status = exec_regular_builtin(&command_name, &args, &mut self.env);
                 redirect_state.restore();
                 self.restore_assignments(saved);
+                self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+
+                // on_cd hook: fire if cd succeeded
+                if command_name == "cd" && status == 0 {
+                    let old = old_pwd.unwrap_or_default();
+                    let new_dir = self.env.vars.get("PWD").unwrap_or("").to_string();
+                    self.plugins.call_on_cd(&mut self.env, &old, &new_dir);
+                }
+
                 self.env.exec.last_exit_status = status;
                 status
             }
             BuiltinKind::NotBuiltin => {
+                // Check plugin commands before external
+                if let Some(status) = self.plugins.exec_command(&mut self.env, &command_name, &args) {
+                    self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+                    self.env.exec.last_exit_status = status;
+                    return status;
+                }
+
                 let env_vars = match self.build_env_vars(&cmd.assignments) {
                     Ok(v) => v,
                     Err(e) => {
@@ -227,6 +259,7 @@ impl Executor {
                 let status = self.exec_external_with_redirects(
                     &command_name, &args, &env_vars, &cmd.redirects,
                 );
+                self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
                 self.env.exec.last_exit_status = status;
                 status
             }

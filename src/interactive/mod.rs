@@ -51,6 +51,9 @@ impl Repl {
         // Load history from file
         executor.env.history.load(std::path::Path::new(&histfile));
 
+        // Load plugins
+        executor.load_plugins();
+
         Self {
             executor,
             line_editor: LineEditor::new(),
