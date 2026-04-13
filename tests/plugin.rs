@@ -267,6 +267,51 @@ fn sandbox_full_capabilities_works_normally() {
 }
 
 #[test]
+fn sandbox_pre_prompt_not_fired_without_capability() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let dylib = build_test_plugin();
+    let mut manager = PluginManager::new();
+    let mut env = ShellEnv::new("kish", vec![]);
+
+    // Load with variables:write + io but NO hook capabilities
+    let caps = kish_plugin_api::CAP_VARIABLES_READ
+        | kish_plugin_api::CAP_VARIABLES_WRITE
+        | kish_plugin_api::CAP_IO;
+    manager
+        .load_plugin_with_capabilities(&dylib, &mut env, Some(caps))
+        .unwrap();
+
+    // pre_prompt hook should not fire
+    manager.call_pre_prompt(&mut env);
+    assert_eq!(env.vars.get("TEST_PRE_PROMPT"), None);
+}
+
+#[test]
+fn sandbox_selective_pre_prompt_capability() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let dylib = build_test_plugin();
+    let mut manager = PluginManager::new();
+    let mut env = ShellEnv::new("kish", vec![]);
+
+    // Grant variables:write (for hook to set_var) + only pre_prompt hook
+    let caps = kish_plugin_api::CAP_VARIABLES_READ
+        | kish_plugin_api::CAP_VARIABLES_WRITE
+        | kish_plugin_api::CAP_IO
+        | kish_plugin_api::CAP_HOOK_PRE_PROMPT;
+    manager
+        .load_plugin_with_capabilities(&dylib, &mut env, Some(caps))
+        .unwrap();
+
+    // pre_prompt should fire
+    manager.call_pre_prompt(&mut env);
+    assert_eq!(env.vars.get("TEST_PRE_PROMPT"), Some("1"));
+
+    // pre_exec should NOT fire (not granted)
+    manager.call_pre_exec(&mut env, "echo hello");
+    assert_eq!(env.vars.get("TEST_PRE_EXEC"), None);
+}
+
+#[test]
 fn sandbox_config_restricts_capabilities() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
