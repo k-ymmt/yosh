@@ -27,6 +27,9 @@ pub trait Terminal {
     /// Move cursor up by N lines.
     fn move_up(&mut self, n: u16) -> io::Result<()>;
 
+    /// Move cursor down by N lines.
+    fn move_down(&mut self, n: u16) -> io::Result<()>;
+
     /// Clear the current line.
     fn clear_current_line(&mut self) -> io::Result<()>;
 
@@ -111,6 +114,13 @@ impl Terminal for CrosstermTerminal {
 
     fn move_up(&mut self, n: u16) -> io::Result<()> {
         self.stdout.execute(cursor::MoveUp(n))?;
+        Ok(())
+    }
+
+    fn move_down(&mut self, n: u16) -> io::Result<()> {
+        if n > 0 {
+            self.stdout.execute(cursor::MoveDown(n))?;
+        }
         Ok(())
     }
 

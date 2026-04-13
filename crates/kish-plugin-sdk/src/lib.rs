@@ -1,3 +1,5 @@
+pub mod style;
+
 pub use kish_plugin_api as ffi;
 
 /// Capabilities a plugin can request.

@@ -1,7 +1,9 @@
 use std::io;
 use crossterm::event::{Event, KeyEvent};
+use unicode_width::UnicodeWidthChar;
 
 use super::completion::{self, CompletionContext, CompletionUI};
+use super::display_width::display_width;
 use super::edit_action::EditAction;
 use super::fuzzy_search::FuzzySearchUI;
 use super::highlight::{HighlightScanner, HighlightStyle, ColorSpan, CheckerEnv, apply_style};
@@ -27,6 +29,7 @@ pub struct LineEditor {
     yank_state: Option<YankState>,
     last_action: EditAction,
     last_was_insert: bool,
+    prev_total_rows: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +52,7 @@ impl LineEditor {
             yank_state: None,
             last_action: EditAction::Noop,
             last_was_insert: false,
+            prev_total_rows: 0,
         }
     }
 
@@ -78,6 +82,7 @@ impl LineEditor {
         self.last_action = EditAction::Noop;
         self.last_was_insert = false;
         self.undo.clear();
+        self.prev_total_rows = 0;
     }
 
     /// Insert a character at the current cursor position and advance
@@ -406,75 +411,132 @@ impl LineEditor {
     /// editing keys.  Returns `Ok(Some(line))` on Enter, `Ok(None)` on
     /// Ctrl-D with an empty buffer (EOF), or `Ok(Some(""))` on Ctrl-C.
     #[allow(dead_code)] // Used by tests; production code uses read_line_with_completion
-    pub fn read_line<T: Terminal>(&mut self, prompt: &str, history: &mut History, term: &mut T) -> io::Result<Option<String>> {
+    pub fn read_line<T: Terminal>(&mut self, prompt: &str, upper_lines: &[String], history: &mut History, term: &mut T) -> io::Result<Option<String>> {
         self.clear();
         term.enable_raw_mode()?;
-        let result = self.read_line_loop(prompt, history, term);
+        let result = self.read_line_loop(prompt, upper_lines, history, term);
         let _ = term.disable_raw_mode();
         result
     }
 
-    fn read_line_loop<T: Terminal>(&mut self, prompt: &str, history: &mut History, term: &mut T) -> io::Result<Option<String>> {
-        let prompt_width = prompt.chars().count();
+    fn read_line_loop<T: Terminal>(&mut self, prompt: &str, upper_lines: &[String], history: &mut History, term: &mut T) -> io::Result<Option<String>> {
+        let prompt_width = display_width(prompt);
         loop {
             term.flush()?;
-            if let Event::Key(key_event) = term.read_event()? {
-                match self.handle_key(key_event, history) {
-                    KeyAction::Submit => {
-                        history.reset_cursor();
-                        term.move_to_column(0)?;
-                        term.write_str("\r\n")?;
-                        term.flush()?;
-                        return Ok(Some(self.buffer()));
-                    }
-                    KeyAction::Eof => {
-                        return Ok(None);
-                    }
-                    KeyAction::Interrupt => {
-                        history.reset_cursor();
-                        term.move_to_column(0)?;
-                        term.write_str("\r\n")?;
-                        term.flush()?;
-                        self.clear();
-                        return Ok(Some(String::new()));
-                    }
-                    KeyAction::FuzzySearch => {
-                        self.suggestion = None;
-                        term.disable_raw_mode()?;
-                        if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
-                            self.buf = line.chars().collect();
-                            self.pos = self.buf.len();
+            match term.read_event()? {
+                Event::Key(key_event) => {
+                    match self.handle_key(key_event, history) {
+                        KeyAction::Submit => {
+                            history.reset_cursor();
+                            if self.prev_total_rows > 0 {
+                                let buf_pos_width: usize = self.buf[..self.pos].iter()
+                                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                                    .sum();
+                                let (tw, _) = term.size().unwrap_or((80, 24));
+                                let tw = tw as usize;
+                                let cursor_row = if tw > 0 { (prompt_width + buf_pos_width) / tw } else { 0 };
+                                if self.prev_total_rows > cursor_row {
+                                    term.move_down((self.prev_total_rows - cursor_row) as u16)?;
+                                }
+                            }
+                            term.move_to_column(0)?;
+                            term.write_str("\r\n")?;
+                            term.flush()?;
+                            return Ok(Some(self.buffer()));
                         }
-                        term.enable_raw_mode()?;
-                        term.move_to_column(0)?;
-                        term.clear_current_line()?;
-                        term.write_str(prompt)?;
+                        KeyAction::Eof => {
+                            return Ok(None);
+                        }
+                        KeyAction::Interrupt => {
+                            history.reset_cursor();
+                            if self.prev_total_rows > 0 {
+                                let buf_pos_width: usize = self.buf[..self.pos].iter()
+                                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                                    .sum();
+                                let (tw, _) = term.size().unwrap_or((80, 24));
+                                let tw = tw as usize;
+                                let cursor_row = if tw > 0 { (prompt_width + buf_pos_width) / tw } else { 0 };
+                                if self.prev_total_rows > cursor_row {
+                                    term.move_down((self.prev_total_rows - cursor_row) as u16)?;
+                                }
+                            }
+                            term.move_to_column(0)?;
+                            term.write_str("\r\n")?;
+                            term.flush()?;
+                            self.clear();
+                            return Ok(Some(String::new()));
+                        }
+                        KeyAction::FuzzySearch => {
+                            self.suggestion = None;
+                            term.disable_raw_mode()?;
+                            if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
+                                self.buf = line.chars().collect();
+                                self.pos = self.buf.len();
+                            }
+                            term.enable_raw_mode()?;
+                            term.move_to_column(0)?;
+                            term.clear_current_line()?;
+                            for line in upper_lines {
+                                term.write_str(line)?;
+                                term.write_str("\r\n")?;
+                            }
+                            term.write_str(prompt)?;
+                        }
+                        KeyAction::ClearScreen => {
+                            term.clear_all()?;
+                            for line in upper_lines {
+                                term.write_str(line)?;
+                                term.write_str("\r\n")?;
+                            }
+                            term.write_str(prompt)?;
+                        }
+                        KeyAction::TabComplete | KeyAction::Continue => {}
                     }
-                    KeyAction::ClearScreen => {
-                        term.clear_all()?;
-                        term.write_str(prompt)?;
-                    }
-                    KeyAction::TabComplete | KeyAction::Continue => {}
+                    self.update_suggestion(history);
+                    let (tw, _) = term.size().unwrap_or((80, 24));
+                    self.redraw(term, prompt_width, &[], tw)?;
                 }
-                self.update_suggestion(history);
-                self.redraw(term, prompt_width, &[])?;
+                Event::Resize(_cols, _rows) => {
+                    let (tw, _) = term.size().unwrap_or((80, 24));
+                    self.update_suggestion(history);
+                    self.redraw(term, prompt_width, &[], tw)?;
+                }
+                _ => {}
             }
         }
     }
 
     /// Redraw the current buffer on screen, positioning the cursor correctly.
-    fn redraw<T: Terminal>(&self, term: &mut T, prompt_width: usize, spans: &[ColorSpan]) -> io::Result<()> {
+    /// Handles input that wraps past the terminal width.
+    fn redraw<T: Terminal>(&mut self, term: &mut T, prompt_width: usize, spans: &[ColorSpan], term_width: u16) -> io::Result<()> {
+        let tw = term_width as usize;
         let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
+
+        // Move cursor up to the prompt's last_line row (start of content)
+        if self.prev_total_rows > 0 {
+            term.move_up(self.prev_total_rows as u16)?;
+        }
+        term.move_to_column(0)?;
+
+        // Clear all rows from previous render
+        for i in 0..=self.prev_total_rows {
+            if i > 0 {
+                term.move_down(1)?;
+            }
+            term.clear_current_line()?;
+        }
+        // Move back up to start
+        if self.prev_total_rows > 0 {
+            term.move_up(self.prev_total_rows as u16)?;
+        }
         term.move_to_column(col(prompt_width))?;
-        term.clear_until_newline()?;
+
+        // Write the buffer with or without highlighting
         if spans.is_empty() {
-            // No highlighting: plain write
             term.write_str(&self.buffer())?;
         } else {
-            // Highlighted write: iterate chars and apply styles
             let mut current_style = HighlightStyle::Default;
             for (i, ch) in self.buf.iter().enumerate() {
-                // Find the style for char at position i
                 let new_style = spans.iter()
                     .find(|sp| sp.start <= i && i < sp.end)
                     .map(|sp| sp.style)
@@ -492,15 +554,48 @@ impl LineEditor {
                 term.reset_style()?;
             }
         }
-        // Draw suggestion in dim text when cursor is at end of buffer
+
+        // Draw suggestion
+        let suggestion_width: usize;
         if let Some(ref suggestion) = self.suggestion
             && self.pos == self.buf.len()
         {
             term.set_dim(true)?;
             term.write_str(suggestion)?;
             term.set_dim(false)?;
+            suggestion_width = suggestion.chars()
+                .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+                .sum();
+        } else {
+            suggestion_width = 0;
         }
-        term.move_to_column(col(prompt_width + self.pos))?;
+
+        // Calculate total display width and rows
+        let buf_total_width: usize = self.buf.iter()
+            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+            .sum();
+        let content_width = prompt_width + buf_total_width + suggestion_width;
+        let total_rows = if tw > 0 && content_width > 0 {
+            (content_width.saturating_sub(1)) / tw
+        } else {
+            0
+        };
+        self.prev_total_rows = total_rows;
+
+        // Position cursor at self.pos
+        let buf_pos_width: usize = self.buf[..self.pos].iter()
+            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+            .sum();
+        let cursor_total = prompt_width + buf_pos_width;
+        let cursor_row = if tw > 0 { cursor_total / tw } else { 0 };
+        let cursor_col = if tw > 0 { cursor_total % tw } else { cursor_total };
+
+        // Move from end-of-content row to cursor row
+        let end_row = total_rows;
+        if end_row > cursor_row {
+            term.move_up((end_row - cursor_row) as u16)?;
+        }
+        term.move_to_column(col(cursor_col))?;
         term.flush()?;
         Ok(())
     }
@@ -736,9 +831,11 @@ impl LineEditor {
     ///
     /// Behaves identically to [`read_line`] but also handles Tab key events
     /// by invoking the completion engine.
+    #[allow(clippy::too_many_arguments)]
     pub fn read_line_with_completion<T: Terminal>(
         &mut self,
         prompt: &str,
+        upper_lines: &[String],
         history: &mut History,
         term: &mut T,
         ctx: &CompletionContext,
@@ -748,14 +845,16 @@ impl LineEditor {
     ) -> io::Result<Option<String>> {
         self.clear();
         term.enable_raw_mode()?;
-        let result = self.read_line_loop_with_completion(prompt, history, term, ctx, scanner, checker_env, accumulated);
+        let result = self.read_line_loop_with_completion(prompt, upper_lines, history, term, ctx, scanner, checker_env, accumulated);
         let _ = term.disable_raw_mode();
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn read_line_loop_with_completion<T: Terminal>(
         &mut self,
         prompt: &str,
+        upper_lines: &[String],
         history: &mut History,
         term: &mut T,
         ctx: &CompletionContext,
@@ -763,57 +862,97 @@ impl LineEditor {
         checker_env: &CheckerEnv<'_>,
         accumulated: &str,
     ) -> io::Result<Option<String>> {
-        let prompt_width = prompt.chars().count();
+        let prompt_width = display_width(prompt);
         loop {
             term.flush()?;
-            if let Event::Key(key_event) = term.read_event()? {
-                match self.handle_key(key_event, history) {
-                    KeyAction::Submit => {
-                        history.reset_cursor();
-                        term.reset_style()?;
-                        term.move_to_column(0)?;
-                        term.write_str("\r\n")?;
-                        term.flush()?;
-                        return Ok(Some(self.buffer()));
-                    }
-                    KeyAction::Eof => {
-                        return Ok(None);
-                    }
-                    KeyAction::Interrupt => {
-                        history.reset_cursor();
-                        term.reset_style()?;
-                        term.move_to_column(0)?;
-                        term.write_str("\r\n")?;
-                        term.flush()?;
-                        self.clear();
-                        return Ok(Some(String::new()));
-                    }
-                    KeyAction::FuzzySearch => {
-                        self.suggestion = None;
-                        term.reset_style()?;
-                        term.disable_raw_mode()?;
-                        if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
-                            self.buf = line.chars().collect();
-                            self.pos = self.buf.len();
+            match term.read_event()? {
+                Event::Key(key_event) => {
+                    match self.handle_key(key_event, history) {
+                        KeyAction::Submit => {
+                            history.reset_cursor();
+                            term.reset_style()?;
+                            if self.prev_total_rows > 0 {
+                                let buf_pos_width: usize = self.buf[..self.pos].iter()
+                                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                                    .sum();
+                                let (tw, _) = term.size().unwrap_or((80, 24));
+                                let tw = tw as usize;
+                                let cursor_row = if tw > 0 { (prompt_width + buf_pos_width) / tw } else { 0 };
+                                if self.prev_total_rows > cursor_row {
+                                    term.move_down((self.prev_total_rows - cursor_row) as u16)?;
+                                }
+                            }
+                            term.move_to_column(0)?;
+                            term.write_str("\r\n")?;
+                            term.flush()?;
+                            return Ok(Some(self.buffer()));
                         }
-                        term.enable_raw_mode()?;
-                        term.move_to_column(0)?;
-                        term.clear_current_line()?;
-                        term.write_str(prompt)?;
+                        KeyAction::Eof => {
+                            return Ok(None);
+                        }
+                        KeyAction::Interrupt => {
+                            history.reset_cursor();
+                            term.reset_style()?;
+                            if self.prev_total_rows > 0 {
+                                let buf_pos_width: usize = self.buf[..self.pos].iter()
+                                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                                    .sum();
+                                let (tw, _) = term.size().unwrap_or((80, 24));
+                                let tw = tw as usize;
+                                let cursor_row = if tw > 0 { (prompt_width + buf_pos_width) / tw } else { 0 };
+                                if self.prev_total_rows > cursor_row {
+                                    term.move_down((self.prev_total_rows - cursor_row) as u16)?;
+                                }
+                            }
+                            term.move_to_column(0)?;
+                            term.write_str("\r\n")?;
+                            term.flush()?;
+                            self.clear();
+                            return Ok(Some(String::new()));
+                        }
+                        KeyAction::FuzzySearch => {
+                            self.suggestion = None;
+                            term.reset_style()?;
+                            term.disable_raw_mode()?;
+                            if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
+                                self.buf = line.chars().collect();
+                                self.pos = self.buf.len();
+                            }
+                            term.enable_raw_mode()?;
+                            term.move_to_column(0)?;
+                            term.clear_current_line()?;
+                            for line in upper_lines {
+                                term.write_str(line)?;
+                                term.write_str("\r\n")?;
+                            }
+                            term.write_str(prompt)?;
+                        }
+                        KeyAction::TabComplete => {
+                            term.reset_style()?;
+                            self.handle_tab_complete(term, prompt, upper_lines, ctx)?;
+                        }
+                        KeyAction::ClearScreen => {
+                            term.clear_all()?;
+                            for line in upper_lines {
+                                term.write_str(line)?;
+                                term.write_str("\r\n")?;
+                            }
+                            term.write_str(prompt)?;
+                        }
+                        KeyAction::Continue => {}
                     }
-                    KeyAction::TabComplete => {
-                        term.reset_style()?;
-                        self.handle_tab_complete(term, prompt, ctx)?;
-                    }
-                    KeyAction::ClearScreen => {
-                        term.clear_all()?;
-                        term.write_str(prompt)?;
-                    }
-                    KeyAction::Continue => {}
+                    self.update_suggestion(history);
+                    let spans = scanner.scan(accumulated, &self.buf, checker_env);
+                    let (tw, _) = term.size().unwrap_or((80, 24));
+                    self.redraw(term, prompt_width, &spans, tw)?;
                 }
-                self.update_suggestion(history);
-                let spans = scanner.scan(accumulated, &self.buf, checker_env);
-                self.redraw(term, prompt_width, &spans)?;
+                Event::Resize(_cols, _rows) => {
+                    let (tw, _) = term.size().unwrap_or((80, 24));
+                    self.update_suggestion(history);
+                    let spans = scanner.scan(accumulated, &self.buf, checker_env);
+                    self.redraw(term, prompt_width, &spans, tw)?;
+                }
+                _ => {}
             }
         }
     }
@@ -822,6 +961,7 @@ impl LineEditor {
         &mut self,
         term: &mut T,
         prompt: &str,
+        upper_lines: &[String],
         ctx: &CompletionContext,
     ) -> io::Result<()> {
         let result = completion::complete(&self.buffer(), self.pos, ctx);
@@ -864,6 +1004,10 @@ impl LineEditor {
             term.enable_raw_mode()?;
             term.move_to_column(0)?;
             term.clear_current_line()?;
+            for line in upper_lines {
+                term.write_str(line)?;
+                term.write_str("\r\n")?;
+            }
             term.write_str(prompt)?;
         }
 
