@@ -4,6 +4,7 @@ mod config;
 mod github;
 mod lockfile;
 mod resolve;
+mod sync;
 mod verify;
 
 fn main() {
