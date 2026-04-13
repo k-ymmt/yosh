@@ -19,7 +19,6 @@
 ## Future: Interactive Mode Enhancements
 
 - [ ] Multiline editing — visual multiline editing with cursor movement across lines
-- [ ] Emacs keybindings — Ctrl+K (kill to end), Ctrl+U (kill to start), Ctrl+W (kill word), Ctrl+Y (yank)
 - [ ] `~/.kishrc` startup file — ENV variable support for interactive initialization
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
