@@ -49,6 +49,7 @@ pub fn capability_from_str(s: &str) -> Option<u32> {
         "hooks:pre_exec" => Some(kish_plugin_api::CAP_HOOK_PRE_EXEC),
         "hooks:post_exec" => Some(kish_plugin_api::CAP_HOOK_POST_EXEC),
         "hooks:on_cd" => Some(kish_plugin_api::CAP_HOOK_ON_CD),
+        "hooks:pre_prompt" => Some(kish_plugin_api::CAP_HOOK_PRE_PROMPT),
         _ => None,
     }
 }
@@ -197,6 +198,10 @@ path = "/usr/lib/libtrusted.dylib"
             Some(CAP_HOOK_POST_EXEC)
         );
         assert_eq!(capability_from_str("hooks:on_cd"), Some(CAP_HOOK_ON_CD));
+        assert_eq!(
+            capability_from_str("hooks:pre_prompt"),
+            Some(CAP_HOOK_PRE_PROMPT)
+        );
         assert_eq!(capability_from_str("unknown"), None);
     }
 
