@@ -3,6 +3,10 @@ name = "kish-plugin-manager"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "kish_plugin_manager"
+path = "src/lib.rs"
+
 [[bin]]
 name = "kish-plugin"
 path = "src/main.rs"

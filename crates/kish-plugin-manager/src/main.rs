@@ -1,11 +1,6 @@
 use std::process;
 
-mod config;
-mod github;
-mod lockfile;
-mod resolve;
-mod sync;
-mod verify;
+use kish_plugin_manager::{config, github, lockfile, sync, verify};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
