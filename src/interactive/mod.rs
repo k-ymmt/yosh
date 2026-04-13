@@ -1,4 +1,5 @@
 pub mod completion;
+pub mod edit_action;
 pub mod fuzzy_search;
 pub mod highlight;
 pub mod history;
