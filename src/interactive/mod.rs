@@ -71,6 +71,11 @@ impl Repl {
             self.executor.reap_zombies();
             self.executor.display_job_notifications();
 
+            // Fire pre_prompt hook for PS1 (not PS2 continuation)
+            if input_buffer.is_empty() {
+                self.executor.plugins.call_pre_prompt(&mut self.executor.env);
+            }
+
             // Choose PS1 or PS2
             let prompt_var = if input_buffer.is_empty() { "PS1" } else { "PS2" };
             let prompt = expand_prompt(&mut self.executor.env, prompt_var);
