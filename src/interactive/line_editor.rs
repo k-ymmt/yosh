@@ -831,6 +831,7 @@ impl LineEditor {
     ///
     /// Behaves identically to [`read_line`] but also handles Tab key events
     /// by invoking the completion engine.
+    #[allow(clippy::too_many_arguments)]
     pub fn read_line_with_completion<T: Terminal>(
         &mut self,
         prompt: &str,
@@ -849,6 +850,7 @@ impl LineEditor {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn read_line_loop_with_completion<T: Terminal>(
         &mut self,
         prompt: &str,
