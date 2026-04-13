@@ -1,4 +1,5 @@
 /target
+crates/*/target
 
 /.claude/settings.local.json
 
