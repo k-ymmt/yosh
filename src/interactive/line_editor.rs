@@ -1,7 +1,9 @@
 use std::io;
 use crossterm::event::{Event, KeyEvent};
+use unicode_width::UnicodeWidthChar;
 
 use super::completion::{self, CompletionContext, CompletionUI};
+use super::display_width::display_width;
 use super::edit_action::EditAction;
 use super::fuzzy_search::FuzzySearchUI;
 use super::highlight::{HighlightScanner, HighlightStyle, ColorSpan, CheckerEnv, apply_style};
@@ -415,7 +417,7 @@ impl LineEditor {
     }
 
     fn read_line_loop<T: Terminal>(&mut self, prompt: &str, history: &mut History, term: &mut T) -> io::Result<Option<String>> {
-        let prompt_width = prompt.chars().count();
+        let prompt_width = display_width(prompt);
         loop {
             term.flush()?;
             if let Event::Key(key_event) = term.read_event()? {
@@ -500,7 +502,11 @@ impl LineEditor {
             term.write_str(suggestion)?;
             term.set_dim(false)?;
         }
-        term.move_to_column(col(prompt_width + self.pos))?;
+        let buf_display_width: usize = self.buf[..self.pos]
+            .iter()
+            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+            .sum();
+        term.move_to_column(col(prompt_width + buf_display_width))?;
         term.flush()?;
         Ok(())
     }
@@ -763,7 +769,7 @@ impl LineEditor {
         checker_env: &CheckerEnv<'_>,
         accumulated: &str,
     ) -> io::Result<Option<String>> {
-        let prompt_width = prompt.chars().count();
+        let prompt_width = display_width(prompt);
         loop {
             term.flush()?;
             if let Event::Key(key_event) = term.read_event()? {
