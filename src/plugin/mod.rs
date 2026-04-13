@@ -78,8 +78,9 @@ impl PluginManager {
 
         // 3. Initialize plugin
         {
-            let mut ctx = HostContext::new(env);
-            let api = ctx.build_api();
+            let mut ctx = HostContext::new(env, &name);
+            let mut api = build_host_api(kish_plugin_api::CAP_ALL);
+            api.ctx = &mut ctx as *mut HostContext as *mut c_void;
 
             let init_fn: libloading::Symbol<unsafe extern "C" fn(*const HostApi) -> i32> =
                 unsafe {
@@ -147,8 +148,9 @@ impl PluginManager {
     ) -> Option<i32> {
         let plugin = self.plugins.iter().find(|p| p.commands.iter().any(|c| c == name))?;
 
-        let mut ctx = HostContext::new(env);
-        let api = ctx.build_api();
+        let mut ctx = HostContext::new(env, &plugin.name);
+        let mut api = build_host_api(kish_plugin_api::CAP_ALL);
+        api.ctx = &mut ctx as *mut HostContext as *mut c_void;
 
         let c_name = CString::new(name).ok()?;
         let c_args: Vec<CString> = args
@@ -183,8 +185,9 @@ impl PluginManager {
             if !plugin.has_pre_exec {
                 continue;
             }
-            let mut ctx = HostContext::new(env);
-            let api = ctx.build_api();
+            let mut ctx = HostContext::new(env, &plugin.name);
+            let mut api = build_host_api(kish_plugin_api::CAP_ALL);
+            api.ctx = &mut ctx as *mut HostContext as *mut c_void;
             unsafe {
                 if let Ok(hook_fn) = plugin.library.get::<
                     unsafe extern "C" fn(*const HostApi, *const c_char),
@@ -206,8 +209,9 @@ impl PluginManager {
             if !plugin.has_post_exec {
                 continue;
             }
-            let mut ctx = HostContext::new(env);
-            let api = ctx.build_api();
+            let mut ctx = HostContext::new(env, &plugin.name);
+            let mut api = build_host_api(kish_plugin_api::CAP_ALL);
+            api.ctx = &mut ctx as *mut HostContext as *mut c_void;
             unsafe {
                 if let Ok(hook_fn) = plugin.library.get::<
                     unsafe extern "C" fn(*const HostApi, *const c_char, i32),
@@ -233,8 +237,9 @@ impl PluginManager {
             if !plugin.has_on_cd {
                 continue;
             }
-            let mut ctx = HostContext::new(env);
-            let api = ctx.build_api();
+            let mut ctx = HostContext::new(env, &plugin.name);
+            let mut api = build_host_api(kish_plugin_api::CAP_ALL);
+            api.ctx = &mut ctx as *mut HostContext as *mut c_void;
             unsafe {
                 if let Ok(hook_fn) = plugin.library.get::<
                     unsafe extern "C" fn(*const HostApi, *const c_char, *const c_char),
@@ -283,29 +288,18 @@ impl Drop for PluginManager {
 /// Context passed to plugin callbacks via the opaque `ctx` pointer.
 struct HostContext<'a> {
     env: &'a mut ShellEnv,
+    plugin_name: String,
     /// Buffer for returning C strings from get_var/get_cwd.
     /// Valid until the next callback invocation.
     return_buf: CString,
 }
 
 impl<'a> HostContext<'a> {
-    fn new(env: &'a mut ShellEnv) -> Self {
+    fn new(env: &'a mut ShellEnv, plugin_name: &str) -> Self {
         HostContext {
             env,
+            plugin_name: plugin_name.to_string(),
             return_buf: CString::default(),
-        }
-    }
-
-    fn build_api(&mut self) -> HostApi {
-        HostApi {
-            ctx: self as *mut HostContext as *mut c_void,
-            get_var: host_get_var,
-            set_var: host_set_var,
-            export_var: host_export_var,
-            get_cwd: host_get_cwd,
-            set_cwd: host_set_cwd,
-            write_stdout: host_write_stdout,
-            write_stderr: host_write_stderr,
         }
     }
 }
@@ -425,5 +419,121 @@ unsafe extern "C" fn host_write_stderr(
             Ok(()) => 0,
             Err(_) => 1,
         }
+    }
+}
+
+// ── Deny functions for sandboxed capabilities ─────────────────────────
+
+unsafe extern "C" fn deny_get_var(ctx: *mut c_void, _name: *const c_char) -> *const c_char {
+    unsafe {
+        let host = &*(ctx as *mut HostContext);
+        eprintln!(
+            "kish: plugin '{}': get_var denied (missing 'variables:read' capability)",
+            host.plugin_name
+        );
+    }
+    std::ptr::null()
+}
+
+unsafe extern "C" fn deny_set_var(
+    ctx: *mut c_void,
+    _name: *const c_char,
+    _value: *const c_char,
+) -> i32 {
+    unsafe {
+        let host = &*(ctx as *mut HostContext);
+        eprintln!(
+            "kish: plugin '{}': set_var denied (missing 'variables:write' capability)",
+            host.plugin_name
+        );
+    }
+    -1
+}
+
+unsafe extern "C" fn deny_export_var(
+    ctx: *mut c_void,
+    _name: *const c_char,
+    _value: *const c_char,
+) -> i32 {
+    unsafe {
+        let host = &*(ctx as *mut HostContext);
+        eprintln!(
+            "kish: plugin '{}': export_var denied (missing 'variables:write' capability)",
+            host.plugin_name
+        );
+    }
+    -1
+}
+
+unsafe extern "C" fn deny_get_cwd(ctx: *mut c_void) -> *const c_char {
+    unsafe {
+        let host = &*(ctx as *mut HostContext);
+        eprintln!(
+            "kish: plugin '{}': get_cwd denied (missing 'filesystem' capability)",
+            host.plugin_name
+        );
+    }
+    std::ptr::null()
+}
+
+unsafe extern "C" fn deny_set_cwd(ctx: *mut c_void, _path: *const c_char) -> i32 {
+    unsafe {
+        let host = &*(ctx as *mut HostContext);
+        eprintln!(
+            "kish: plugin '{}': set_cwd denied (missing 'filesystem' capability)",
+            host.plugin_name
+        );
+    }
+    -1
+}
+
+unsafe extern "C" fn deny_write_stdout(
+    ctx: *mut c_void,
+    _data: *const c_char,
+    _len: usize,
+) -> i32 {
+    unsafe {
+        let host = &*(ctx as *mut HostContext);
+        eprintln!(
+            "kish: plugin '{}': write_stdout denied (missing 'io' capability)",
+            host.plugin_name
+        );
+    }
+    -1
+}
+
+unsafe extern "C" fn deny_write_stderr(
+    ctx: *mut c_void,
+    _data: *const c_char,
+    _len: usize,
+) -> i32 {
+    // Cannot log to stderr since write_stderr itself is denied.
+    // Use stdout as fallback for the denial message.
+    unsafe {
+        let host = &*(ctx as *mut HostContext);
+        println!(
+            "kish: plugin '{}': write_stderr denied (missing 'io' capability)",
+            host.plugin_name
+        );
+    }
+    -1
+}
+
+/// Build a HostApi table for a plugin based on its effective capabilities.
+/// Denied functions are replaced with stubs that log and return errors.
+fn build_host_api(capabilities: u32) -> HostApi {
+    use kish_plugin_api::*;
+
+    let has = |cap: u32| capabilities & cap != 0;
+
+    HostApi {
+        ctx: std::ptr::null_mut(),
+        get_var: if has(CAP_VARIABLES_READ) { host_get_var } else { deny_get_var },
+        set_var: if has(CAP_VARIABLES_WRITE) { host_set_var } else { deny_set_var },
+        export_var: if has(CAP_VARIABLES_WRITE) { host_export_var } else { deny_export_var },
+        get_cwd: if has(CAP_FILESYSTEM) { host_get_cwd } else { deny_get_cwd },
+        set_cwd: if has(CAP_FILESYSTEM) { host_set_cwd } else { deny_set_cwd },
+        write_stdout: if has(CAP_IO) { host_write_stdout } else { deny_write_stdout },
+        write_stderr: if has(CAP_IO) { host_write_stderr } else { deny_write_stderr },
     }
 }
