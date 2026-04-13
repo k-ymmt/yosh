@@ -47,6 +47,9 @@
 - [ ] SDK `export!` macro `unsafe` lint — `#[allow(unsafe_attr_outside_unsafe)]` workaround in generated code; clean up when macro hygiene improves (`crates/kish-plugin-sdk/src/lib.rs`)
 - [ ] Sandbox: warn on unknown capability strings in `plugins.toml` — currently `capabilities_from_strs` silently ignores typos like `"typo:read"`; should log warning in `load_from_config` (`src/plugin/config.rs`, `src/plugin/mod.rs`)
 - [ ] Sandbox: `CAP_ALL` manual sync risk — when adding new capabilities, `CAP_ALL` must be manually updated; consider deriving it from a list or using a test to verify completeness (`crates/kish-plugin-api/src/lib.rs`)
+- [ ] `kish-plugin sync`: suggest `KISH_GITHUB_TOKEN` when GitHub API rate limit (60 req/hour) is hit without auth (`crates/kish-plugin-manager/src/github.rs`)
+- [ ] `kish-plugin sync --prune`: remove empty plugin directories after deleting binaries (`crates/kish-plugin-manager/src/sync.rs`)
+- [ ] Workspace default package: `cargo test` without `-p` or `--workspace` may not find kish tests — document in CLAUDE.md or set `default-members` in workspace config (`Cargo.toml`)
 
 ## Future: Arithmetic Expansion Edge Cases
 
