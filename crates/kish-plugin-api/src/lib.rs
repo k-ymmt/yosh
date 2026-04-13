@@ -1,7 +1,26 @@
 use std::ffi::{c_char, c_void};
 
 /// API version for compatibility checks between kish and plugins.
-pub const KISH_PLUGIN_API_VERSION: u32 = 1;
+pub const KISH_PLUGIN_API_VERSION: u32 = 2;
+
+// ── Capability bitflags ───────────────────────────────────────────────
+
+pub const CAP_VARIABLES_READ: u32 = 0x01;
+pub const CAP_VARIABLES_WRITE: u32 = 0x02;
+pub const CAP_FILESYSTEM: u32 = 0x04;
+pub const CAP_IO: u32 = 0x08;
+pub const CAP_HOOK_PRE_EXEC: u32 = 0x10;
+pub const CAP_HOOK_POST_EXEC: u32 = 0x20;
+pub const CAP_HOOK_ON_CD: u32 = 0x40;
+
+/// All capability bits OR'd together.
+pub const CAP_ALL: u32 = CAP_VARIABLES_READ
+    | CAP_VARIABLES_WRITE
+    | CAP_FILESYSTEM
+    | CAP_IO
+    | CAP_HOOK_PRE_EXEC
+    | CAP_HOOK_POST_EXEC
+    | CAP_HOOK_ON_CD;
 
 /// Plugin metadata returned by kish_plugin_decl().
 #[repr(C)]
@@ -9,6 +28,7 @@ pub struct PluginDecl {
     pub api_version: u32,
     pub name: *const c_char,
     pub version: *const c_char,
+    pub required_capabilities: u32,
 }
 
 // SAFETY: PluginDecl contains raw pointers to static string data only.
