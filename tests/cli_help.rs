@@ -47,3 +47,26 @@ fn help_no_color_when_env_set() {
     // ANSI escape sequences start with \x1b[
     assert!(!stdout.contains('\x1b'), "should not contain ANSI escapes when NO_COLOR is set");
 }
+
+#[test]
+fn help_color_forced_with_clicolor_force() {
+    let output = kish_bin()
+        .arg("--help")
+        .env("CLICOLOR_FORCE", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains('\x1b'), "should contain ANSI escapes when CLICOLOR_FORCE=1");
+}
+
+#[test]
+fn help_clicolor_force_zero_does_not_force() {
+    // CLICOLOR_FORCE=0 should not force colors; since test stdout is not a TTY, no color
+    let output = kish_bin()
+        .arg("--help")
+        .env("CLICOLOR_FORCE", "0")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains('\x1b'), "CLICOLOR_FORCE=0 should not force ANSI escapes");
+}

@@ -21,8 +21,10 @@ fn should_colorize() -> bool {
     if std::env::var_os("NO_COLOR").is_some() {
         return false;
     }
-    if std::env::var_os("CLICOLOR_FORCE").is_some() {
-        return true;
+    if let Some(val) = std::env::var_os("CLICOLOR_FORCE") {
+        if val != "0" {
+            return true;
+        }
     }
     nix::unistd::isatty(std::io::stdout()).unwrap_or(false)
 }
