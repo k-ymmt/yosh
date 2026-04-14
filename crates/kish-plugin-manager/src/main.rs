@@ -1,28 +1,56 @@
 use std::process;
 
+use clap::{Parser, Subcommand};
 use kish_plugin_manager::{config, github, lockfile, sync, verify};
 
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("KISH_GIT_HASH"),
+    " ",
+    env!("KISH_BUILD_DATE"),
+    ")"
+);
+
+#[derive(Parser)]
+#[command(name = "kish-plugin", about = "Manage kish shell plugins")]
+#[command(version = VERSION)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Install plugins from plugins.toml
+    Sync {
+        /// Remove plugins not in plugins.toml
+        #[arg(long)]
+        prune: bool,
+    },
+    /// Update installed plugins to latest version
+    Update {
+        /// Only update the named plugin
+        name: Option<String>,
+    },
+    /// List installed plugins
+    List,
+    /// Verify plugin integrity (SHA-256)
+    Verify,
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let code = match args.first().map(|s| s.as_str()) {
-        Some("sync") => cmd_sync(&args[1..]),
-        Some("update") => cmd_update(&args[1..]),
-        Some("list") => cmd_list(),
-        Some("verify") => cmd_verify(),
-        Some(cmd) => {
-            eprintln!("kish-plugin: unknown command '{}'", cmd);
-            2
-        }
-        None => {
-            eprintln!("usage: kish-plugin <sync|update|list|verify>");
-            2
-        }
+    let cli = Cli::parse();
+    let code = match cli.command {
+        Commands::Sync { prune } => cmd_sync(prune),
+        Commands::Update { name } => cmd_update(name.as_deref()),
+        Commands::List => cmd_list(),
+        Commands::Verify => cmd_verify(),
     };
     process::exit(code);
 }
 
-fn cmd_sync(args: &[String]) -> i32 {
-    let prune = args.iter().any(|a| a == "--prune");
+fn cmd_sync(prune: bool) -> i32 {
     let result = match sync::sync(prune) {
         Ok(r) => r,
         Err(e) => {
@@ -32,14 +60,17 @@ fn cmd_sync(args: &[String]) -> i32 {
     };
 
     for name in &result.succeeded {
-        eprintln!("  ✓ {}", name);
+        eprintln!("  \u{2713} {}", name);
     }
     for (name, err) in &result.failed {
-        eprintln!("  ✗ {}: {}", name, err);
+        eprintln!("  \u{2717} {}: {}", name, err);
     }
 
     if result.failed.is_empty() {
-        eprintln!("kish-plugin: sync complete ({} plugins)", result.succeeded.len());
+        eprintln!(
+            "kish-plugin: sync complete ({} plugins)",
+            result.succeeded.len()
+        );
         0
     } else {
         eprintln!(
@@ -51,9 +82,7 @@ fn cmd_sync(args: &[String]) -> i32 {
     }
 }
 
-fn cmd_update(args: &[String]) -> i32 {
-    let name_filter = args.first().map(|s| s.as_str());
-
+fn cmd_update(name_filter: Option<&str>) -> i32 {
     let config_path = sync::config_path();
     let decls = match config::load_config(&config_path) {
         Ok(d) => d,
@@ -86,7 +115,7 @@ fn cmd_update(args: &[String]) -> i32 {
                 Ok(latest) => {
                     let current = decl.version.as_deref().unwrap_or("");
                     if latest != current {
-                        eprintln!("  {} {} → {}", decl.name, current, latest);
+                        eprintln!("  {} {} \u{2192} {}", decl.name, current, latest);
                         if !current.is_empty() {
                             new_content = new_content.replacen(
                                 &format!("version = \"{}\"", current),
@@ -100,7 +129,7 @@ fn cmd_update(args: &[String]) -> i32 {
                     }
                 }
                 Err(e) => {
-                    eprintln!("  ✗ {}: {}", decl.name, e);
+                    eprintln!("  \u{2717} {}: {}", decl.name, e);
                 }
             }
         }
@@ -111,7 +140,7 @@ fn cmd_update(args: &[String]) -> i32 {
             eprintln!("kish-plugin: write {}: {}", config_path.display(), e);
             return 2;
         }
-        return cmd_sync(&[]);
+        return cmd_sync(false);
     }
 
     0
@@ -138,9 +167,9 @@ fn cmd_list() -> i32 {
             &config::expand_tilde_path(&entry.path),
             &entry.sha256,
         ) {
-            Ok(true) => "✓ verified",
-            Ok(false) => "✗ checksum mismatch",
-            Err(_) => "✗ file missing",
+            Ok(true) => "\u{2713} verified",
+            Ok(false) => "\u{2717} checksum mismatch",
+            Err(_) => "\u{2717} file missing",
         };
         println!(
             "{:<16} {:<8} {:<48} {}",
@@ -166,14 +195,14 @@ fn cmd_verify() -> i32 {
         let path = config::expand_tilde_path(&entry.path);
         match verify::verify_checksum(&path, &entry.sha256) {
             Ok(true) => {
-                eprintln!("  ✓ {}", entry.name);
+                eprintln!("  \u{2713} {}", entry.name);
             }
             Ok(false) => {
-                eprintln!("  ✗ {}: checksum mismatch", entry.name);
+                eprintln!("  \u{2717} {}: checksum mismatch", entry.name);
                 all_ok = false;
             }
             Err(e) => {
-                eprintln!("  ✗ {}: {}", entry.name, e);
+                eprintln!("  \u{2717} {}: {}", entry.name, e);
                 all_ok = false;
             }
         }
