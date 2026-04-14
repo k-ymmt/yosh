@@ -21,6 +21,7 @@ toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 kish-plugin-api = { path = "crates/kish-plugin-api" }
 unicode-width = "0.2"
+owo-colors = "4"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

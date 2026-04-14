@@ -15,6 +15,67 @@ use std::io::{self, Read};
 use std::process;
 
 use exec::Executor;
+use owo_colors::OwoColorize;
+
+fn should_colorize() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    if std::env::var_os("CLICOLOR_FORCE").is_some() {
+        return true;
+    }
+    nix::unistd::isatty(std::io::stdout()).unwrap_or(false)
+}
+
+fn print_help() {
+    let color = should_colorize();
+
+    let header = "kish - A POSIX-compliant shell";
+    if color {
+        println!("{}", header.bold());
+    } else {
+        println!("{}", header);
+    }
+    println!();
+
+    if color {
+        println!("{}  kish [options] [file [argument...]]", "Usage:".yellow().bold());
+    } else {
+        println!("Usage:  kish [options] [file [argument...]]");
+    }
+    println!();
+
+    if color {
+        println!("{}", "Options:".yellow().bold());
+        println!("  {}    Read commands from command_string", "-c <command>".green());
+        println!("  {}  Parse and dump AST (debug)", "--parse <code>".green());
+        println!("  {}          Show this help message", "--help".green());
+        println!("  {}       Show version information", "--version".green());
+    } else {
+        println!("Options:");
+        println!("  -c <command>    Read commands from command_string");
+        println!("  --parse <code>  Parse and dump AST (debug)");
+        println!("  --help          Show this help message");
+        println!("  --version       Show version information");
+    }
+    println!();
+
+    if color {
+        println!("{}", "Subcommands:".yellow().bold());
+        println!("  {}          Manage shell plugins (see '{}')",
+            "plugin".green(), "kish plugin --help".green());
+    } else {
+        println!("Subcommands:");
+        println!("  plugin          Manage shell plugins (see 'kish plugin --help')");
+    }
+}
+
+fn print_version() {
+    println!("kish {} ({} {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("KISH_GIT_HASH"),
+        env!("KISH_BUILD_DATE"));
+}
 
 fn main() {
     let args: Vec<String> = std_env::args().collect();
@@ -37,7 +98,11 @@ fn main() {
             }
         }
         _ => {
-            if args[1] == "-c" {
+            if args[1] == "--help" {
+                print_help();
+            } else if args[1] == "--version" {
+                print_version();
+            } else if args[1] == "-c" {
                 if args.len() < 3 {
                     eprintln!("kish: -c requires an argument");
                     process::exit(2);
