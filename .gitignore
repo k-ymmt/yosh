@@ -3,6 +3,7 @@ crates/*/target
 tests/**/target
 
 /.claude/settings.local.json
+mise.local.toml
 
 # Git worktrees
 .worktrees/
