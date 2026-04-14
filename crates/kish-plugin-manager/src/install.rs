@@ -3,6 +3,7 @@ use std::path::Path;
 use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::config::PluginSource;
+use crate::github::GitHubClient;
 
 pub struct InstallTarget {
     pub name: String,
@@ -143,6 +144,54 @@ fn parse_local(arg: &str) -> Result<InstallTarget, String> {
         source: PluginSource::Local { path: path_str },
         version: None,
     })
+}
+
+/// Main install entry point.
+/// `github_client` is optional — if None and a GitHub latest version is needed, a default client is created.
+pub fn install(
+    arg: &str,
+    force: bool,
+    config_path: &Path,
+    github_client: Option<&GitHubClient>,
+) -> Result<String, String> {
+    let mut target = parse_install_arg(arg)?;
+
+    // Resolve latest version for GitHub sources when not specified
+    if matches!(&target.source, PluginSource::GitHub { .. }) && target.version.is_none() {
+        let default_client;
+        let client = match github_client {
+            Some(c) => c,
+            None => {
+                default_client = GitHubClient::new();
+                &default_client
+            }
+        };
+        if let PluginSource::GitHub { owner, repo } = &target.source {
+            let version = client.latest_version(owner, repo)?;
+            target.version = Some(version);
+        }
+    }
+
+    // Ensure config file exists
+    if !config_path.exists() {
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create {}: {}", parent.display(), e))?;
+        }
+        std::fs::write(config_path, "")
+            .map_err(|e| format!("failed to create {}: {}", config_path.display(), e))?;
+    }
+
+    write_plugin_entry(config_path, &target, force)?;
+
+    // Build result message
+    let source_str = source_string(&target.source);
+    let msg = match &target.version {
+        Some(v) => format!("Installed plugin '{}' ({}@{})", target.name, source_str, v),
+        None => format!("Installed plugin '{}' ({})", target.name, source_str),
+    };
+
+    Ok(msg)
 }
 
 #[cfg(test)]
@@ -335,5 +384,91 @@ mod tests {
     fn parse_local_nonexistent_path_error() {
         let result = parse_install_arg("/nonexistent/path/to/lib.dylib");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn install_github_with_explicit_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("plugins.toml");
+        std::fs::write(&config_path, "").unwrap();
+
+        install(
+            "https://github.com/example/my-plugin@1.0.0",
+            false,
+            &config_path,
+            None, // skip GitHub API when version is explicit
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("name = \"my-plugin\""));
+        assert!(content.contains("source = \"github:example/my-plugin\""));
+        assert!(content.contains("version = \"1.0.0\""));
+        assert!(content.contains("enabled = true"));
+    }
+
+    #[test]
+    fn install_local_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("plugins.toml");
+        std::fs::write(&config_path, "").unwrap();
+
+        // Create a temp file to act as the local plugin binary
+        let lib_file = dir.path().join("libtest.dylib");
+        std::fs::write(&lib_file, b"fake").unwrap();
+        let lib_path = lib_file.to_string_lossy().to_string();
+        // canonicalize resolves symlinks (e.g. /var -> /private/var on macOS)
+        let canonical_lib_path = lib_file.canonicalize().unwrap().to_string_lossy().to_string();
+
+        install(&lib_path, false, &config_path, None).unwrap();
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("name = \"libtest\""));
+        assert!(content.contains(&format!("source = \"local:{}\"", canonical_lib_path)));
+        assert!(!content.contains("version"));
+    }
+
+    #[test]
+    fn install_duplicate_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("plugins.toml");
+        std::fs::write(
+            &config_path,
+            "[[plugin]]\nname = \"my-plugin\"\nsource = \"local:/tmp/x.dylib\"\nenabled = true\n",
+        )
+        .unwrap();
+
+        let result = install(
+            "https://github.com/example/my-plugin@1.0.0",
+            false,
+            &config_path,
+            None,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already installed"));
+    }
+
+    #[test]
+    fn install_duplicate_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("plugins.toml");
+        std::fs::write(
+            &config_path,
+            "[[plugin]]\nname = \"my-plugin\"\nsource = \"local:/tmp/old.dylib\"\nenabled = true\n",
+        )
+        .unwrap();
+
+        install(
+            "https://github.com/example/my-plugin@2.0.0",
+            true,
+            &config_path,
+            None,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(!content.contains("local:/tmp/old.dylib"));
+        assert!(content.contains("github:example/my-plugin"));
+        assert!(content.contains("version = \"2.0.0\""));
     }
 }

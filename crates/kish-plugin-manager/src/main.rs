@@ -1,7 +1,7 @@
 use std::process;
 
 use clap::{Parser, Subcommand};
-use kish_plugin_manager::{config, github, lockfile, sync, verify};
+use kish_plugin_manager::{config, github, install, lockfile, sync, verify};
 
 const VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
@@ -37,6 +37,14 @@ enum Commands {
     List,
     /// Verify plugin integrity (SHA-256)
     Verify,
+    /// Add a plugin from a GitHub URL or local path to plugins.toml
+    Install {
+        /// GitHub URL (https://github.com/owner/repo[@version]) or local file path
+        source: String,
+        /// Overwrite existing plugin with the same name
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() {
@@ -46,8 +54,26 @@ fn main() {
         Commands::Update { name } => cmd_update(name.as_deref()),
         Commands::List => cmd_list(),
         Commands::Verify => cmd_verify(),
+        Commands::Install { source, force } => cmd_install(&source, force),
     };
     process::exit(code);
+}
+
+fn cmd_install(source: &str, force: bool) -> i32 {
+    let config_path = sync::config_path();
+    match install::install(source, force, &config_path, None) {
+        Ok(msg) => {
+            eprintln!("{}", msg);
+            if source.starts_with("https://github.com/") {
+                eprintln!("Run 'kish plugin sync' to download.");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("kish-plugin: {}", e);
+            1
+        }
+    }
 }
 
 fn cmd_sync(prune: bool) -> i32 {
