@@ -189,6 +189,7 @@ mod tests {
         assert!(content.contains("name = \"existing\""));
         assert!(content.contains("name = \"new-plugin\""));
         assert!(content.contains("source = \"local:/usr/lib/new.dylib\""));
+        assert!(!content.contains("version"));
     }
 
     #[test]
