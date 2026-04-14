@@ -22,5 +22,6 @@ fn main() {
     println!("cargo:rustc-env=KISH_GIT_HASH={}", hash);
     println!("cargo:rustc-env=KISH_BUILD_DATE={}", date);
     println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs");
+    println!("cargo:rerun-if-changed=.git/refs/heads");
+    println!("cargo:rerun-if-changed=.git/packed-refs");
 }
