@@ -7,3 +7,20 @@ mise.local.toml
 
 # Git worktrees
 .worktrees/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+
+# Environment / secrets
+.env
+.env.*

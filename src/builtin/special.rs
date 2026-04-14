@@ -557,12 +557,21 @@ fn fc_edit(
         commands.reverse();
     }
 
-    let tmp_path = format!("/tmp/kish_fc_{}", std::process::id());
+    let tmp_path = match create_secure_tempfile("kish_fc") {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("kish: fc: {}", e);
+            return 1;
+        }
+    };
     {
-        let mut file = match std::fs::File::create(&tmp_path) {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = match OpenOptions::new().write(true).mode(0o600).open(&tmp_path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("kish: fc: cannot create temp file: {}", e);
+                eprintln!("kish: fc: cannot open temp file: {}", e);
+                let _ = std::fs::remove_file(&tmp_path);
                 return 1;
             }
         };
@@ -643,4 +652,36 @@ fn fc_substitute(operands: &[String], executor: &mut Executor) -> i32 {
 
     executor.eval_string(&cmd);
     executor.env.exec.last_exit_status
+}
+
+/// Create a temporary file with a random name and restrictive permissions (0o600).
+/// Uses `O_CREAT | O_EXCL` to atomically create the file, preventing TOCTOU races.
+fn create_secure_tempfile(prefix: &str) -> Result<String, String> {
+    use std::collections::hash_map::RandomState;
+    use std::fs::OpenOptions;
+    use std::hash::{BuildHasher, Hasher};
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+
+    for _ in 0..16 {
+        let s = RandomState::new();
+        let mut hasher = s.build_hasher();
+        hasher.write_u64(std::process::id() as u64);
+        let rand_hex = format!("{:016x}", hasher.finish());
+        let path = format!("{}/{}_{}", tmp_dir, prefix, rand_hex);
+
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(_) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("cannot create temp file: {}", e)),
+        }
+    }
+
+    Err("cannot create temp file: too many collisions".to_string())
 }

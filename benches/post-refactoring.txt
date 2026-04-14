@@ -1,4 +1,4 @@
-   Compiling kish v0.1.0 (/Users/kazukiyamamoto/Projects/rust/kish)
+   Compiling kish v0.1.0 (/path/to/kish)
 warning: methods `current_job`, `previous_job`, `previous_id`, `is_empty`, `find_by_pgid`, and `find_by_pgid_mut` are never used
    --> src/env/jobs.rs:125:12
     |

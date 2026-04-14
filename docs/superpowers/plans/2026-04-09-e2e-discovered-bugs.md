@@ -313,7 +313,7 @@ Resolves: consecutive IFS delimiters empty field (TODO.md E2E bug #3)"
 - [ ] **Step 1: Confirm kish glob is already correct**
 
 ```bash
-mkdir -p /tmp/kish_gtest && echo x > /tmp/kish_gtest/visible.txt && echo x > /tmp/kish_gtest/.hidden.txt && /Users/kazukiyamamoto/Projects/rust/kish/target/release/kish -c 'cd /tmp/kish_gtest; count=0; for f in *; do count=$((count + 1)); done; echo $count' && rm -rf /tmp/kish_gtest
+mkdir -p /tmp/kish_gtest && echo x > /tmp/kish_gtest/visible.txt && echo x > /tmp/kish_gtest/.hidden.txt && ./target/release/kish -c 'cd /tmp/kish_gtest; count=0; for f in *; do count=$((count + 1)); done; echo $count' && rm -rf /tmp/kish_gtest
 ```
 
 Expected: `1` (only `visible.txt` matched).
