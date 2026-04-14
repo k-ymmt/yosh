@@ -105,10 +105,8 @@ fn cmd_update(name_filter: Option<&str>) -> i32 {
     let mut updated = false;
 
     for decl in &decls {
-        if let Some(filter) = name_filter {
-            if decl.name != filter {
-                continue;
-            }
+        if name_filter.is_some_and(|f| decl.name != f) {
+            continue;
         }
         if let config::PluginSource::GitHub { owner, repo } = &decl.source {
             match client.latest_version(owner, repo) {
