@@ -19,6 +19,15 @@ fn help_flag_prints_usage_and_exits_zero() {
 }
 
 #[test]
+fn short_help_flag_works() {
+    let output = kish_bin().arg("-h").output().unwrap();
+    assert!(output.status.success(), "exit code should be 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("kish - A POSIX-compliant shell"), "should contain description");
+    assert!(stdout.contains("Usage:"), "should contain Usage section");
+}
+
+#[test]
 fn version_flag_prints_version_and_exits_zero() {
     let output = kish_bin().arg("--version").output().unwrap();
     assert!(output.status.success(), "exit code should be 0");

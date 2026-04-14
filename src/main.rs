@@ -51,13 +51,13 @@ fn print_help() {
         println!("{}", "Options:".yellow().bold());
         println!("  {}    Read commands from command_string", "-c <command>".green());
         println!("  {}  Parse and dump AST (debug)", "--parse <code>".green());
-        println!("  {}          Show this help message", "--help".green());
+        println!("  {}     Show this help message", "-h, --help".green());
         println!("  {}       Show version information", "--version".green());
     } else {
         println!("Options:");
         println!("  -c <command>    Read commands from command_string");
         println!("  --parse <code>  Parse and dump AST (debug)");
-        println!("  --help          Show this help message");
+        println!("  -h, --help      Show this help message");
         println!("  --version       Show version information");
     }
     println!();
@@ -100,7 +100,7 @@ fn main() {
             }
         }
         _ => {
-            if args[1] == "--help" {
+            if args[1] == "--help" || args[1] == "-h" {
                 print_help();
                 process::exit(0);
             } else if args[1] == "--version" {
