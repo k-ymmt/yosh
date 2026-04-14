@@ -100,8 +100,10 @@ fn main() {
         _ => {
             if args[1] == "--help" {
                 print_help();
+                process::exit(0);
             } else if args[1] == "--version" {
                 print_version();
+                process::exit(0);
             } else if args[1] == "-c" {
                 if args.len() < 3 {
                     eprintln!("kish: -c requires an argument");
