@@ -14,6 +14,7 @@ fn help_flag_prints_usage_and_exits_zero() {
     assert!(stdout.contains("update"), "should list update command");
     assert!(stdout.contains("list"), "should list list command");
     assert!(stdout.contains("verify"), "should list verify command");
+    assert!(stdout.contains("install"), "should list install command");
 }
 
 #[test]
@@ -35,7 +36,7 @@ fn version_flag_prints_version_and_exits_zero() {
 
 #[test]
 fn subcommand_help_works() {
-    for subcmd in &["sync", "update", "list", "verify"] {
+    for subcmd in &["sync", "update", "list", "verify", "install"] {
         let output = kish_plugin_bin()
             .args([subcmd, "--help"])
             .output()

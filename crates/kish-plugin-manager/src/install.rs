@@ -5,6 +5,7 @@ use toml_edit::{DocumentMut, Item, Table, value};
 use crate::config::PluginSource;
 use crate::github::GitHubClient;
 
+#[derive(Debug)]
 pub struct InstallTarget {
     pub name: String,
     pub source: PluginSource,
@@ -91,6 +92,12 @@ fn parse_github(rest: &str) -> Result<InstallTarget, String> {
     // Split off version at `@` — but only after the github.com/ prefix has been stripped.
     let (url_part, version) = if let Some(at_pos) = rest.find('@') {
         let v = rest[at_pos + 1..].to_string();
+        if v.is_empty() {
+            return Err(format!(
+                "empty version after '@' in 'https://github.com/{}'",
+                rest
+            ));
+        }
         (&rest[..at_pos], Some(v))
     } else {
         (rest, None)
@@ -102,11 +109,17 @@ fn parse_github(rest: &str) -> Result<InstallTarget, String> {
     // Strip again in case there was a trailing slash before `.git`
     let url_part = url_part.trim_end_matches('/');
 
-    // Split into owner/repo — exactly two non-empty segments.
-    let parts: Vec<&str> = url_part.splitn(2, '/').collect();
-    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+    // Split into owner/repo — exactly two non-empty segments, no extra path components.
+    let parts: Vec<&str> = url_part.splitn(3, '/').collect();
+    if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
         return Err(format!(
             "invalid GitHub URL 'https://github.com/{}': expected 'https://github.com/owner/repo'",
+            url_part
+        ));
+    }
+    if parts.len() > 2 {
+        return Err(format!(
+            "invalid GitHub URL 'https://github.com/{}': unexpected path after repo name",
             url_part
         ));
     }
@@ -370,6 +383,20 @@ mod tests {
     fn parse_github_invalid_url_empty_repo() {
         let result = parse_install_arg("https://github.com/owner/");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_github_empty_version_error() {
+        let result = parse_install_arg("https://github.com/owner/repo@");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty version"));
+    }
+
+    #[test]
+    fn parse_github_extra_path_segments_error() {
+        let result = parse_install_arg("https://github.com/owner/repo/tree/main");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unexpected path"));
     }
 
     #[test]
