@@ -66,6 +66,8 @@
 
 - [ ] Extract quote-aware balanced-paren scanning into a shared helper — the same ~40-line scanning logic (single/double quote skip, backslash escape, depth counting) is duplicated in three places: `expand_heredoc_string` `$(...)` and `$((...))` branches (`src/expand/mod.rs`) and `expand_vars` in `src/expand/arith.rs`; consider a `skip_balanced_parens(bytes, start, terminator)` helper
 - [ ] Runtime error migration — replace ~90 `eprintln!("kish: ...")` call sites in exec/builtin with `Result<i32, ShellError>` using `RuntimeErrorKind` variants (type definitions ready in `src/error.rs`)
+- [ ] `exit_requested` check missing in `exec_and_or()` — `exit 0 || echo X` could execute the `echo` after `exit` sets `exit_requested`; rare in practice but technically incorrect (`src/exec/mod.rs`)
+- [ ] `PENDING_EXIT_SIGNAL` uses `Ordering::Relaxed` — sufficient for 50ms polling but `Acquire/Release` pair would be more idiomatic for cross-thread flag signaling (`src/signal.rs`)
 
 ## Future: E2E Test Expansion
 
