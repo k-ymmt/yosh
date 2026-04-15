@@ -57,6 +57,7 @@
 - [ ] `kish-plugin update` help: add `#[arg(value_name = "PLUGIN")]` to show `[PLUGIN]` instead of `[NAME]` in help output (`crates/kish-plugin-manager/src/main.rs`)
 - [ ] `plugins.lock` atomic write — current `std::fs::write` can leave truncated file on crash; use write-to-temp + rename (`crates/kish-plugin-manager/src/lockfile.rs`)
 - [ ] `verify.rs` reads entire file into memory for SHA-256 — use streaming `Digest::update()` for large binaries (`crates/kish-plugin-manager/src/verify.rs`)
+- [ ] `GitHubClient` public API error type — `find_asset_url`, `latest_version`, `download` still return `Result<_, String>`; promote internal `GitHubApiError` to a public error type so callers can match on structured variants instead of string messages (`crates/kish-plugin-manager/src/github.rs`)
 - [ ] Integration tests: add checksum mismatch re-download test and partial failure (404) test per spec (`crates/kish-plugin-manager/tests/`)
 
 ## Future: Arithmetic Expansion Edge Cases
