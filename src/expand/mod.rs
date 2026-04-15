@@ -225,9 +225,53 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                         let start = i;
                         let mut depth = 1;
                         while i < bytes.len() && depth > 0 {
-                            if bytes[i] == b'(' { depth += 1; }
-                            if bytes[i] == b')' { depth -= 1; }
-                            if depth > 0 { i += 1; }
+                            match bytes[i] {
+                                b'\'' => {
+                                    // Single quote: skip to matching '
+                                    i += 1;
+                                    while i < bytes.len() && bytes[i] != b'\'' {
+                                        i += 1;
+                                    }
+                                    if i < bytes.len() {
+                                        i += 1;
+                                    }
+                                }
+                                b'"' => {
+                                    // Double quote: skip to matching ", handle backslash escapes
+                                    i += 1;
+                                    while i < bytes.len() && bytes[i] != b'"' {
+                                        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                                            i += 2;
+                                        } else {
+                                            i += 1;
+                                        }
+                                    }
+                                    if i < bytes.len() {
+                                        i += 1;
+                                    }
+                                }
+                                b'\\' => {
+                                    // Backslash: skip next character
+                                    if i + 1 < bytes.len() {
+                                        i += 2;
+                                    } else {
+                                        i += 1;
+                                    }
+                                }
+                                b'(' => {
+                                    depth += 1;
+                                    i += 1;
+                                }
+                                b')' => {
+                                    depth -= 1;
+                                    if depth > 0 {
+                                        i += 1;
+                                    }
+                                }
+                                _ => {
+                                    i += 1;
+                                }
+                            }
                         }
                         let cmd_str = &s[start..i];
                         if i < bytes.len() { i += 1; } // skip )
