@@ -494,12 +494,12 @@ impl LineEditor {
                     }
                     self.update_suggestion(history);
                     let (tw, _) = term.size().unwrap_or((80, 24));
-                    self.redraw(term, prompt_width, &[], tw)?;
+                    self.redraw(term, prompt, prompt_width, &[], tw)?;
                 }
                 Event::Resize(_cols, _rows) => {
                     let (tw, _) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
-                    self.redraw(term, prompt_width, &[], tw)?;
+                    self.redraw(term, prompt, prompt_width, &[], tw)?;
                 }
                 _ => {}
             }
@@ -508,7 +508,7 @@ impl LineEditor {
 
     /// Redraw the current buffer on screen, positioning the cursor correctly.
     /// Handles input that wraps past the terminal width.
-    fn redraw<T: Terminal>(&mut self, term: &mut T, prompt_width: usize, spans: &[ColorSpan], term_width: u16) -> io::Result<()> {
+    fn redraw<T: Terminal>(&mut self, term: &mut T, prompt: &str, prompt_width: usize, spans: &[ColorSpan], term_width: u16) -> io::Result<()> {
         let tw = term_width as usize;
         let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
 
@@ -529,7 +529,10 @@ impl LineEditor {
         if self.prev_total_rows > 0 {
             term.move_up(self.prev_total_rows as u16)?;
         }
-        term.move_to_column(col(prompt_width))?;
+
+        // Repaint the prompt
+        term.move_to_column(0)?;
+        term.write_str(prompt)?;
 
         // Write the buffer with or without highlighting
         if spans.is_empty() {
@@ -944,13 +947,13 @@ impl LineEditor {
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
                     let (tw, _) = term.size().unwrap_or((80, 24));
-                    self.redraw(term, prompt_width, &spans, tw)?;
+                    self.redraw(term, prompt, prompt_width, &spans, tw)?;
                 }
                 Event::Resize(_cols, _rows) => {
                     let (tw, _) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
-                    self.redraw(term, prompt_width, &spans, tw)?;
+                    self.redraw(term, prompt, prompt_width, &spans, tw)?;
                 }
                 _ => {}
             }
