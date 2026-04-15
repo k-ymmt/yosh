@@ -286,6 +286,79 @@ fn test_pty_tab_completion() {
 }
 
 #[test]
+fn test_pty_command_completion() {
+    let (mut s, _tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // "ech" + Tab should complete to "echo" (builtin)
+    s.send("ech").unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    s.send("\t").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Add " hello" and press Enter to execute "echo hello"
+    s.send(" hello\r").unwrap();
+    expect_output(&mut s, "hello", "Command completion for 'echo' failed");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_command_completion_after_pipe() {
+    let (mut s, _tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // "echo hello | ca" + Tab inserts the common prefix of ca* commands.
+    // Then send "t" to ensure we have "cat", then Enter.
+    s.send("echo hello | ca").unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    s.send("\t").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    // Send "t\r" in case Tab only completed up to the common prefix "ca"
+    s.send("t\r").unwrap();
+    expect_output(
+        &mut s,
+        "hello",
+        "Command completion after pipe failed",
+    );
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_path_completion_in_argument_position() {
+    let (mut s, tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // Create a uniquely named file
+    let test_file = tmpdir.path().join("kish_argcomp_unique.txt");
+    std::fs::write(&test_file, "content").unwrap();
+
+    // cd to HOME
+    s.send("cd\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    // "cat kish_argcomp" + Tab should path-complete to "kish_argcomp_unique.txt"
+    s.send("cat kish_argcomp").unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    s.send("\t").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Press Enter — should print the file content
+    s.send("\r").unwrap();
+    expect_output(
+        &mut s,
+        "content",
+        "Path completion in argument position failed",
+    );
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_syntax_highlight_keyword() {
     let (mut s, _tmpdir) = spawn_kish();
     wait_for_prompt(&mut s);
