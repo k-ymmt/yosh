@@ -59,6 +59,10 @@
 - [ ] `GitHubClient` public API error type — `find_asset_url`, `latest_version`, `download` still return `Result<_, String>`; promote internal `GitHubApiError` to a public error type so callers can match on structured variants instead of string messages (`crates/kish-plugin-manager/src/github.rs`)
 - [ ] Integration tests: add checksum mismatch re-download test and partial failure (404) test per spec (`crates/kish-plugin-manager/tests/`)
 
+## Future: Expansion Edge Cases
+
+- [ ] `expand_heredoc_string` arithmetic `$((...))` scanning is quote-unaware — depth counter ignores quote context, same class of bug as the fixed `$(cmd)` scanning in the same function (`src/expand/mod.rs:200-211`)
+
 ## Future: Code Quality Improvements
 
 - [ ] Runtime error migration — replace ~90 `eprintln!("kish: ...")` call sites in exec/builtin with `Result<i32, ShellError>` using `RuntimeErrorKind` variants (type definitions ready in `src/error.rs`)
