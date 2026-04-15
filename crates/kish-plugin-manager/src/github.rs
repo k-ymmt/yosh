@@ -2,6 +2,27 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
 
+/// Error type for GitHub API requests made through `get_json`.
+#[derive(Debug)]
+enum GitHubApiError {
+    /// HTTP response with non-2xx status code.
+    HttpStatus(u16),
+    /// Network/transport error (DNS, connection, timeout).
+    Network(String),
+    /// Response body could not be read or parsed as JSON.
+    Parse(String),
+}
+
+impl std::fmt::Display for GitHubApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HttpStatus(code) => write!(f, "HTTP {}", code),
+            Self::Network(msg) => write!(f, "request failed: {}", msg),
+            Self::Parse(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
 /// GitHub API client for fetching release information and downloading assets.
 pub struct GitHubClient {
     base_url: String,
@@ -20,7 +41,7 @@ impl GitHubClient {
         }
     }
 
-    fn get_json(&self, url: &str) -> Result<serde_json::Value, String> {
+    fn get_json(&self, url: &str) -> Result<serde_json::Value, GitHubApiError> {
         let mut req = ureq::get(url)
             .header("User-Agent", "kish-plugin-manager")
             .header("Accept", "application/vnd.github.v3+json");
@@ -29,14 +50,18 @@ impl GitHubClient {
         }
         let body = req
             .call()
-            .map_err(|e| format!("request failed: {}", e))?
+            .map_err(|e| match &e {
+                ureq::Error::StatusCode(code) => GitHubApiError::HttpStatus(*code),
+                _ => GitHubApiError::Network(e.to_string()),
+            })?
             .body_mut()
             .read_to_string()
-            .map_err(|e| format!("failed to read body: {}", e))?;
-        serde_json::from_str(&body).map_err(|e| format!("failed to parse JSON: {}", e))
+            .map_err(|e| GitHubApiError::Parse(format!("failed to read body: {}", e)))?;
+        serde_json::from_str(&body)
+            .map_err(|e| GitHubApiError::Parse(format!("failed to parse JSON: {}", e)))
     }
 
-    fn release_json(&self, owner: &str, repo: &str, tag: &str) -> Result<serde_json::Value, String> {
+    fn release_json(&self, owner: &str, repo: &str, tag: &str) -> Result<serde_json::Value, GitHubApiError> {
         let url = format!("{}/repos/{}/{}/releases/tags/{}", self.base_url, owner, repo, tag);
         self.get_json(&url)
     }
@@ -55,8 +80,16 @@ impl GitHubClient {
             Ok(r) => r,
             Err(_) => {
                 // Fallback to bare version tag
-                self.release_json(owner, repo, version)
-                    .map_err(|e| format!("release not found for {} or {}: {}", v_tag, version, e))?
+                self.release_json(owner, repo, version).map_err(|e| match e {
+                    GitHubApiError::HttpStatus(404) => format!(
+                        "release not found for {}/{} (tried tags '{}' and '{}')",
+                        owner, repo, v_tag, version
+                    ),
+                    other => format!(
+                        "failed to fetch release for {}/{} (tried tags '{}' and '{}'): {}",
+                        owner, repo, v_tag, version, other
+                    ),
+                })?
             }
         };
 
@@ -114,7 +147,16 @@ impl GitHubClient {
     /// Get the latest release tag for a repo, stripping a leading `v` prefix.
     pub fn latest_version(&self, owner: &str, repo: &str) -> Result<String, String> {
         let url = format!("{}/repos/{}/{}/releases/latest", self.base_url, owner, repo);
-        let json = self.get_json(&url)?;
+        let json = self.get_json(&url).map_err(|e| match e {
+            GitHubApiError::HttpStatus(404) => format!(
+                "no releases found for {}/{}: publish a GitHub Release first",
+                owner, repo
+            ),
+            other => format!(
+                "failed to fetch latest release for {}/{}: {}",
+                owner, repo, other
+            ),
+        })?;
 
         let tag = json["tag_name"]
             .as_str()
@@ -310,5 +352,63 @@ mod tests {
         let client = GitHubClientWithBase::new(&base);
         let version = client.latest_version("owner", "repo").unwrap();
         assert_eq!(version, "1.0.0");
+    }
+
+    #[test]
+    fn latest_version_no_releases_gives_helpful_error() {
+        let mut server = mockito::Server::new();
+        let base = server.url();
+
+        let _m = server
+            .mock("GET", "/repos/owner/repo/releases/latest")
+            .with_status(404)
+            .with_body(r#"{"message": "Not Found"}"#)
+            .create();
+
+        let client = GitHubClientWithBase::new(&base);
+        let err = client.latest_version("owner", "repo").unwrap_err();
+        assert!(
+            err.contains("no releases found for owner/repo"),
+            "expected helpful error, got: {}",
+            err
+        );
+        assert!(
+            err.contains("publish a GitHub Release first"),
+            "expected hint about publishing a release, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn find_asset_url_both_tags_404_gives_helpful_error() {
+        let mut server = mockito::Server::new();
+        let base = server.url();
+
+        let _m1 = server
+            .mock("GET", "/repos/owner/repo/releases/tags/v1.0.0")
+            .with_status(404)
+            .with_body(r#"{"message": "Not Found"}"#)
+            .create();
+
+        let _m2 = server
+            .mock("GET", "/repos/owner/repo/releases/tags/1.0.0")
+            .with_status(404)
+            .with_body(r#"{"message": "Not Found"}"#)
+            .create();
+
+        let client = GitHubClientWithBase::new(&base);
+        let err = client
+            .find_asset_url("owner", "repo", "1.0.0", "myasset.so")
+            .unwrap_err();
+        assert!(
+            err.contains("release not found for owner/repo"),
+            "expected helpful error, got: {}",
+            err
+        );
+        assert!(
+            err.contains("v1.0.0"),
+            "expected tried tags in error, got: {}",
+            err
+        );
     }
 }
