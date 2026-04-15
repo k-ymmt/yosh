@@ -1146,6 +1146,159 @@ fn test_double_tab_opens_completion_ui() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn test_tab_command_completion_at_line_start() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    // Create an executable in a temp PATH directory
+    let bin_dir = tempfile::TempDir::new().unwrap();
+    let cmd_path = bin_dir.path().join("kish_test_mycmd");
+    fs::File::create(&cmd_path).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&cmd_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/tmp".to_string(),
+        show_dotfiles: false,
+    };
+
+    let mut command_completer = CommandCompleter::new();
+    let aliases = AliasStore::default();
+    let path_str = bin_dir.path().to_str().unwrap().to_string();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: &path_str,
+        builtins: &[],
+        aliases: &aliases,
+    };
+
+    // Type "kish_test_my" + Tab + Enter — should complete to "kish_test_mycmd "
+    let mut events = chars("kish_test_my");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let result = editor
+        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .unwrap();
+    assert_eq!(result, Some("kish_test_mycmd ".to_string()));
+}
+
+#[test]
+fn test_tab_command_position_path_fallback() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    // Create a file in cwd starting with "./"
+    fs::File::create(tmp.path().join("myscript.sh")).unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/tmp".to_string(),
+        show_dotfiles: false,
+    };
+
+    let mut command_completer = CommandCompleter::new();
+    let aliases = AliasStore::default();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
+
+    // Type "./my" + Tab + Enter — should fall back to path completion
+    let mut events = chars("./my");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let result = editor
+        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .unwrap();
+    assert_eq!(result, Some("./myscript.sh ".to_string()));
+}
+
+#[test]
+fn test_tab_argument_position_uses_path_completion() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    fs::File::create(tmp.path().join("testfile.txt")).unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/tmp".to_string(),
+        show_dotfiles: false,
+    };
+
+    let mut command_completer = CommandCompleter::new();
+    let aliases = AliasStore::default();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
+
+    // Type "cat test" + Tab + Enter — argument position should use path completion
+    let mut events = chars("cat test");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let result = editor
+        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .unwrap();
+    assert_eq!(result, Some("cat testfile.txt ".to_string()));
+}
+
+#[test]
+fn test_tab_completes_builtin() {
+    let tmp = tempfile::TempDir::new().unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/tmp".to_string(),
+        show_dotfiles: false,
+    };
+
+    let mut command_completer = CommandCompleter::new();
+    let aliases = AliasStore::default();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &["export", "exec", "exit"],
+        aliases: &aliases,
+    };
+
+    // Type "expo" + Tab + Enter — should complete to "export "
+    let mut events = chars("expo");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let result = editor
+        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .unwrap();
+    assert_eq!(result, Some("export ".to_string()));
+}
+
 // ── Kill ring tests ───────────────────────────────────────────────────
 
 #[test]
