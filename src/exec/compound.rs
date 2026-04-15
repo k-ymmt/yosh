@@ -65,7 +65,13 @@ impl Executor {
                 break;
             }
             self.check_errexit(status);
+            if self.exit_requested.is_some() {
+                break;
+            }
             self.process_pending_signals();
+            if self.exit_requested.is_some() {
+                break;
+            }
         }
         status
     }
