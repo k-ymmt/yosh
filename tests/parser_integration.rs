@@ -960,10 +960,6 @@ case "$-" in *m*) echo "m=on";; *) echo "m=off";; esac"#,
     );
 }
 
-// Note: Testing `set -m` signal-level restoration (init_job_control_signals)
-// requires an interactive/PTY context with a controlling terminal.
-// The flag toggle is verified in test_set_monitor_toggle_flag above;
-// signal-level re-enable verification is deferred to PTY tests.
 
 #[test]
 fn test_set_plus_m_disables_job_control() {
