@@ -117,9 +117,13 @@ impl Executor {
     }
 
     /// Handle a signal with default behavior (terminate).
-    fn handle_default_signal(&mut self, sig: i32) {
+    pub(crate) fn handle_default_signal(&mut self, sig: i32) {
         self.execute_exit_trap();
-        std::process::exit(128 + sig);
+        if self.env.mode.is_interactive {
+            self.exit_requested = Some(128 + sig);
+        } else {
+            std::process::exit(128 + sig);
+        }
     }
 
     /// Evaluate a string as shell commands (used by trap actions and eval).
@@ -871,5 +875,13 @@ mod tests {
     fn exit_requested_defaults_to_none() {
         let exec = Executor::new("kish", vec![]);
         assert_eq!(exec.exit_requested, None);
+    }
+
+    #[test]
+    fn handle_default_signal_sets_exit_requested_in_interactive_mode() {
+        let mut exec = Executor::new("kish", vec![]);
+        exec.env.mode.is_interactive = true;
+        exec.handle_default_signal(libc::SIGHUP);
+        assert_eq!(exec.exit_requested, Some(128 + libc::SIGHUP));
     }
 }
