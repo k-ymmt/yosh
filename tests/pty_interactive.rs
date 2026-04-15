@@ -364,3 +364,34 @@ fn multi_line_prompt() {
 
     exit_shell(&mut session);
 }
+
+#[test]
+fn test_pty_sighup_saves_history() {
+    let (mut s, tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // Execute a command so it gets added to history
+    s.send("echo sighup_test_marker\r").unwrap();
+    expect_output(&mut s, "sighup_test_marker", "echo output");
+    wait_for_prompt(&mut s);
+
+    // Send SIGHUP to the kish process
+    // get_process() returns &UnixProcess which Derefs to PtyProcess; pid() returns nix::unistd::Pid
+    let pid = s.get_process().pid();
+    unsafe {
+        libc::kill(pid.as_raw(), libc::SIGHUP);
+    }
+
+    // Wait for kish to exit
+    let _ = s.expect(Eof);
+
+    // Verify history file was written
+    let histfile = tmpdir.path().join(".kish_history");
+    let contents = std::fs::read_to_string(&histfile)
+        .expect("history file should exist after SIGHUP");
+    assert!(
+        contents.contains("echo sighup_test_marker"),
+        "history file should contain the command, got: {:?}",
+        contents
+    );
+}

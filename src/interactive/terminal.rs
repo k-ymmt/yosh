@@ -92,7 +92,22 @@ impl CrosstermTerminal {
 
 impl Terminal for CrosstermTerminal {
     fn read_event(&mut self) -> io::Result<Event> {
-        event::read()
+        use std::time::Duration;
+        // Poll in short bursts so we can check the signal self-pipe between
+        // calls.  This lets SIGHUP (and other termination signals) interrupt
+        // the read loop even though crossterm itself retries on EINTR.
+        loop {
+            if event::poll(Duration::from_millis(50))? {
+                return event::read();
+            }
+            // Check whether a pending signal should abort the read.
+            if crate::signal::has_pending_exit_signal() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "signal pending",
+                ));
+            }
+        }
     }
 
     fn size(&self) -> io::Result<(u16, u16)> {

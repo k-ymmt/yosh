@@ -1,7 +1,20 @@
 use std::os::unix::io::RawFd;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+
+/// Set to `true` by the signal handler when SIGHUP or SIGTERM is received.
+/// Checked by the terminal read loop to interrupt blocking reads gracefully.
+static PENDING_EXIT_SIGNAL: AtomicBool = AtomicBool::new(false);
+
+/// Returns `true` if a SIGHUP or SIGTERM has been received since the last
+/// call to [`drain_pending_signals`].
+///
+/// This is safe to call from any thread or async context.
+pub fn has_pending_exit_signal() -> bool {
+    PENDING_EXIT_SIGNAL.load(Ordering::Relaxed)
+}
 
 /// Full signal table for name/number conversion.
 pub const SIGNAL_TABLE: &[(i32, &str)] = &[
@@ -66,8 +79,13 @@ pub fn signal_number_to_name(num: i32) -> Option<&'static str> {
 static SELF_PIPE: OnceLock<(RawFd, RawFd)> = OnceLock::new();
 
 /// Async-signal-safe handler: writes the signal number as a single byte to the
-/// write end of the self-pipe.
+/// write end of the self-pipe, and sets the PENDING_EXIT_SIGNAL flag for
+/// SIGHUP and SIGTERM so that the terminal read loop can notice quickly.
 extern "C" fn signal_handler(sig: libc::c_int) {
+    // AtomicBool::store is async-signal-safe.
+    if sig == libc::SIGHUP || sig == libc::SIGTERM {
+        PENDING_EXIT_SIGNAL.store(true, Ordering::Relaxed);
+    }
     let Some(&(_, write_fd)) = SELF_PIPE.get() else {
         return;
     };
@@ -111,16 +129,32 @@ pub fn init_signal_handling() {
         }
 
         // Register sigaction handlers for all HANDLED_SIGNALS.
-        let sa = SigAction::new(
+        // Use SA_RESTART for most signals so that slow system calls are
+        // automatically restarted.  SIGHUP and SIGTERM are termination
+        // signals; we deliberately omit SA_RESTART so that a blocking
+        // read() (e.g. inside read_event()) returns EINTR, which causes
+        // the shell to break out of its read loop and call
+        // process_pending_signals() where the exit is handled.
+        let sa_restart = SigAction::new(
             SigHandler::Handler(signal_handler),
             SaFlags::SA_RESTART,
+            SigSet::empty(),
+        );
+        let sa_no_restart = SigAction::new(
+            SigHandler::Handler(signal_handler),
+            SaFlags::empty(),
             SigSet::empty(),
         );
 
         for &(num, _) in HANDLED_SIGNALS {
             let sig = Signal::try_from(num).expect("invalid signal number in HANDLED_SIGNALS");
+            let sa = if num == libc::SIGHUP || num == libc::SIGTERM {
+                &sa_no_restart
+            } else {
+                &sa_restart
+            };
             unsafe {
-                sigaction(sig, &sa).expect("sigaction failed");
+                sigaction(sig, sa).expect("sigaction failed");
             }
         }
 
@@ -131,7 +165,12 @@ pub fn init_signal_handling() {
 /// Non-blocking read of all pending signal bytes from the self-pipe.
 ///
 /// Returns a (possibly empty) vector of signal numbers.
+/// Also clears the [`PENDING_EXIT_SIGNAL`] flag.
 pub fn drain_pending_signals() -> Vec<i32> {
+    // Clear the exit-signal flag before draining so that the terminal poll
+    // loop does not spuriously re-trigger after the signal has been handled.
+    PENDING_EXIT_SIGNAL.store(false, Ordering::Relaxed);
+
     let Some(&(read_fd, _)) = SELF_PIPE.get() else {
         return Vec::new();
     };
