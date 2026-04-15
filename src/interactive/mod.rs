@@ -1,3 +1,4 @@
+pub mod command_completion;
 pub mod completion;
 pub mod display_width;
 pub mod edit_action;
