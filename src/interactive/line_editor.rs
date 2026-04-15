@@ -2,7 +2,8 @@ use std::io;
 use crossterm::event::{Event, KeyEvent};
 use unicode_width::UnicodeWidthChar;
 
-use super::completion::{self, CompletionContext, CompletionUI};
+use super::completion::{self, CompletionContext, CompletionUI, is_command_position, extract_completion_word};
+use super::command_completion::CommandCompletionContext;
 use super::display_width::display_width;
 use super::edit_action::EditAction;
 use super::fuzzy_search::FuzzySearchUI;
@@ -842,13 +843,14 @@ impl LineEditor {
         history: &mut History,
         term: &mut T,
         ctx: &CompletionContext,
+        cmd_ctx: &mut CommandCompletionContext<'_>,
         scanner: &mut HighlightScanner,
         checker_env: &CheckerEnv<'_>,
         accumulated: &str,
     ) -> io::Result<Option<String>> {
         self.clear();
         term.enable_raw_mode()?;
-        let result = self.read_line_loop_with_completion(prompt, upper_lines, history, term, ctx, scanner, checker_env, accumulated);
+        let result = self.read_line_loop_with_completion(prompt, upper_lines, history, term, ctx, cmd_ctx, scanner, checker_env, accumulated);
         let _ = term.disable_raw_mode();
         result
     }
@@ -861,6 +863,7 @@ impl LineEditor {
         history: &mut History,
         term: &mut T,
         ctx: &CompletionContext,
+        cmd_ctx: &mut CommandCompletionContext<'_>,
         scanner: &mut HighlightScanner,
         checker_env: &CheckerEnv<'_>,
         accumulated: &str,
@@ -932,7 +935,7 @@ impl LineEditor {
                         }
                         KeyAction::TabComplete => {
                             term.reset_style()?;
-                            self.handle_tab_complete(term, prompt, upper_lines, ctx)?;
+                            self.handle_tab_complete(term, prompt, upper_lines, ctx, cmd_ctx)?;
                         }
                         KeyAction::ClearScreen => {
                             term.clear_all()?;
@@ -966,43 +969,68 @@ impl LineEditor {
         prompt: &str,
         upper_lines: &[String],
         ctx: &CompletionContext,
+        cmd_ctx: &mut CommandCompletionContext<'_>,
     ) -> io::Result<()> {
-        let result = completion::complete(&self.buffer(), self.pos, ctx);
+        let (word_start, word) = {
+            let buf = self.buffer();
+            let (ws, w) = extract_completion_word(&buf, self.pos);
+            (ws, w.to_owned())
+        };
+        let is_cmd_pos = {
+            let buf = self.buffer();
+            is_command_position(&buf, word_start)
+        };
 
-        if result.candidates.is_empty() {
+        let (candidates, common_prefix, dir_prefix) =
+            if is_cmd_pos && !word.contains('/') {
+                // Command name completion
+                let (cands, common) = cmd_ctx.completer.complete_common_prefix(
+                    &word,
+                    cmd_ctx.path,
+                    cmd_ctx.builtins,
+                    cmd_ctx.aliases,
+                );
+                (cands, common, String::new())
+            } else {
+                // Path completion (existing)
+                let result = completion::complete(&self.buffer(), self.pos, ctx);
+                (result.candidates, result.common_prefix, result.dir_prefix)
+            };
+
+        if candidates.is_empty() {
             return Ok(());
         }
 
         if self.tab_count == 1 {
-            if result.candidates.len() == 1 {
-                // Single candidate: replace word with dir_prefix + candidate
-                let candidate = &result.candidates[0];
+            if candidates.len() == 1 {
+                // Single candidate: replace word
+                let candidate = &candidates[0];
                 let is_dir = candidate.ends_with('/');
-                let mut replacement = format!("{}{}", result.dir_prefix, candidate);
+                let mut replacement = format!("{}{}", dir_prefix, candidate);
                 if !is_dir {
                     replacement.push(' ');
                 }
-                self.replace_word(result.word_start, &replacement);
+                self.replace_word(word_start, &replacement);
             } else {
                 // Multiple candidates: replace with common prefix if longer
-                let current_word = &self.buffer()[result.word_start..self.pos];
-                let new_word = format!("{}{}", result.dir_prefix, result.common_prefix);
-                if new_word.len() > current_word.len() {
-                    self.replace_word(result.word_start, &new_word);
+                let current_word_len = self.buffer()[word_start..self.pos].len();
+                let new_word = format!("{}{}", dir_prefix, common_prefix);
+                if new_word.len() > current_word_len {
+                    self.replace_word(word_start, &new_word);
                 }
             }
-        } else if self.tab_count >= 2 && result.candidates.len() >= 2 {
+        } else if self.tab_count >= 2 && candidates.len() >= 2 {
             // Show interactive completion UI
             self.suggestion = None;
             term.disable_raw_mode()?;
-            let selected = CompletionUI::run(&result.candidates, term)?;
+            let selected = CompletionUI::run(&candidates, term)?;
             if let Some(sel) = selected {
                 let is_dir = sel.ends_with('/');
-                let mut replacement = format!("{}{}", result.dir_prefix, sel);
+                let mut replacement = format!("{}{}", dir_prefix, sel);
                 if !is_dir {
                     replacement.push(' ');
                 }
-                self.replace_word(result.word_start, &replacement);
+                self.replace_word(word_start, &replacement);
             }
             term.enable_raw_mode()?;
             term.move_to_column(0)?;
