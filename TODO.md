@@ -64,6 +64,7 @@
 
 - [ ] Extract quote-aware balanced-paren scanning into a shared helper — the same ~40-line scanning logic (single/double quote skip, backslash escape, depth counting) is duplicated in three places: `expand_heredoc_string` `$(...)` and `$((...))` branches (`src/expand/mod.rs`) and `expand_vars` in `src/expand/arith.rs`; consider a `skip_balanced_parens(bytes, start, terminator)` helper
 - [ ] Runtime error migration — replace ~90 `eprintln!("kish: ...")` call sites in exec/builtin with `Result<i32, ShellError>` using `RuntimeErrorKind` variants (type definitions ready in `src/error.rs`)
+- [ ] `JobTable::update_status` per-process status tracking — currently overwrites the overall `job.status` on each child exit; if per-process status tracking (e.g., `$PIPESTATUS` array) is needed in the future, the `Job` struct will need a `Vec<(Pid, JobStatus)>` field instead of a single `status` (`src/env/jobs.rs`)
 
 ## Future: E2E Test Expansion
 
