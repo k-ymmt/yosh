@@ -944,6 +944,30 @@ fn test_set_no_args_displays_vars() {
     assert!(stdout.contains("X=hello"));
 }
 
+#[test]
+fn test_set_monitor_toggle_flag() {
+    // Scripts start with monitor off; set -m enables it, set +m disables it
+    let out = kish_exec(
+        r#"case "$-" in *m*) echo "m=on";; *) echo "m=off";; esac
+set -m
+case "$-" in *m*) echo "m=on";; *) echo "m=off";; esac
+set +m
+case "$-" in *m*) echo "m=on";; *) echo "m=off";; esac"#,
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "m=off\nm=on\nm=off\n"
+    );
+}
+
+#[test]
+fn test_set_plus_m_disables_job_control() {
+    // After set +m, fg should report "no job control"
+    let out = kish_exec("set +m; fg");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no job control"), "stderr: {}", stderr);
+}
+
 // ── eval ──
 
 #[test]

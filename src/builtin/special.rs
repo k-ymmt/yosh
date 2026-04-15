@@ -16,7 +16,17 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
         "return" => builtin_return(args, &mut executor.env),
         "break" => builtin_break(args, &mut executor.env),
         "continue" => builtin_continue(args, &mut executor.env),
-        "set" => builtin_set(args, &mut executor.env),
+        "set" => {
+            let was_monitor = executor.env.mode.options.monitor;
+            let ret = builtin_set(args, &mut executor.env);
+            let is_monitor = executor.env.mode.options.monitor;
+            if was_monitor && !is_monitor {
+                crate::signal::reset_job_control_signals();
+            } else if !was_monitor && is_monitor {
+                crate::signal::init_job_control_signals();
+            }
+            ret
+        }
         "eval" => builtin_eval(args, executor),
         "exec" => builtin_exec(args, &mut executor.env),
         "trap" => builtin_trap(args, &mut executor.env),
