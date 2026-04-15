@@ -166,6 +166,9 @@ impl Repl {
                     for cmd in &commands {
                         let status = self.executor.exec_complete_command(cmd);
                         self.executor.env.exec.last_exit_status = status;
+                        if self.executor.exit_requested.is_some() {
+                            break;
+                        }
                     }
                     input_buffer.clear();
                 }
@@ -184,10 +187,16 @@ impl Repl {
 
             // Process any pending signals
             self.executor.process_pending_signals();
+            if let Some(code) = self.executor.exit_requested {
+                self.executor.env.exec.last_exit_status = code;
+                break;
+            }
         }
 
         self.executor.process_pending_signals();
-        self.executor.execute_exit_trap();
+        if self.executor.exit_requested.is_none() {
+            self.executor.execute_exit_trap();
+        }
 
         // Save history to file
         let histfile = self.executor.env.vars.get("HISTFILE").unwrap_or("").to_string();
