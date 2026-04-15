@@ -49,7 +49,12 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> i32 {
     };
     executor.process_pending_signals();
     executor.execute_exit_trap();
-    std::process::exit(code);
+    if executor.env.mode.is_interactive {
+        executor.exit_requested = Some(code);
+        code
+    } else {
+        std::process::exit(code);
+    }
 }
 
 fn builtin_export(args: &[String], env: &mut ShellEnv) -> i32 {
@@ -652,6 +657,30 @@ fn fc_substitute(operands: &[String], executor: &mut Executor) -> i32 {
 
     executor.eval_string(&cmd);
     executor.env.exec.last_exit_status
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::Executor;
+
+    #[test]
+    fn exit_builtin_sets_exit_requested_in_interactive_mode() {
+        let mut executor = Executor::new("kish", vec![]);
+        executor.env.mode.is_interactive = true;
+        let status = exec_special_builtin("exit", &["42".to_string()], &mut executor);
+        assert_eq!(status, 42);
+        assert_eq!(executor.exit_requested, Some(42));
+    }
+
+    #[test]
+    fn exit_builtin_uses_last_status_when_no_args() {
+        let mut executor = Executor::new("kish", vec![]);
+        executor.env.mode.is_interactive = true;
+        executor.env.exec.last_exit_status = 7;
+        exec_special_builtin("exit", &[], &mut executor);
+        assert_eq!(executor.exit_requested, Some(7));
+    }
 }
 
 /// Create a temporary file with a random name and restrictive permissions (0o600).
