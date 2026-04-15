@@ -59,6 +59,10 @@
 - [ ] `GitHubClient` public API error type — `find_asset_url`, `latest_version`, `download` still return `Result<_, String>`; promote internal `GitHubApiError` to a public error type so callers can match on structured variants instead of string messages (`crates/kish-plugin-manager/src/github.rs`)
 - [ ] Integration tests: add checksum mismatch re-download test and partial failure (404) test per spec (`crates/kish-plugin-manager/tests/`)
 
+## Future: Expansion Edge Cases
+
+- [ ] `expand_heredoc_string` `${...}` scanning is quote-unaware — depth counter ignores quote context; not currently reachable because only simple variable lookup is implemented (no conditional forms like `${var:-default}`), but will become a bug if conditional parameter expansion is added (`src/expand/mod.rs:183-197`)
+
 ## Future: Code Quality Improvements
 
 - [ ] Extract quote-aware balanced-paren scanning into a shared helper — the same ~40-line scanning logic (single/double quote skip, backslash escape, depth counting) is duplicated in three places: `expand_heredoc_string` `$(...)` and `$((...))` branches (`src/expand/mod.rs`) and `expand_vars` in `src/expand/arith.rs`; consider a `skip_balanced_parens(bytes, start, terminator)` helper
