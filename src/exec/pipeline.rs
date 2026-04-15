@@ -1,6 +1,6 @@
 use std::os::unix::io::RawFd;
 
-use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{fork, setpgid, ForkResult, Pid};
 
 use crate::parser::ast::Pipeline;
@@ -108,13 +108,27 @@ impl Executor {
         close_all_pipes(&pipes);
 
         if self.env.mode.options.monitor {
-            // Monitor mode: register as foreground job and use WUNTRACED wait
             let cmd_str = "(pipeline)".to_string();
             let job_id = self.env.process.jobs.add_job(pgid, children.clone(), cmd_str, true);
             crate::env::jobs::give_terminal(pgid).ok();
-            let status = self.wait_for_foreground_pipeline(job_id, &children, n);
+
+            let result = self.wait_for_foreground_job(job_id);
+
             crate::env::jobs::take_terminal(self.env.process.shell_pgid).ok();
-            status
+
+            if result.stopped {
+                result.last_status
+            } else if self.env.mode.options.pipefail {
+                let mut ordered = vec![0i32; n];
+                for (pid, code) in &result.process_statuses {
+                    if let Some(idx) = children.iter().position(|c| c == pid) {
+                        ordered[idx] = *code;
+                    }
+                }
+                ordered.iter().rev().find(|&&s| s != 0).copied().unwrap_or(0)
+            } else {
+                result.last_status
+            }
         } else {
             // Non-monitor mode: simple wait loop (existing behavior)
             let mut last_status = 0;
@@ -134,66 +148,6 @@ impl Executor {
             } else {
                 last_status
             }
-        }
-    }
-
-    fn wait_for_foreground_pipeline(&mut self, job_id: crate::env::jobs::JobId, children: &[Pid], n: usize) -> i32 {
-        use crate::env::jobs::JobStatus;
-
-        let pgid = match self.env.process.jobs.get(job_id) {
-            Some(j) => j.pgid,
-            None => return 1,
-        };
-
-        let mut statuses = vec![0i32; n];
-        let mut remaining = n;
-
-        loop {
-            if remaining == 0 {
-                break;
-            }
-
-            match waitpid(Pid::from_raw(-pgid.as_raw()), Some(WaitPidFlag::WUNTRACED)) {
-                Ok(WaitStatus::Exited(pid, code)) => {
-                    if let Some(idx) = children.iter().position(|&c| c == pid) {
-                        statuses[idx] = code;
-                        remaining -= 1;
-                    }
-                    self.env.process.jobs.update_status(pid, JobStatus::Done(code));
-                }
-                Ok(WaitStatus::Signaled(pid, sig, _)) => {
-                    let code = 128 + sig as i32;
-                    if let Some(idx) = children.iter().position(|&c| c == pid) {
-                        statuses[idx] = code;
-                        remaining -= 1;
-                    }
-                    self.env.process.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
-                }
-                Ok(WaitStatus::Stopped(pid, sig)) => {
-                    self.env.process.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
-                    if let Some(job) = self.env.process.jobs.get_mut(job_id) {
-                        job.status = JobStatus::Stopped(sig as i32);
-                        job.foreground = false;
-                    }
-                    if let Some(line) = self.env.process.jobs.format_job(job_id) {
-                        eprintln!("{}", line);
-                    }
-                    return 128 + sig as i32;
-                }
-                Err(nix::errno::Errno::ECHILD) => break,
-                Err(nix::errno::Errno::EINTR) => continue,
-                _ => break,
-            }
-        }
-
-        // All children done — remove job
-        self.env.process.jobs.mark_notified(job_id);
-        self.env.process.jobs.remove_job(job_id);
-
-        if self.env.mode.options.pipefail {
-            statuses.iter().rev().find(|&&s| s != 0).copied().unwrap_or(0)
-        } else {
-            statuses.last().copied().unwrap_or(0)
         }
     }
 }
