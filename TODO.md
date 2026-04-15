@@ -64,6 +64,8 @@
 
 - [ ] Extract quote-aware balanced-paren scanning into a shared helper — the same ~40-line scanning logic (single/double quote skip, backslash escape, depth counting) is duplicated in three places: `expand_heredoc_string` `$(...)` and `$((...))` branches (`src/expand/mod.rs`) and `expand_vars` in `src/expand/arith.rs`; consider a `skip_balanced_parens(bytes, start, terminator)` helper
 - [ ] Runtime error migration — replace ~90 `eprintln!("kish: ...")` call sites in exec/builtin with `Result<i32, ShellError>` using `RuntimeErrorKind` variants (type definitions ready in `src/error.rs`)
+- [ ] Extract shared foreground job wait helper — `exec_external_with_redirects` (`src/exec/simple.rs`) and `wait_for_foreground_pipeline` (`src/exec/pipeline.rs`) duplicate the same setpgid/give_terminal/WUNTRACED-wait/take_terminal pattern; consider a `wait_for_foreground_job(job_id, pgid)` helper
+- [ ] `wait_for_foreground_pipeline` EINTR handling — does not call `process_pending_signals()` on EINTR unlike the simple.rs equivalent; signals received during `waitpid` are silently deferred (`src/exec/pipeline.rs`)
 
 ## Future: E2E Test Expansion
 
