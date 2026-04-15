@@ -3,6 +3,7 @@ use crossterm::event::KeyCode;
 use kish::env::ShellEnv;
 use kish::env::aliases::AliasStore;
 use kish::interactive::completion::CompletionContext;
+use kish::interactive::command_completion::{CommandCompleter, CommandCompletionContext};
 use kish::interactive::edit_action::EditAction;
 use kish::interactive::fuzzy_search::FuzzySearchUI;
 use kish::interactive::highlight::{CheckerEnv, HighlightScanner};
@@ -972,8 +973,8 @@ fn test_tab_completes_single_candidate() {
         show_dotfiles: false,
     };
 
-    // Type "uni" + Tab + Enter
-    let mut events = chars("uni");
+    // Type "ls uni" + Tab + Enter (argument position ensures path completion)
+    let mut events = chars("ls uni");
     events.push(key(KeyCode::Tab));
     events.push(key(KeyCode::Enter));
 
@@ -981,12 +982,19 @@ fn test_tab_completes_single_candidate() {
     let mut editor = LineEditor::new();
     let mut history = History::new();
     let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
     let mut scanner = HighlightScanner::new();
     let checker_env = CheckerEnv { path: "", aliases: &aliases };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
         .unwrap();
-    assert_eq!(result, Some("unique_file.txt ".to_string()));
+    assert_eq!(result, Some("ls unique_file.txt ".to_string()));
 }
 
 #[test]
@@ -1001,8 +1009,8 @@ fn test_tab_completes_common_prefix() {
         show_dotfiles: false,
     };
 
-    // Type "file" + Tab + Enter
-    let mut events = chars("file");
+    // Type "ls file" + Tab + Enter (argument position ensures path completion)
+    let mut events = chars("ls file");
     events.push(key(KeyCode::Tab));
     events.push(key(KeyCode::Enter));
 
@@ -1010,12 +1018,19 @@ fn test_tab_completes_common_prefix() {
     let mut editor = LineEditor::new();
     let mut history = History::new();
     let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
     let mut scanner = HighlightScanner::new();
     let checker_env = CheckerEnv { path: "", aliases: &aliases };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
         .unwrap();
-    assert_eq!(result, Some("file_".to_string()));
+    assert_eq!(result, Some("ls file_".to_string()));
 }
 
 #[test]
@@ -1029,8 +1044,8 @@ fn test_tab_directory_appends_slash() {
         show_dotfiles: false,
     };
 
-    // Type "my" + Tab + Enter
-    let mut events = chars("my");
+    // Type "ls my" + Tab + Enter (argument position ensures path completion)
+    let mut events = chars("ls my");
     events.push(key(KeyCode::Tab));
     events.push(key(KeyCode::Enter));
 
@@ -1038,12 +1053,19 @@ fn test_tab_directory_appends_slash() {
     let mut editor = LineEditor::new();
     let mut history = History::new();
     let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
     let mut scanner = HighlightScanner::new();
     let checker_env = CheckerEnv { path: "", aliases: &aliases };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
         .unwrap();
-    assert_eq!(result, Some("mydir/".to_string()));
+    assert_eq!(result, Some("ls mydir/".to_string()));
 }
 
 #[test]
@@ -1057,8 +1079,8 @@ fn test_tab_no_match_does_nothing() {
         show_dotfiles: false,
     };
 
-    // Type "xyz" + Tab + Enter
-    let mut events = chars("xyz");
+    // Type "ls xyz" + Tab + Enter (argument position ensures path completion)
+    let mut events = chars("ls xyz");
     events.push(key(KeyCode::Tab));
     events.push(key(KeyCode::Enter));
 
@@ -1066,12 +1088,19 @@ fn test_tab_no_match_does_nothing() {
     let mut editor = LineEditor::new();
     let mut history = History::new();
     let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
     let mut scanner = HighlightScanner::new();
     let checker_env = CheckerEnv { path: "", aliases: &aliases };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
         .unwrap();
-    assert_eq!(result, Some("xyz".to_string()));
+    assert_eq!(result, Some("ls xyz".to_string()));
 }
 
 #[test]
@@ -1088,9 +1117,10 @@ fn test_double_tab_opens_completion_ui() {
         show_dotfiles: false,
     };
 
-    // Type "file_", Tab (common prefix already complete, no change),
+    // Type "ls file_", Tab (common prefix already complete, no change),
     // Tab again (opens CompletionUI), Up (select file_beta.rs), Enter (confirm), Enter (submit)
-    let mut events = chars("file_");
+    // Using "ls " prefix puts "file_" in argument position to ensure path completion
+    let mut events = chars("ls file_");
     events.push(key(KeyCode::Tab));     // first tab: completes common prefix (already "file_")
     events.push(key(KeyCode::Tab));     // second tab: opens CompletionUI
     events.push(key(KeyCode::Up));      // select file_beta.rs
@@ -1101,10 +1131,17 @@ fn test_double_tab_opens_completion_ui() {
     let mut editor = LineEditor::new();
     let mut history = History::new();
     let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
     let mut scanner = HighlightScanner::new();
     let checker_env = CheckerEnv { path: "", aliases: &aliases };
-    let result = editor.read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut scanner, &checker_env, "").unwrap();
-    assert_eq!(result, Some("file_beta.rs ".to_string()));
+    let result = editor.read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "").unwrap();
+    assert_eq!(result, Some("ls file_beta.rs ".to_string()));
 
     let _ = fs::remove_dir_all(&dir);
 }
