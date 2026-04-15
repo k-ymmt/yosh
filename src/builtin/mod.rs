@@ -3,6 +3,16 @@ pub mod special;
 
 use crate::env::ShellEnv;
 
+/// All builtin command names (special + regular) for tab-completion.
+pub const BUILTIN_NAMES: &[&str] = &[
+    // Special builtins
+    "break", ":", "continue", ".", "eval", "exec", "exit", "export",
+    "readonly", "return", "set", "shift", "times", "trap", "unset", "fc",
+    // Regular builtins
+    "cd", "echo", "true", "false", "alias", "unalias", "kill", "wait",
+    "fg", "bg", "jobs", "umask",
+];
+
 /// Classification of a command name as a POSIX builtin kind.
 #[derive(Debug, PartialEq)]
 pub enum BuiltinKind {
@@ -140,5 +150,17 @@ mod tests {
         // the function returns 0 (behavior tested via E2E).
         let args = vec!["-n".to_string(), "hello".to_string()];
         assert_eq!(regular::builtin_echo(&args), 0);
+    }
+
+    #[test]
+    fn test_builtin_names_consistent_with_classify() {
+        for &name in BUILTIN_NAMES {
+            assert_ne!(
+                classify_builtin(name),
+                BuiltinKind::NotBuiltin,
+                "{} is in BUILTIN_NAMES but classify_builtin returns NotBuiltin",
+                name,
+            );
+        }
     }
 }
