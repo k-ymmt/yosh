@@ -14,6 +14,16 @@ use crate::parser::ast::{
     AndOrList, AndOrOp, Command, CompleteCommand, Program, SeparatorOp,
 };
 
+/// Result of waiting for a foreground job.
+pub(crate) struct ForegroundWaitResult {
+    /// Exit status of the last process to report.
+    pub last_status: i32,
+    /// Per-process exit statuses (pid, exit_code) in reporting order — used by pipefail.
+    pub process_statuses: Vec<(nix::unistd::Pid, i32)>,
+    /// Whether the job was stopped (e.g., Ctrl+Z) rather than exiting.
+    pub stopped: bool,
+}
+
 pub struct Executor {
     pub env: ShellEnv,
     pub plugins: PluginManager,
@@ -504,7 +514,8 @@ impl Executor {
         jobs::give_terminal(pgid).ok();
 
         // Wait for the job
-        let status = self.wait_for_foreground_job(job_id);
+        let result = self.wait_for_foreground_job(job_id);
+        let status = result.last_status;
 
         // Take terminal back
         jobs::take_terminal(self.env.process.shell_pgid).ok();
@@ -567,46 +578,55 @@ impl Executor {
     }
 
     /// Wait for a foreground job to complete or stop.
-    fn wait_for_foreground_job(&mut self, job_id: crate::env::jobs::JobId) -> i32 {
+    ///
+    /// Returns a `ForegroundWaitResult` containing the last exit status,
+    /// per-process statuses (for pipefail), and whether the job was stopped.
+    fn wait_for_foreground_job(&mut self, job_id: crate::env::jobs::JobId) -> ForegroundWaitResult {
         use crate::env::jobs::JobStatus;
         use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 
-        let pgid = match self.env.process.jobs.get(job_id) {
-            Some(j) => j.pgid,
-            None => return 1,
+        let (pgid, total_processes) = match self.env.process.jobs.get(job_id) {
+            Some(j) => (j.pgid, j.pids.len()),
+            None => return ForegroundWaitResult {
+                last_status: 1,
+                process_statuses: Vec::new(),
+                stopped: false,
+            },
         };
 
         let mut last_status = 0;
+        let mut process_statuses: Vec<(nix::unistd::Pid, i32)> = Vec::new();
 
         loop {
+            if process_statuses.len() >= total_processes {
+                self.env.process.jobs.mark_notified(job_id);
+                self.env.process.jobs.remove_job(job_id);
+                break;
+            }
+
             match waitpid(nix::unistd::Pid::from_raw(-pgid.as_raw()), Some(WaitPidFlag::WUNTRACED)) {
                 Ok(WaitStatus::Exited(pid, code)) => {
                     self.env.process.jobs.update_status(pid, JobStatus::Done(code));
                     last_status = code;
-                    // Check if job is done
-                    if self.all_job_processes_done(job_id) {
-                        self.env.process.jobs.mark_notified(job_id);
-                        self.env.process.jobs.remove_job(job_id);
-                        break;
-                    }
+                    process_statuses.push((pid, code));
                 }
                 Ok(WaitStatus::Signaled(pid, sig, _)) => {
                     let code = 128 + sig as i32;
                     self.env.process.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
                     last_status = code;
-                    if self.all_job_processes_done(job_id) {
-                        self.env.process.jobs.mark_notified(job_id);
-                        self.env.process.jobs.remove_job(job_id);
-                        break;
-                    }
+                    process_statuses.push((pid, code));
                 }
                 Ok(WaitStatus::Stopped(pid, sig)) => {
                     self.env.process.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
+                    if let Some(job) = self.env.process.jobs.get_mut(job_id) {
+                        job.status = JobStatus::Stopped(sig as i32);
+                        job.foreground = false;
+                    }
                     if let Some(line) = self.env.process.jobs.format_job(job_id) {
                         eprintln!("{}", line);
                     }
                     last_status = 128 + sig as i32;
-                    break;
+                    return ForegroundWaitResult { last_status, process_statuses, stopped: true };
                 }
                 Err(nix::errno::Errno::ECHILD) => {
                     self.env.process.jobs.remove_job(job_id);
@@ -620,16 +640,7 @@ impl Executor {
             }
         }
 
-        last_status
-    }
-
-    /// Check if all processes in a job have finished (Done or Terminated).
-    fn all_job_processes_done(&self, job_id: crate::env::jobs::JobId) -> bool {
-        use crate::env::jobs::JobStatus;
-        match self.env.process.jobs.get(job_id) {
-            Some(job) => matches!(job.status, JobStatus::Done(_) | JobStatus::Terminated(_)),
-            None => true,
-        }
+        ForegroundWaitResult { last_status, process_statuses, stopped: false }
     }
 
     /// Display pending job notifications and clean up completed jobs.
