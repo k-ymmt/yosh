@@ -77,13 +77,52 @@ fn expand_vars(env: &mut ShellEnv, expr: &str) -> String {
                 let start = i;
                 let mut depth: usize = 1;
                 while i < bytes.len() && depth > 0 {
-                    if bytes[i] == b'(' {
-                        depth += 1;
-                    } else if bytes[i] == b')' {
-                        depth -= 1;
-                    }
-                    if depth > 0 {
-                        i += 1;
+                    match bytes[i] {
+                        b'\'' => {
+                            // Single quote: skip to matching '
+                            i += 1;
+                            while i < bytes.len() && bytes[i] != b'\'' {
+                                i += 1;
+                            }
+                            if i < bytes.len() {
+                                i += 1;
+                            }
+                        }
+                        b'"' => {
+                            // Double quote: skip to matching ", handle backslash escapes
+                            i += 1;
+                            while i < bytes.len() && bytes[i] != b'"' {
+                                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                                    i += 2;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            if i < bytes.len() {
+                                i += 1;
+                            }
+                        }
+                        b'\\' => {
+                            // Backslash: skip next character
+                            if i + 1 < bytes.len() {
+                                i += 2;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        b'(' => {
+                            depth += 1;
+                            i += 1;
+                        }
+                        b')' => {
+                            depth -= 1;
+                            if depth > 0 {
+                                i += 1;
+                            }
+                        }
+                        _ => {
+                            i += 1;
+                        }
                     }
                 }
                 let cmd_str = &expr[start..i];
@@ -799,4 +838,5 @@ mod tests {
         // No positional params set; $1 should default to 0
         assert_eq!(evaluate(&mut e, "$1 + 5"), Ok("5".to_string()));
     }
+
 }

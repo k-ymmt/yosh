@@ -600,6 +600,39 @@ impl Lexer {
             }
             let ch = self.current_byte();
             match ch {
+                b'$' if self.peek_byte() == b'(' => {
+                    // Nested $(cmd) or $((...)) — delegate to read_balanced_parens
+                    // which correctly handles quotes inside command substitutions
+                    let sub_span = self.current_span();
+                    expr.push('$');
+                    self.advance(); // consume '$', now at '('
+                    let content = self.read_balanced_parens(sub_span)?;
+                    expr.push('(');
+                    expr.push_str(&content);
+                    expr.push(')');
+                }
+                b'`' => {
+                    // Backtick command substitution — skip to matching `
+                    expr.push('`');
+                    self.advance();
+                    while !self.at_end() {
+                        let bch = self.current_byte();
+                        if bch == b'\\' {
+                            expr.push('\\');
+                            self.advance();
+                            if !self.at_end() {
+                                expr.push(self.current_byte() as char);
+                                self.advance();
+                            }
+                        } else {
+                            expr.push(bch as char);
+                            self.advance();
+                            if bch == b'`' {
+                                break;
+                            }
+                        }
+                    }
+                }
                 b'(' => {
                     depth += 1;
                     expr.push('(');

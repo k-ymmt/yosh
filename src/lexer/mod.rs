@@ -469,6 +469,34 @@ mod tests {
     }
 
     #[test]
+    fn test_arith_expansion_with_quoted_paren_in_cmd_sub() {
+        // $(echo "3)") inside $((...)) — the ')' in double quotes must not
+        // prematurely close the command substitution or arithmetic expansion
+        let tokens = tokenize("$(($(echo \"3)\") + 1))");
+        assert_eq!(
+            tokens,
+            vec![Token::Word(Word {
+                parts: vec![WordPart::ArithSub(
+                    "$(echo \"3)\") + 1".to_string()
+                )]
+            })]
+        );
+    }
+
+    #[test]
+    fn test_arith_expansion_with_single_quoted_paren_in_cmd_sub() {
+        let tokens = tokenize("$(($(echo '3)') + 1))");
+        assert_eq!(
+            tokens,
+            vec![Token::Word(Word {
+                parts: vec![WordPart::ArithSub(
+                    "$(echo '3)') + 1".to_string()
+                )]
+            })]
+        );
+    }
+
+    #[test]
     fn test_backtick_command_sub() {
         let tokens = tokenize("`echo hello`");
         assert_eq!(tokens.len(), 1);
