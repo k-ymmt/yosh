@@ -286,6 +286,9 @@ impl Executor {
                 break;
             }
             self.check_errexit(status);
+            if self.exit_requested.is_some() {
+                break;
+            }
         }
 
         self.env.exec.last_exit_status = status;
@@ -297,6 +300,9 @@ impl Executor {
         let mut status = 0;
         for cmd in &program.commands {
             status = self.exec_complete_command(cmd);
+            if self.exit_requested.is_some() {
+                break;
+            }
         }
         self.env.exec.last_exit_status = status;
         status
