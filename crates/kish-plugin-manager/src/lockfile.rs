@@ -1,6 +1,8 @@
+use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LockFile {
@@ -39,12 +41,18 @@ pub fn load_lockfile(path: &Path) -> Result<LockFile, String> {
 pub fn save_lockfile(path: &Path, lockfile: &LockFile) -> Result<(), String> {
     let content = toml::to_string_pretty(lockfile)
         .map_err(|e| format!("serialize lock file: {}", e))?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("{}: {}", parent.display(), e))?;
-    }
-    std::fs::write(path, content)
-        .map_err(|e| format!("{}: {}", path.display(), e))
+    let parent = path.parent().ok_or_else(|| {
+        format!("{}: no parent directory", path.display())
+    })?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("{}: {}", parent.display(), e))?;
+    let mut tmp = NamedTempFile::new_in(parent)
+        .map_err(|e| format!("{}: {}", path.display(), e))?;
+    tmp.write_all(content.as_bytes())
+        .map_err(|e| format!("{}: {}", path.display(), e))?;
+    tmp.persist(path)
+        .map_err(|e| format!("{}: {}", path.display(), e))?;
+    Ok(())
 }
 
 #[cfg(test)]
