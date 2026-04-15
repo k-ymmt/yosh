@@ -1,9 +1,11 @@
 use std::ffi::CString;
 
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{execvp, fork, ForkResult};
 
 use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
 use crate::builtin::special::exec_special_builtin;
+use crate::env::jobs::{self, JobStatus};
 use crate::expand::expand_words;
 use crate::parser::ast::{Assignment, SimpleCommand};
 use crate::signal;
@@ -312,13 +314,25 @@ impl Executor {
             }
         }
 
+        let monitor = self.env.mode.options.monitor;
+        let shell_pgid = self.env.process.shell_pgid;
+        let ignored = self.env.traps.ignored_signals();
+
         match unsafe { fork() } {
             Err(e) => {
                 eprintln!("kish: fork: {}", e);
                 1
             }
             Ok(ForkResult::Child) => {
-                signal::reset_child_signals(&self.env.traps.ignored_signals());
+                // In monitor mode: put child in its own process group so Ctrl+Z
+                // (SIGTSTP) stops only the foreground job, not the shell.
+                if monitor {
+                    let my_pid = nix::unistd::getpid();
+                    nix::unistd::setpgid(my_pid, my_pid).ok();
+                    signal::setup_foreground_child_signals(&ignored);
+                } else {
+                    signal::reset_child_signals(&ignored);
+                }
 
                 // Apply redirects (no need to save, we're in the child)
                 let mut redir_state = RedirectState::new();
@@ -361,7 +375,80 @@ impl Executor {
                 };
                 std::process::exit(exit_code);
             }
-            Ok(ForkResult::Parent { child }) => wait_child(child),
+            Ok(ForkResult::Parent { child }) => {
+                if monitor {
+                    // Ensure child is in its own process group (race-free: both
+                    // parent and child call setpgid).
+                    nix::unistd::setpgid(child, child).ok();
+
+                    let full_cmd = std::iter::once(cmd)
+                        .chain(args.iter().map(|s| s.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let job_id = self.env.process.jobs.add_job(
+                        child,
+                        vec![child],
+                        full_cmd,
+                        true,
+                    );
+
+                    // Hand terminal to the child's process group.
+                    jobs::give_terminal(child).ok();
+
+                    // Wait with WUNTRACED so we see SIGTSTP stops.
+                    let mut last_status = 0;
+                    loop {
+                        match waitpid(
+                            nix::unistd::Pid::from_raw(-child.as_raw()),
+                            Some(WaitPidFlag::WUNTRACED),
+                        ) {
+                            Ok(WaitStatus::Exited(pid, code)) => {
+                                self.env.process.jobs.update_status(pid, JobStatus::Done(code));
+                                last_status = code;
+                                self.env.process.jobs.mark_notified(job_id);
+                                self.env.process.jobs.remove_job(job_id);
+                                break;
+                            }
+                            Ok(WaitStatus::Signaled(pid, sig, _)) => {
+                                let code = 128 + sig as i32;
+                                self.env.process.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
+                                last_status = code;
+                                self.env.process.jobs.mark_notified(job_id);
+                                self.env.process.jobs.remove_job(job_id);
+                                break;
+                            }
+                            Ok(WaitStatus::Stopped(pid, sig)) => {
+                                self.env.process.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
+                                if let Some(job) = self.env.process.jobs.get_mut(job_id) {
+                                    job.status = JobStatus::Stopped(sig as i32);
+                                    job.foreground = false;
+                                }
+                                if let Some(line) = self.env.process.jobs.format_job(job_id) {
+                                    eprintln!("{}", line);
+                                }
+                                last_status = 128 + sig as i32;
+                                break;
+                            }
+                            Err(nix::errno::Errno::ECHILD) => {
+                                self.env.process.jobs.remove_job(job_id);
+                                break;
+                            }
+                            Err(nix::errno::Errno::EINTR) => {
+                                self.process_pending_signals();
+                                continue;
+                            }
+                            _ => break,
+                        }
+                    }
+
+                    // Take terminal back for the shell.
+                    jobs::take_terminal(shell_pgid).ok();
+
+                    last_status
+                } else {
+                    wait_child(child)
+                }
+            }
         }
     }
 

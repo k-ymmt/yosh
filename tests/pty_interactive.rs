@@ -486,3 +486,38 @@ fn test_pty_set_plus_m_disables_job_control() {
 
     exit_shell(&mut s);
 }
+
+#[test]
+fn test_pty_set_minus_m_reenables_job_control() {
+    let (mut s, _tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // Disable then re-enable monitor mode
+    s.send("set +m\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("set -m\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    // Start a foreground job
+    s.send("sleep 100\r").unwrap();
+    // Brief pause to let sleep start
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Ctrl+Z to suspend
+    s.send("\x1a").unwrap();
+
+    // Shell should regain control and show prompt
+    wait_for_prompt(&mut s);
+
+    // jobs should show the stopped job
+    s.send("jobs\r").unwrap();
+    s.expect("Stopped")
+        .expect("jobs should show Stopped after Ctrl+Z suspend");
+    wait_for_prompt(&mut s);
+
+    // Cleanup: kill the stopped job
+    s.send("kill %1\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
