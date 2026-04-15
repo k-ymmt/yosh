@@ -19,6 +19,7 @@ use crate::exec::Executor;
 use crate::signal;
 
 use completion::CompletionContext;
+use command_completion::{CommandCompleter, CommandCompletionContext};
 use highlight::{CheckerEnv, HighlightScanner};
 use line_editor::LineEditor;
 use parse_status::{ParseStatus, classify_parse};
@@ -30,6 +31,7 @@ pub struct Repl {
     line_editor: LineEditor,
     terminal: CrosstermTerminal,
     scanner: HighlightScanner,
+    command_completer: CommandCompleter,
 }
 
 impl Repl {
@@ -61,6 +63,7 @@ impl Repl {
             line_editor: LineEditor::new(),
             terminal: CrosstermTerminal::new(),
             scanner: HighlightScanner::new(),
+            command_completer: CommandCompleter::new(),
         }
     }
 
@@ -107,6 +110,13 @@ impl Repl {
                 aliases: &self.executor.env.aliases,
             };
 
+            let mut cmd_ctx = CommandCompletionContext {
+                completer: &mut self.command_completer,
+                path: &path_val,
+                builtins: crate::builtin::BUILTIN_NAMES,
+                aliases: &self.executor.env.aliases,
+            };
+
             // Read a line
             let line = match self.line_editor.read_line_with_completion(
                 &prompt_info.last_line,
@@ -114,6 +124,7 @@ impl Repl {
                 &mut self.executor.env.history,
                 &mut self.terminal,
                 &comp_ctx,
+                &mut cmd_ctx,
                 &mut self.scanner,
                 &checker_env,
                 &input_buffer,
