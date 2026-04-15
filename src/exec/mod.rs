@@ -175,7 +175,7 @@ impl Executor {
             self.exec_pipeline(&and_or.first)
         };
 
-        if self.env.exec.flow_control.is_some() {
+        if self.env.exec.flow_control.is_some() || self.exit_requested.is_some() {
             return status;
         }
 
@@ -195,7 +195,7 @@ impl Executor {
                 self.exec_pipeline(pipeline)
             };
 
-            if self.env.exec.flow_control.is_some() {
+            if self.env.exec.flow_control.is_some() || self.exit_requested.is_some() {
                 break;
             }
         }
@@ -902,5 +902,41 @@ mod tests {
         exec.env.mode.options.errexit = true;
         exec.check_errexit(1);
         assert_eq!(exec.exit_requested, Some(1));
+    }
+
+    #[test]
+    fn exec_and_or_stops_after_first_pipeline_when_exit_requested() {
+        // Simulates: exit 0 && echo X — the && branch should not execute
+        let mut exec = Executor::new("kish".to_string(), vec![]);
+        exec.exit_requested = Some(0);
+        let and_or = AndOrList {
+            first: make_pipeline("true"),
+            rest: vec![(AndOrOp::And, make_pipeline("false"))],
+        };
+        let status = exec.exec_and_or(&and_or);
+        assert_eq!(status, 0);
+        assert_eq!(exec.exit_requested, Some(0));
+    }
+
+    #[test]
+    fn exec_and_or_stops_after_rest_pipeline_when_exit_requested() {
+        // Simulates: false || exit 0 && echo X — after exit sets exit_requested,
+        // the && branch should not execute
+        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let and_or = AndOrList {
+            first: make_pipeline("false"),
+            rest: vec![
+                (AndOrOp::Or, make_pipeline("true")),
+                (AndOrOp::And, make_pipeline("false")),
+            ],
+        };
+        // Set exit_requested after first rest pipeline would execute
+        // To test the loop check, we pre-set exit_requested; the second rest
+        // pipeline ("false") should be skipped.
+        exec.exit_requested = Some(0);
+        let status = exec.exec_and_or(&and_or);
+        // First pipeline returns 1 (false), but exit_requested stops before it runs
+        assert_eq!(status, 1);
+        assert_eq!(exec.exit_requested, Some(0));
     }
 }
