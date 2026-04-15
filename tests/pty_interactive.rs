@@ -468,3 +468,21 @@ fn test_pty_sighup_saves_history() {
         contents
     );
 }
+
+#[test]
+fn test_pty_set_plus_m_disables_job_control() {
+    let (mut s, _tmpdir) = spawn_kish();
+    wait_for_prompt(&mut s);
+
+    // Interactive shell starts with monitor=on; disable it
+    s.send("set +m\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    // fg should fail with "no job control"
+    s.send("fg\r").unwrap();
+    s.expect("no job control")
+        .expect("fg should report 'no job control' after set +m");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
