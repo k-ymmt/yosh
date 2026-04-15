@@ -67,7 +67,11 @@ impl Executor {
     pub fn check_errexit(&mut self, status: i32) {
         if status != 0 && self.should_errexit() {
             self.execute_exit_trap();
-            std::process::exit(status);
+            if self.env.mode.is_interactive {
+                self.exit_requested = Some(status);
+            } else {
+                std::process::exit(status);
+            }
         }
     }
 
@@ -883,5 +887,14 @@ mod tests {
         exec.env.mode.is_interactive = true;
         exec.handle_default_signal(libc::SIGHUP);
         assert_eq!(exec.exit_requested, Some(128 + libc::SIGHUP));
+    }
+
+    #[test]
+    fn check_errexit_sets_exit_requested_in_interactive_mode() {
+        let mut exec = Executor::new("kish", vec![]);
+        exec.env.mode.is_interactive = true;
+        exec.env.mode.options.errexit = true;
+        exec.check_errexit(1);
+        assert_eq!(exec.exit_requested, Some(1));
     }
 }
