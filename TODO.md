@@ -7,6 +7,7 @@
 - [ ] `suspend` builtin — not implemented
 - [ ] Terminal state save/restore (tcgetattr/tcsetattr) — jobs that modify terminal settings may leave terminal in bad state
 - [ ] Pipeline command display in `jobs` output uses placeholder format — improve to reconstruct shell syntax
+- [ ] `set -m` signal-level re-enable PTY test — verify `init_job_control_signals()` is effective after `set +m; set -m` toggle; requires interactive/PTY context (`tests/pty_interactive.rs`)
 
 ## History: Known Limitations
 
