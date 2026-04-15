@@ -13,7 +13,7 @@ static PENDING_EXIT_SIGNAL: AtomicBool = AtomicBool::new(false);
 ///
 /// This is safe to call from any thread or async context.
 pub fn has_pending_exit_signal() -> bool {
-    PENDING_EXIT_SIGNAL.load(Ordering::Relaxed)
+    PENDING_EXIT_SIGNAL.load(Ordering::Acquire)
 }
 
 /// Full signal table for name/number conversion.
@@ -84,7 +84,7 @@ static SELF_PIPE: OnceLock<(RawFd, RawFd)> = OnceLock::new();
 extern "C" fn signal_handler(sig: libc::c_int) {
     // AtomicBool::store is async-signal-safe.
     if sig == libc::SIGHUP || sig == libc::SIGTERM {
-        PENDING_EXIT_SIGNAL.store(true, Ordering::Relaxed);
+        PENDING_EXIT_SIGNAL.store(true, Ordering::Release);
     }
     let Some(&(_, write_fd)) = SELF_PIPE.get() else {
         return;
@@ -169,7 +169,7 @@ pub fn init_signal_handling() {
 pub fn drain_pending_signals() -> Vec<i32> {
     // Clear the exit-signal flag before draining so that the terminal poll
     // loop does not spuriously re-trigger after the signal has been handled.
-    PENDING_EXIT_SIGNAL.store(false, Ordering::Relaxed);
+    PENDING_EXIT_SIGNAL.store(false, Ordering::Release);
 
     let Some(&(read_fd, _)) = SELF_PIPE.get() else {
         return Vec::new();
