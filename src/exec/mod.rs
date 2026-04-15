@@ -18,6 +18,7 @@ pub struct Executor {
     pub env: ShellEnv,
     pub plugins: PluginManager,
     errexit_suppressed_depth: usize,
+    pub exit_requested: Option<i32>,
 }
 
 impl Executor {
@@ -26,6 +27,7 @@ impl Executor {
             env: ShellEnv::new(shell_name, args),
             plugins: PluginManager::new(),
             errexit_suppressed_depth: 0,
+            exit_requested: None,
         }
     }
 
@@ -35,6 +37,7 @@ impl Executor {
             env,
             plugins: PluginManager::new(),
             errexit_suppressed_depth: 0,
+            exit_requested: None,
         }
     }
 
@@ -862,5 +865,11 @@ mod tests {
     fn plugin_config_path_points_to_lock_file() {
         let path = super::plugin_config_path();
         assert!(path.to_string_lossy().ends_with("plugins.lock"));
+    }
+
+    #[test]
+    fn exit_requested_defaults_to_none() {
+        let exec = Executor::new("kish", vec![]);
+        assert_eq!(exec.exit_requested, None);
     }
 }
