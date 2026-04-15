@@ -70,6 +70,22 @@ fn is_unquoted_delimiter(ch: u8) -> bool {
     matches!(ch, b' ' | b'|' | b';' | b'&' | b'<' | b'>' | b'(' | b')')
 }
 
+/// Returns `true` if `word_start` is at command position in `buf`.
+///
+/// Command position means the word is the first token after:
+/// - line start (nothing before it)
+/// - `|`, `;`, `&`, `(`, `!`
+///
+/// Scans backward from `word_start`, skipping whitespace, and checks
+/// the last non-whitespace character.
+pub fn is_command_position(buf: &str, word_start: usize) -> bool {
+    let before = buf[..word_start].trim_end();
+    if before.is_empty() {
+        return true;
+    }
+    matches!(before.as_bytes().last(), Some(b'|' | b';' | b'&' | b'(' | b'!'))
+}
+
 /// Split a completion word at the last `/` into (directory_part, prefix).
 ///
 /// - If the word starts with `~`, the tilde is expanded to `home`.
@@ -936,5 +952,61 @@ mod tests {
         let mut term = MockTerm::new(events);
         let _result = CompletionUI::run(&candidates, &mut term).unwrap();
         assert_eq!(term.cursor_row, 0);
+    }
+
+    // ── is_command_position ────────────────────────────────────────
+
+    #[test]
+    fn test_command_position_line_start() {
+        assert!(is_command_position("", 0));
+        assert!(is_command_position("gi", 0));
+    }
+
+    #[test]
+    fn test_command_position_after_pipe() {
+        // "ls | gr" — word_start=5
+        assert!(is_command_position("ls | gr", 5));
+    }
+
+    #[test]
+    fn test_command_position_after_semicolon() {
+        // "echo a; ls" — word_start=8
+        assert!(is_command_position("echo a; ls", 8));
+    }
+
+    #[test]
+    fn test_command_position_after_and_and() {
+        // "true && ec" — word_start=8
+        assert!(is_command_position("true && ec", 8));
+    }
+
+    #[test]
+    fn test_command_position_after_or_or() {
+        // "false || ec" — word_start=9
+        assert!(is_command_position("false || ec", 9));
+    }
+
+    #[test]
+    fn test_command_position_after_open_paren() {
+        // "(ls" — word_start=1
+        assert!(is_command_position("(ls", 1));
+    }
+
+    #[test]
+    fn test_command_position_after_bang() {
+        // "! cmd" — word_start=2
+        assert!(is_command_position("! cmd", 2));
+    }
+
+    #[test]
+    fn test_not_command_position_argument() {
+        // "ls fo" — word_start=3
+        assert!(!is_command_position("ls fo", 3));
+    }
+
+    #[test]
+    fn test_not_command_position_second_arg() {
+        // "echo hello wor" — word_start=11
+        assert!(!is_command_position("echo hello wor", 11));
     }
 }
