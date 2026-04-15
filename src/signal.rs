@@ -413,4 +413,12 @@ mod tests {
         let _ = setup_foreground_child_signals as fn(&[i32]);
         let _ = setup_background_child_signals as fn(&[i32]);
     }
+
+    #[test]
+    fn test_reset_job_control_signals_after_init() {
+        init_signal_handling();
+        init_job_control_signals();
+        reset_job_control_signals();
+        // No panic = success
+    }
 }
