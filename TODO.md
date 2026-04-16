@@ -16,6 +16,7 @@
 
 ## Future: Interactive Mode Enhancements
 
+- [ ] `ENV` tilde expansion — `ENV=~/foo` is not expanded because the value is parsed in double-quote context; POSIX only requires parameter expansion, but tilde support is practically expected (`src/interactive/mod.rs`)
 - [ ] Multiline editing — visual multiline editing with cursor movement across lines
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
@@ -60,6 +61,8 @@
 
 ## Future: Code Quality Improvements
 
+- [ ] Unify `builtin_source` and `source_file` — `src/builtin/special.rs:349-396` and `src/exec/mod.rs:62-85` share the same core sourcing logic (read, parse, exec with `in_dot_script`); `builtin_source` should delegate to `source_file` to avoid divergence
+- [ ] Rename `KISH_SHOW_DOTFILES` to `YOSH_SHOW_DOTFILES` — old project name prefix remains in `src/interactive/mod.rs:130`
 - [ ] Extract quote-aware balanced-paren scanning into a shared helper — the same ~40-line scanning logic (single/double quote skip, backslash escape, depth counting) is duplicated in three places: `expand_heredoc_string` `$(...)` and `$((...))` branches (`src/expand/mod.rs`) and `expand_vars` in `src/expand/arith.rs`; consider a `skip_balanced_parens(bytes, start, terminator)` helper
 - [ ] Runtime error migration — replace ~90 `eprintln!("yosh: ...")` call sites in exec/builtin with `Result<i32, ShellError>` using `RuntimeErrorKind` variants (type definitions ready in `src/error.rs`)
 - [ ] `JobTable::update_status` per-process status tracking — currently overwrites the overall `job.status` on each child exit; if per-process status tracking (e.g., `$PIPESTATUS` array) is needed in the future, the `Job` struct will need a `Vec<(Pid, JobStatus)>` field instead of a single `status` (`src/env/jobs.rs`)
