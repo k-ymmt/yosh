@@ -1,10 +1,13 @@
 [package]
-name = "kish-plugin-sdk"
+name = "yosh-plugin-sdk"
 version = "0.1.0"
 edition = "2024"
+description = "SDK for building yosh shell plugins"
+license = "MIT"
+repository = "https://github.com/k-ymmt/yosh"
 
 [dependencies]
-kish-plugin-api = { path = "../kish-plugin-api" }
+yosh-plugin-api = { version = "0.1.0", path = "../yosh-plugin-api" }
 
 [lib]
 crate-type = ["rlib"]

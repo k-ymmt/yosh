@@ -1,6 +1,9 @@
 [package]
-name = "kish-plugin-api"
+name = "yosh-plugin-api"
 version = "0.1.0"
 edition = "2024"
+description = "FFI API types for yosh shell plugins"
+license = "MIT"
+repository = "https://github.com/k-ymmt/yosh"
 
 [dependencies]

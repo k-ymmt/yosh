@@ -7,4 +7,4 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-kish-plugin-sdk = { path = "../../../crates/kish-plugin-sdk" }
+yosh-plugin-sdk = { path = "../../../crates/yosh-plugin-sdk" }

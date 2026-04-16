@@ -1,16 +1,19 @@
 [workspace]
 members = [
     ".",
-    "crates/kish-plugin-api",
-    "crates/kish-plugin-sdk",
-    "crates/kish-plugin-manager",
+    "crates/yosh-plugin-api",
+    "crates/yosh-plugin-sdk",
+    "crates/yosh-plugin-manager",
     "tests/plugins/test_plugin",
 ]
 
 [package]
-name = "kish"
+name = "yosh"
 version = "0.1.0"
 edition = "2024"
+description = "A POSIX-compliant shell implemented in Rust"
+license = "MIT"
+repository = "https://github.com/k-ymmt/yosh"
 
 [dependencies]
 nix = { version = "0.31", features = ["signal", "process", "fs", "poll", "term"] }
@@ -19,7 +22,7 @@ crossterm = "0.29"
 libloading = "0.8"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
-kish-plugin-api = { path = "crates/kish-plugin-api" }
+yosh-plugin-api = { version = "0.1.0", path = "crates/yosh-plugin-api" }
 unicode-width = "0.2"
 owo-colors = "4"
 

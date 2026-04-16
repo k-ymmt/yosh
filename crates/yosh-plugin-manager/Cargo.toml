@@ -1,14 +1,17 @@
 [package]
-name = "kish-plugin-manager"
+name = "yosh-plugin-manager"
 version = "0.1.0"
 edition = "2024"
+description = "Plugin manager for yosh shell"
+license = "MIT"
+repository = "https://github.com/k-ymmt/yosh"
 
 [lib]
-name = "kish_plugin_manager"
+name = "yosh_plugin_manager"
 path = "src/lib.rs"
 
 [[bin]]
-name = "kish-plugin"
+name = "yosh-plugin"
 path = "src/main.rs"
 
 [dependencies]

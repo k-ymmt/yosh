@@ -19,8 +19,8 @@ fn main() {
         .and_then(|s| s.get(..10).map(|d| d.to_string()))
         .unwrap_or_else(|| "unknown".to_string());
 
-    println!("cargo:rustc-env=KISH_GIT_HASH={}", hash);
-    println!("cargo:rustc-env=KISH_BUILD_DATE={}", date);
+    println!("cargo:rustc-env=YOSH_GIT_HASH={}", hash);
+    println!("cargo:rustc-env=YOSH_BUILD_DATE={}", date);
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/heads");
     println!("cargo:rerun-if-changed=../../.git/packed-refs");
