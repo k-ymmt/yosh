@@ -21,7 +21,6 @@
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
 - [ ] `CLICOLOR=0` support in `should_colorize()` — disable colors even on TTY when `CLICOLOR=0` is set; many CLI tools support this alongside `NO_COLOR` (`src/main.rs`)
-- [ ] `print_help()` DRY refactor — color/no-color branches duplicate help text; extract into a data-driven approach to reduce update risk when adding new flags (`src/main.rs`)
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
 - [ ] Right-aligned prompt (`PS1_RIGHT`) — starship-style right-side prompt display based on terminal width (`src/interactive/line_editor.rs`)
@@ -61,11 +60,6 @@
 
 ## Future: Code Quality Improvements
 
-- [ ] Unify `builtin_source` and `source_file` — `src/builtin/special.rs:349-396` and `src/exec/mod.rs:62-85` share the same core sourcing logic (read, parse, exec with `in_dot_script`); `builtin_source` should delegate to `source_file` to avoid divergence
-- [ ] Consolidate tilde expansion logic — `src/interactive/mod.rs` ENV pre-processing and `src/expand/mod.rs` `WordPart::Tilde` handling duplicate the same `$HOME`/`getpwnam` logic; extract into a shared `expand_tilde_prefix(env, s: &str) -> String` helper to avoid divergence on future `~` behavior changes
-- [ ] Rename `KISH_SHOW_DOTFILES` to `YOSH_SHOW_DOTFILES` — old project name prefix remains in `src/interactive/mod.rs:130`
-- [ ] Extract quote-aware balanced-paren scanning into a shared helper — the same ~40-line scanning logic (single/double quote skip, backslash escape, depth counting) is duplicated in three places: `expand_heredoc_string` `$(...)` and `$((...))` branches (`src/expand/mod.rs`) and `expand_vars` in `src/expand/arith.rs`; consider a `skip_balanced_parens(bytes, start, terminator)` helper
-- [ ] Runtime error migration — replace ~90 `eprintln!("yosh: ...")` call sites in exec/builtin with `Result<i32, ShellError>` using `RuntimeErrorKind` variants (type definitions ready in `src/error.rs`)
 - [ ] `JobTable::update_status` per-process status tracking — currently overwrites the overall `job.status` on each child exit; if per-process status tracking (e.g., `$PIPESTATUS` array) is needed in the future, the `Job` struct will need a `Vec<(Pid, JobStatus)>` field instead of a single `status` (`src/env/jobs.rs`)
 
 ## Future: E2E Test Expansion
