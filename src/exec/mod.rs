@@ -57,6 +57,33 @@ impl Executor {
         self.plugins.load_from_config(&config_path, &mut self.env);
     }
 
+    /// Source a file in the current shell context.
+    /// Returns `None` if the file doesn't exist, `Some(status)` otherwise.
+    pub fn source_file(&mut self, path: &std::path::Path) -> Option<i32> {
+        let content = std::fs::read_to_string(path).ok()?;
+        let prev_dot_script = self.env.mode.in_dot_script;
+        self.env.mode.in_dot_script = true;
+        let status = match crate::parser::Parser::new_with_aliases(&content, &self.env.aliases)
+            .parse_program()
+        {
+            Ok(program) => {
+                let s = self.exec_program(&program);
+                if let Some(crate::env::FlowControl::Return(code)) = self.env.exec.flow_control {
+                    self.env.exec.flow_control = None;
+                    self.env.mode.in_dot_script = prev_dot_script;
+                    return Some(code);
+                }
+                s
+            }
+            Err(e) => {
+                eprintln!("yosh: {}", e);
+                2
+            }
+        };
+        self.env.mode.in_dot_script = prev_dot_script;
+        Some(status)
+    }
+
     /// Execute closure within errexit-suppressed context.
     pub fn with_errexit_suppressed<F, R>(&mut self, f: F) -> R
     where
@@ -913,6 +940,36 @@ mod tests {
         exec.env.mode.options.errexit = true;
         exec.check_errexit(1);
         assert_eq!(exec.exit_requested, Some(1));
+    }
+
+    #[test]
+    fn source_file_nonexistent_returns_none() {
+        let mut exec = Executor::new("yosh", vec![]);
+        let result = exec.source_file(std::path::Path::new("/nonexistent/file.sh"));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn source_file_sets_variable() {
+        let mut exec = Executor::new("yosh", vec![]);
+        let dir = std::env::temp_dir();
+        let path = dir.join("yosh_test_source_file.sh");
+        std::fs::write(&path, "MY_TEST_VAR=hello_from_rc\n").unwrap();
+        let result = exec.source_file(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(result, Some(0));
+        assert_eq!(exec.env.vars.get("MY_TEST_VAR"), Some("hello_from_rc"));
+    }
+
+    #[test]
+    fn source_file_parse_error_returns_some_2() {
+        let mut exec = Executor::new("yosh", vec![]);
+        let dir = std::env::temp_dir();
+        let path = dir.join("yosh_test_source_parse_error.sh");
+        std::fs::write(&path, "if\n").unwrap();
+        let result = exec.source_file(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(result, Some(2));
     }
 
     #[test]
