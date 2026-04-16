@@ -525,6 +525,35 @@ fn expand_part_to_fields(
     Ok(())
 }
 
+/// Expand a tilde prefix in a string: `~` uses `home_dir`, `~user` uses getpwnam.
+/// Returns the original string unchanged if the prefix doesn't start with `~`
+/// or expansion fails.
+pub(crate) fn expand_tilde_prefix(home_dir: Option<&str>, s: &str) -> String {
+    let rest = match s.strip_prefix('~') {
+        Some(r) => r,
+        None => return s.to_string(),
+    };
+    let (user, suffix) = match rest.find('/') {
+        Some(pos) => (&rest[..pos], &rest[pos..]),
+        None => (rest, ""),
+    };
+    if user.is_empty() {
+        // ~ alone: use provided home directory
+        match home_dir {
+            Some(home) if !home.is_empty() => format!("{}{}", home, suffix),
+            _ => s.to_string(),
+        }
+    } else {
+        // ~user: resolve via getpwnam
+        let expanded = expand_tilde_user(user);
+        if expanded.starts_with('~') {
+            s.to_string() // unknown user, keep original
+        } else {
+            format!("{}{}", expanded, suffix)
+        }
+    }
+}
+
 /// Expand `~username` using `getpwnam`.
 pub(crate) fn expand_tilde_user(user: &str) -> String {
     use std::ffi::CString;
@@ -986,5 +1015,30 @@ mod tests {
             WordPart::Literal("\n".to_string()),
         ];
         assert_eq!(expand_heredoc_body(&mut env, &parts, false), "value is bar\n");
+    }
+
+    #[test]
+    fn test_expand_tilde_prefix_home() {
+        assert_eq!(expand_tilde_prefix(Some("/home/user"), "~/docs"), "/home/user/docs");
+    }
+
+    #[test]
+    fn test_expand_tilde_prefix_home_only() {
+        assert_eq!(expand_tilde_prefix(Some("/home/user"), "~"), "/home/user");
+    }
+
+    #[test]
+    fn test_expand_tilde_prefix_no_home() {
+        assert_eq!(expand_tilde_prefix(None, "~/docs"), "~/docs");
+    }
+
+    #[test]
+    fn test_expand_tilde_prefix_no_tilde() {
+        assert_eq!(expand_tilde_prefix(Some("/home/user"), "/abs/path"), "/abs/path");
+    }
+
+    #[test]
+    fn test_expand_tilde_prefix_empty_home() {
+        assert_eq!(expand_tilde_prefix(Some(""), "~/docs"), "~/docs");
     }
 }
