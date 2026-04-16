@@ -200,57 +200,7 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                         // $((...)) — arithmetic
                         i += 2;
                         let start = i;
-                        let mut depth = 1;
-                        while i + 1 < bytes.len() && depth > 0 {
-                            match bytes[i] {
-                                b'\'' => {
-                                    // Single quote: skip to matching '
-                                    i += 1;
-                                    while i < bytes.len() && bytes[i] != b'\'' {
-                                        i += 1;
-                                    }
-                                    if i < bytes.len() {
-                                        i += 1;
-                                    }
-                                }
-                                b'"' => {
-                                    // Double quote: skip to matching ", handle backslash escapes
-                                    i += 1;
-                                    while i < bytes.len() && bytes[i] != b'"' {
-                                        if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                                            i += 2;
-                                        } else {
-                                            i += 1;
-                                        }
-                                    }
-                                    if i < bytes.len() {
-                                        i += 1;
-                                    }
-                                }
-                                b'\\' => {
-                                    // Backslash: skip next character
-                                    if i + 1 < bytes.len() {
-                                        i += 2;
-                                    } else {
-                                        i += 1;
-                                    }
-                                }
-                                b'(' => {
-                                    depth += 1;
-                                    i += 1;
-                                }
-                                b')' if bytes[i + 1] == b')' && depth == 1 => {
-                                    break;
-                                }
-                                b')' => {
-                                    depth -= 1;
-                                    i += 1;
-                                }
-                                _ => {
-                                    i += 1;
-                                }
-                            }
-                        }
+                        i = skip_balanced_double_parens(bytes, i);
                         let expr = &s[start..i];
                         if i + 1 < bytes.len() { i += 2; } // skip ))
                         match arith::evaluate(env, expr) {
@@ -265,56 +215,7 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                         // $(...) — command substitution
                         i += 1;
                         let start = i;
-                        let mut depth = 1;
-                        while i < bytes.len() && depth > 0 {
-                            match bytes[i] {
-                                b'\'' => {
-                                    // Single quote: skip to matching '
-                                    i += 1;
-                                    while i < bytes.len() && bytes[i] != b'\'' {
-                                        i += 1;
-                                    }
-                                    if i < bytes.len() {
-                                        i += 1;
-                                    }
-                                }
-                                b'"' => {
-                                    // Double quote: skip to matching ", handle backslash escapes
-                                    i += 1;
-                                    while i < bytes.len() && bytes[i] != b'"' {
-                                        if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                                            i += 2;
-                                        } else {
-                                            i += 1;
-                                        }
-                                    }
-                                    if i < bytes.len() {
-                                        i += 1;
-                                    }
-                                }
-                                b'\\' => {
-                                    // Backslash: skip next character
-                                    if i + 1 < bytes.len() {
-                                        i += 2;
-                                    } else {
-                                        i += 1;
-                                    }
-                                }
-                                b'(' => {
-                                    depth += 1;
-                                    i += 1;
-                                }
-                                b')' => {
-                                    depth -= 1;
-                                    if depth > 0 {
-                                        i += 1;
-                                    }
-                                }
-                                _ => {
-                                    i += 1;
-                                }
-                            }
-                        }
+                        i = skip_balanced_parens(bytes, i);
                         let cmd_str = &s[start..i];
                         if i < bytes.len() { i += 1; } // skip )
                         // Parse and execute
@@ -523,6 +424,119 @@ fn expand_part_to_fields(
         }
     }
     Ok(())
+}
+
+/// Skip forward from `start` in `bytes`, tracking parenthesis depth (starting at 1),
+/// while respecting single/double quotes and backslash escapes.
+/// Returns the index of the byte where depth reaches 0 (the closing `)`).
+/// If no matching `)` is found, returns `bytes.len()`.
+pub(crate) fn skip_balanced_parens(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    let mut depth: usize = 1;
+    while i < bytes.len() && depth > 0 {
+        match bytes[i] {
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'\\' => {
+                if i + 1 < bytes.len() {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth > 0 {
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    i
+}
+
+/// Like `skip_balanced_parens`, but terminates when `))` is found at depth 1.
+/// Used for `$((...))` arithmetic substitution scanning.
+/// Returns the index of the first `)` in the closing `))`.
+/// If no matching `))` is found, returns `bytes.len()`.
+pub(crate) fn skip_balanced_double_parens(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    let mut depth: usize = 1;
+    while i + 1 < bytes.len() && depth > 0 {
+        match bytes[i] {
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'\\' => {
+                if i + 1 < bytes.len() {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' if bytes[i + 1] == b')' && depth == 1 => {
+                break;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    i
 }
 
 /// Expand a tilde prefix in a string: `~` uses `home_dir`, `~user` uses getpwnam.
@@ -1040,5 +1054,47 @@ mod tests {
     #[test]
     fn test_expand_tilde_prefix_empty_home() {
         assert_eq!(expand_tilde_prefix(Some(""), "~/docs"), "~/docs");
+    }
+
+    #[test]
+    fn test_skip_balanced_parens_simple() {
+        let input = b"echo hello)";
+        assert_eq!(skip_balanced_parens(input, 0), 10);
+    }
+
+    #[test]
+    fn test_skip_balanced_parens_nested() {
+        let input = b"(inner) outer)";
+        assert_eq!(skip_balanced_parens(input, 0), 13);
+    }
+
+    #[test]
+    fn test_skip_balanced_parens_single_quoted() {
+        let input = b"')' real)";
+        assert_eq!(skip_balanced_parens(input, 0), 8);
+    }
+
+    #[test]
+    fn test_skip_balanced_parens_double_quoted() {
+        let input = b"\")(\" real)";
+        assert_eq!(skip_balanced_parens(input, 0), 9);
+    }
+
+    #[test]
+    fn test_skip_balanced_parens_backslash_escape() {
+        let input = b"\\) real)";
+        assert_eq!(skip_balanced_parens(input, 0), 7);
+    }
+
+    #[test]
+    fn test_skip_balanced_double_parens_simple() {
+        let input = b"1 + 2))";
+        assert_eq!(skip_balanced_double_parens(input, 0), 5);
+    }
+
+    #[test]
+    fn test_skip_balanced_double_parens_nested() {
+        let input = b"(1 + 2) * 3))";
+        assert_eq!(skip_balanced_double_parens(input, 0), 11);
     }
 }

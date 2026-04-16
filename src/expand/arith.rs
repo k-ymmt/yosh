@@ -75,56 +75,7 @@ fn expand_vars(env: &mut ShellEnv, expr: &str) -> String {
                 // $(cmd) — command substitution inside arithmetic
                 i += 2; // skip '$('
                 let start = i;
-                let mut depth: usize = 1;
-                while i < bytes.len() && depth > 0 {
-                    match bytes[i] {
-                        b'\'' => {
-                            // Single quote: skip to matching '
-                            i += 1;
-                            while i < bytes.len() && bytes[i] != b'\'' {
-                                i += 1;
-                            }
-                            if i < bytes.len() {
-                                i += 1;
-                            }
-                        }
-                        b'"' => {
-                            // Double quote: skip to matching ", handle backslash escapes
-                            i += 1;
-                            while i < bytes.len() && bytes[i] != b'"' {
-                                if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                                    i += 2;
-                                } else {
-                                    i += 1;
-                                }
-                            }
-                            if i < bytes.len() {
-                                i += 1;
-                            }
-                        }
-                        b'\\' => {
-                            // Backslash: skip next character
-                            if i + 1 < bytes.len() {
-                                i += 2;
-                            } else {
-                                i += 1;
-                            }
-                        }
-                        b'(' => {
-                            depth += 1;
-                            i += 1;
-                        }
-                        b')' => {
-                            depth -= 1;
-                            if depth > 0 {
-                                i += 1;
-                            }
-                        }
-                        _ => {
-                            i += 1;
-                        }
-                    }
-                }
+                i = crate::expand::skip_balanced_parens(bytes, i);
                 let cmd_str = &expr[start..i];
                 if i < bytes.len() {
                     i += 1; // skip closing ')'
