@@ -4,11 +4,12 @@ use std::io::Write;
 use nix::unistd::execvp;
 
 use crate::env::{FlowControl, ShellEnv, TrapAction};
+use crate::error::{RuntimeErrorKind, ShellError};
 use crate::exec::Executor;
 
 pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor) -> i32 {
-    match name {
-        ":" => 0,
+    let result = match name {
+        ":" => Ok(0),
         "exit" => builtin_exit(args, executor),
         "export" => builtin_export(args, &mut executor.env),
         "unset" => builtin_unset(args, &mut executor.env),
@@ -18,14 +19,20 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
         "continue" => builtin_continue(args, &mut executor.env),
         "set" => {
             let was_monitor = executor.env.mode.options.monitor;
-            let ret = builtin_set(args, &mut executor.env);
+            let ret = match builtin_set(args, &mut executor.env) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    return e.exit_code();
+                }
+            };
             let is_monitor = executor.env.mode.options.monitor;
             if was_monitor && !is_monitor {
                 crate::signal::reset_job_control_signals();
             } else if !was_monitor && is_monitor {
                 crate::signal::init_job_control_signals();
             }
-            ret
+            return ret;
         }
         "eval" => builtin_eval(args, executor),
         "exec" => builtin_exec(args, &mut executor.env),
@@ -34,9 +41,16 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
         "shift" => builtin_shift(args, &mut executor.env),
         "times" => builtin_times(),
         "fc" => builtin_fc(args, executor),
-        _ => {
-            eprintln!("yosh: {}: not a special builtin", name);
-            1
+        _ => Err(ShellError::runtime(
+            RuntimeErrorKind::InvalidArgument,
+            format!("{}: not a special builtin", name),
+        )),
+    };
+    match result {
+        Ok(status) => status,
+        Err(e) => {
+            eprintln!("{}", e);
+            e.exit_code()
         }
     }
 }
@@ -45,15 +59,17 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
 // Existing implementations (moved from mod.rs)
 // ---------------------------------------------------------------------------
 
-fn builtin_exit(args: &[String], executor: &mut Executor) -> i32 {
+fn builtin_exit(args: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
     let code = if args.is_empty() {
         executor.env.exec.last_exit_status
     } else {
         match args[0].parse::<i32>() {
             Ok(n) => n & 0xFF,
             Err(_) => {
-                eprintln!("yosh: exit: {}: numeric argument required", args[0]);
-                2
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::InvalidArgument,
+                    format!("exit: {}: numeric argument required", args[0]),
+                ));
             }
         }
     };
@@ -61,13 +77,13 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> i32 {
     executor.execute_exit_trap();
     if executor.env.mode.is_interactive {
         executor.exit_requested = Some(code);
-        code
+        Ok(code)
     } else {
         std::process::exit(code);
     }
 }
 
-fn builtin_export(args: &[String], env: &mut ShellEnv) -> i32 {
+fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() || args[0] == "-p" {
         // Print all exported variables in POSIX re-input format
         let mut exported: Vec<(String, String)> = env.vars.environ().to_vec();
@@ -75,7 +91,7 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> i32 {
         for (name, value) in exported {
             println!("export {}=\"{}\"", name, value);
         }
-        return 0;
+        return Ok(0);
     }
 
     let mut status = 0;
@@ -94,10 +110,10 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> i32 {
             env.vars.export(arg);
         }
     }
-    status
+    Ok(status)
 }
 
-fn builtin_unset(args: &[String], env: &mut ShellEnv) -> i32 {
+fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     let mut status = 0;
     for name in args {
         if let Err(e) = env.vars.unset(name) {
@@ -105,10 +121,10 @@ fn builtin_unset(args: &[String], env: &mut ShellEnv) -> i32 {
             status = 1;
         }
     }
-    status
+    Ok(status)
 }
 
-fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> i32 {
+fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() {
         // Print all readonly variables
         let readonly_vars: Vec<(String, String)> = env
@@ -122,7 +138,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> i32 {
         for (name, value) in sorted {
             println!("readonly {}={}", name, value);
         }
-        return 0;
+        return Ok(0);
     }
 
     let mut status = 0;
@@ -140,13 +156,15 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> i32 {
             env.vars.set_readonly(arg);
         }
     }
-    status
+    Ok(status)
 }
 
-fn builtin_return(args: &[String], env: &mut ShellEnv) -> i32 {
+fn builtin_return(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if env.vars.scope_depth() <= 1 && !env.mode.in_dot_script {
-        eprintln!("yosh: return: can only return from a function or sourced script");
-        return 1;
+        return Err(ShellError::runtime(
+            RuntimeErrorKind::IoError,
+            "return: can only return from a function or sourced script".to_string(),
+        ));
     }
     let code = if args.is_empty() {
         env.exec.last_exit_status & 0xFF
@@ -154,70 +172,82 @@ fn builtin_return(args: &[String], env: &mut ShellEnv) -> i32 {
         match args[0].parse::<i32>() {
             Ok(n) => n & 0xFF,
             Err(_) => {
-                eprintln!("yosh: return: {}: numeric argument required", args[0]);
-                2
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::InvalidArgument,
+                    format!("return: {}: numeric argument required", args[0]),
+                ))
             }
         }
     };
     env.exec.flow_control = Some(FlowControl::Return(code));
-    code
+    Ok(code)
 }
 
-fn builtin_break(args: &[String], env: &mut ShellEnv) -> i32 {
+fn builtin_break(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     let n = if args.is_empty() {
         1
     } else {
         match args[0].parse::<usize>() {
             Ok(0) => {
-                eprintln!("yosh: break: loop count must be > 0");
-                return 1;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::InvalidArgument,
+                    "break: loop count must be > 0".to_string(),
+                ));
             }
             Ok(n) => n,
             Err(_) => {
-                eprintln!("yosh: break: {}: numeric argument required", args[0]);
-                return 1;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::InvalidArgument,
+                    format!("break: {}: numeric argument required", args[0]),
+                ));
             }
         }
     };
     env.exec.flow_control = Some(FlowControl::Break(n));
-    0
+    Ok(0)
 }
 
-fn builtin_continue(args: &[String], env: &mut ShellEnv) -> i32 {
+fn builtin_continue(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     let n = if args.is_empty() {
         1
     } else {
         match args[0].parse::<usize>() {
             Ok(0) => {
-                eprintln!("yosh: continue: loop count must be > 0");
-                return 1;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::InvalidArgument,
+                    "continue: loop count must be > 0".to_string(),
+                ));
             }
             Ok(n) => n,
             Err(_) => {
-                eprintln!("yosh: continue: {}: numeric argument required", args[0]);
-                return 1;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::InvalidArgument,
+                    format!("continue: {}: numeric argument required", args[0]),
+                ));
             }
         }
     };
     env.exec.flow_control = Some(FlowControl::Continue(n));
-    0
+    Ok(0)
 }
 
 // ---------------------------------------------------------------------------
 // Implementations for new builtins
 // ---------------------------------------------------------------------------
 
-fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
+fn builtin_set(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() {
         // Display all variables sorted
-        let mut vars: Vec<(String, String)> = env.vars.vars_iter()
+        let mut vars: Vec<(String, String)> = env
+            .vars
+            .vars_iter()
             .map(|(k, v)| (k.to_string(), v.value.clone()))
             .collect();
         vars.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in vars {
             println!("{}={}", name, value);
         }
-        return 0;
+        return Ok(0);
     }
 
     let mut i = 0;
@@ -225,7 +255,7 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
         let arg = &args[i];
         if arg == "--" {
             env.vars.set_positional_params(args[i + 1..].to_vec());
-            return 0;
+            return Ok(0);
         }
         if arg == "-" {
             env.mode.options.xtrace = false;
@@ -233,18 +263,21 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
             if i + 1 < args.len() {
                 env.vars.set_positional_params(args[i + 1..].to_vec());
             }
-            return 0;
+            return Ok(0);
         }
         if arg == "-o" || arg == "+o" {
             let on = arg.starts_with('-');
             i += 1;
             if i >= args.len() {
-                if on { env.mode.options.display_all(); } else { env.mode.options.display_restorable(); }
-                return 0;
+                if on {
+                    env.mode.options.display_all();
+                } else {
+                    env.mode.options.display_restorable();
+                }
+                return Ok(0);
             }
             if let Err(e) = env.mode.options.set_by_name(&args[i], on) {
-                eprintln!("yosh: {}", e);
-                return 1;
+                return Err(ShellError::runtime(RuntimeErrorKind::InvalidOption, e));
             }
             i += 1;
             continue;
@@ -253,8 +286,7 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
             let on = arg.starts_with('-');
             for c in arg[1..].chars() {
                 if let Err(e) = env.mode.options.set_by_char(c, on) {
-                    eprintln!("yosh: {}", e);
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::InvalidOption, e));
                 }
             }
             i += 1;
@@ -262,35 +294,37 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
         }
         // Remaining args are positional params
         env.vars.set_positional_params(args[i..].to_vec());
-        return 0;
+        return Ok(0);
     }
-    0
+    Ok(0)
 }
 
-fn builtin_eval(args: &[String], executor: &mut Executor) -> i32 {
+fn builtin_eval(args: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
     if args.is_empty() {
-        return 0;
+        return Ok(0);
     }
     let input = args.join(" ");
     match crate::parser::Parser::new_with_aliases(&input, &executor.env.aliases).parse_program() {
-        Ok(program) => executor.exec_program(&program),
+        Ok(program) => Ok(executor.exec_program(&program)),
         Err(e) => {
             eprintln!("yosh: eval: {}", e);
-            2
+            Ok(2)
         }
     }
 }
 
-fn builtin_exec(args: &[String], _env: &mut ShellEnv) -> i32 {
+fn builtin_exec(args: &[String], _env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() {
-        return 0;
+        return Ok(0);
     }
     let cmd = &args[0];
     let c_cmd = match CString::new(cmd.as_str()) {
         Ok(s) => s,
         Err(_) => {
-            eprintln!("yosh: exec: {}: invalid command name", cmd);
-            return 126;
+            return Err(ShellError::runtime(
+                RuntimeErrorKind::ExecFailed,
+                format!("exec: {}: invalid command name", cmd),
+            ));
         }
     };
     let mut c_args: Vec<CString> = Vec::with_capacity(args.len());
@@ -298,32 +332,43 @@ fn builtin_exec(args: &[String], _env: &mut ShellEnv) -> i32 {
         match CString::new(a.as_str()) {
             Ok(s) => c_args.push(s),
             Err(_) => {
-                eprintln!("yosh: exec: {}: invalid argument", a);
-                return 126;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::ExecFailed,
+                    format!("exec: {}: invalid argument", a),
+                ));
             }
         }
     }
     let err = execvp(&c_cmd, &c_args).unwrap_err();
     use nix::errno::Errno;
     match err {
-        Errno::ENOENT => { eprintln!("yosh: exec: {}: not found", cmd); 127 }
-        Errno::EACCES => { eprintln!("yosh: exec: {}: permission denied", cmd); 126 }
-        _ => { eprintln!("yosh: exec: {}: {}", cmd, err); 126 }
+        Errno::ENOENT => Err(ShellError::runtime(
+            RuntimeErrorKind::CommandNotFound,
+            format!("exec: {}: not found", cmd),
+        )),
+        Errno::EACCES => Err(ShellError::runtime(
+            RuntimeErrorKind::PermissionDenied,
+            format!("exec: {}: permission denied", cmd),
+        )),
+        _ => Err(ShellError::runtime(
+            RuntimeErrorKind::ExecFailed,
+            format!("exec: {}: {}", cmd, err),
+        )),
     }
 }
 
-fn builtin_trap(args: &[String], env: &mut ShellEnv) -> i32 {
+fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() {
         env.traps.display_all();
-        return 0;
+        return Ok(0);
     }
     if args[0] == "-p" {
         env.traps.display_all();
-        return 0;
+        return Ok(0);
     }
     if args.len() == 1 {
         env.traps.remove_trap(&args[0]);
-        return 0;
+        return Ok(0);
     }
     let action_str = &args[0];
     let signals = &args[1..];
@@ -343,13 +388,15 @@ fn builtin_trap(args: &[String], env: &mut ShellEnv) -> i32 {
             status = 1;
         }
     }
-    status
+    Ok(status)
 }
 
-fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
+fn builtin_source(args: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
     if args.is_empty() {
-        eprintln!("yosh: .: filename argument required");
-        return 2;
+        return Err(ShellError::runtime(
+            RuntimeErrorKind::InvalidArgument,
+            ".: filename argument required".to_string(),
+        ));
     }
     let filename = &args[0];
     let path = if filename.contains('/') {
@@ -366,47 +413,59 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
             }
             match found {
                 Some(p) => p,
-                None => { eprintln!("yosh: .: {}: not found", filename); return 1; }
+                None => {
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::IoError,
+                        format!(".: {}: not found", filename),
+                    ));
+                }
             }
         } else {
             std::path::PathBuf::from(filename)
         }
     };
     match executor.source_file(&path) {
-        Some(status) => status,
-        None => {
-            eprintln!("yosh: .: {}: No such file or directory", path.display());
-            1
-        }
+        Some(status) => Ok(status),
+        None => Err(ShellError::runtime(
+            RuntimeErrorKind::IoError,
+            format!(".: {}: No such file or directory", path.display()),
+        )),
     }
 }
 
-fn builtin_shift(args: &[String], env: &mut ShellEnv) -> i32 {
+fn builtin_shift(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     let n = if args.is_empty() {
         1usize
     } else {
         match args[0].parse::<usize>() {
             Ok(n) => n,
             Err(_) => {
-                eprintln!("yosh: shift: {}: numeric argument required", args[0]);
-                return 1;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::InvalidArgument,
+                    format!("shift: {}: numeric argument required", args[0]),
+                ));
             }
         }
     };
     if n > env.vars.positional_params().len() {
-        eprintln!("yosh: shift: shift count out of range");
-        return 1;
+        return Err(ShellError::runtime(
+            RuntimeErrorKind::IoError,
+            "shift: shift count out of range".to_string(),
+        ));
     }
-    env.vars.set_positional_params(env.vars.positional_params()[n..].to_vec());
-    0
+    env.vars
+        .set_positional_params(env.vars.positional_params()[n..].to_vec());
+    Ok(0)
 }
 
-fn builtin_times() -> i32 {
+fn builtin_times() -> Result<i32, ShellError> {
     let mut tms: libc::tms = unsafe { std::mem::zeroed() };
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
     if unsafe { libc::times(&mut tms) } == u64::MAX {
-        eprintln!("yosh: times: failed");
-        return 1;
+        return Err(ShellError::runtime(
+            RuntimeErrorKind::IoError,
+            "times: failed".to_string(),
+        ));
     }
     let fmt = |t: libc::clock_t| -> String {
         let secs = t as f64 / ticks;
@@ -416,17 +475,19 @@ fn builtin_times() -> i32 {
     };
     println!("{} {}", fmt(tms.tms_utime), fmt(tms.tms_stime));
     println!("{} {}", fmt(tms.tms_cutime), fmt(tms.tms_cstime));
-    0
+    Ok(0)
 }
 
 // ---------------------------------------------------------------------------
 // fc built-in
 // ---------------------------------------------------------------------------
 
-fn builtin_fc(args: &[String], executor: &mut Executor) -> i32 {
+fn builtin_fc(args: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
     if executor.env.history.entries().is_empty() {
-        eprintln!("yosh: fc: history is empty");
-        return 1;
+        return Err(ShellError::runtime(
+            RuntimeErrorKind::IoError,
+            "fc: history is empty".to_string(),
+        ));
     }
 
     let mut list_mode = false;
@@ -442,11 +503,16 @@ fn builtin_fc(args: &[String], executor: &mut Executor) -> i32 {
         if arg == "-e" {
             i += 1;
             if i >= args.len() {
-                eprintln!("yosh: fc: -e: option requires an argument");
-                return 1;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::IoError,
+                    "fc: -e: option requires an argument".to_string(),
+                ));
             }
             editor = Some(args[i].clone());
-        } else if arg.starts_with('-') && arg.len() > 1 && arg.chars().nth(1).is_some_and(|c| c.is_ascii_alphabetic()) {
+        } else if arg.starts_with('-')
+            && arg.len() > 1
+            && arg.chars().nth(1).is_some_and(|c| c.is_ascii_alphabetic())
+        {
             for ch in arg[1..].chars() {
                 match ch {
                     'l' => list_mode = true,
@@ -454,8 +520,10 @@ fn builtin_fc(args: &[String], executor: &mut Executor) -> i32 {
                     'r' => reverse = true,
                     's' => substitute_mode = true,
                     _ => {
-                        eprintln!("yosh: fc: -{}: invalid option", ch);
-                        return 2;
+                        return Err(ShellError::runtime(
+                            RuntimeErrorKind::InvalidArgument,
+                            format!("fc: -{}: invalid option", ch),
+                        ));
                     }
                 }
             }
@@ -477,7 +545,7 @@ fn builtin_fc(args: &[String], executor: &mut Executor) -> i32 {
 
     if list_mode {
         fc_list(&entries, start, end, suppress_numbers, reverse);
-        0
+        Ok(0)
     } else {
         fc_edit(&entries, start, end, reverse, editor, executor)
     }
@@ -491,13 +559,19 @@ fn fc_resolve_one(spec: &str, default: usize, entries: &[String]) -> usize {
             entries.len().saturating_sub((-n) as usize)
         }
     } else {
-        (0..entries.len()).rev()
+        (0..entries.len())
+            .rev()
             .find(|&i| entries[i].starts_with(spec))
             .unwrap_or(default)
     }
 }
 
-fn fc_resolve_range(operands: &[String], hist_len: usize, is_list: bool, entries: &[String]) -> (usize, usize) {
+fn fc_resolve_range(
+    operands: &[String],
+    hist_len: usize,
+    is_list: bool,
+    entries: &[String],
+) -> (usize, usize) {
     match operands.len() {
         0 => {
             if is_list {
@@ -523,8 +597,18 @@ fn fc_resolve_range(operands: &[String], hist_len: usize, is_list: bool, entries
     }
 }
 
-fn fc_list(entries: &[String], start: usize, end: usize, suppress_numbers: bool, reverse: bool) {
-    let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
+fn fc_list(
+    entries: &[String],
+    start: usize,
+    end: usize,
+    suppress_numbers: bool,
+    reverse: bool,
+) {
+    let (lo, hi) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
     let range: Vec<usize> = if reverse ^ (start > end) {
         (lo..=hi).rev().collect()
     } else {
@@ -546,13 +630,29 @@ fn fc_edit(
     reverse: bool,
     editor: Option<String>,
     executor: &mut Executor,
-) -> i32 {
+) -> Result<i32, ShellError> {
     let editor_cmd = editor
-        .or_else(|| executor.env.vars.get("FCEDIT").map(|s| s.to_string()))
-        .or_else(|| executor.env.vars.get("EDITOR").map(|s| s.to_string()))
+        .or_else(|| {
+            executor
+                .env
+                .vars
+                .get("FCEDIT")
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            executor
+                .env
+                .vars
+                .get("EDITOR")
+                .map(|s| s.to_string())
+        })
         .unwrap_or_else(|| "/bin/ed".to_string());
 
-    let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
+    let (lo, hi) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
     let mut commands: Vec<&str> = (lo..=hi).map(|i| entries[i].as_str()).collect();
     if reverse {
         commands.reverse();
@@ -561,8 +661,10 @@ fn fc_edit(
     let tmp_path = match create_secure_tempfile("yosh_fc") {
         Ok(path) => path,
         Err(e) => {
-            eprintln!("yosh: fc: {}", e);
-            return 1;
+            return Err(ShellError::runtime(
+                RuntimeErrorKind::IoError,
+                format!("fc: {}", e),
+            ));
         }
     };
     {
@@ -571,9 +673,11 @@ fn fc_edit(
         let mut file = match OpenOptions::new().write(true).mode(0o600).open(&tmp_path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("yosh: fc: cannot open temp file: {}", e);
                 let _ = std::fs::remove_file(&tmp_path);
-                return 1;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::IoError,
+                    format!("fc: cannot open temp file: {}", e),
+                ));
             }
         };
         for cmd in &commands {
@@ -587,38 +691,44 @@ fn fc_edit(
         Ok(s) if s.success() => {}
         Ok(s) => {
             let _ = std::fs::remove_file(&tmp_path);
-            return s.code().unwrap_or(1);
+            return Ok(s.code().unwrap_or(1));
         }
         Err(e) => {
-            eprintln!("yosh: fc: {}: {}", editor_cmd, e);
             let _ = std::fs::remove_file(&tmp_path);
-            return 127;
+            return Err(ShellError::runtime(
+                RuntimeErrorKind::CommandNotFound,
+                format!("fc: {}: {}", editor_cmd, e),
+            ));
         }
     }
 
     let content = match std::fs::read_to_string(&tmp_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("yosh: fc: cannot read temp file: {}", e);
             let _ = std::fs::remove_file(&tmp_path);
-            return 1;
+            return Err(ShellError::runtime(
+                RuntimeErrorKind::IoError,
+                format!("fc: cannot read temp file: {}", e),
+            ));
         }
     };
     let _ = std::fs::remove_file(&tmp_path);
 
     if content.trim().is_empty() {
-        return 0;
+        return Ok(0);
     }
 
     executor.eval_string(&content);
-    executor.env.exec.last_exit_status
+    Ok(executor.env.exec.last_exit_status)
 }
 
-fn fc_substitute(operands: &[String], executor: &mut Executor) -> i32 {
+fn fc_substitute(operands: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
     let entries = executor.env.history.entries();
     if entries.is_empty() {
-        eprintln!("yosh: fc: history is empty");
-        return 1;
+        return Err(ShellError::runtime(
+            RuntimeErrorKind::IoError,
+            "fc: history is empty".to_string(),
+        ));
     }
 
     let mut replacement: Option<(&str, &str)> = None;
@@ -643,16 +753,25 @@ fn fc_substitute(operands: &[String], executor: &mut Executor) -> i32 {
         cmd = cmd.replacen(old, new, 1);
     }
 
+    // Informational output — not an error
     eprintln!("{}", cmd);
 
-    let histsize: usize = executor.env.vars.get("HISTSIZE")
-        .and_then(|s| s.parse().ok()).unwrap_or(500);
-    let histcontrol = executor.env.vars.get("HISTCONTROL")
-        .unwrap_or("ignoreboth").to_string();
+    let histsize: usize = executor
+        .env
+        .vars
+        .get("HISTSIZE")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    let histcontrol = executor
+        .env
+        .vars
+        .get("HISTCONTROL")
+        .unwrap_or("ignoreboth")
+        .to_string();
     executor.env.history.add(&cmd, histsize, &histcontrol);
 
     executor.eval_string(&cmd);
-    executor.env.exec.last_exit_status
+    Ok(executor.env.exec.last_exit_status)
 }
 
 #[cfg(test)]
