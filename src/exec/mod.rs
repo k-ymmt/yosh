@@ -189,7 +189,15 @@ impl Executor {
             return 0;
         }
         match cmd {
-            Command::Simple(simple) => self.exec_simple_command(simple),
+            Command::Simple(simple) => match self.exec_simple_command(simple) {
+                Ok(status) => status,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    let code = e.exit_code();
+                    self.env.exec.last_exit_status = code;
+                    code
+                }
+            },
             Command::Compound(compound, redirects) => {
                 self.exec_compound_command(compound, redirects)
             }
@@ -711,7 +719,7 @@ mod tests {
     fn exec_builtin_true_returns_0() {
         let mut exec = Executor::new("yosh", vec![]);
         let cmd = make_simple_cmd(&["true"]);
-        assert_eq!(exec.exec_simple_command(&cmd), 0);
+        assert_eq!(exec.exec_simple_command(&cmd), Ok(0));
         assert_eq!(exec.env.exec.last_exit_status, 0);
     }
 
@@ -719,7 +727,7 @@ mod tests {
     fn exec_builtin_false_returns_1() {
         let mut exec = Executor::new("yosh", vec![]);
         let cmd = make_simple_cmd(&["false"]);
-        assert_eq!(exec.exec_simple_command(&cmd), 1);
+        assert_eq!(exec.exec_simple_command(&cmd), Ok(1));
         assert_eq!(exec.env.exec.last_exit_status, 1);
     }
 
@@ -727,7 +735,7 @@ mod tests {
     fn exec_external_true_returns_0() {
         let mut exec = Executor::new("yosh", vec![]);
         let cmd = make_simple_cmd(&["/usr/bin/true"]);
-        assert_eq!(exec.exec_simple_command(&cmd), 0);
+        assert_eq!(exec.exec_simple_command(&cmd), Ok(0));
     }
 
     #[test]
@@ -742,7 +750,7 @@ mod tests {
             words: vec![],
             redirects: vec![],
         };
-        let status = exec.exec_simple_command(&cmd);
+        let status = exec.exec_simple_command(&cmd).unwrap();
         assert_eq!(status, 0);
         assert_eq!(exec.env.vars.get("MYVAR"), Some("hello"));
     }
@@ -752,12 +760,12 @@ mod tests {
         let mut exec = Executor::new("yosh", vec![]);
         // false sets last_exit_status to 1
         let false_cmd = make_simple_cmd(&["false"]);
-        exec.exec_simple_command(&false_cmd);
+        let _ = exec.exec_simple_command(&false_cmd);
         assert_eq!(exec.env.exec.last_exit_status, 1);
 
         // true resets it to 0
         let true_cmd = make_simple_cmd(&["true"]);
-        exec.exec_simple_command(&true_cmd);
+        let _ = exec.exec_simple_command(&true_cmd);
         assert_eq!(exec.env.exec.last_exit_status, 0);
     }
 

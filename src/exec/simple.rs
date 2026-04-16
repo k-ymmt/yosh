@@ -5,6 +5,7 @@ use nix::unistd::{execvp, fork, ForkResult};
 use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
 use crate::builtin::special::exec_special_builtin;
 use crate::env::jobs;
+use crate::error::{ShellError, RuntimeErrorKind};
 use crate::expand::expand_words;
 use crate::parser::ast::{Assignment, SimpleCommand};
 use crate::signal;
@@ -15,21 +16,20 @@ use super::Executor;
 
 impl Executor {
     /// Execute a simple command (assignments, builtins, or external programs).
-    pub(crate) fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> i32 {
+    pub(crate) fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> Result<i32, ShellError> {
         // Expand all words
         let expanded = match expand_words(&mut self.env, &cmd.words) {
             Ok(words) => words,
             Err(e) => {
-                eprintln!("{}", e);
                 self.env.exec.last_exit_status = 1;
-                return 1;
+                return Err(e);
             }
         };
 
         // Check if expansion triggered a flow control signal (e.g., nounset error)
         if self.env.exec.flow_control.is_some() {
             self.env.exec.last_exit_status = 1;
-            return 1;
+            return Ok(1);
         }
 
         // Assignment-only command (no words)
@@ -45,9 +45,8 @@ impl Executor {
                     Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
                         Ok(v) => v,
                         Err(e) => {
-                            eprintln!("{}", e);
                             self.env.exec.last_exit_status = 1;
-                            return 1;
+                            return Err(e);
                         }
                     },
                     None => String::new(),
@@ -55,13 +54,12 @@ impl Executor {
                 // Capture the status set by any command substitution during expansion
                 last_cmd_sub_status = self.env.exec.last_exit_status;
                 if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.mode.options.allexport) {
-                    eprintln!("yosh: {}", e);
                     self.env.exec.last_exit_status = 1;
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, format!("{}", e)));
                 }
             }
             self.env.exec.last_exit_status = last_cmd_sub_status;
-            return last_cmd_sub_status;
+            return Ok(last_cmd_sub_status);
         }
 
         if self.env.mode.options.xtrace && !expanded.is_empty() {
@@ -81,70 +79,55 @@ impl Executor {
 
         // Check for function call (before builtins, matching POSIX lookup order)
         if let Some(func_def) = self.env.functions.get(&command_name).cloned() {
-            let saved = match self.apply_temp_assignments(&cmd.assignments) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("{}", e);
-                    self.env.exec.last_exit_status = 1;
-                    return 1;
-                }
-            };
+            let saved = self.apply_temp_assignments(&cmd.assignments).map_err(|e| {
+                self.env.exec.last_exit_status = 1;
+                e
+            })?;
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                eprintln!("yosh: {}", e);
                 self.restore_assignments(saved);
                 self.env.exec.last_exit_status = 1;
-                return 1;
+                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
             }
             let status = self.exec_function_call(&func_def, &args);
             redirect_state.restore();
             self.restore_assignments(saved);
             self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
-            return status;
+            return Ok(status);
         }
 
         // wait needs Executor access (bg_jobs + signal processing)
         if command_name == "wait" {
-            let saved = match self.apply_temp_assignments(&cmd.assignments) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("{}", e);
-                    self.env.exec.last_exit_status = 1;
-                    return 1;
-                }
-            };
+            let saved = self.apply_temp_assignments(&cmd.assignments).map_err(|e| {
+                self.env.exec.last_exit_status = 1;
+                e
+            })?;
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                eprintln!("yosh: {}", e);
                 self.restore_assignments(saved);
                 self.env.exec.last_exit_status = 1;
-                return 1;
+                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
             }
             let status = self.builtin_wait(&args);
             redirect_state.restore();
             self.restore_assignments(saved);
             self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
-            return status;
+            return Ok(status);
         }
 
         // fg/bg/jobs need Executor access for job table + terminal control
         if command_name == "fg" || command_name == "bg" || command_name == "jobs" {
-            let saved = match self.apply_temp_assignments(&cmd.assignments) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("{}", e);
-                    self.env.exec.last_exit_status = 1;
-                    return 1;
-                }
-            };
+            let saved = self.apply_temp_assignments(&cmd.assignments).map_err(|e| {
+                self.env.exec.last_exit_status = 1;
+                e
+            })?;
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                eprintln!("yosh: {}", e);
                 self.restore_assignments(saved);
                 self.env.exec.last_exit_status = 1;
-                return 1;
+                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
             }
             let status = match command_name.as_str() {
                 "fg" => self.builtin_fg(&args),
@@ -156,7 +139,7 @@ impl Executor {
             self.restore_assignments(saved);
             self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
-            return status;
+            return Ok(status);
         }
 
         match classify_builtin(&command_name) {
@@ -167,59 +150,50 @@ impl Executor {
                         Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
                             Ok(v) => v,
                             Err(e) => {
-                                eprintln!("{}", e);
                                 self.env.exec.last_exit_status = 1;
-                                return 1;
+                                return Err(e);
                             }
                         },
                         None => String::new(),
                     };
                     if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.mode.options.allexport) {
-                        eprintln!("yosh: {}", e);
                         self.env.exec.last_exit_status = 1;
-                        return 1;
+                        return Err(ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, format!("{}", e)));
                     }
                 }
                 // exec with no args: redirects persist (don't save/restore)
                 if command_name == "exec" && args.is_empty() {
                     let mut redirect_state = RedirectState::new();
                     if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, false) {
-                        eprintln!("yosh: {}", e);
                         self.env.exec.last_exit_status = 1;
-                        return 1;
+                        return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
                     }
                     self.env.exec.last_exit_status = 0;
-                    return 0;
+                    return Ok(0);
                 }
 
                 let mut redirect_state = RedirectState::new();
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                    eprintln!("yosh: {}", e);
                     self.env.exec.last_exit_status = 1;
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
                 }
                 let status = exec_special_builtin(&command_name, &args, self);
                 redirect_state.restore();
                 self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
                 self.env.exec.last_exit_status = status;
-                status
+                Ok(status)
             }
             BuiltinKind::Regular => {
                 // Regular builtins: prefix assignments are temporary
-                let saved = match self.apply_temp_assignments(&cmd.assignments) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        self.env.exec.last_exit_status = 1;
-                        return 1;
-                    }
-                };
+                let saved = self.apply_temp_assignments(&cmd.assignments).map_err(|e| {
+                    self.env.exec.last_exit_status = 1;
+                    e
+                })?;
                 let mut redirect_state = RedirectState::new();
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                    eprintln!("yosh: {}", e);
                     self.restore_assignments(saved);
                     self.env.exec.last_exit_status = 1;
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
                 }
                 let old_pwd = if command_name == "cd" {
                     self.env.vars.get("PWD").map(|s| s.to_string())
@@ -239,30 +213,26 @@ impl Executor {
                 }
 
                 self.env.exec.last_exit_status = status;
-                status
+                Ok(status)
             }
             BuiltinKind::NotBuiltin => {
                 // Check plugin commands before external
                 if let Some(status) = self.plugins.exec_command(&mut self.env, &command_name, &args) {
                     self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
                     self.env.exec.last_exit_status = status;
-                    return status;
+                    return Ok(status);
                 }
 
-                let env_vars = match self.build_env_vars(&cmd.assignments) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        self.env.exec.last_exit_status = 1;
-                        return 1;
-                    }
-                };
+                let env_vars = self.build_env_vars(&cmd.assignments).map_err(|e| {
+                    self.env.exec.last_exit_status = 1;
+                    e
+                })?;
                 let status = self.exec_external_with_redirects(
                     &command_name, &args, &env_vars, &cmd.redirects,
                 );
                 self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
                 self.env.exec.last_exit_status = status;
-                status
+                Ok(status)
             }
         }
     }
