@@ -526,7 +526,7 @@ fn expand_part_to_fields(
 }
 
 /// Expand `~username` using `getpwnam`.
-fn expand_tilde_user(user: &str) -> String {
+pub(crate) fn expand_tilde_user(user: &str) -> String {
     use std::ffi::CString;
     let c_user = match CString::new(user) {
         Ok(s) => s,
