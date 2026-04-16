@@ -54,10 +54,6 @@
 - [ ] `GitHubClient` public API error type — `find_asset_url`, `latest_version`, `download` still return `Result<_, String>`; promote internal `GitHubApiError` to a public error type so callers can match on structured variants instead of string messages (`crates/yosh-plugin-manager/src/github.rs`)
 - [ ] Integration tests: add checksum mismatch re-download test and partial failure (404) test per spec (`crates/yosh-plugin-manager/tests/`)
 
-## Future: Expansion Edge Cases
-
-- [ ] `expand_heredoc_string` `${...}` scanning is quote-unaware — depth counter ignores quote context; not currently reachable because only simple variable lookup is implemented (no conditional forms like `${var:-default}`), but will become a bug if conditional parameter expansion is added (`src/expand/mod.rs:183-197`)
-
 ## Future: Code Quality Improvements
 
 - [ ] `JobTable::update_status` per-process status tracking — currently overwrites the overall `job.status` on each child exit; if per-process status tracking (e.g., `$PIPESTATUS` array) is needed in the future, the `Job` struct will need a `Vec<(Pid, JobStatus)>` field instead of a single `status` (`src/env/jobs.rs`)

@@ -181,15 +181,10 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
             i += 1;
             match bytes[i] {
                 b'{' => {
-                    // ${...} — find matching }
+                    // ${...} — find matching } (quote-aware)
                     i += 1;
                     let start = i;
-                    let mut depth = 1;
-                    while i < bytes.len() && depth > 0 {
-                        if bytes[i] == b'{' { depth += 1; }
-                        if bytes[i] == b'}' { depth -= 1; }
-                        if depth > 0 { i += 1; }
-                    }
+                    i = skip_balanced_braces(bytes, i);
                     let name = &s[start..i];
                     if i < bytes.len() { i += 1; } // skip }
                     // Simple lookup (conditional forms not supported in heredoc string expansion)
@@ -469,6 +464,62 @@ pub(crate) fn skip_balanced_parens(bytes: &[u8], start: usize) -> usize {
                 i += 1;
             }
             b')' => {
+                depth -= 1;
+                if depth > 0 {
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    i
+}
+
+/// Like `skip_balanced_parens`, but for `{`/`}` braces.
+/// Used for `${...}` parameter expansion scanning in heredoc strings.
+/// Returns the index of the closing `}` where depth reaches 0.
+/// If no matching `}` is found, returns `bytes.len()`.
+pub(crate) fn skip_balanced_braces(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    let mut depth: usize = 1;
+    while i < bytes.len() && depth > 0 {
+        match bytes[i] {
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'\\' => {
+                if i + 1 < bytes.len() {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
                 depth -= 1;
                 if depth > 0 {
                     i += 1;
@@ -1096,5 +1147,35 @@ mod tests {
     fn test_skip_balanced_double_parens_nested() {
         let input = b"(1 + 2) * 3))";
         assert_eq!(skip_balanced_double_parens(input, 0), 11);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_simple() {
+        let input = b"var}";
+        assert_eq!(skip_balanced_braces(input, 0), 3);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_nested() {
+        let input = b"{inner} outer}";
+        assert_eq!(skip_balanced_braces(input, 0), 13);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_single_quoted() {
+        let input = b"var:-'}'}";
+        assert_eq!(skip_balanced_braces(input, 0), 8);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_double_quoted() {
+        let input = b"var:-\"}{\"}";
+        assert_eq!(skip_balanced_braces(input, 0), 9);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_backslash_escape() {
+        let input = b"var:-\\} real}";
+        assert_eq!(skip_balanced_braces(input, 0), 12);
     }
 }
