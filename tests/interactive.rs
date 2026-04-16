@@ -1,17 +1,17 @@
 use std::fs;
 use crossterm::event::KeyCode;
-use kish::env::ShellEnv;
-use kish::env::aliases::AliasStore;
-use kish::interactive::completion::CompletionContext;
-use kish::interactive::command_completion::{CommandCompleter, CommandCompletionContext};
-use kish::interactive::edit_action::EditAction;
-use kish::interactive::fuzzy_search::FuzzySearchUI;
-use kish::interactive::highlight::{CheckerEnv, HighlightScanner};
-use kish::interactive::history::History;
-use kish::interactive::keymap::{BufferState, Keymap};
-use kish::interactive::line_editor::LineEditor;
-use kish::interactive::parse_status::{classify_parse, ParseStatus};
-use kish::interactive::prompt::expand_prompt;
+use yosh::env::ShellEnv;
+use yosh::env::aliases::AliasStore;
+use yosh::interactive::completion::CompletionContext;
+use yosh::interactive::command_completion::{CommandCompleter, CommandCompletionContext};
+use yosh::interactive::edit_action::EditAction;
+use yosh::interactive::fuzzy_search::FuzzySearchUI;
+use yosh::interactive::highlight::{CheckerEnv, HighlightScanner};
+use yosh::interactive::history::History;
+use yosh::interactive::keymap::{BufferState, Keymap};
+use yosh::interactive::line_editor::LineEditor;
+use yosh::interactive::parse_status::{classify_parse, ParseStatus};
+use yosh::interactive::prompt::expand_prompt;
 
 mod helpers;
 use helpers::mock_terminal::{MockTerminal, alt, chars, ctrl, key};
@@ -182,7 +182,7 @@ fn test_backspace_in_middle() {
 
 #[test]
 fn test_prompt_default_ps1() {
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     let _ = env.vars.unset("PS1");
     let prompt = expand_prompt(&mut env, "PS1");
     assert_eq!(prompt, "$ ");
@@ -190,7 +190,7 @@ fn test_prompt_default_ps1() {
 
 #[test]
 fn test_prompt_default_ps2() {
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     let _ = env.vars.unset("PS2");
     let prompt = expand_prompt(&mut env, "PS2");
     assert_eq!(prompt, "> ");
@@ -198,7 +198,7 @@ fn test_prompt_default_ps2() {
 
 #[test]
 fn test_prompt_custom_ps1() {
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     env.vars.set("PS1", "myshell> ").unwrap();
     let prompt = expand_prompt(&mut env, "PS1");
     assert_eq!(prompt, "myshell> ");
@@ -206,7 +206,7 @@ fn test_prompt_custom_ps1() {
 
 #[test]
 fn test_prompt_with_variable_expansion() {
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     env.vars.set("MYVAR", "hello").unwrap();
     env.vars.set("PS1", "${MYVAR}$ ").unwrap();
     let prompt = expand_prompt(&mut env, "PS1");
@@ -215,7 +215,7 @@ fn test_prompt_with_variable_expansion() {
 
 #[test]
 fn test_prompt_empty_string() {
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     env.vars.set("PS1", "").unwrap();
     let prompt = expand_prompt(&mut env, "PS1");
     assert_eq!(prompt, "");
@@ -1105,13 +1105,13 @@ fn test_tab_no_match_does_nothing() {
 
 #[test]
 fn test_double_tab_opens_completion_ui() {
-    let dir = std::env::temp_dir().join(format!("kish-tab-test5-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("yosh-tab-test5-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("file_alpha.rs"), "").unwrap();
     fs::write(dir.join("file_beta.rs"), "").unwrap();
 
-    let ctx = kish::interactive::completion::CompletionContext {
+    let ctx = yosh::interactive::completion::CompletionContext {
         cwd: dir.to_str().unwrap().to_string(),
         home: "/tmp".to_string(),
         show_dotfiles: false,
@@ -1151,7 +1151,7 @@ fn test_tab_command_completion_at_line_start() {
     let tmp = tempfile::TempDir::new().unwrap();
     // Create an executable in a temp PATH directory
     let bin_dir = tempfile::TempDir::new().unwrap();
-    let cmd_path = bin_dir.path().join("kish_test_mycmd");
+    let cmd_path = bin_dir.path().join("yosh_test_mycmd");
     fs::File::create(&cmd_path).unwrap();
     #[cfg(unix)]
     {
@@ -1175,8 +1175,8 @@ fn test_tab_command_completion_at_line_start() {
         aliases: &aliases,
     };
 
-    // Type "kish_test_my" + Tab + Enter — should complete to "kish_test_mycmd "
-    let mut events = chars("kish_test_my");
+    // Type "yosh_test_my" + Tab + Enter — should complete to "yosh_test_mycmd "
+    let mut events = chars("yosh_test_my");
     events.push(key(KeyCode::Tab));
     events.push(key(KeyCode::Enter));
 
@@ -1188,7 +1188,7 @@ fn test_tab_command_completion_at_line_start() {
     let result = editor
         .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
         .unwrap();
-    assert_eq!(result, Some("kish_test_mycmd ".to_string()));
+    assert_eq!(result, Some("yosh_test_mycmd ".to_string()));
 }
 
 #[test]
@@ -1303,7 +1303,7 @@ fn test_tab_completes_builtin() {
 
 #[test]
 fn test_kill_ring_kill_and_yank() {
-    use kish::interactive::kill_ring::KillRing;
+    use yosh::interactive::kill_ring::KillRing;
     let mut kr = KillRing::new(60);
     kr.kill("hello", false);
     assert_eq!(kr.yank(), Some("hello"));
@@ -1311,7 +1311,7 @@ fn test_kill_ring_kill_and_yank() {
 
 #[test]
 fn test_kill_ring_multiple_kills() {
-    use kish::interactive::kill_ring::KillRing;
+    use yosh::interactive::kill_ring::KillRing;
     let mut kr = KillRing::new(60);
     kr.kill("first", false);
     kr.kill("second", false);
@@ -1320,7 +1320,7 @@ fn test_kill_ring_multiple_kills() {
 
 #[test]
 fn test_kill_ring_append_forward() {
-    use kish::interactive::kill_ring::KillRing;
+    use yosh::interactive::kill_ring::KillRing;
     let mut kr = KillRing::new(60);
     kr.kill("hello", false);
     kr.kill(" world", true);
@@ -1329,7 +1329,7 @@ fn test_kill_ring_append_forward() {
 
 #[test]
 fn test_kill_ring_yank_pop_cycles() {
-    use kish::interactive::kill_ring::KillRing;
+    use yosh::interactive::kill_ring::KillRing;
     let mut kr = KillRing::new(60);
     kr.kill("first", false);
     kr.kill("second", false);
@@ -1343,21 +1343,21 @@ fn test_kill_ring_yank_pop_cycles() {
 
 #[test]
 fn test_kill_ring_yank_empty() {
-    use kish::interactive::kill_ring::KillRing;
+    use yosh::interactive::kill_ring::KillRing;
     let mut kr = KillRing::new(60);
     assert_eq!(kr.yank(), None);
 }
 
 #[test]
 fn test_kill_ring_yank_pop_empty() {
-    use kish::interactive::kill_ring::KillRing;
+    use yosh::interactive::kill_ring::KillRing;
     let mut kr = KillRing::new(60);
     assert_eq!(kr.yank_pop(), None);
 }
 
 #[test]
 fn test_kill_ring_max_size() {
-    use kish::interactive::kill_ring::KillRing;
+    use yosh::interactive::kill_ring::KillRing;
     let mut kr = KillRing::new(3);
     kr.kill("a", false);
     kr.kill("b", false);
@@ -1373,7 +1373,7 @@ fn test_kill_ring_max_size() {
 
 #[test]
 fn test_kill_ring_prepend() {
-    use kish::interactive::kill_ring::KillRing;
+    use yosh::interactive::kill_ring::KillRing;
     let mut kr = KillRing::new(60);
     kr.kill("world", false);
     kr.prepend("hello ", true);
@@ -1384,7 +1384,7 @@ fn test_kill_ring_prepend() {
 
 #[test]
 fn test_undo_save_and_restore() {
-    use kish::interactive::undo::UndoManager;
+    use yosh::interactive::undo::UndoManager;
     let mut um = UndoManager::new(256);
     um.save(&['h', 'e', 'l', 'l', 'o'], 5);
     let (buf, pos) = um.undo().unwrap();
@@ -1394,7 +1394,7 @@ fn test_undo_save_and_restore() {
 
 #[test]
 fn test_undo_multiple_states() {
-    use kish::interactive::undo::UndoManager;
+    use yosh::interactive::undo::UndoManager;
     let mut um = UndoManager::new(256);
     um.save(&[], 0);
     um.save(&['a'], 1);
@@ -1409,14 +1409,14 @@ fn test_undo_multiple_states() {
 
 #[test]
 fn test_undo_empty_returns_none() {
-    use kish::interactive::undo::UndoManager;
+    use yosh::interactive::undo::UndoManager;
     let mut um = UndoManager::new(256);
     assert!(um.undo().is_none());
 }
 
 #[test]
 fn test_undo_clear_resets_stack() {
-    use kish::interactive::undo::UndoManager;
+    use yosh::interactive::undo::UndoManager;
     let mut um = UndoManager::new(256);
     um.save(&['a'], 1);
     um.save(&['a', 'b'], 2);
@@ -1426,7 +1426,7 @@ fn test_undo_clear_resets_stack() {
 
 #[test]
 fn test_undo_respects_max_size() {
-    use kish::interactive::undo::UndoManager;
+    use yosh::interactive::undo::UndoManager;
     let mut um = UndoManager::new(2);
     um.save(&[], 0);
     um.save(&['a'], 1);

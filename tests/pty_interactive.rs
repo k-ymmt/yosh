@@ -23,7 +23,7 @@ impl TempDir {
             .unwrap()
             .as_nanos();
         let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        path.push(format!("kish-pty-test-{}-{}", id, seq));
+        path.push(format!("yosh-pty-test-{}-{}", id, seq));
         std::fs::create_dir_all(&path).unwrap();
         TempDir { path }
     }
@@ -42,16 +42,16 @@ impl Drop for TempDir {
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Returns (session, tmpdir). The tmpdir must be kept alive for the
-/// duration of the test so that kish's HOME directory is not deleted.
-fn spawn_kish() -> (OsSession, TempDir) {
-    let bin = env!("CARGO_BIN_EXE_kish");
+/// duration of the test so that yosh's HOME directory is not deleted.
+fn spawn_yosh() -> (OsSession, TempDir) {
+    let bin = env!("CARGO_BIN_EXE_yosh");
     let tmpdir = TempDir::new();
 
     let mut cmd = Command::new(bin);
     cmd.env("TERM", "dumb");
     cmd.env("HOME", tmpdir.path());
 
-    let mut session = Session::spawn(cmd).expect("failed to spawn kish");
+    let mut session = Session::spawn(cmd).expect("failed to spawn yosh");
     session.set_expect_timeout(Some(TIMEOUT));
     (session, tmpdir)
 }
@@ -66,9 +66,9 @@ fn wait_for_ps2(session: &mut OsSession) {
     wait_for_raw_mode();
 }
 
-/// Brief pause to let kish finish enable_raw_mode() before the next send.
+/// Brief pause to let yosh finish enable_raw_mode() before the next send.
 /// Without this, input sent immediately after the prompt may arrive while
-/// kish is still transitioning from canonical to raw mode, causing the PTY
+/// yosh is still transitioning from canonical to raw mode, causing the PTY
 /// line discipline to buffer or transform input unexpectedly.
 fn wait_for_raw_mode() {
     std::thread::sleep(Duration::from_millis(50));
@@ -89,7 +89,7 @@ fn expect_output(session: &mut OsSession, text: &str, msg: &str) {
 /// Send Ctrl+D and wait for the shell to exit cleanly.
 fn exit_shell(session: &mut OsSession) {
     session.send("\x04").unwrap();
-    // Wait for EOF to ensure the kish process has fully exited before the
+    // Wait for EOF to ensure the yosh process has fully exited before the
     // next test starts — avoids PTY resource contention between tests.
     let _ = session.expect(Eof);
 }
@@ -98,7 +98,7 @@ fn exit_shell(session: &mut OsSession) {
 
 #[test]
 fn test_pty_echo_command() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     s.send("echo hello\r").unwrap();
@@ -110,7 +110,7 @@ fn test_pty_echo_command() {
 
 #[test]
 fn test_pty_ctrl_d_exits() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     s.send("\x04").unwrap();
@@ -119,7 +119,7 @@ fn test_pty_ctrl_d_exits() {
 
 #[test]
 fn test_pty_ctrl_c_interrupts_input() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Type something, then Ctrl+C
@@ -139,7 +139,7 @@ fn test_pty_ctrl_c_interrupts_input() {
 
 #[test]
 fn test_pty_history_up_re_executes() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     s.send("echo first_cmd\r").unwrap();
@@ -157,7 +157,7 @@ fn test_pty_history_up_re_executes() {
 
 #[test]
 fn test_pty_backspace_editing() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Type "echoo", backspace, " works"
@@ -172,7 +172,7 @@ fn test_pty_backspace_editing() {
 
 #[test]
 fn test_pty_ps2_continuation() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Incomplete command: if true; then
@@ -192,7 +192,7 @@ fn test_pty_ps2_continuation() {
 
 #[test]
 fn test_pty_ctrl_r_history_search() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Build up history
@@ -228,7 +228,7 @@ fn test_pty_ctrl_r_history_search() {
 
 #[test]
 fn test_pty_autosuggest_accept_with_right_arrow() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Execute a command to populate history
@@ -256,19 +256,19 @@ fn test_pty_autosuggest_accept_with_right_arrow() {
 
 #[test]
 fn test_pty_tab_completion() {
-    let (mut s, tmpdir) = spawn_kish();
+    let (mut s, tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Create a uniquely named file in the temp HOME directory
-    let test_file = tmpdir.path().join("kish_tab_test_unique.txt");
+    let test_file = tmpdir.path().join("yosh_tab_test_unique.txt");
     std::fs::write(&test_file, "hello").unwrap();
 
     // cd to HOME (which is tmpdir)
     s.send("cd\r").unwrap();
     wait_for_prompt(&mut s);
 
-    // Type "echo kish_tab" then Tab to complete the filename
-    s.send("echo kish_tab").unwrap();
+    // Type "echo yosh_tab" then Tab to complete the filename
+    s.send("echo yosh_tab").unwrap();
     std::thread::sleep(Duration::from_millis(50));
     s.send("\t").unwrap(); // Tab
     std::thread::sleep(Duration::from_millis(100));
@@ -277,7 +277,7 @@ fn test_pty_tab_completion() {
     s.send("\r").unwrap();
     expect_output(
         &mut s,
-        "kish_tab_test_unique.txt",
+        "yosh_tab_test_unique.txt",
         "Tab completion failed to complete and execute",
     );
     wait_for_prompt(&mut s);
@@ -287,7 +287,7 @@ fn test_pty_tab_completion() {
 
 #[test]
 fn test_pty_command_completion() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // "ech" + Tab should complete to "echo" (builtin)
@@ -306,7 +306,7 @@ fn test_pty_command_completion() {
 
 #[test]
 fn test_pty_command_completion_after_pipe() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // "echo hello | ca" + Tab inserts the common prefix of ca* commands.
@@ -329,19 +329,19 @@ fn test_pty_command_completion_after_pipe() {
 
 #[test]
 fn test_pty_path_completion_in_argument_position() {
-    let (mut s, tmpdir) = spawn_kish();
+    let (mut s, tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Create a uniquely named file
-    let test_file = tmpdir.path().join("kish_argcomp_unique.txt");
+    let test_file = tmpdir.path().join("yosh_argcomp_unique.txt");
     std::fs::write(&test_file, "content").unwrap();
 
     // cd to HOME
     s.send("cd\r").unwrap();
     wait_for_prompt(&mut s);
 
-    // "cat kish_argcomp" + Tab should path-complete to "kish_argcomp_unique.txt"
-    s.send("cat kish_argcomp").unwrap();
+    // "cat yosh_argcomp" + Tab should path-complete to "yosh_argcomp_unique.txt"
+    s.send("cat yosh_argcomp").unwrap();
     std::thread::sleep(Duration::from_millis(50));
     s.send("\t").unwrap();
     std::thread::sleep(Duration::from_millis(100));
@@ -360,7 +360,7 @@ fn test_pty_path_completion_in_argument_position() {
 
 #[test]
 fn test_pty_syntax_highlight_keyword() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Type "if" — should be highlighted as Keyword (Bold + Magenta)
@@ -376,7 +376,7 @@ fn test_pty_syntax_highlight_keyword() {
 
 #[test]
 fn test_pty_syntax_highlight_valid_command() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Type "echo hi" — echo should be highlighted as CommandValid (Bold + Green)
@@ -389,7 +389,7 @@ fn test_pty_syntax_highlight_valid_command() {
 
 #[test]
 fn test_pty_syntax_highlight_pipe() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Execute a pipe command with highlighting active
@@ -402,7 +402,7 @@ fn test_pty_syntax_highlight_pipe() {
 
 #[test]
 fn ansi_colored_prompt() {
-    let (mut session, _tmpdir) = spawn_kish();
+    let (mut session, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut session);
 
     // Set PS1 to an ANSI-colored prompt using command substitution with printf
@@ -421,7 +421,7 @@ fn ansi_colored_prompt() {
 
 #[test]
 fn multi_line_prompt() {
-    let (mut session, _tmpdir) = spawn_kish();
+    let (mut session, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut session);
 
     // Set a two-line PS1: info line + prompt char
@@ -440,7 +440,7 @@ fn multi_line_prompt() {
 
 #[test]
 fn test_pty_sighup_saves_history() {
-    let (mut s, tmpdir) = spawn_kish();
+    let (mut s, tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Execute a command so it gets added to history
@@ -448,18 +448,18 @@ fn test_pty_sighup_saves_history() {
     expect_output(&mut s, "sighup_test_marker", "echo output");
     wait_for_prompt(&mut s);
 
-    // Send SIGHUP to the kish process
+    // Send SIGHUP to the yosh process
     // get_process() returns &UnixProcess which Derefs to PtyProcess; pid() returns nix::unistd::Pid
     let pid = s.get_process().pid();
     unsafe {
         libc::kill(pid.as_raw(), libc::SIGHUP);
     }
 
-    // Wait for kish to exit
+    // Wait for yosh to exit
     let _ = s.expect(Eof);
 
     // Verify history file was written
-    let histfile = tmpdir.path().join(".kish_history");
+    let histfile = tmpdir.path().join(".yosh_history");
     let contents = std::fs::read_to_string(&histfile)
         .expect("history file should exist after SIGHUP");
     assert!(
@@ -471,7 +471,7 @@ fn test_pty_sighup_saves_history() {
 
 #[test]
 fn test_pty_set_plus_m_disables_job_control() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Interactive shell starts with monitor=on; disable it
@@ -489,7 +489,7 @@ fn test_pty_set_plus_m_disables_job_control() {
 
 #[test]
 fn test_pty_set_minus_m_reenables_job_control() {
-    let (mut s, _tmpdir) = spawn_kish();
+    let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
     // Disable then re-enable monitor mode

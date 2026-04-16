@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::io;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use kish::interactive::terminal::Terminal;
+use yosh::interactive::terminal::Terminal;
 
 /// A mock terminal that replays a queue of events and records output.
 pub struct MockTerminal {

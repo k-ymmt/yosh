@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
-use kish::env::ShellEnv;
-use kish::plugin::PluginManager;
+use yosh::env::ShellEnv;
+use yosh::plugin::PluginManager;
 
 /// Serialize all plugin tests to avoid interference from the test plugin's
 /// internal static Mutex (each load_plugin call resets the static, so parallel
@@ -33,7 +33,7 @@ fn load_plugin_successfully() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     manager.load_plugin(&dylib, &mut env).unwrap();
     assert!(manager.has_command("test-hello"));
     assert!(manager.has_command("test-set-var"));
@@ -45,7 +45,7 @@ fn exec_plugin_command() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     manager.load_plugin(&dylib, &mut env).unwrap();
 
     let status = manager.exec_command(&mut env, "test-hello", &[]);
@@ -58,7 +58,7 @@ fn exec_plugin_command_with_args() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     manager.load_plugin(&dylib, &mut env).unwrap();
 
     let status = manager.exec_command(
@@ -75,7 +75,7 @@ fn exec_unknown_command_returns_none() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     manager.load_plugin(&dylib, &mut env).unwrap();
 
     let status = manager.exec_command(&mut env, "nonexistent", &[]);
@@ -87,7 +87,7 @@ fn hook_pre_exec() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     manager.load_plugin(&dylib, &mut env).unwrap();
 
     manager.call_pre_exec(&mut env, "echo hello");
@@ -99,7 +99,7 @@ fn hook_post_exec() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     manager.load_plugin(&dylib, &mut env).unwrap();
 
     manager.call_post_exec(&mut env, "ls -la", 0);
@@ -111,7 +111,7 @@ fn hook_on_cd() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     manager.load_plugin(&dylib, &mut env).unwrap();
 
     manager.call_on_cd(&mut env, "/old/dir", "/new/dir");
@@ -123,7 +123,7 @@ fn hook_pre_prompt() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     manager.load_plugin(&dylib, &mut env).unwrap();
 
     manager.call_pre_prompt(&mut env);
@@ -134,7 +134,7 @@ fn hook_pre_prompt() {
 fn load_nonexistent_plugin_fails() {
     let _guard = TEST_LOCK.lock().unwrap();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     let result = manager.load_plugin(Path::new("/nonexistent/libfoo.dylib"), &mut env);
     assert!(result.is_err());
 }
@@ -144,7 +144,7 @@ fn readonly_var_rejected_by_plugin() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
     manager.load_plugin(&dylib, &mut env).unwrap();
 
     // Set a readonly variable
@@ -167,10 +167,10 @@ fn sandbox_deny_set_var_without_capability() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
 
     // Load with only variables:read + io (no variables:write)
-    let caps = kish_plugin_api::CAP_VARIABLES_READ | kish_plugin_api::CAP_IO;
+    let caps = yosh_plugin_api::CAP_VARIABLES_READ | yosh_plugin_api::CAP_IO;
     manager
         .load_plugin_with_capabilities(&dylib, &mut env, Some(caps))
         .unwrap();
@@ -191,12 +191,12 @@ fn sandbox_hook_not_fired_without_capability() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
 
     // Load with variables:write + io but NO hook capabilities
-    let caps = kish_plugin_api::CAP_VARIABLES_READ
-        | kish_plugin_api::CAP_VARIABLES_WRITE
-        | kish_plugin_api::CAP_IO;
+    let caps = yosh_plugin_api::CAP_VARIABLES_READ
+        | yosh_plugin_api::CAP_VARIABLES_WRITE
+        | yosh_plugin_api::CAP_IO;
     manager
         .load_plugin_with_capabilities(&dylib, &mut env, Some(caps))
         .unwrap();
@@ -217,13 +217,13 @@ fn sandbox_selective_hook_capability() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
 
     // Grant variables:write (for hooks to set_var) + only pre_exec hook
-    let caps = kish_plugin_api::CAP_VARIABLES_READ
-        | kish_plugin_api::CAP_VARIABLES_WRITE
-        | kish_plugin_api::CAP_IO
-        | kish_plugin_api::CAP_HOOK_PRE_EXEC;
+    let caps = yosh_plugin_api::CAP_VARIABLES_READ
+        | yosh_plugin_api::CAP_VARIABLES_WRITE
+        | yosh_plugin_api::CAP_IO
+        | yosh_plugin_api::CAP_HOOK_PRE_EXEC;
     manager
         .load_plugin_with_capabilities(&dylib, &mut env, Some(caps))
         .unwrap();
@@ -246,7 +246,7 @@ fn sandbox_full_capabilities_works_normally() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
 
     // Load with all capabilities (None = trust mode)
     manager.load_plugin(&dylib, &mut env).unwrap();
@@ -274,12 +274,12 @@ fn sandbox_pre_prompt_not_fired_without_capability() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
 
     // Load with variables:write + io but NO hook capabilities
-    let caps = kish_plugin_api::CAP_VARIABLES_READ
-        | kish_plugin_api::CAP_VARIABLES_WRITE
-        | kish_plugin_api::CAP_IO;
+    let caps = yosh_plugin_api::CAP_VARIABLES_READ
+        | yosh_plugin_api::CAP_VARIABLES_WRITE
+        | yosh_plugin_api::CAP_IO;
     manager
         .load_plugin_with_capabilities(&dylib, &mut env, Some(caps))
         .unwrap();
@@ -294,13 +294,13 @@ fn sandbox_selective_pre_prompt_capability() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
 
     // Grant variables:write (for hook to set_var) + only pre_prompt hook
-    let caps = kish_plugin_api::CAP_VARIABLES_READ
-        | kish_plugin_api::CAP_VARIABLES_WRITE
-        | kish_plugin_api::CAP_IO
-        | kish_plugin_api::CAP_HOOK_PRE_PROMPT;
+    let caps = yosh_plugin_api::CAP_VARIABLES_READ
+        | yosh_plugin_api::CAP_VARIABLES_WRITE
+        | yosh_plugin_api::CAP_IO
+        | yosh_plugin_api::CAP_HOOK_PRE_PROMPT;
     manager
         .load_plugin_with_capabilities(&dylib, &mut env, Some(caps))
         .unwrap();
@@ -319,10 +319,10 @@ fn sandbox_config_restricts_capabilities() {
     let _guard = TEST_LOCK.lock().unwrap();
     let dylib = build_test_plugin();
     let mut manager = PluginManager::new();
-    let mut env = ShellEnv::new("kish", vec![]);
+    let mut env = ShellEnv::new("yosh", vec![]);
 
     // Plugin requests all capabilities, config only grants io
-    let caps = kish_plugin_api::CAP_IO;
+    let caps = yosh_plugin_api::CAP_IO;
     manager
         .load_plugin_with_capabilities(&dylib, &mut env, Some(caps))
         .unwrap();

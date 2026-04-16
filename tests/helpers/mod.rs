@@ -17,7 +17,7 @@ impl TempDir {
             .unwrap()
             .as_nanos();
         let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        path.push(format!("kish-test-{}-{}", id, seq));
+        path.push(format!("yosh-test-{}-{}", id, seq));
         std::fs::create_dir_all(&path).unwrap();
         TempDir { path }
     }

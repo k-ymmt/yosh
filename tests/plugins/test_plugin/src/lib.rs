@@ -1,4 +1,4 @@
-use kish_plugin_sdk::{Capability, Plugin, PluginApi, export};
+use yosh_plugin_sdk::{Capability, Plugin, PluginApi, export};
 
 #[derive(Default)]
 struct TestPlugin;

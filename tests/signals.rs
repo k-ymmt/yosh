@@ -8,33 +8,33 @@ use std::time::Duration;
 /// Atomic counter to ensure unique temp file names across parallel tests.
 static TIMEOUT_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn kish_exec(input: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_kish"))
+fn yosh_exec(input: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_yosh"))
         .args(["-c", input])
         .output()
-        .expect("failed to execute kish")
+        .expect("failed to execute yosh")
 }
 
-/// Run a kish command with a timeout, using temp files for output to avoid
+/// Run a yosh command with a timeout, using temp files for output to avoid
 /// pipe-inheritance issues with background processes.
 /// Returns (stdout, stderr, exit_code).
-fn kish_exec_timeout(input: &str, timeout_secs: u64) -> (String, String, Option<i32>) {
+fn yosh_exec_timeout(input: &str, timeout_secs: u64) -> (String, String, Option<i32>) {
     let id = std::process::id();
     let seq = TIMEOUT_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let stdout_path = format!("/tmp/kish-test-{}-{}-out", id, seq);
-    let stderr_path = format!("/tmp/kish-test-{}-{}-err", id, seq);
+    let stdout_path = format!("/tmp/yosh-test-{}-{}-out", id, seq);
+    let stderr_path = format!("/tmp/yosh-test-{}-{}-err", id, seq);
 
     let stdout_file = std::fs::File::create(&stdout_path).expect("create stdout file");
     let stderr_file = std::fs::File::create(&stderr_path).expect("create stderr file");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_kish"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yosh"))
         .args(["-c", input])
         .stdin(Stdio::null())
         .stdout(stdout_file)
         .stderr(stderr_file)
         .process_group(0)
         .spawn()
-        .expect("failed to spawn kish");
+        .expect("failed to spawn yosh");
 
     let start = std::time::Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
@@ -51,14 +51,14 @@ fn kish_exec_timeout(input: &str, timeout_secs: u64) -> (String, String, Option<
                     let _ = child.wait();
                     let _ = std::fs::remove_file(&stdout_path);
                     let _ = std::fs::remove_file(&stderr_path);
-                    panic!("kish timed out after {}s for: {}", timeout_secs, input);
+                    panic!("yosh timed out after {}s for: {}", timeout_secs, input);
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&stdout_path);
                 let _ = std::fs::remove_file(&stderr_path);
-                panic!("error waiting for kish: {}", e);
+                panic!("error waiting for yosh: {}", e);
             }
         }
     };
@@ -82,7 +82,7 @@ fn kish_exec_timeout(input: &str, timeout_secs: u64) -> (String, String, Option<
 
 #[test]
 fn test_trap_int_execution() {
-    let out = kish_exec("trap 'echo caught' INT; kill -INT $$; echo after");
+    let out = yosh_exec("trap 'echo caught' INT; kill -INT $$; echo after");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("caught"));
@@ -91,7 +91,7 @@ fn test_trap_int_execution() {
 
 #[test]
 fn test_trap_reset() {
-    let out = kish_exec("trap 'echo x' INT; trap - INT; trap");
+    let out = yosh_exec("trap 'echo x' INT; trap - INT; trap");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains("INT"));
@@ -99,7 +99,7 @@ fn test_trap_reset() {
 
 #[test]
 fn test_subshell_trap_reset() {
-    let out = kish_exec("trap 'echo x' INT; (trap)");
+    let out = yosh_exec("trap 'echo x' INT; (trap)");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains("INT"));
@@ -107,7 +107,7 @@ fn test_subshell_trap_reset() {
 
 #[test]
 fn test_subshell_ignore_preserved() {
-    let out = kish_exec("trap '' INT; (trap -p INT)");
+    let out = yosh_exec("trap '' INT; (trap -p INT)");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("INT"));
@@ -118,7 +118,7 @@ fn test_subshell_ignore_preserved() {
 #[test]
 fn test_kill_default_sigterm() {
     let (stdout, _stderr, code) =
-        kish_exec_timeout("exec sleep 100 & kill $!; wait $!; echo $?", 10);
+        yosh_exec_timeout("exec sleep 100 & kill $!; wait $!; echo $?", 10);
     assert_eq!(code, Some(0));
     assert_eq!(stdout.trim(), "143"); // 128 + 15 (SIGTERM)
 }
@@ -126,7 +126,7 @@ fn test_kill_default_sigterm() {
 #[test]
 fn test_kill_dash_s() {
     let (stdout, _stderr, code) =
-        kish_exec_timeout("exec sleep 100 & kill -s INT $!; wait $!; echo $?", 10);
+        yosh_exec_timeout("exec sleep 100 & kill -s INT $!; wait $!; echo $?", 10);
     assert_eq!(code, Some(0));
     assert_eq!(stdout.trim(), "130"); // 128 + 2 (SIGINT)
 }
@@ -134,7 +134,7 @@ fn test_kill_dash_s() {
 #[test]
 fn test_kill_dash_9() {
     let (stdout, _stderr, code) =
-        kish_exec_timeout("exec sleep 100 & kill -9 $!; wait $!; echo $?", 10);
+        yosh_exec_timeout("exec sleep 100 & kill -9 $!; wait $!; echo $?", 10);
     assert_eq!(code, Some(0));
     assert_eq!(stdout.trim(), "137"); // 128 + 9 (SIGKILL)
 }
@@ -142,14 +142,14 @@ fn test_kill_dash_9() {
 #[test]
 fn test_kill_dash_signal_name() {
     let (stdout, _stderr, code) =
-        kish_exec_timeout("exec sleep 100 & kill -INT $!; wait $!; echo $?", 10);
+        yosh_exec_timeout("exec sleep 100 & kill -INT $!; wait $!; echo $?", 10);
     assert_eq!(code, Some(0));
     assert_eq!(stdout.trim(), "130");
 }
 
 #[test]
 fn test_kill_list() {
-    let out = kish_exec("kill -l");
+    let out = yosh_exec("kill -l");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("HUP"));
@@ -159,7 +159,7 @@ fn test_kill_list() {
 
 #[test]
 fn test_kill_list_status() {
-    let out = kish_exec("kill -l 130");
+    let out = yosh_exec("kill -l 130");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(stdout.trim(), "INT");
@@ -170,7 +170,7 @@ fn test_kill_list_status() {
 #[test]
 fn test_wait_basic() {
     let (stdout, _stderr, code) =
-        kish_exec_timeout("exec sleep 0.1 & wait; echo done", 10);
+        yosh_exec_timeout("exec sleep 0.1 & wait; echo done", 10);
     assert_eq!(code, Some(0));
     assert_eq!(stdout.trim(), "done");
 }
@@ -178,14 +178,14 @@ fn test_wait_basic() {
 #[test]
 fn test_wait_pid() {
     let (stdout, _stderr, code) =
-        kish_exec_timeout("exec sleep 0.1 & pid=$!; wait $pid; echo $?", 10);
+        yosh_exec_timeout("exec sleep 0.1 & pid=$!; wait $pid; echo $?", 10);
     assert_eq!(code, Some(0));
     assert_eq!(stdout.trim(), "0");
 }
 
 #[test]
 fn test_wait_nonexistent_pid() {
-    let out = kish_exec("wait 99999");
+    let out = yosh_exec("wait 99999");
     assert_eq!(out.status.code(), Some(127));
 }
 
@@ -195,7 +195,7 @@ fn test_kill_0_targets_shell_pgid() {
     // not the pipeline's process group. We verify by using a trap + kill 0 in
     // a pipeline command — if kill 0 incorrectly targets only the pipeline group,
     // the trap on the shell won't fire.
-    let (stdout, _stderr, code) = kish_exec_timeout(
+    let (stdout, _stderr, code) = yosh_exec_timeout(
         "trap 'echo trapped' TERM; true | kill -TERM 0; echo after",
         5,
     );
@@ -211,7 +211,7 @@ fn test_kill_0_targets_shell_pgid() {
 #[test]
 fn test_background_job_last_pid() {
     let (stdout, _stderr, code) =
-        kish_exec_timeout("true & echo $!", 5);
+        yosh_exec_timeout("true & echo $!", 5);
     assert_eq!(code, Some(0));
     let pid: i32 = stdout.trim().parse().expect("$! should be a number");
     assert!(pid > 0);

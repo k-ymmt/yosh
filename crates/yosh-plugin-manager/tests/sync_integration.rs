@@ -3,8 +3,8 @@ use std::io::Write;
 #[test]
 fn sync_local_plugin_creates_lockfile() {
     let dir = tempfile::tempdir().unwrap();
-    let config_dir = dir.path().join(".config/kish");
-    let plugin_dir = dir.path().join(".kish/plugins");
+    let config_dir = dir.path().join(".config/yosh");
+    let plugin_dir = dir.path().join(".yosh/plugins");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::create_dir_all(&plugin_dir).unwrap();
 
@@ -23,12 +23,12 @@ capabilities = ["io"]
 "#, fake_binary.display()).unwrap();
 
     // Parse config
-    let decls = kish_plugin_manager::config::load_config(&toml_path).unwrap();
+    let decls = yosh_plugin_manager::config::load_config(&toml_path).unwrap();
     assert_eq!(decls.len(), 1);
     assert_eq!(decls[0].name, "local-test");
 
     // Compute expected SHA-256
-    let sha256 = kish_plugin_manager::verify::sha256_file(&fake_binary).unwrap();
+    let sha256 = yosh_plugin_manager::verify::sha256_file(&fake_binary).unwrap();
     assert!(!sha256.is_empty());
     assert_eq!(sha256.len(), 64); // hex-encoded SHA-256 is 64 chars
 }
@@ -38,9 +38,9 @@ fn lockfile_round_trip_with_multiple_entries() {
     let dir = tempfile::tempdir().unwrap();
     let lock_path = dir.path().join("plugins.lock");
 
-    let lockfile = kish_plugin_manager::lockfile::LockFile {
+    let lockfile = yosh_plugin_manager::lockfile::LockFile {
         plugin: vec![
-            kish_plugin_manager::lockfile::LockEntry {
+            yosh_plugin_manager::lockfile::LockEntry {
                 name: "a".into(),
                 path: "/path/a.dylib".into(),
                 enabled: true,
@@ -49,7 +49,7 @@ fn lockfile_round_trip_with_multiple_entries() {
                 source: "github:u/a".into(),
                 version: Some("1.0.0".into()),
             },
-            kish_plugin_manager::lockfile::LockEntry {
+            yosh_plugin_manager::lockfile::LockEntry {
                 name: "b".into(),
                 path: "/path/b.dylib".into(),
                 enabled: false,
@@ -61,8 +61,8 @@ fn lockfile_round_trip_with_multiple_entries() {
         ],
     };
 
-    kish_plugin_manager::lockfile::save_lockfile(&lock_path, &lockfile).unwrap();
-    let loaded = kish_plugin_manager::lockfile::load_lockfile(&lock_path).unwrap();
+    yosh_plugin_manager::lockfile::save_lockfile(&lock_path, &lockfile).unwrap();
+    let loaded = yosh_plugin_manager::lockfile::load_lockfile(&lock_path).unwrap();
     assert_eq!(loaded.plugin.len(), 2);
     assert_eq!(loaded.plugin[0].name, "a");
     assert!(loaded.plugin[0].enabled);
