@@ -1,9 +1,11 @@
+pub mod command_checker;
 pub mod command_completion;
 pub mod completion;
 pub mod display_width;
 pub mod edit_action;
 pub mod fuzzy_search;
 pub mod highlight;
+pub mod highlight_scanner;
 pub mod history;
 pub mod keymap;
 pub mod kill_ring;
