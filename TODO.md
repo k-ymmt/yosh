@@ -16,7 +16,6 @@
 
 ## Future: Interactive Mode Enhancements
 
-- [ ] `ENV` tilde expansion — `ENV=~/foo` is not expanded because the value is parsed in double-quote context; POSIX only requires parameter expansion, but tilde support is practically expected (`src/interactive/mod.rs`)
 - [ ] Multiline editing — visual multiline editing with cursor movement across lines
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
