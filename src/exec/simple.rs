@@ -109,7 +109,7 @@ impl Executor {
                 self.env.exec.last_exit_status = 1;
                 return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
             }
-            let status = self.builtin_wait(&args);
+            let status = self.builtin_wait(&args).unwrap_or_else(|e| { eprintln!("{}", e); e.exit_code() });
             redirect_state.restore();
             self.restore_assignments(saved);
             self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
@@ -134,7 +134,7 @@ impl Executor {
                 "bg" => self.builtin_bg(&args),
                 "jobs" => self.builtin_jobs(&args),
                 _ => unreachable!(),
-            };
+            }.unwrap_or_else(|e| { eprintln!("{}", e); e.exit_code() });
             redirect_state.restore();
             self.restore_assignments(saved);
             self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
@@ -371,7 +371,7 @@ impl Executor {
 
                     result.last_status
                 } else {
-                    wait_child(child)
+                    wait_child(child).unwrap_or(1)
                 }
             }
         }

@@ -8,6 +8,7 @@ mod simple;
 use nix::unistd::{fork, ForkResult};
 
 use crate::env::ShellEnv;
+use crate::error::{ShellError, RuntimeErrorKind};
 use crate::plugin::PluginManager;
 use crate::signal;
 use crate::parser::ast::{
@@ -281,11 +282,10 @@ impl Executor {
     }
 
     /// Execute a command asynchronously (background with &).
-    fn exec_async(&mut self, and_or: &AndOrList) -> i32 {
+    fn exec_async(&mut self, and_or: &AndOrList) -> Result<i32, ShellError> {
         match unsafe { fork() } {
             Err(e) => {
-                eprintln!("yosh: fork: {}", e);
-                1
+                Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("fork: {}", e)))
             }
             Ok(ForkResult::Child) => {
                 // Set process group BEFORE signal setup to ensure proper isolation.
@@ -310,7 +310,7 @@ impl Executor {
                 nix::unistd::setpgid(child, child).ok();
                 let job_id = self.env.process.jobs.add_job(child, vec![child], "(background)", false);
                 eprintln!("[{}] {}", job_id, child.as_raw());
-                0
+                Ok(0)
             }
         }
     }
@@ -329,7 +329,10 @@ impl Executor {
 
         for (and_or, separator) in &cmd.items {
             if separator == &Some(SeparatorOp::Amp) {
-                status = self.exec_async(and_or);
+                status = match self.exec_async(and_or) {
+                    Ok(s) => s,
+                    Err(e) => { eprintln!("{}", e); e.exit_code() }
+                };
             } else {
                 // Sequential execution
                 status = self.exec_and_or(and_or);
@@ -361,7 +364,7 @@ impl Executor {
     }
 
     /// POSIX wait builtin: wait for background jobs.
-    fn builtin_wait(&mut self, args: &[String]) -> i32 {
+    fn builtin_wait(&mut self, args: &[String]) -> Result<i32, ShellError> {
         use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
         use nix::unistd::Pid;
         use crate::env::jobs::JobStatus;
@@ -380,15 +383,13 @@ impl Executor {
                     if let Some(job) = self.env.process.jobs.get(job_id) {
                         pids.push(job.pgid);
                     } else {
-                        eprintln!("yosh: wait: {}: no such job", arg);
-                        return 127;
+                        return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: no such job", arg)));
                     }
                 } else {
                     match arg.parse::<i32>() {
                         Ok(n) => pids.push(Pid::from_raw(n)),
                         Err(_) => {
-                            eprintln!("yosh: wait: {}: not a pid or valid job spec", arg);
-                            return 2;
+                            return Err(ShellError::runtime(RuntimeErrorKind::InvalidArgument, format!("wait: {}: not a pid or valid job spec", arg)));
                         }
                     }
                 }
@@ -397,7 +398,7 @@ impl Executor {
         };
 
         if target_pids.is_empty() {
-            return self.env.exec.last_exit_status;
+            return Ok(self.env.exec.last_exit_status);
         }
 
         let mut last_status = 0;
@@ -447,7 +448,7 @@ impl Executor {
                                 if !signals.is_empty() {
                                     self.process_pending_signals();
                                     last_status = 128 + *signals.last().unwrap();
-                                    return last_status;
+                                    return Ok(last_status);
                                 }
                             }
                             Err(nix::errno::Errno::EINTR) => {
@@ -459,7 +460,8 @@ impl Executor {
                         }
                     }
                     Err(nix::errno::Errno::ECHILD) => {
-                        eprintln!("yosh: wait: pid {} is not a child of this shell", pid);
+                        let err = ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: pid {} is not a child of this shell", pid));
+                        eprintln!("{}", err);
                         last_status = 127;
                         break;
                     }
@@ -468,10 +470,10 @@ impl Executor {
             }
         }
 
-        last_status
+        Ok(last_status)
     }
 
-    fn builtin_jobs(&mut self, args: &[String]) -> i32 {
+    fn builtin_jobs(&mut self, args: &[String]) -> Result<i32, ShellError> {
         let long_format = args.contains(&"-l".to_string());
         let pgid_only = args.contains(&"-p".to_string());
 
@@ -498,31 +500,28 @@ impl Executor {
             self.env.process.jobs.mark_notified(id);
         }
 
-        0
+        Ok(0)
     }
 
-    fn builtin_fg(&mut self, args: &[String]) -> i32 {
+    fn builtin_fg(&mut self, args: &[String]) -> Result<i32, ShellError> {
         use crate::env::jobs::{self, JobStatus};
 
         if !self.env.mode.options.monitor {
-            eprintln!("yosh: fg: no job control");
-            return 1;
+            return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "fg: no job control".to_string()));
         }
 
         let job_id = if args.is_empty() {
             match self.env.process.jobs.current_id() {
                 Some(id) => id,
                 None => {
-                    eprintln!("yosh: fg: no current job");
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "fg: no current job".to_string()));
                 }
             }
         } else {
             match self.env.process.jobs.resolve_job_spec(&args[0]) {
                 Some(id) => id,
                 None => {
-                    eprintln!("yosh: fg: {}: no such job", args[0]);
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("fg: {}: no such job", args[0])));
                 }
             }
         };
@@ -531,8 +530,7 @@ impl Executor {
             let job = match self.env.process.jobs.get(job_id) {
                 Some(j) => j,
                 None => {
-                    eprintln!("yosh: fg: job not found");
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "fg: job not found".to_string()));
                 }
             };
             (job.pgid, job.command.clone())
@@ -562,31 +560,28 @@ impl Executor {
         // Take terminal back
         jobs::take_terminal(self.env.process.shell_pgid).ok();
 
-        status
+        Ok(status)
     }
 
-    fn builtin_bg(&mut self, args: &[String]) -> i32 {
+    fn builtin_bg(&mut self, args: &[String]) -> Result<i32, ShellError> {
         use crate::env::jobs::JobStatus;
 
         if !self.env.mode.options.monitor {
-            eprintln!("yosh: bg: no job control");
-            return 1;
+            return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "bg: no job control".to_string()));
         }
 
         let job_id = if args.is_empty() {
             match self.env.process.jobs.current_id() {
                 Some(id) => id,
                 None => {
-                    eprintln!("yosh: bg: no current job");
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "bg: no current job".to_string()));
                 }
             }
         } else {
             match self.env.process.jobs.resolve_job_spec(&args[0]) {
                 Some(id) => id,
                 None => {
-                    eprintln!("yosh: bg: {}: no such job", args[0]);
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("bg: {}: no such job", args[0])));
                 }
             }
         };
@@ -595,13 +590,11 @@ impl Executor {
             let job = match self.env.process.jobs.get(job_id) {
                 Some(j) => j,
                 None => {
-                    eprintln!("yosh: bg: job not found");
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "bg: job not found".to_string()));
                 }
             };
             if !matches!(job.status, JobStatus::Stopped(_)) {
-                eprintln!("yosh: bg: job {} not stopped", job_id);
-                return 1;
+                return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("bg: job {} not stopped", job_id)));
             }
             job.pgid
         };
@@ -616,7 +609,7 @@ impl Executor {
         // Send SIGCONT
         nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGCONT).ok();
 
-        0
+        Ok(0)
     }
 
     /// Wait for a foreground job to complete or stop.

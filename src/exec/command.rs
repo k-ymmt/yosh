@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::Pid;
 
+use crate::error::{ShellError, RuntimeErrorKind};
+
 /// Search each directory in `path_var` for `cmd`.
 /// Returns the full path if found and executable, otherwise None.
 #[allow(dead_code)]
@@ -25,15 +27,12 @@ pub fn find_in_path(cmd: &str, path_var: &str) -> Option<PathBuf> {
 }
 
 /// Wait for a child process and return its exit code.
-pub fn wait_child(child: Pid) -> i32 {
+pub fn wait_child(child: Pid) -> Result<i32, ShellError> {
     match waitpid(child, None) {
-        Ok(WaitStatus::Exited(_, code)) => code,
-        Ok(WaitStatus::Signaled(_, sig, _)) => 128 + sig as i32,
-        Ok(_) => 0,
-        Err(e) => {
-            eprintln!("yosh: waitpid: {}", e);
-            1
-        }
+        Ok(WaitStatus::Exited(_, code)) => Ok(code),
+        Ok(WaitStatus::Signaled(_, sig, _)) => Ok(128 + sig as i32),
+        Ok(_) => Ok(0),
+        Err(e) => Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("waitpid: {}", e))),
     }
 }
 

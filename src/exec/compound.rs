@@ -92,7 +92,7 @@ impl Executor {
                 let status = self.exec_body(body);
                 std::process::exit(status);
             }
-            Ok(ForkResult::Parent { child }) => Ok(command::wait_child(child)),
+            Ok(ForkResult::Parent { child }) => Ok(command::wait_child(child).unwrap_or(1)),
         }
     }
 

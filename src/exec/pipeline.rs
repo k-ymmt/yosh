@@ -3,6 +3,7 @@ use std::os::unix::io::RawFd;
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{fork, setpgid, ForkResult, Pid};
 
+use crate::error::{ShellError, RuntimeErrorKind};
 use crate::parser::ast::Pipeline;
 use crate::signal;
 
@@ -14,7 +15,10 @@ impl Executor {
         let status = if pipeline.commands.len() == 1 {
             self.exec_command(&pipeline.commands[0])
         } else {
-            self.exec_multi_pipeline(pipeline)
+            match self.exec_multi_pipeline(pipeline) {
+                Ok(s) => s,
+                Err(e) => { eprintln!("{}", e); e.exit_code() }
+            }
         };
 
         // Apply negation
@@ -28,7 +32,7 @@ impl Executor {
         final_status
     }
 
-    fn exec_multi_pipeline(&mut self, pipeline: &Pipeline) -> i32 {
+    fn exec_multi_pipeline(&mut self, pipeline: &Pipeline) -> Result<i32, ShellError> {
         let n = pipeline.commands.len();
         assert!(n >= 2);
 
@@ -39,9 +43,8 @@ impl Executor {
             match create_pipe() {
                 Ok(fds) => pipes.push(fds),
                 Err(e) => {
-                    eprintln!("yosh: pipe: {}", e);
                     close_all_pipes(&pipes);
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("pipe: {}", e)));
                 }
             }
         }
@@ -52,9 +55,8 @@ impl Executor {
         for (i, cmd) in pipeline.commands.iter().enumerate() {
             match unsafe { fork() } {
                 Err(e) => {
-                    eprintln!("yosh: fork: {}", e);
                     close_all_pipes(&pipes);
-                    return 1;
+                    return Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("fork: {}", e)));
                 }
                 Ok(ForkResult::Child) => {
                     // Set process group
@@ -117,7 +119,7 @@ impl Executor {
             crate::env::jobs::take_terminal(self.env.process.shell_pgid).ok();
 
             if result.stopped {
-                result.last_status
+                Ok(result.last_status)
             } else if self.env.mode.options.pipefail {
                 let mut ordered = vec![0i32; n];
                 for (pid, code) in &result.process_statuses {
@@ -125,16 +127,16 @@ impl Executor {
                         ordered[idx] = *code;
                     }
                 }
-                ordered.iter().rev().find(|&&s| s != 0).copied().unwrap_or(0)
+                Ok(ordered.iter().rev().find(|&&s| s != 0).copied().unwrap_or(0))
             } else {
-                result.last_status
+                Ok(result.last_status)
             }
         } else {
             // Non-monitor mode: simple wait loop (existing behavior)
             let mut last_status = 0;
             let mut max_nonzero = 0;
             for (idx, child) in children.into_iter().enumerate() {
-                let status = wait_for_child(child);
+                let status = wait_for_child(child).unwrap_or(1);
                 if status != 0 {
                     max_nonzero = status;
                 }
@@ -144,9 +146,9 @@ impl Executor {
             }
 
             if self.env.mode.options.pipefail {
-                max_nonzero
+                Ok(max_nonzero)
             } else {
-                last_status
+                Ok(last_status)
             }
         }
     }
@@ -173,14 +175,11 @@ fn close_all_pipes(pipes: &[(RawFd, RawFd)]) {
 }
 
 /// Wait for a child process and return its exit code.
-fn wait_for_child(child: Pid) -> i32 {
+fn wait_for_child(child: Pid) -> Result<i32, ShellError> {
     match waitpid(child, None) {
-        Ok(WaitStatus::Exited(_, code)) => code,
-        Ok(WaitStatus::Signaled(_, sig, _)) => 128 + sig as i32,
-        Ok(_) => 0,
-        Err(e) => {
-            eprintln!("yosh: waitpid: {}", e);
-            1
-        }
+        Ok(WaitStatus::Exited(_, code)) => Ok(code),
+        Ok(WaitStatus::Signaled(_, sig, _)) => Ok(128 + sig as i32),
+        Ok(_) => Ok(0),
+        Err(e) => Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("waitpid: {}", e))),
     }
 }
