@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use kish::parser::Parser;
+use yosh::parser::Parser;
 
 const SMALL_SCRIPT: &str = r#"
 echo hello world

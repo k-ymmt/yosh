@@ -1,12 +1,12 @@
 # POSIX E2E Test Suite
 
-End-to-end tests verifying kish's POSIX shell compliance against
+End-to-end tests verifying yosh's POSIX shell compliance against
 IEEE Std 1003.1 (POSIX Shell Command Language).
 
 ## Running Tests
 
 ```sh
-# Build kish first
+# Build yosh first
 cargo build
 
 # Run all tests

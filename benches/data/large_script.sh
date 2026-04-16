@@ -34,7 +34,7 @@ LEN=${#NAME}
 echo "Length of NAME: ${LEN}"
 
 # Substring extraction
-FULL_PATH="/usr/local/bin/kish"
+FULL_PATH="/usr/local/bin/yosh"
 BASE="${FULL_PATH##*/}"
 DIR="${FULL_PATH%/*}"
 EXT="${FULL_PATH##*.}"

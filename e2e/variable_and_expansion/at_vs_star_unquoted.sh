@@ -4,7 +4,7 @@
 # EXPECT_EXIT: 0
 # Test with custom IFS to expose the difference:
 # POSIX: "a:b" split by IFS → "a","b", plus "c","d" = 4 fields
-# kish bug: joins to "a:b c d" split by IFS → "a","b c d" = 2 fields
+# yosh bug: joins to "a:b c d" split by IFS → "a","b c d" = 2 fields
 IFS=:
 set -- "a:b" c d
 count=0

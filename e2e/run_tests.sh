@@ -1,12 +1,12 @@
 #!/bin/sh
-# POSIX E2E Test Runner for kish
+# POSIX E2E Test Runner for yosh
 # Discovers and runs .sh test files under e2e/, comparing actual output
 # against metadata expectations (EXPECT_OUTPUT, EXPECT_EXIT, EXPECT_STDERR).
 
 set -u
 
 # ── Defaults ──────────────────────────────────────────────────────────
-SHELL_UNDER_TEST="./target/debug/kish"
+SHELL_UNDER_TEST="./target/debug/yosh"
 FILTER=""
 VERBOSE=0
 TIMEOUT=5
@@ -162,7 +162,7 @@ for test_file in $test_files; do
     parse_metadata "$test_file"
 
     # Create per-test temp directory
-    TEST_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/kish_e2e.XXXXXX")
+    TEST_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/yosh_e2e.XXXXXX")
     export TEST_TMPDIR
 
     # Run the test with timeout

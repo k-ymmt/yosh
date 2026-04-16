@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use kish::lexer::Lexer;
+use yosh::lexer::Lexer;
 
 const SMALL_SCRIPT: &str = r#"
 echo hello world
@@ -21,7 +21,7 @@ fn lex_all(input: &str) {
     loop {
         match lexer.next_token() {
             Ok(tok) => {
-                if tok.token == kish::lexer::token::Token::Eof {
+                if tok.token == yosh::lexer::token::Token::Eof {
                     break;
                 }
             }

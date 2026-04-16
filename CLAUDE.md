@@ -1,4 +1,4 @@
-# kish - POSIX Shell in Rust
+# yosh - POSIX Shell in Rust
 
 A POSIX-compliant shell (IEEE Std 1003.1) implemented in Rust.
 
@@ -23,7 +23,7 @@ Shell state lives in `ShellEnv` (`src/env/`). Interactive mode is in `src/intera
 ## Key Conventions
 
 - **POSIX compliance is the primary goal.** Non-POSIX extensions (e.g., bash-isms) should be explicitly noted and kept separate.
-- **Error messages** are prefixed with `kish: ` on stderr.
+- **Error messages** are prefixed with `yosh: ` on stderr.
 - **Exit codes:** 0 success, 1 general error, 2 usage/syntax, 126 not executable, 127 not found, 128+N signal.
 - **Builtins** are split into special (`src/builtin/special.rs`) and regular (`src/builtin/regular.rs`) per POSIX classification.
 
