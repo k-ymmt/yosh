@@ -13,14 +13,16 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 fn build_test_plugin() -> PathBuf {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/plugins/test_plugin/Cargo.toml");
+    let target_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/plugins/test_plugin/target");
     let status = Command::new("cargo")
         .args(["build", "--manifest-path", manifest.to_str().unwrap()])
+        .env("CARGO_TARGET_DIR", &target_dir)
         .status()
         .expect("failed to run cargo build for test plugin");
     assert!(status.success(), "test plugin build failed");
 
-    let target_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/plugins/test_plugin/target/debug");
+    let target_dir = target_dir.join("debug");
     if cfg!(target_os = "macos") {
         target_dir.join("libtest_plugin.dylib")
     } else {
