@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "test_plugin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "yosh-plugin-sdk",
 ]
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "yosh"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion",
  "crossterm",
@@ -2063,11 +2063,11 @@ dependencies = [
 
 [[package]]
 name = "yosh-plugin-api"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "yosh-plugin-manager"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "mockito",
@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "yosh-plugin-sdk"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "yosh-plugin-api",
 ]

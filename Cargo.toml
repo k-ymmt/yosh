@@ -9,7 +9,7 @@ members = [
 
 [package]
 name = "yosh"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A POSIX-compliant shell implemented in Rust"
 license = "MIT"
@@ -22,7 +22,7 @@ crossterm = "0.29"
 libloading = "0.8"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
-yosh-plugin-api = { version = "0.1.0", path = "crates/yosh-plugin-api" }
+yosh-plugin-api = { version = "0.1.1", path = "crates/yosh-plugin-api" }
 unicode-width = "0.2"
 owo-colors = "4"
 
