@@ -47,28 +47,37 @@ fn print_help() {
     }
     println!();
 
-    if color {
-        println!("{}", "Options:".yellow().bold());
-        println!("  {}    Read commands from command_string", "-c <command>".green());
-        println!("  {}  Parse and dump AST (debug)", "--parse <code>".green());
-        println!("  {}     Show this help message", "-h, --help".green());
-        println!("  {}       Show version information", "--version".green());
-    } else {
-        println!("Options:");
-        println!("  -c <command>    Read commands from command_string");
-        println!("  --parse <code>  Parse and dump AST (debug)");
-        println!("  -h, --help      Show this help message");
-        println!("  --version       Show version information");
+    struct HelpSection {
+        heading: &'static str,
+        items: &'static [(&'static str, &'static str)],
     }
-    println!();
 
-    if color {
-        println!("{}", "Subcommands:".yellow().bold());
-        println!("  {}          Manage shell plugins (see '{}')",
-            "plugin".green(), "yosh plugin --help".green());
-    } else {
-        println!("Subcommands:");
-        println!("  plugin          Manage shell plugins (see 'yosh plugin --help')");
+    const SECTIONS: &[HelpSection] = &[
+        HelpSection { heading: "Options", items: &[
+            ("-c <command>",    "Read commands from command_string"),
+            ("--parse <code>",  "Parse and dump AST (debug)"),
+            ("-h, --help",      "Show this help message"),
+            ("--version",       "Show version information"),
+        ]},
+        HelpSection { heading: "Subcommands", items: &[
+            ("plugin",          "Manage shell plugins (see 'yosh plugin --help')"),
+        ]},
+    ];
+
+    for section in SECTIONS {
+        if color {
+            println!("{}", format!("{}:", section.heading).yellow().bold());
+        } else {
+            println!("{}:", section.heading);
+        }
+        for &(flag, desc) in section.items {
+            if color {
+                println!("  {}  {}", flag.green(), desc);
+            } else {
+                println!("  {:16}{}", flag, desc);
+            }
+        }
+        println!();
     }
 }
 
