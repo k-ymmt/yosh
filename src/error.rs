@@ -17,7 +17,6 @@ pub struct SourceLocation {
 pub enum ShellErrorKind {
     Parse(ParseErrorKind),
     Expansion(ExpansionErrorKind),
-    #[allow(dead_code)] // planned: runtime error migration (see TODO.md)
     Runtime(RuntimeErrorKind),
 }
 
@@ -49,13 +48,17 @@ pub enum ExpansionErrorKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum RuntimeErrorKind {
     CommandNotFound,
     PermissionDenied,
     RedirectFailed,
     ReadonlyVariable,
     InvalidOption,
+    InvalidArgument,
+    IoError,
+    ExecFailed,
+    TrapError,
+    JobControlError,
 }
 
 impl fmt::Display for ShellError {
@@ -86,12 +89,25 @@ impl ShellError {
         }
     }
 
-    #[allow(dead_code)] // planned: runtime error migration (see TODO.md)
     pub fn runtime(kind: RuntimeErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind: ShellErrorKind::Runtime(kind),
             message: message.into(),
             location: None,
+        }
+    }
+
+    /// Map this error to an appropriate POSIX exit code.
+    pub fn exit_code(&self) -> i32 {
+        match &self.kind {
+            ShellErrorKind::Parse(_) => 2,
+            ShellErrorKind::Expansion(_) => 1,
+            ShellErrorKind::Runtime(r) => match r {
+                RuntimeErrorKind::CommandNotFound => 127,
+                RuntimeErrorKind::PermissionDenied | RuntimeErrorKind::ExecFailed => 126,
+                RuntimeErrorKind::InvalidOption | RuntimeErrorKind::InvalidArgument => 2,
+                _ => 1,
+            },
         }
     }
 }
@@ -120,5 +136,23 @@ mod tests {
             "foo: not found",
         );
         assert_eq!(err.to_string(), "yosh: foo: not found");
+    }
+
+    #[test]
+    fn test_runtime_error_new_variants() {
+        let err = ShellError::runtime(RuntimeErrorKind::InvalidArgument, "bad arg");
+        assert_eq!(err.to_string(), "yosh: bad arg");
+
+        let err = ShellError::runtime(RuntimeErrorKind::IoError, "read failed");
+        assert_eq!(err.to_string(), "yosh: read failed");
+    }
+
+    #[test]
+    fn test_exit_code_mapping() {
+        assert_eq!(ShellError::runtime(RuntimeErrorKind::CommandNotFound, "x").exit_code(), 127);
+        assert_eq!(ShellError::runtime(RuntimeErrorKind::PermissionDenied, "x").exit_code(), 126);
+        assert_eq!(ShellError::runtime(RuntimeErrorKind::InvalidArgument, "x").exit_code(), 2);
+        assert_eq!(ShellError::runtime(RuntimeErrorKind::IoError, "x").exit_code(), 1);
+        assert_eq!(ShellError::runtime(RuntimeErrorKind::RedirectFailed, "x").exit_code(), 1);
     }
 }
