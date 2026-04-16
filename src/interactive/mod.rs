@@ -67,19 +67,44 @@ impl Repl {
         // Source $ENV (POSIX: parameter-expanded path for interactive shells)
         if let Some(env_val) = executor.env.vars.get("ENV").map(|s| s.to_string()) {
             if !env_val.is_empty() {
+                // POSIX 2.6.1: tilde expansion occurs before parameter expansion
+                let after_tilde = if let Some(rest) = env_val.strip_prefix('~') {
+                    let (user, suffix) = match rest.find('/') {
+                        Some(pos) => (&rest[..pos], &rest[pos..]),
+                        None => (rest, ""),
+                    };
+                    if user.is_empty() {
+                        // ~ alone: use $HOME from shell environment
+                        match executor.env.vars.get("HOME").map(|s| s.to_string()) {
+                            Some(home) if !home.is_empty() => format!("{}{}", home, suffix),
+                            _ => env_val.clone(), // no HOME, keep original
+                        }
+                    } else {
+                        // ~user: resolve via getpwnam
+                        let expanded = crate::expand::expand_tilde_user(user);
+                        if expanded.starts_with('~') {
+                            env_val.clone() // unknown user, keep original
+                        } else {
+                            format!("{}{}", expanded, suffix)
+                        }
+                    }
+                } else {
+                    env_val.clone()
+                };
+
                 // Parse as double-quoted word for parameter expansion
-                let input = format!("\"{}\"", env_val);
+                let input = format!("\"{}\"", after_tilde);
                 let expanded = match crate::lexer::Lexer::new(&input).next_token() {
                     Ok(tok) => {
                         if let crate::lexer::token::Token::Word(word) = tok.token {
                             crate::expand::expand_word_to_string(&mut executor.env, &word)
                                 .ok()
-                                .or_else(|| Some(env_val.clone()))
+                                .or_else(|| Some(after_tilde.clone()))
                         } else {
-                            Some(env_val.clone())
+                            Some(after_tilde.clone())
                         }
                     }
-                    Err(_) => Some(env_val.clone()),
+                    Err(_) => Some(after_tilde.clone()),
                 };
                 if let Some(path) = expanded {
                     if executor.source_file(std::path::Path::new(&path)).is_none() {
