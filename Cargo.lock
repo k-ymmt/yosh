@@ -773,50 +773,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kish"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "crossterm",
- "expectrl",
- "kish-plugin-api",
- "libc",
- "libloading",
- "nix 0.31.2",
- "owo-colors",
- "serde",
- "tempfile",
- "toml",
- "unicode-width",
-]
-
-[[package]]
-name = "kish-plugin-api"
-version = "0.1.0"
-
-[[package]]
-name = "kish-plugin-manager"
-version = "0.1.0"
-dependencies = [
- "clap",
- "mockito",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "toml",
- "toml_edit",
- "ureq",
-]
-
-[[package]]
-name = "kish-plugin-sdk"
-version = "0.1.0"
-dependencies = [
- "kish-plugin-api",
-]
-
-[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1489,7 +1445,7 @@ dependencies = [
 name = "test_plugin"
 version = "0.1.0"
 dependencies = [
- "kish-plugin-sdk",
+ "yosh-plugin-sdk",
 ]
 
 [[package]]
@@ -2085,6 +2041,50 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "yosh"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "crossterm",
+ "expectrl",
+ "libc",
+ "libloading",
+ "nix 0.31.2",
+ "owo-colors",
+ "serde",
+ "tempfile",
+ "toml",
+ "unicode-width",
+ "yosh-plugin-api",
+]
+
+[[package]]
+name = "yosh-plugin-api"
+version = "0.1.0"
+
+[[package]]
+name = "yosh-plugin-manager"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "mockito",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+ "toml_edit",
+ "ureq",
+]
+
+[[package]]
+name = "yosh-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "yosh-plugin-api",
 ]
 
 [[package]]
