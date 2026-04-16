@@ -41,10 +41,10 @@ pub fn classify_builtin(name: &str) -> BuiltinKind {
 
 /// Execute a regular builtin command, returning its exit status.
 pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> i32 {
-    match name {
+    let result = match name {
         "cd" => regular::builtin_cd(args, env),
-        "true" => 0,
-        "false" => 1,
+        "true" => Ok(0),
+        "false" => Ok(1),
         "echo" => regular::builtin_echo(args),
         "umask" => regular::builtin_umask(args),
         "alias" => regular::builtin_alias(args, env),
@@ -53,16 +53,23 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "wait" => {
             // Handled in Executor::exec_simple_command — should not reach here
             eprintln!("yosh: wait: internal error");
-            1
+            Ok(1)
         }
         "fg" | "bg" | "jobs" => {
             // Handled in Executor::exec_simple_command
             eprintln!("yosh: {}: internal error", name);
-            1
+            Ok(1)
         }
         _ => {
             eprintln!("yosh: {}: not a regular builtin", name);
-            1
+            Ok(1)
+        }
+    };
+    match result {
+        Ok(status) => status,
+        Err(e) => {
+            eprintln!("{}", e);
+            e.exit_code()
         }
     }
 }
@@ -149,7 +156,7 @@ mod tests {
         // We can't easily capture stdout in unit tests, so verify
         // the function returns 0 (behavior tested via E2E).
         let args = vec!["-n".to_string(), "hello".to_string()];
-        assert_eq!(regular::builtin_echo(&args), 0);
+        assert_eq!(regular::builtin_echo(&args).unwrap(), 0);
     }
 
     #[test]

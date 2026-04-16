@@ -1,23 +1,28 @@
 use crate::env::ShellEnv;
+use crate::error::{RuntimeErrorKind, ShellError};
 use nix::unistd::Pid;
 
-pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
+pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     let is_dash = !args.is_empty() && args[0] == "-";
 
     let target = if args.is_empty() {
         match env.vars.get("HOME") {
             Some(h) => h.to_string(),
             None => {
-                eprintln!("yosh: cd: HOME not set");
-                return 1;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::InvalidArgument,
+                    "cd: HOME not set",
+                ));
             }
         }
     } else if args[0] == "-" {
         match env.vars.get("OLDPWD") {
             Some(old) => old.to_string(),
             None => {
-                eprintln!("yosh: cd: OLDPWD not set");
-                return 1;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::InvalidArgument,
+                    "cd: OLDPWD not set",
+                ));
             }
         }
     } else {
@@ -46,30 +51,30 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
                     eprintln!("yosh: cd: could not determine new directory: {}", e);
                 }
             }
-            0
+            Ok(0)
         }
-        Err(e) => {
-            eprintln!("yosh: cd: {}: {}", target, e);
-            1
-        }
+        Err(e) => Err(ShellError::runtime(
+            RuntimeErrorKind::IoError,
+            format!("cd: {}: {}", target, e),
+        )),
     }
 }
 
-pub fn builtin_echo(args: &[String]) -> i32 {
+pub fn builtin_echo(args: &[String]) -> Result<i32, ShellError> {
     if args.first().map(|a| a.as_str()) == Some("-n") {
         print!("{}", args[1..].join(" "));
     } else {
         println!("{}", args.join(" "));
     }
-    0
+    Ok(0)
 }
 
-pub fn builtin_alias(args: &[String], env: &mut ShellEnv) -> i32 {
+pub fn builtin_alias(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() {
         for (name, value) in env.aliases.sorted_iter() {
             println!("alias {}='{}'", name, value);
         }
-        return 0;
+        return Ok(0);
     }
     let mut status = 0;
     for arg in args {
@@ -87,13 +92,15 @@ pub fn builtin_alias(args: &[String], env: &mut ShellEnv) -> i32 {
             }
         }
     }
-    status
+    Ok(status)
 }
 
-pub fn builtin_unalias(args: &[String], env: &mut ShellEnv) -> i32 {
+pub fn builtin_unalias(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() {
-        eprintln!("yosh: unalias: usage: unalias name [name ...]");
-        return 2;
+        return Err(ShellError::runtime(
+            RuntimeErrorKind::InvalidArgument,
+            "unalias: usage: unalias name [name ...]",
+        ));
     }
     let mut status = 0;
     for arg in args {
@@ -104,13 +111,15 @@ pub fn builtin_unalias(args: &[String], env: &mut ShellEnv) -> i32 {
             status = 1;
         }
     }
-    status
+    Ok(status)
 }
 
-pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> i32 {
+pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> Result<i32, ShellError> {
     if args.is_empty() {
-        eprintln!("yosh: kill: usage: kill [-s sigspec | -signum] pid...");
-        return 2;
+        return Err(ShellError::runtime(
+            RuntimeErrorKind::InvalidArgument,
+            "kill: usage: kill [-s sigspec | -signum] pid...",
+        ));
     }
 
     if args[0] == "-l" {
@@ -120,8 +129,10 @@ pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> i32 {
     let (sig_num, pid_args) = match parse_kill_signal(args) {
         Ok(v) => v,
         Err(msg) => {
-            eprintln!("yosh: kill: {}", msg);
-            return 2;
+            return Err(ShellError::runtime(
+                RuntimeErrorKind::InvalidArgument,
+                format!("kill: {}", msg),
+            ));
         }
     };
 
@@ -157,7 +168,7 @@ pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> i32 {
             status = 1;
         }
     }
-    status
+    Ok(status)
 }
 
 fn parse_kill_signal(args: &[String]) -> Result<(i32, &[String]), String> {
@@ -182,14 +193,14 @@ fn parse_kill_signal(args: &[String]) -> Result<(i32, &[String]), String> {
     }
 }
 
-fn kill_list(args: &[String]) -> i32 {
+fn kill_list(args: &[String]) -> Result<i32, ShellError> {
     if args.is_empty() {
         let names: Vec<&str> = crate::signal::SIGNAL_TABLE
             .iter()
             .map(|&(_, name)| name)
             .collect();
         println!("{}", names.join(" "));
-        return 0;
+        return Ok(0);
     }
     for arg in args {
         if let Ok(num) = arg.parse::<i32>() {
@@ -197,36 +208,40 @@ fn kill_list(args: &[String]) -> i32 {
             match crate::signal::signal_number_to_name(sig) {
                 Some(name) => println!("{}", name),
                 None => {
-                    eprintln!("yosh: kill: {}: invalid signal number", arg);
-                    return 1;
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::InvalidArgument,
+                        format!("kill: {}: invalid signal number", arg),
+                    ));
                 }
             }
         } else {
             match crate::signal::signal_name_to_number(arg) {
                 Ok(num) => println!("{}", num),
                 Err(e) => {
-                    eprintln!("yosh: kill: {}", e);
-                    return 1;
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::InvalidArgument,
+                        format!("kill: {}", e),
+                    ));
                 }
             }
         }
     }
-    0
+    Ok(0)
 }
 
-pub fn builtin_umask(args: &[String]) -> i32 {
+pub fn builtin_umask(args: &[String]) -> Result<i32, ShellError> {
     if args.is_empty() {
         let current = unsafe { libc::umask(0) };
         unsafe { libc::umask(current) };
         println!("{:04o}", current);
-        return 0;
+        return Ok(0);
     }
 
     if args[0] == "-S" {
         let current = unsafe { libc::umask(0) };
         unsafe { libc::umask(current) };
         println!("{}", umask_to_symbolic(current));
-        return 0;
+        return Ok(0);
     }
 
     // Try octal parse first
@@ -255,26 +270,28 @@ fn umask_to_symbolic(mask: libc::mode_t) -> String {
     )
 }
 
-fn umask_set_octal(s: &str) -> i32 {
+fn umask_set_octal(s: &str) -> Result<i32, ShellError> {
     for c in s.chars() {
         if !('0'..='7').contains(&c) {
-            eprintln!("yosh: umask: {}: invalid octal number", s);
-            return 1;
+            return Err(ShellError::runtime(
+                RuntimeErrorKind::InvalidArgument,
+                format!("umask: {}: invalid octal number", s),
+            ));
         }
     }
     match libc::mode_t::from_str_radix(s, 8) {
         Ok(mode) => {
             unsafe { libc::umask(mode) };
-            0
+            Ok(0)
         }
-        Err(_) => {
-            eprintln!("yosh: umask: {}: invalid octal number", s);
-            1
-        }
+        Err(_) => Err(ShellError::runtime(
+            RuntimeErrorKind::InvalidArgument,
+            format!("umask: {}: invalid octal number", s),
+        )),
     }
 }
 
-fn umask_set_symbolic(s: &str) -> i32 {
+fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
     let current = unsafe { libc::umask(0) };
     unsafe { libc::umask(current) };
 
@@ -283,8 +300,10 @@ fn umask_set_symbolic(s: &str) -> i32 {
     for clause in s.split(',') {
         let bytes = clause.as_bytes();
         if bytes.is_empty() {
-            eprintln!("yosh: umask: {}: invalid symbolic mode", s);
-            return 1;
+            return Err(ShellError::runtime(
+                RuntimeErrorKind::InvalidArgument,
+                format!("umask: {}: invalid symbolic mode", s),
+            ));
         }
 
         let mut i = 0;
@@ -309,8 +328,10 @@ fn umask_set_symbolic(s: &str) -> i32 {
 
         // Parse operator (=, +, -)
         if i >= bytes.len() || !matches!(bytes[i], b'=' | b'+' | b'-') {
-            eprintln!("yosh: umask: {}: invalid symbolic mode", s);
-            return 1;
+            return Err(ShellError::runtime(
+                RuntimeErrorKind::InvalidArgument,
+                format!("umask: {}: invalid symbolic mode", s),
+            ));
         }
         let op = bytes[i] as char;
         i += 1;
@@ -323,8 +344,10 @@ fn umask_set_symbolic(s: &str) -> i32 {
                 b'w' => perm_bits |= 0o222,
                 b'x' => perm_bits |= 0o111,
                 _ => {
-                    eprintln!("yosh: umask: {}: invalid symbolic mode", s);
-                    return 1;
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::InvalidArgument,
+                        format!("umask: {}: invalid symbolic mode", s),
+                    ));
                 }
             }
             i += 1;
@@ -351,5 +374,5 @@ fn umask_set_symbolic(s: &str) -> i32 {
     }
 
     unsafe { libc::umask(mask) };
-    0
+    Ok(0)
 }

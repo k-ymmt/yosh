@@ -419,7 +419,7 @@ fn test_umask_invalid_octal() {
     let out = yosh_exec("umask 089; echo $?");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout.trim(), "1");
+    assert_eq!(stdout.trim(), "2");
 }
 
 // =============================================================================
