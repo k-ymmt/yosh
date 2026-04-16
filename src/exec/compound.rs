@@ -1,6 +1,7 @@
 use nix::unistd::{fork, ForkResult};
 
 use crate::env::FlowControl;
+use crate::error::{ShellError, RuntimeErrorKind};
 use crate::expand::expand_words;
 use crate::parser::ast::{CaseItem, CaseTerminator, CompoundCommand, CompleteCommand, Redirect, Word};
 use crate::signal;
@@ -15,12 +16,11 @@ impl Executor {
         &mut self,
         compound: &CompoundCommand,
         redirects: &[Redirect],
-    ) -> i32 {
+    ) -> Result<i32, ShellError> {
         let mut redirect_state = RedirectState::new();
         if let Err(e) = redirect_state.apply(redirects, &mut self.env, true) {
-            eprintln!("yosh: {}", e);
             self.env.exec.last_exit_status = 1;
-            return 1;
+            return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
         }
 
         let status = match &compound.kind {
@@ -28,7 +28,7 @@ impl Executor {
                 self.exec_brace_group(body)
             }
             crate::parser::ast::CompoundCommandKind::Subshell { body } => {
-                self.exec_subshell(body)
+                self.exec_subshell(body)?
             }
             crate::parser::ast::CompoundCommandKind::If {
                 condition,
@@ -43,16 +43,16 @@ impl Executor {
                 self.exec_loop(condition, body, true)
             }
             crate::parser::ast::CompoundCommandKind::For { var, words, body } => {
-                self.exec_for(var, words, body)
+                self.exec_for(var, words, body)?
             }
             crate::parser::ast::CompoundCommandKind::Case { word, items } => {
-                self.exec_case(word, items)
+                self.exec_case(word, items)?
             }
         };
 
         redirect_state.restore();
         self.env.exec.last_exit_status = status;
-        status
+        Ok(status)
     }
 
     /// Execute a list of complete commands (a compound-list / body).
@@ -80,11 +80,10 @@ impl Executor {
         self.exec_body(body)
     }
 
-    fn exec_subshell(&mut self, body: &[CompleteCommand]) -> i32 {
+    fn exec_subshell(&mut self, body: &[CompleteCommand]) -> Result<i32, ShellError> {
         match unsafe { fork() } {
             Err(e) => {
-                eprintln!("yosh: fork: {}", e);
-                1
+                return Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("fork: {}", e)));
             }
             Ok(ForkResult::Child) => {
                 let ignored = self.env.traps.ignored_signals();
@@ -93,7 +92,7 @@ impl Executor {
                 let status = self.exec_body(body);
                 std::process::exit(status);
             }
-            Ok(ForkResult::Parent { child }) => command::wait_child(child),
+            Ok(ForkResult::Parent { child }) => Ok(command::wait_child(child)),
         }
     }
 
@@ -185,14 +184,13 @@ impl Executor {
         var: &str,
         words: &Option<Vec<Word>>,
         body: &[CompleteCommand],
-    ) -> i32 {
+    ) -> Result<i32, ShellError> {
         let items: Vec<String> = match words {
             Some(word_list) => match expand_words(&mut self.env, word_list) {
                 Ok(words) => words,
                 Err(e) => {
-                    eprintln!("{}", e);
                     self.env.exec.last_exit_status = 1;
-                    return 1;
+                    return Err(e);
                 }
             },
             None => self.env.vars.positional_params().to_vec(),
@@ -201,8 +199,7 @@ impl Executor {
         let mut status = 0;
         for item in &items {
             if let Err(e) = self.env.vars.set(var, item.as_str()) {
-                eprintln!("yosh: {}", e);
-                return 1;
+                return Err(ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, format!("{}", e)));
             }
 
             status = self.exec_body(body);
@@ -228,16 +225,15 @@ impl Executor {
                 None => {}
             }
         }
-        status
+        Ok(status)
     }
 
-    fn exec_case(&mut self, word: &Word, items: &[CaseItem]) -> i32 {
+    fn exec_case(&mut self, word: &Word, items: &[CaseItem]) -> Result<i32, ShellError> {
         let case_word = match crate::expand::expand_word_to_string(&mut self.env, word) {
             Ok(w) => w,
             Err(e) => {
-                eprintln!("{}", e);
                 self.env.exec.last_exit_status = 1;
-                return 1;
+                return Err(e);
             }
         };
         let mut status = 0;
@@ -250,9 +246,8 @@ impl Executor {
                     let pat = match crate::expand::expand_word_to_string(&mut self.env, pattern) {
                         Ok(p) => p,
                         Err(e) => {
-                            eprintln!("{}", e);
                             self.env.exec.last_exit_status = 1;
-                            return 1;
+                            return Err(e);
                         }
                     };
                     if crate::expand::pattern::matches(&pat, &case_word) {
@@ -278,6 +273,6 @@ impl Executor {
             }
         }
 
-        status
+        Ok(status)
     }
 }

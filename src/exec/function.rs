@@ -15,9 +15,19 @@ impl Executor {
 
         self.env.vars.pop_scope();
 
-        let status = match result {
+        let compound_result = match result {
             Ok(s) => s,
             Err(payload) => std::panic::resume_unwind(payload),
+        };
+
+        let status = match compound_result {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{}", e);
+                let code = e.exit_code();
+                self.env.exec.last_exit_status = code;
+                code
+            }
         };
 
         // Handle return flow control

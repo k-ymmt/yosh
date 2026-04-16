@@ -199,7 +199,14 @@ impl Executor {
                 }
             },
             Command::Compound(compound, redirects) => {
-                self.exec_compound_command(compound, redirects)
+                match self.exec_compound_command(compound, redirects) {
+                    Ok(status) => status,
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        self.env.exec.last_exit_status = e.exit_code();
+                        e.exit_code()
+                    }
+                }
             }
             Command::FunctionDef(func_def) => {
                 self.env
