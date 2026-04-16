@@ -17,7 +17,6 @@
 ## Future: Interactive Mode Enhancements
 
 - [ ] Multiline editing — visual multiline editing with cursor movement across lines
-- [ ] `~/.yoshrc` startup file — ENV variable support for interactive initialization
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
 - [ ] `CLICOLOR=0` support in `should_colorize()` — disable colors even on TTY when `CLICOLOR=0` is set; many CLI tools support this alongside `NO_COLOR` (`src/main.rs`)
@@ -42,7 +41,6 @@
 
 - [ ] Runtime plugin load/unload — builtin commands `plugin load <path>` / `plugin unload <name>` for dynamic management
 - [ ] SemVer API version management — replace single `YOSH_PLUGIN_API_VERSION` check with semver range compatibility (`crates/yosh-plugin-api/`)
-- [ ] `~/.yoshrc` plugin loading — load plugins configured in `~/.yoshrc` once startup file support is implemented
 - [ ] SDK `export!` macro `unsafe` lint — `#[allow(unsafe_attr_outside_unsafe)]` workaround in generated code; clean up when macro hygiene improves (`crates/yosh-plugin-sdk/src/lib.rs`)
 - [ ] Sandbox: warn on unknown capability strings in `plugins.toml` — currently `capabilities_from_strs` silently ignores typos like `"typo:read"`; should log warning in `load_from_config` (`src/plugin/config.rs`, `src/plugin/mod.rs`)
 - [ ] Sandbox: `CAP_ALL` manual sync risk — when adding new capabilities, `CAP_ALL` must be manually updated; consider deriving it from a list or using a test to verify completeness (`crates/yosh-plugin-api/src/lib.rs`)
