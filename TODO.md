@@ -1,9 +1,5 @@
 # TODO
 
-## crates.io Publication
-
-- [ ] Publish to crates.io in order: `yosh-plugin-api` → `yosh-plugin-sdk` → `yosh-plugin-manager` → `yosh`
-
 ## Job Control: Known Limitations
 
 - [ ] `%string` / `%?string` job specifiers — prefix/substring matching not implemented
