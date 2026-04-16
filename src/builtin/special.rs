@@ -372,27 +372,13 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
             std::path::PathBuf::from(filename)
         }
     };
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => { eprintln!("yosh: .: {}: {}", path.display(), e); return 1; }
-    };
-    let prev_dot_script = executor.env.mode.in_dot_script;
-    executor.env.mode.in_dot_script = true;
-    let status = match crate::parser::Parser::new_with_aliases(&content, &executor.env.aliases).parse_program() {
-        Ok(program) => {
-            let s = executor.exec_program(&program);
-            // If the sourced script used `return`, consume the FlowControl and use its status.
-            if let Some(FlowControl::Return(code)) = executor.env.exec.flow_control {
-                executor.env.exec.flow_control = None;
-                executor.env.mode.in_dot_script = prev_dot_script;
-                return code;
-            }
-            s
+    match executor.source_file(&path) {
+        Some(status) => status,
+        None => {
+            eprintln!("yosh: .: {}: No such file or directory", path.display());
+            1
         }
-        Err(e) => { eprintln!("yosh: .: {}", e); 2 }
-    };
-    executor.env.mode.in_dot_script = prev_dot_script;
-    status
+    }
 }
 
 fn builtin_shift(args: &[String], env: &mut ShellEnv) -> i32 {
