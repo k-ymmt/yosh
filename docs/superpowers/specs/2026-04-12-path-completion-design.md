@@ -63,7 +63,7 @@ Split the completion word at the last `/`:
 
 **Hidden file handling:**
 - If prefix starts with `.`: include dotfiles
-- If `KISH_SHOW_DOTFILES=1`: always include dotfiles
+- If `YOSH_SHOW_DOTFILES=1`: always include dotfiles
 - Otherwise: exclude entries starting with `.`
 
 **Candidate decoration:**
@@ -153,7 +153,7 @@ pub struct CompletionContext {
 
 Passed from `Repl` to `read_line`. `Repl` constructs it from:
 - CWD: `std::env::current_dir()` or `$PWD`
-- `show_dotfiles`: `KISH_SHOW_DOTFILES == "1"`
+- `show_dotfiles`: `YOSH_SHOW_DOTFILES == "1"`
 
 ### 9. `read_line_loop` Integration
 
@@ -175,7 +175,7 @@ TabComplete received:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KISH_SHOW_DOTFILES` | unset | When set to `1`, include hidden files in completion candidates regardless of prefix |
+| `YOSH_SHOW_DOTFILES` | unset | When set to `1`, include hidden files in completion candidates regardless of prefix |
 
 ## Testing Strategy
 
@@ -185,7 +185,7 @@ TabComplete received:
 - `split_path`: relative, absolute, `~`, no-directory cases
 - `longest_common_prefix`: various candidate sets
 - `generate_candidates`: using `tempdir`
-  - Hidden file filtering (with/without `KISH_SHOW_DOTFILES`)
+  - Hidden file filtering (with/without `YOSH_SHOW_DOTFILES`)
   - Directory `/` suffix
   - Sort order
   - Non-existent directory returns empty

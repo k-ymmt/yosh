@@ -154,7 +154,7 @@ impl Repl {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| self.executor.env.vars.get("PWD").unwrap_or(".").to_string());
             let home = self.executor.env.vars.get("HOME").unwrap_or("").to_string();
-            let show_dotfiles = self.executor.env.vars.get("KISH_SHOW_DOTFILES")
+            let show_dotfiles = self.executor.env.vars.get("YOSH_SHOW_DOTFILES")
                 .map(|v| v == "1")
                 .unwrap_or(false);
             let comp_ctx = CompletionContext { cwd, home, show_dotfiles };
