@@ -58,6 +58,37 @@ impl Repl {
         // Load plugins
         executor.load_plugins();
 
+        // Source ~/.yoshrc (yosh-specific startup file)
+        if !home.is_empty() {
+            let rc_path = std::path::PathBuf::from(&home).join(".yoshrc");
+            executor.source_file(&rc_path); // Silent skip if absent
+        }
+
+        // Source $ENV (POSIX: parameter-expanded path for interactive shells)
+        if let Some(env_val) = executor.env.vars.get("ENV").map(|s| s.to_string()) {
+            if !env_val.is_empty() {
+                // Parse as double-quoted word for parameter expansion
+                let input = format!("\"{}\"", env_val);
+                let expanded = match crate::lexer::Lexer::new(&input).next_token() {
+                    Ok(tok) => {
+                        if let crate::lexer::token::Token::Word(word) = tok.token {
+                            crate::expand::expand_word_to_string(&mut executor.env, &word)
+                                .ok()
+                                .or_else(|| Some(env_val.clone()))
+                        } else {
+                            Some(env_val.clone())
+                        }
+                    }
+                    Err(_) => Some(env_val.clone()),
+                };
+                if let Some(path) = expanded {
+                    if executor.source_file(std::path::Path::new(&path)).is_none() {
+                        eprintln!("yosh: {}: No such file or directory", path);
+                    }
+                }
+            }
+        }
+
         Self {
             executor,
             line_editor: LineEditor::new(),
