@@ -78,8 +78,8 @@ mod tests {
 
     #[test]
     fn test_shell_env_construction() {
-        let env = ShellEnv::new("kish", vec!["arg1".to_string(), "arg2".to_string()]);
-        assert_eq!(env.shell_name, "kish");
+        let env = ShellEnv::new("yosh", vec!["arg1".to_string(), "arg2".to_string()]);
+        assert_eq!(env.shell_name, "yosh");
         assert_eq!(env.vars.positional_params(), &["arg1", "arg2"]);
         assert_eq!(env.exec.last_exit_status, 0);
         // PID should be a positive number
@@ -88,13 +88,13 @@ mod tests {
 
     #[test]
     fn test_jobs_table() {
-        let env = ShellEnv::new("kish", vec![]);
+        let env = ShellEnv::new("yosh", vec![]);
         assert!(env.process.jobs.is_empty());
     }
 
     #[test]
     fn test_shell_pgid() {
-        let env = ShellEnv::new("kish", vec![]);
+        let env = ShellEnv::new("yosh", vec![]);
         assert!(env.process.shell_pgid.as_raw() > 0);
     }
 }

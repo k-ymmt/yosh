@@ -8,17 +8,17 @@ use crate::verify::{sha256_file, verify_checksum};
 
 fn plugin_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".kish/plugins")
+        PathBuf::from(home).join(".yosh/plugins")
     } else {
-        PathBuf::from("/tmp/kish/plugins")
+        PathBuf::from("/tmp/yosh/plugins")
     }
 }
 
 fn config_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config/kish")
+        PathBuf::from(home).join(".config/yosh")
     } else {
-        PathBuf::from("/tmp/kish")
+        PathBuf::from("/tmp/yosh")
     }
 }
 
@@ -45,7 +45,7 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
     let existing_lock = match load_lockfile(&lock_path) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("kish-plugin: warning: {}", e);
+            eprintln!("yosh-plugin: warning: {}", e);
             LockFile { plugin: Vec::new() }
         }
     };
@@ -62,7 +62,7 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
                 new_entries.push(entry);
             }
             Err(e) => {
-                eprintln!("kish-plugin: {}: {}", decl.name, e);
+                eprintln!("yosh-plugin: {}: {}", decl.name, e);
                 failed.push((decl.name.clone(), e));
             }
         }
@@ -75,9 +75,9 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
                 let path = config::expand_tilde_path(&old.path);
                 if path.exists() {
                     if let Err(e) = std::fs::remove_file(&path) {
-                        eprintln!("kish-plugin: prune {}: {}", old.name, e);
+                        eprintln!("yosh-plugin: prune {}: {}", old.name, e);
                     } else {
-                        eprintln!("kish-plugin: pruned {}", old.name);
+                        eprintln!("yosh-plugin: pruned {}", old.name);
                     }
                 }
             }
@@ -112,7 +112,7 @@ fn sync_one(
                             return Ok(LockEntry {
                                 name: decl.name.clone(),
                                 path: format!(
-                                    "~/.kish/plugins/{}/{}",
+                                    "~/.yosh/plugins/{}/{}",
                                     decl.name, asset_name
                                 ),
                                 enabled: decl.enabled,
@@ -124,12 +124,12 @@ fn sync_one(
                         }
                         Ok(false) => {
                             eprintln!(
-                                "kish-plugin: {}: local binary checksum mismatch, re-downloading",
+                                "yosh-plugin: {}: local binary checksum mismatch, re-downloading",
                                 decl.name
                             );
                         }
                         Err(e) => {
-                            eprintln!("kish-plugin: {}: verify failed: {}", decl.name, e);
+                            eprintln!("yosh-plugin: {}: verify failed: {}", decl.name, e);
                         }
                     }
                 }
@@ -156,7 +156,7 @@ fn sync_one(
 
             Ok(LockEntry {
                 name: decl.name.clone(),
-                path: format!("~/.kish/plugins/{}/{}", decl.name, asset_name),
+                path: format!("~/.yosh/plugins/{}/{}", decl.name, asset_name),
                 enabled: decl.enabled,
                 capabilities: decl.capabilities.clone(),
                 sha256,
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn expand_tilde_via_config() {
-        let result = config::expand_tilde_path("~/.kish/plugins/lib.dylib");
+        let result = config::expand_tilde_path("~/.yosh/plugins/lib.dylib");
         assert!(!result.to_string_lossy().starts_with("~"));
     }
 

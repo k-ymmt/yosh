@@ -131,10 +131,10 @@ mod tests {
 
     #[test]
     fn parse_local_source() {
-        let src = parse_source("local:~/.kish/plugins/lib.dylib").unwrap();
+        let src = parse_source("local:~/.yosh/plugins/lib.dylib").unwrap();
         assert_eq!(
             src,
-            PluginSource::Local { path: "~/.kish/plugins/lib.dylib".into() }
+            PluginSource::Local { path: "~/.yosh/plugins/lib.dylib".into() }
         );
     }
 
@@ -165,7 +165,7 @@ capabilities = ["variables:read", "io"]
 
 [[plugin]]
 name = "local-tool"
-source = "local:~/.kish/plugins/liblocal.dylib"
+source = "local:~/.yosh/plugins/liblocal.dylib"
 capabilities = ["io"]
 "#).unwrap();
         let decls = load_config(f.path()).unwrap();

@@ -43,7 +43,7 @@ impl GitHubClient {
 
     fn get_json(&self, url: &str) -> Result<serde_json::Value, GitHubApiError> {
         let mut req = ureq::get(url)
-            .header("User-Agent", "kish-plugin-manager")
+            .header("User-Agent", "yosh-plugin-manager")
             .header("Accept", "application/vnd.github.v3+json");
         if let Some(token) = &self.token {
             req = req.header("Authorization", format!("Bearer {}", token));
@@ -116,7 +116,7 @@ impl GitHubClient {
         }
 
         let mut req = ureq::get(url)
-            .header("User-Agent", "kish-plugin-manager")
+            .header("User-Agent", "yosh-plugin-manager")
             .header("Accept", "application/vnd.github.v3+json");
         if let Some(token) = &self.token {
             req = req.header("Authorization", format!("Bearer {}", token));

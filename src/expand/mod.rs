@@ -256,7 +256,7 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                         match arith::evaluate(env, expr) {
                             Ok(val) => result.push_str(&val),
                             Err(msg) => {
-                                eprintln!("kish: arithmetic: {}", msg);
+                                eprintln!("yosh: arithmetic: {}", msg);
                                 env.exec.last_exit_status = 1;
                                 result.push('0');
                             }
@@ -409,7 +409,7 @@ fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
             match arith::evaluate(env, expr) {
                 Ok(val) => out.push_str(&val),
                 Err(msg) => {
-                    eprintln!("kish: arithmetic: {}", msg);
+                    eprintln!("yosh: arithmetic: {}", msg);
                     env.exec.last_exit_status = 1;
                     out.push('0');
                 }
@@ -624,7 +624,7 @@ mod tests {
     use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 
     fn make_env() -> ShellEnv {
-        ShellEnv::new("kish", vec![])
+        ShellEnv::new("yosh", vec![])
     }
 
     // ── Basic pipeline ──
@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn test_dollar_at_in_double_quotes_splits() {
         let mut env = ShellEnv::new(
-            "kish",
+            "yosh",
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
         );
         // "$@"
@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn test_dollar_at_empty_params_produces_nothing() {
-        let mut env = ShellEnv::new("kish", vec![]);
+        let mut env = ShellEnv::new("yosh", vec![]);
         let word = Word {
             parts: vec![WordPart::DoubleQuoted(vec![WordPart::Parameter(
                 ParamExpr::Special(SpecialParam::At),
@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn test_unquoted_dollar_at_splits_per_param() {
         let mut env = ShellEnv::new(
-            "kish",
+            "yosh",
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
         );
         // Unquoted $@ — each positional param becomes its own field
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn test_unquoted_dollar_at_empty_produces_nothing() {
-        let mut env = ShellEnv::new("kish", vec![]);
+        let mut env = ShellEnv::new("yosh", vec![]);
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::At))],
         };
@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn test_dollar_star_in_double_quotes_joins() {
         let mut env = ShellEnv::new(
-            "kish",
+            "yosh",
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
         );
         // IFS defaults to space; "$*" → "a b c"
@@ -836,16 +836,16 @@ mod tests {
 
     #[test]
     fn test_special_zero() {
-        let mut env = ShellEnv::new("mykish", vec![]);
+        let mut env = ShellEnv::new("myyosh", vec![]);
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::Zero))],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "mykish");
+        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "myyosh");
     }
 
     #[test]
     fn test_positional_param() {
-        let mut env = ShellEnv::new("kish", vec!["first".to_string(), "second".to_string()]);
+        let mut env = ShellEnv::new("yosh", vec!["first".to_string(), "second".to_string()]);
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Positional(1))],
         };
@@ -858,7 +858,7 @@ mod tests {
 
     #[test]
     fn test_positional_out_of_range() {
-        let mut env = ShellEnv::new("kish", vec!["only".to_string()]);
+        let mut env = ShellEnv::new("yosh", vec!["only".to_string()]);
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Positional(5))],
         };
@@ -868,7 +868,7 @@ mod tests {
     #[test]
     fn test_special_hash() {
         let mut env =
-            ShellEnv::new("kish", vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+            ShellEnv::new("yosh", vec!["a".to_string(), "b".to_string(), "c".to_string()]);
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::Hash))],
         };

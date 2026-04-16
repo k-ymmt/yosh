@@ -4,7 +4,7 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::io::Write;
 use std::path::Path;
 
-use kish_plugin_api::{HostApi, PluginDecl, KISH_PLUGIN_API_VERSION};
+use yosh_plugin_api::{HostApi, PluginDecl, YOSH_PLUGIN_API_VERSION};
 
 use crate::env::ShellEnv;
 
@@ -50,7 +50,7 @@ impl PluginManager {
                 .as_ref()
                 .map(|strs| config::capabilities_from_strs(strs));
             if let Err(e) = self.load_plugin_with_capabilities(&path, env, config_caps) {
-                eprintln!("kish: plugin: {}", e);
+                eprintln!("yosh: plugin: {}", e);
             }
         }
     }
@@ -76,17 +76,17 @@ impl PluginManager {
         // 2. Get and validate declaration
         let (name, requested_capabilities) = unsafe {
             let decl_fn: libloading::Symbol<extern "C" fn() -> *const PluginDecl> = library
-                .get(b"kish_plugin_decl")
+                .get(b"yosh_plugin_decl")
                 .map_err(|_| {
-                    format!("{}: not a valid kish plugin", path.display())
+                    format!("{}: not a valid yosh plugin", path.display())
                 })?;
             let decl = &*decl_fn();
 
-            if decl.api_version != KISH_PLUGIN_API_VERSION {
+            if decl.api_version != YOSH_PLUGIN_API_VERSION {
                 return Err(format!(
                     "{}: API version mismatch (expected {}, got {})",
                     path.display(),
-                    KISH_PLUGIN_API_VERSION,
+                    YOSH_PLUGIN_API_VERSION,
                     decl.api_version
                 ));
             }
@@ -116,8 +116,8 @@ impl PluginManager {
 
             let init_fn: libloading::Symbol<unsafe extern "C" fn(*const HostApi) -> i32> =
                 unsafe {
-                    library.get(b"kish_plugin_init").map_err(|_| {
-                        format!("{}: missing kish_plugin_init", path.display())
+                    library.get(b"yosh_plugin_init").map_err(|_| {
+                        format!("{}: missing yosh_plugin_init", path.display())
                     })?
                 };
 
@@ -132,7 +132,7 @@ impl PluginManager {
             let cmd_fn: Result<
                 libloading::Symbol<unsafe extern "C" fn(*mut u32) -> *const *const c_char>,
                 _,
-            > = library.get(b"kish_plugin_commands");
+            > = library.get(b"yosh_plugin_commands");
 
             match cmd_fn {
                 Ok(cmd_fn) => {
@@ -152,13 +152,13 @@ impl PluginManager {
 
         // 6. Check for optional hook functions
         let has_pre_exec =
-            unsafe { library.get::<*const ()>(b"kish_plugin_hook_pre_exec").is_ok() };
+            unsafe { library.get::<*const ()>(b"yosh_plugin_hook_pre_exec").is_ok() };
         let has_post_exec =
-            unsafe { library.get::<*const ()>(b"kish_plugin_hook_post_exec").is_ok() };
+            unsafe { library.get::<*const ()>(b"yosh_plugin_hook_post_exec").is_ok() };
         let has_on_cd =
-            unsafe { library.get::<*const ()>(b"kish_plugin_hook_on_cd").is_ok() };
+            unsafe { library.get::<*const ()>(b"yosh_plugin_hook_on_cd").is_ok() };
         let has_pre_prompt =
-            unsafe { library.get::<*const ()>(b"kish_plugin_hook_pre_prompt").is_ok() };
+            unsafe { library.get::<*const ()>(b"yosh_plugin_hook_pre_prompt").is_ok() };
 
         self.plugins.push(LoadedPlugin {
             name,
@@ -176,7 +176,7 @@ impl PluginManager {
 
     /// Log which capabilities were requested but not granted.
     fn log_denied_capabilities(plugin_name: &str, denied: u32) {
-        use kish_plugin_api::*;
+        use yosh_plugin_api::*;
         let caps = [
             (CAP_VARIABLES_READ, "variables:read"),
             (CAP_VARIABLES_WRITE, "variables:write"),
@@ -190,7 +190,7 @@ impl PluginManager {
         for (flag, name) in caps {
             if denied & flag != 0 {
                 eprintln!(
-                    "kish: plugin '{}': capability '{}' requested but not granted",
+                    "yosh: plugin '{}': capability '{}' requested but not granted",
                     plugin_name, name
                 );
             }
@@ -222,7 +222,7 @@ impl PluginManager {
         let status = unsafe {
             let exec_fn: libloading::Symbol<
                 unsafe extern "C" fn(*const HostApi, *const c_char, i32, *const *const c_char) -> i32,
-            > = plugin.library.get(b"kish_plugin_exec").ok()?;
+            > = plugin.library.get(b"yosh_plugin_exec").ok()?;
             exec_fn(
                 &api,
                 c_name.as_ptr(),
@@ -244,7 +244,7 @@ impl PluginManager {
             if !plugin.has_pre_exec {
                 continue;
             }
-            if plugin.capabilities & kish_plugin_api::CAP_HOOK_PRE_EXEC == 0 {
+            if plugin.capabilities & yosh_plugin_api::CAP_HOOK_PRE_EXEC == 0 {
                 continue;
             }
             let mut ctx = HostContext::new(env, &plugin.name);
@@ -253,7 +253,7 @@ impl PluginManager {
             unsafe {
                 if let Ok(hook_fn) = plugin.library.get::<
                     unsafe extern "C" fn(*const HostApi, *const c_char),
-                >(b"kish_plugin_hook_pre_exec")
+                >(b"yosh_plugin_hook_pre_exec")
                 {
                     hook_fn(&api, c_cmd.as_ptr());
                 }
@@ -271,7 +271,7 @@ impl PluginManager {
             if !plugin.has_post_exec {
                 continue;
             }
-            if plugin.capabilities & kish_plugin_api::CAP_HOOK_POST_EXEC == 0 {
+            if plugin.capabilities & yosh_plugin_api::CAP_HOOK_POST_EXEC == 0 {
                 continue;
             }
             let mut ctx = HostContext::new(env, &plugin.name);
@@ -280,7 +280,7 @@ impl PluginManager {
             unsafe {
                 if let Ok(hook_fn) = plugin.library.get::<
                     unsafe extern "C" fn(*const HostApi, *const c_char, i32),
-                >(b"kish_plugin_hook_post_exec")
+                >(b"yosh_plugin_hook_post_exec")
                 {
                     hook_fn(&api, c_cmd.as_ptr(), exit_code);
                 }
@@ -302,7 +302,7 @@ impl PluginManager {
             if !plugin.has_on_cd {
                 continue;
             }
-            if plugin.capabilities & kish_plugin_api::CAP_HOOK_ON_CD == 0 {
+            if plugin.capabilities & yosh_plugin_api::CAP_HOOK_ON_CD == 0 {
                 continue;
             }
             let mut ctx = HostContext::new(env, &plugin.name);
@@ -311,7 +311,7 @@ impl PluginManager {
             unsafe {
                 if let Ok(hook_fn) = plugin.library.get::<
                     unsafe extern "C" fn(*const HostApi, *const c_char, *const c_char),
-                >(b"kish_plugin_hook_on_cd")
+                >(b"yosh_plugin_hook_on_cd")
                 {
                     hook_fn(&api, c_old.as_ptr(), c_new.as_ptr());
                 }
@@ -325,7 +325,7 @@ impl PluginManager {
             if !plugin.has_pre_prompt {
                 continue;
             }
-            if plugin.capabilities & kish_plugin_api::CAP_HOOK_PRE_PROMPT == 0 {
+            if plugin.capabilities & yosh_plugin_api::CAP_HOOK_PRE_PROMPT == 0 {
                 continue;
             }
             let mut ctx = HostContext::new(env, &plugin.name);
@@ -334,7 +334,7 @@ impl PluginManager {
             unsafe {
                 if let Ok(hook_fn) = plugin.library.get::<
                     unsafe extern "C" fn(*const HostApi),
-                >(b"kish_plugin_hook_pre_prompt")
+                >(b"yosh_plugin_hook_pre_prompt")
                 {
                     hook_fn(&api);
                 }
@@ -347,7 +347,7 @@ impl PluginManager {
         for plugin in &self.plugins {
             unsafe {
                 if let Ok(destroy_fn) =
-                    plugin.library.get::<unsafe extern "C" fn()>(b"kish_plugin_destroy")
+                    plugin.library.get::<unsafe extern "C" fn()>(b"yosh_plugin_destroy")
                 {
                     destroy_fn();
                 }
@@ -519,7 +519,7 @@ unsafe extern "C" fn deny_get_var(ctx: *mut c_void, _name: *const c_char) -> *co
     unsafe {
         let host = &*(ctx as *mut HostContext);
         eprintln!(
-            "kish: plugin '{}': get_var denied (missing 'variables:read' capability)",
+            "yosh: plugin '{}': get_var denied (missing 'variables:read' capability)",
             host.plugin_name
         );
     }
@@ -534,7 +534,7 @@ unsafe extern "C" fn deny_set_var(
     unsafe {
         let host = &*(ctx as *mut HostContext);
         eprintln!(
-            "kish: plugin '{}': set_var denied (missing 'variables:write' capability)",
+            "yosh: plugin '{}': set_var denied (missing 'variables:write' capability)",
             host.plugin_name
         );
     }
@@ -549,7 +549,7 @@ unsafe extern "C" fn deny_export_var(
     unsafe {
         let host = &*(ctx as *mut HostContext);
         eprintln!(
-            "kish: plugin '{}': export_var denied (missing 'variables:write' capability)",
+            "yosh: plugin '{}': export_var denied (missing 'variables:write' capability)",
             host.plugin_name
         );
     }
@@ -560,7 +560,7 @@ unsafe extern "C" fn deny_get_cwd(ctx: *mut c_void) -> *const c_char {
     unsafe {
         let host = &*(ctx as *mut HostContext);
         eprintln!(
-            "kish: plugin '{}': get_cwd denied (missing 'filesystem' capability)",
+            "yosh: plugin '{}': get_cwd denied (missing 'filesystem' capability)",
             host.plugin_name
         );
     }
@@ -571,7 +571,7 @@ unsafe extern "C" fn deny_set_cwd(ctx: *mut c_void, _path: *const c_char) -> i32
     unsafe {
         let host = &*(ctx as *mut HostContext);
         eprintln!(
-            "kish: plugin '{}': set_cwd denied (missing 'filesystem' capability)",
+            "yosh: plugin '{}': set_cwd denied (missing 'filesystem' capability)",
             host.plugin_name
         );
     }
@@ -586,7 +586,7 @@ unsafe extern "C" fn deny_write_stdout(
     unsafe {
         let host = &*(ctx as *mut HostContext);
         eprintln!(
-            "kish: plugin '{}': write_stdout denied (missing 'io' capability)",
+            "yosh: plugin '{}': write_stdout denied (missing 'io' capability)",
             host.plugin_name
         );
     }
@@ -601,7 +601,7 @@ unsafe extern "C" fn deny_write_stderr(
     unsafe {
         let host = &*(ctx as *mut HostContext);
         eprintln!(
-            "kish: plugin '{}': write_stderr denied (missing 'io' capability)",
+            "yosh: plugin '{}': write_stderr denied (missing 'io' capability)",
             host.plugin_name
         );
     }
@@ -611,7 +611,7 @@ unsafe extern "C" fn deny_write_stderr(
 /// Build a HostApi table for a plugin based on its effective capabilities.
 /// Denied functions are replaced with stubs that log and return errors.
 fn build_host_api(capabilities: u32) -> HostApi {
-    use kish_plugin_api::*;
+    use yosh_plugin_api::*;
 
     let has = |cap: u32| capabilities & cap != 0;
 

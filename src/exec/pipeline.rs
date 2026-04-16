@@ -39,7 +39,7 @@ impl Executor {
             match create_pipe() {
                 Ok(fds) => pipes.push(fds),
                 Err(e) => {
-                    eprintln!("kish: pipe: {}", e);
+                    eprintln!("yosh: pipe: {}", e);
                     close_all_pipes(&pipes);
                     return 1;
                 }
@@ -52,7 +52,7 @@ impl Executor {
         for (i, cmd) in pipeline.commands.iter().enumerate() {
             match unsafe { fork() } {
                 Err(e) => {
-                    eprintln!("kish: fork: {}", e);
+                    eprintln!("yosh: fork: {}", e);
                     close_all_pipes(&pipes);
                     return 1;
                 }
@@ -76,7 +76,7 @@ impl Executor {
                     if i > 0 {
                         let read_fd = pipes[i - 1].0;
                         if unsafe { libc::dup2(read_fd, 0) } == -1 {
-                            eprintln!("kish: dup2: {}", std::io::Error::last_os_error());
+                            eprintln!("yosh: dup2: {}", std::io::Error::last_os_error());
                             unsafe { libc::_exit(1) };
                         }
                     }
@@ -84,7 +84,7 @@ impl Executor {
                     if i < n - 1 {
                         let write_fd = pipes[i].1;
                         if unsafe { libc::dup2(write_fd, 1) } == -1 {
-                            eprintln!("kish: dup2: {}", std::io::Error::last_os_error());
+                            eprintln!("yosh: dup2: {}", std::io::Error::last_os_error());
                             unsafe { libc::_exit(1) };
                         }
                     }
@@ -179,7 +179,7 @@ fn wait_for_child(child: Pid) -> i32 {
         Ok(WaitStatus::Signaled(_, sig, _)) => 128 + sig as i32,
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("kish: waitpid: {}", e);
+            eprintln!("yosh: waitpid: {}", e);
             1
         }
     }

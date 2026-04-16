@@ -16,7 +16,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
     let mut pipe_fds: [libc::c_int; 2] = [0; 2];
     let ret = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
     if ret != 0 {
-        eprintln!("kish: pipe: failed to create pipe");
+        eprintln!("yosh: pipe: failed to create pipe");
         return String::new();
     }
     let pipe_read = pipe_fds[0];
@@ -24,7 +24,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
 
     match unsafe { fork() } {
         Err(e) => {
-            eprintln!("kish: fork: {}", e);
+            eprintln!("yosh: fork: {}", e);
             unsafe {
                 libc::close(pipe_read);
                 libc::close(pipe_write);
@@ -79,7 +79,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
             // SAFETY: pipe_read is a valid file descriptor opened by pipe()
             let mut file = unsafe { std::fs::File::from_raw_fd(pipe_read) };
             if let Err(e) = file.read_to_string(&mut output) {
-                eprintln!("kish: command substitution: read error: {}", e);
+                eprintln!("yosh: command substitution: read error: {}", e);
             }
 
             // Wait for the child to finish
@@ -92,7 +92,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("kish: waitpid: {}", e);
+                    eprintln!("yosh: waitpid: {}", e);
                 }
             }
 

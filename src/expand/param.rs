@@ -11,7 +11,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                 Some(val) => Ok(val.to_string()),
                 None => {
                     if env.mode.options.nounset {
-                        eprintln!("kish: {}: parameter not set", name);
+                        eprintln!("yosh: {}: parameter not set", name);
                         env.exec.last_exit_status = 1;
                         env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
                     }
@@ -77,7 +77,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                     Some(w) => expand_word_to_string(env, w)?,
                     None => format!("{}: parameter null or not set", name),
                 };
-                eprintln!("kish: {}", msg);
+                eprintln!("yosh: {}", msg);
                 // POSIX: non-interactive shell shall exit with non-zero status
                 env.exec.last_exit_status = 1;
                 env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
@@ -220,7 +220,7 @@ mod tests {
     use crate::parser::ast::{ParamExpr, SpecialParam, Word};
 
     fn make_env() -> ShellEnv {
-        ShellEnv::new("kish", vec![])
+        ShellEnv::new("yosh", vec![])
     }
 
     // ── Simple ──
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_special_at_joins() {
-        let mut env = ShellEnv::new("kish", vec!["a".to_string(), "b".to_string()]);
+        let mut env = ShellEnv::new("yosh", vec!["a".to_string(), "b".to_string()]);
         let result = expand(&mut env, &ParamExpr::Special(SpecialParam::At)).unwrap();
         assert_eq!(result, "a b");
     }

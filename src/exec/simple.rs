@@ -55,7 +55,7 @@ impl Executor {
                 // Capture the status set by any command substitution during expansion
                 last_cmd_sub_status = self.env.exec.last_exit_status;
                 if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.mode.options.allexport) {
-                    eprintln!("kish: {}", e);
+                    eprintln!("yosh: {}", e);
                     self.env.exec.last_exit_status = 1;
                     return 1;
                 }
@@ -91,7 +91,7 @@ impl Executor {
             };
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                eprintln!("kish: {}", e);
+                eprintln!("yosh: {}", e);
                 self.restore_assignments(saved);
                 self.env.exec.last_exit_status = 1;
                 return 1;
@@ -116,7 +116,7 @@ impl Executor {
             };
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                eprintln!("kish: {}", e);
+                eprintln!("yosh: {}", e);
                 self.restore_assignments(saved);
                 self.env.exec.last_exit_status = 1;
                 return 1;
@@ -141,7 +141,7 @@ impl Executor {
             };
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                eprintln!("kish: {}", e);
+                eprintln!("yosh: {}", e);
                 self.restore_assignments(saved);
                 self.env.exec.last_exit_status = 1;
                 return 1;
@@ -175,7 +175,7 @@ impl Executor {
                         None => String::new(),
                     };
                     if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.mode.options.allexport) {
-                        eprintln!("kish: {}", e);
+                        eprintln!("yosh: {}", e);
                         self.env.exec.last_exit_status = 1;
                         return 1;
                     }
@@ -184,7 +184,7 @@ impl Executor {
                 if command_name == "exec" && args.is_empty() {
                     let mut redirect_state = RedirectState::new();
                     if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, false) {
-                        eprintln!("kish: {}", e);
+                        eprintln!("yosh: {}", e);
                         self.env.exec.last_exit_status = 1;
                         return 1;
                     }
@@ -194,7 +194,7 @@ impl Executor {
 
                 let mut redirect_state = RedirectState::new();
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                    eprintln!("kish: {}", e);
+                    eprintln!("yosh: {}", e);
                     self.env.exec.last_exit_status = 1;
                     return 1;
                 }
@@ -216,7 +216,7 @@ impl Executor {
                 };
                 let mut redirect_state = RedirectState::new();
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                    eprintln!("kish: {}", e);
+                    eprintln!("yosh: {}", e);
                     self.restore_assignments(saved);
                     self.env.exec.last_exit_status = 1;
                     return 1;
@@ -297,7 +297,7 @@ impl Executor {
         let c_cmd = match CString::new(cmd) {
             Ok(s) => s,
             Err(_) => {
-                eprintln!("kish: {}: invalid command name", cmd);
+                eprintln!("yosh: {}: invalid command name", cmd);
                 return 127;
             }
         };
@@ -307,7 +307,7 @@ impl Executor {
             match CString::new(a.as_str()) {
                 Ok(s) => c_args.push(s),
                 Err(_) => {
-                    eprintln!("kish: {}: invalid argument", a);
+                    eprintln!("yosh: {}: invalid argument", a);
                     return 1;
                 }
             }
@@ -319,7 +319,7 @@ impl Executor {
 
         match unsafe { fork() } {
             Err(e) => {
-                eprintln!("kish: fork: {}", e);
+                eprintln!("yosh: fork: {}", e);
                 1
             }
             Ok(ForkResult::Child) => {
@@ -336,7 +336,7 @@ impl Executor {
                 // Apply redirects (no need to save, we're in the child)
                 let mut redir_state = RedirectState::new();
                 if let Err(e) = redir_state.apply(redirects, &mut self.env, false) {
-                    eprintln!("kish: {}", e);
+                    eprintln!("yosh: {}", e);
                     std::process::exit(1);
                 }
 
@@ -360,15 +360,15 @@ impl Executor {
                 use nix::errno::Errno;
                 let exit_code = match err {
                     Errno::ENOENT => {
-                        eprintln!("kish: {}: command not found", cmd);
+                        eprintln!("yosh: {}: command not found", cmd);
                         127
                     }
                     Errno::EACCES => {
-                        eprintln!("kish: {}: permission denied", cmd);
+                        eprintln!("yosh: {}: permission denied", cmd);
                         126
                     }
                     _ => {
-                        eprintln!("kish: {}: {}", cmd, err);
+                        eprintln!("yosh: {}: {}", cmd, err);
                         127
                     }
                 };

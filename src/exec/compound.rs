@@ -18,7 +18,7 @@ impl Executor {
     ) -> i32 {
         let mut redirect_state = RedirectState::new();
         if let Err(e) = redirect_state.apply(redirects, &mut self.env, true) {
-            eprintln!("kish: {}", e);
+            eprintln!("yosh: {}", e);
             self.env.exec.last_exit_status = 1;
             return 1;
         }
@@ -83,7 +83,7 @@ impl Executor {
     fn exec_subshell(&mut self, body: &[CompleteCommand]) -> i32 {
         match unsafe { fork() } {
             Err(e) => {
-                eprintln!("kish: fork: {}", e);
+                eprintln!("yosh: fork: {}", e);
                 1
             }
             Ok(ForkResult::Child) => {
@@ -201,7 +201,7 @@ impl Executor {
         let mut status = 0;
         for item in &items {
             if let Err(e) = self.env.vars.set(var, item.as_str()) {
-                eprintln!("kish: {}", e);
+                eprintln!("yosh: {}", e);
                 return 1;
             }
 

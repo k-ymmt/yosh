@@ -185,13 +185,13 @@ mod tests {
     use crate::env::ShellEnv;
 
     fn env_with_ifs(ifs: &str) -> ShellEnv {
-        let mut env = ShellEnv::new("kish", vec![]);
+        let mut env = ShellEnv::new("yosh", vec![]);
         env.vars.set("IFS", ifs).unwrap();
         env
     }
 
     fn env_no_ifs() -> ShellEnv {
-        let mut env = ShellEnv::new("kish", vec![]);
+        let mut env = ShellEnv::new("yosh", vec![]);
         env.vars.unset("IFS").ok();
         env
     }

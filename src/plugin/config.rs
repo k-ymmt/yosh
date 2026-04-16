@@ -48,14 +48,14 @@ pub fn expand_tilde(path: &str) -> PathBuf {
 /// Parse a single capability string to its bitflag value.
 pub fn capability_from_str(s: &str) -> Option<u32> {
     match s {
-        "variables:read" => Some(kish_plugin_api::CAP_VARIABLES_READ),
-        "variables:write" => Some(kish_plugin_api::CAP_VARIABLES_WRITE),
-        "filesystem" => Some(kish_plugin_api::CAP_FILESYSTEM),
-        "io" => Some(kish_plugin_api::CAP_IO),
-        "hooks:pre_exec" => Some(kish_plugin_api::CAP_HOOK_PRE_EXEC),
-        "hooks:post_exec" => Some(kish_plugin_api::CAP_HOOK_POST_EXEC),
-        "hooks:on_cd" => Some(kish_plugin_api::CAP_HOOK_ON_CD),
-        "hooks:pre_prompt" => Some(kish_plugin_api::CAP_HOOK_PRE_PROMPT),
+        "variables:read" => Some(yosh_plugin_api::CAP_VARIABLES_READ),
+        "variables:write" => Some(yosh_plugin_api::CAP_VARIABLES_WRITE),
+        "filesystem" => Some(yosh_plugin_api::CAP_FILESYSTEM),
+        "io" => Some(yosh_plugin_api::CAP_IO),
+        "hooks:pre_exec" => Some(yosh_plugin_api::CAP_HOOK_PRE_EXEC),
+        "hooks:post_exec" => Some(yosh_plugin_api::CAP_HOOK_POST_EXEC),
+        "hooks:on_cd" => Some(yosh_plugin_api::CAP_HOOK_ON_CD),
+        "hooks:pre_prompt" => Some(yosh_plugin_api::CAP_HOOK_PRE_PROMPT),
         _ => None,
     }
 }
@@ -130,7 +130,7 @@ path = "/usr/lib/libhello.dylib"
 
     #[test]
     fn expand_tilde_with_home() {
-        let result = expand_tilde("~/.kish/plugins/lib.dylib");
+        let result = expand_tilde("~/.yosh/plugins/lib.dylib");
         // Just check it doesn't start with ~ anymore (HOME varies by environment)
         assert!(!result.to_string_lossy().starts_with("~"));
     }
@@ -184,7 +184,7 @@ path = "/usr/lib/libtrusted.dylib"
 
     #[test]
     fn parse_capability_string_to_bitflags() {
-        use kish_plugin_api::*;
+        use yosh_plugin_api::*;
         assert_eq!(
             capability_from_str("variables:read"),
             Some(CAP_VARIABLES_READ)
@@ -213,7 +213,7 @@ path = "/usr/lib/libtrusted.dylib"
 
     #[test]
     fn parse_capabilities_to_bitflags() {
-        use kish_plugin_api::*;
+        use yosh_plugin_api::*;
         let strs = vec![
             "variables:read".to_string(),
             "io".to_string(),

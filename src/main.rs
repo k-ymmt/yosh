@@ -32,7 +32,7 @@ fn should_colorize() -> bool {
 fn print_help() {
     let color = should_colorize();
 
-    let header = "kish - A POSIX-compliant shell";
+    let header = "yosh - A POSIX-compliant shell";
     if color {
         println!("{}", header.bold());
     } else {
@@ -41,9 +41,9 @@ fn print_help() {
     println!();
 
     if color {
-        println!("{}  kish [options] [file [argument...]]", "Usage:".yellow().bold());
+        println!("{}  yosh [options] [file [argument...]]", "Usage:".yellow().bold());
     } else {
-        println!("Usage:  kish [options] [file [argument...]]");
+        println!("Usage:  yosh [options] [file [argument...]]");
     }
     println!();
 
@@ -65,23 +65,23 @@ fn print_help() {
     if color {
         println!("{}", "Subcommands:".yellow().bold());
         println!("  {}          Manage shell plugins (see '{}')",
-            "plugin".green(), "kish plugin --help".green());
+            "plugin".green(), "yosh plugin --help".green());
     } else {
         println!("Subcommands:");
-        println!("  plugin          Manage shell plugins (see 'kish plugin --help')");
+        println!("  plugin          Manage shell plugins (see 'yosh plugin --help')");
     }
 }
 
 fn print_version() {
-    println!("kish {} ({} {})",
+    println!("yosh {} ({} {})",
         env!("CARGO_PKG_VERSION"),
-        env!("KISH_GIT_HASH"),
-        env!("KISH_BUILD_DATE"));
+        env!("YOSH_GIT_HASH"),
+        env!("YOSH_BUILD_DATE"));
 }
 
 fn main() {
     let args: Vec<String> = std_env::args().collect();
-    let shell_name = args.first().map_or("kish".to_string(), |a| a.clone());
+    let shell_name = args.first().map_or("yosh".to_string(), |a| a.clone());
 
     match args.len() {
         1 => {
@@ -92,7 +92,7 @@ fn main() {
                 // stdin is a pipe — read as script
                 let mut input = String::new();
                 io::stdin().read_to_string(&mut input).unwrap_or_else(|e| {
-                    eprintln!("kish: {}", e);
+                    eprintln!("yosh: {}", e);
                     process::exit(1);
                 });
                 let status = run_string(&input, shell_name, vec![], false);
@@ -108,7 +108,7 @@ fn main() {
                 process::exit(0);
             } else if args[1] == "-c" {
                 if args.len() < 3 {
-                    eprintln!("kish: -c requires an argument");
+                    eprintln!("yosh: -c requires an argument");
                     process::exit(2);
                 }
                 // POSIX: sh -c cmd [name [arg...]]
@@ -121,7 +121,7 @@ fn main() {
                 process::exit(status);
             } else if args[1] == "--parse" {
                 if args.len() < 3 {
-                    eprintln!("kish: --parse requires an argument");
+                    eprintln!("yosh: --parse requires an argument");
                     process::exit(2);
                 }
                 let input = if args[2] == "-" {
@@ -146,7 +146,7 @@ fn main() {
     }
 }
 
-/// Try to delegate `kish <sub> [args...]` to `kish-<sub>` binary in PATH.
+/// Try to delegate `yosh <sub> [args...]` to `yosh-<sub>` binary in PATH.
 /// Returns Some(exit_status) if a matching binary was found and executed.
 fn try_subcommand(args: &[String]) -> Option<i32> {
     let sub = args.first()?;
@@ -154,7 +154,7 @@ fn try_subcommand(args: &[String]) -> Option<i32> {
     if sub.starts_with('-') || sub.contains('/') || sub.contains('.') {
         return None;
     }
-    let bin_name = format!("kish-{}", sub);
+    let bin_name = format!("yosh-{}", sub);
     let found = std_env::var_os("PATH").and_then(|paths| {
         std_env::split_paths(&paths).find(|dir| dir.join(&bin_name).is_file())
     });
@@ -163,7 +163,7 @@ fn try_subcommand(args: &[String]) -> Option<i32> {
         .args(&args[1..])
         .status()
         .unwrap_or_else(|e| {
-            eprintln!("kish: {}: {}", bin_name, e);
+            eprintln!("yosh: {}: {}", bin_name, e);
             process::exit(126);
         });
     Some(status.code().unwrap_or(1))
@@ -229,7 +229,7 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_stri
 fn run_file(path: &str, shell_name: String, positional: Vec<String>) -> i32 {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
-        Err(e) => { eprintln!("kish: {}: {}", path, e); return 127; }
+        Err(e) => { eprintln!("yosh: {}: {}", path, e); return 127; }
     };
     run_string(&content, shell_name, positional, false)
 }

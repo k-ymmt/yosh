@@ -244,13 +244,13 @@ mod tests {
     use crate::parser::ast::{Redirect, RedirectKind, Word};
 
     fn make_env() -> ShellEnv {
-        ShellEnv::new("kish", vec![])
+        ShellEnv::new("yosh", vec![])
     }
 
     #[test]
     fn test_redirect_output_and_restore() {
         let mut env = make_env();
-        let tmp = std::env::temp_dir().join("kish_redirect_test_output.txt");
+        let tmp = std::env::temp_dir().join("yosh_redirect_test_output.txt");
         let path_str = tmp.to_str().unwrap().to_string();
 
         let redirects = vec![Redirect {
@@ -282,7 +282,7 @@ mod tests {
         use std::os::unix::io::FromRawFd;
 
         let mut env = make_env();
-        let tmp = std::env::temp_dir().join("kish_redirect_test_input.txt");
+        let tmp = std::env::temp_dir().join("yosh_redirect_test_input.txt");
         std::fs::write(&tmp, "test input\n").unwrap();
         let path_str = tmp.to_str().unwrap().to_string();
 

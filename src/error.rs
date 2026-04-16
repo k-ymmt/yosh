@@ -61,8 +61,8 @@ pub enum RuntimeErrorKind {
 impl fmt::Display for ShellError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.location {
-            Some(loc) => write!(f, "kish: line {}: {}", loc.line, self.message),
-            None => write!(f, "kish: {}", self.message),
+            Some(loc) => write!(f, "yosh: line {}: {}", loc.line, self.message),
+            None => write!(f, "yosh: {}", self.message),
         }
     }
 }
@@ -110,7 +110,7 @@ mod tests {
             10,
             "unexpected ')'",
         );
-        assert_eq!(err.to_string(), "kish: line 5: unexpected ')'");
+        assert_eq!(err.to_string(), "yosh: line 5: unexpected ')'");
     }
 
     #[test]
@@ -119,6 +119,6 @@ mod tests {
             RuntimeErrorKind::CommandNotFound,
             "foo: not found",
         );
-        assert_eq!(err.to_string(), "kish: foo: not found");
+        assert_eq!(err.to_string(), "yosh: foo: not found");
     }
 }

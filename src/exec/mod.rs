@@ -51,7 +51,7 @@ impl Executor {
         }
     }
 
-    /// Load plugins from the lock file (~/.config/kish/plugins.lock).
+    /// Load plugins from the lock file (~/.config/yosh/plugins.lock).
     pub fn load_plugins(&mut self) {
         let config_path = plugin_config_path();
         self.plugins.load_from_config(&config_path, &mut self.env);
@@ -242,7 +242,7 @@ impl Executor {
     fn exec_async(&mut self, and_or: &AndOrList) -> i32 {
         match unsafe { fork() } {
             Err(e) => {
-                eprintln!("kish: fork: {}", e);
+                eprintln!("yosh: fork: {}", e);
                 1
             }
             Ok(ForkResult::Child) => {
@@ -338,14 +338,14 @@ impl Executor {
                     if let Some(job) = self.env.process.jobs.get(job_id) {
                         pids.push(job.pgid);
                     } else {
-                        eprintln!("kish: wait: {}: no such job", arg);
+                        eprintln!("yosh: wait: {}: no such job", arg);
                         return 127;
                     }
                 } else {
                     match arg.parse::<i32>() {
                         Ok(n) => pids.push(Pid::from_raw(n)),
                         Err(_) => {
-                            eprintln!("kish: wait: {}: not a pid or valid job spec", arg);
+                            eprintln!("yosh: wait: {}: not a pid or valid job spec", arg);
                             return 2;
                         }
                     }
@@ -417,7 +417,7 @@ impl Executor {
                         }
                     }
                     Err(nix::errno::Errno::ECHILD) => {
-                        eprintln!("kish: wait: pid {} is not a child of this shell", pid);
+                        eprintln!("yosh: wait: pid {} is not a child of this shell", pid);
                         last_status = 127;
                         break;
                     }
@@ -463,7 +463,7 @@ impl Executor {
         use crate::env::jobs::{self, JobStatus};
 
         if !self.env.mode.options.monitor {
-            eprintln!("kish: fg: no job control");
+            eprintln!("yosh: fg: no job control");
             return 1;
         }
 
@@ -471,7 +471,7 @@ impl Executor {
             match self.env.process.jobs.current_id() {
                 Some(id) => id,
                 None => {
-                    eprintln!("kish: fg: no current job");
+                    eprintln!("yosh: fg: no current job");
                     return 1;
                 }
             }
@@ -479,7 +479,7 @@ impl Executor {
             match self.env.process.jobs.resolve_job_spec(&args[0]) {
                 Some(id) => id,
                 None => {
-                    eprintln!("kish: fg: {}: no such job", args[0]);
+                    eprintln!("yosh: fg: {}: no such job", args[0]);
                     return 1;
                 }
             }
@@ -489,7 +489,7 @@ impl Executor {
             let job = match self.env.process.jobs.get(job_id) {
                 Some(j) => j,
                 None => {
-                    eprintln!("kish: fg: job not found");
+                    eprintln!("yosh: fg: job not found");
                     return 1;
                 }
             };
@@ -527,7 +527,7 @@ impl Executor {
         use crate::env::jobs::JobStatus;
 
         if !self.env.mode.options.monitor {
-            eprintln!("kish: bg: no job control");
+            eprintln!("yosh: bg: no job control");
             return 1;
         }
 
@@ -535,7 +535,7 @@ impl Executor {
             match self.env.process.jobs.current_id() {
                 Some(id) => id,
                 None => {
-                    eprintln!("kish: bg: no current job");
+                    eprintln!("yosh: bg: no current job");
                     return 1;
                 }
             }
@@ -543,7 +543,7 @@ impl Executor {
             match self.env.process.jobs.resolve_job_spec(&args[0]) {
                 Some(id) => id,
                 None => {
-                    eprintln!("kish: bg: {}: no such job", args[0]);
+                    eprintln!("yosh: bg: {}: no such job", args[0]);
                     return 1;
                 }
             }
@@ -553,12 +553,12 @@ impl Executor {
             let job = match self.env.process.jobs.get(job_id) {
                 Some(j) => j,
                 None => {
-                    eprintln!("kish: bg: job not found");
+                    eprintln!("yosh: bg: job not found");
                     return 1;
                 }
             };
             if !matches!(job.status, JobStatus::Stopped(_)) {
-                eprintln!("kish: bg: job {} not stopped", job_id);
+                eprintln!("yosh: bg: job {} not stopped", job_id);
                 return 1;
             }
             job.pgid
@@ -658,7 +658,7 @@ impl Executor {
 
 fn plugin_config_path() -> std::path::PathBuf {
     if let Ok(home) = std::env::var("HOME") {
-        std::path::PathBuf::from(home).join(".config/kish/plugins.lock")
+        std::path::PathBuf::from(home).join(".config/yosh/plugins.lock")
     } else {
         std::path::PathBuf::from("/nonexistent")
     }
@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn exec_builtin_true_returns_0() {
-        let mut exec = Executor::new("kish", vec![]);
+        let mut exec = Executor::new("yosh", vec![]);
         let cmd = make_simple_cmd(&["true"]);
         assert_eq!(exec.exec_simple_command(&cmd), 0);
         assert_eq!(exec.env.exec.last_exit_status, 0);
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn exec_builtin_false_returns_1() {
-        let mut exec = Executor::new("kish", vec![]);
+        let mut exec = Executor::new("yosh", vec![]);
         let cmd = make_simple_cmd(&["false"]);
         assert_eq!(exec.exec_simple_command(&cmd), 1);
         assert_eq!(exec.env.exec.last_exit_status, 1);
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn exec_external_true_returns_0() {
-        let mut exec = Executor::new("kish", vec![]);
+        let mut exec = Executor::new("yosh", vec![]);
         let cmd = make_simple_cmd(&["/usr/bin/true"]);
         assert_eq!(exec.exec_simple_command(&cmd), 0);
     }
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn assignment_only_sets_var() {
         use crate::parser::ast::Assignment;
-        let mut exec = Executor::new("kish", vec![]);
+        let mut exec = Executor::new("yosh", vec![]);
         let cmd = SimpleCommand {
             assignments: vec![Assignment {
                 name: "MYVAR".to_string(),
@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn exit_status_tracked() {
-        let mut exec = Executor::new("kish", vec![]);
+        let mut exec = Executor::new("yosh", vec![]);
         // false sets last_exit_status to 1
         let false_cmd = make_simple_cmd(&["false"]);
         exec.exec_simple_command(&false_cmd);
@@ -736,7 +736,7 @@ mod tests {
 
     #[test]
     fn test_single_command_pipeline() {
-        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let mut exec = Executor::new("yosh".to_string(), vec![]);
         let pipeline = Pipeline {
             negated: false,
             commands: vec![Command::Simple(SimpleCommand {
@@ -750,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_negated_pipeline() {
-        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let mut exec = Executor::new("yosh".to_string(), vec![]);
         let pipeline = Pipeline {
             negated: true,
             commands: vec![Command::Simple(SimpleCommand {
@@ -776,7 +776,7 @@ mod tests {
     #[test]
     fn test_and_list_all_succeed() {
         // true && true → 0
-        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let mut exec = Executor::new("yosh".to_string(), vec![]);
         let and_or = AndOrList {
             first: make_pipeline("true"),
             rest: vec![(AndOrOp::And, make_pipeline("true"))],
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn test_and_list_first_fails() {
         // false && true → 1 (second not executed)
-        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let mut exec = Executor::new("yosh".to_string(), vec![]);
         let and_or = AndOrList {
             first: make_pipeline("false"),
             rest: vec![(AndOrOp::And, make_pipeline("true"))],
@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn test_or_list_first_fails() {
         // false || true → 0
-        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let mut exec = Executor::new("yosh".to_string(), vec![]);
         let and_or = AndOrList {
             first: make_pipeline("false"),
             rest: vec![(AndOrOp::Or, make_pipeline("true"))],
@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn test_or_list_first_succeeds() {
         // true || false → 0 (second not executed)
-        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let mut exec = Executor::new("yosh".to_string(), vec![]);
         let and_or = AndOrList {
             first: make_pipeline("true"),
             rest: vec![(AndOrOp::Or, make_pipeline("false"))],
@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn test_exec_program_sequential() {
         // true; false → 1 (last command status)
-        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let mut exec = Executor::new("yosh".to_string(), vec![]);
         let program = Program {
             commands: vec![
                 CompleteCommand {
@@ -848,20 +848,20 @@ mod tests {
 
     #[test]
     fn test_should_errexit_default_off() {
-        let exec = Executor::new("kish", vec![]);
+        let exec = Executor::new("yosh", vec![]);
         assert!(!exec.should_errexit());
     }
 
     #[test]
     fn test_should_errexit_enabled() {
-        let mut exec = Executor::new("kish", vec![]);
+        let mut exec = Executor::new("yosh", vec![]);
         exec.env.mode.options.errexit = true;
         assert!(exec.should_errexit());
     }
 
     #[test]
     fn test_with_errexit_suppressed() {
-        let mut exec = Executor::new("kish", vec![]);
+        let mut exec = Executor::new("yosh", vec![]);
         exec.env.mode.options.errexit = true;
         assert!(exec.should_errexit());
         let result = exec.with_errexit_suppressed(|e| {
@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn test_with_errexit_suppressed_nested() {
-        let mut exec = Executor::new("kish", vec![]);
+        let mut exec = Executor::new("yosh", vec![]);
         exec.env.mode.options.errexit = true;
         exec.with_errexit_suppressed(|e| {
             assert!(!e.should_errexit());
@@ -894,13 +894,13 @@ mod tests {
 
     #[test]
     fn exit_requested_defaults_to_none() {
-        let exec = Executor::new("kish", vec![]);
+        let exec = Executor::new("yosh", vec![]);
         assert_eq!(exec.exit_requested, None);
     }
 
     #[test]
     fn handle_default_signal_sets_exit_requested_in_interactive_mode() {
-        let mut exec = Executor::new("kish", vec![]);
+        let mut exec = Executor::new("yosh", vec![]);
         exec.env.mode.is_interactive = true;
         exec.handle_default_signal(libc::SIGHUP);
         assert_eq!(exec.exit_requested, Some(128 + libc::SIGHUP));
@@ -908,7 +908,7 @@ mod tests {
 
     #[test]
     fn check_errexit_sets_exit_requested_in_interactive_mode() {
-        let mut exec = Executor::new("kish", vec![]);
+        let mut exec = Executor::new("yosh", vec![]);
         exec.env.mode.is_interactive = true;
         exec.env.mode.options.errexit = true;
         exec.check_errexit(1);
@@ -918,7 +918,7 @@ mod tests {
     #[test]
     fn exec_and_or_stops_after_first_pipeline_when_exit_requested() {
         // Simulates: exit 0 && echo X — the && branch should not execute
-        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let mut exec = Executor::new("yosh".to_string(), vec![]);
         exec.exit_requested = Some(0);
         let and_or = AndOrList {
             first: make_pipeline("true"),
@@ -933,7 +933,7 @@ mod tests {
     fn exec_and_or_stops_after_rest_pipeline_when_exit_requested() {
         // Simulates: false || exit 0 && echo X — after exit sets exit_requested,
         // the && branch should not execute
-        let mut exec = Executor::new("kish".to_string(), vec![]);
+        let mut exec = Executor::new("yosh".to_string(), vec![]);
         let and_or = AndOrList {
             first: make_pipeline("false"),
             rest: vec![

@@ -62,7 +62,7 @@ mod tests {
     fn sample_entry() -> LockEntry {
         LockEntry {
             name: "git-status".into(),
-            path: "~/.kish/plugins/git-status/libgit_status.dylib".into(),
+            path: "~/.yosh/plugins/git-status/libgit_status.dylib".into(),
             enabled: true,
             capabilities: Some(vec!["variables:read".into(), "io".into()]),
             sha256: "abc123".into(),
@@ -100,11 +100,11 @@ mod tests {
     fn local_entry_without_version() {
         let entry = LockEntry {
             name: "local-tool".into(),
-            path: "~/.kish/plugins/liblocal.dylib".into(),
+            path: "~/.yosh/plugins/liblocal.dylib".into(),
             enabled: true,
             capabilities: Some(vec!["io".into()]),
             sha256: "def456".into(),
-            source: "local:~/.kish/plugins/liblocal.dylib".into(),
+            source: "local:~/.yosh/plugins/liblocal.dylib".into(),
             version: None,
         };
         let dir = tempfile::tempdir().unwrap();

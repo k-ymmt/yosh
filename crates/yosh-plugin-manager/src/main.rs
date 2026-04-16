@@ -1,19 +1,19 @@
 use std::process;
 
 use clap::{Parser, Subcommand};
-use kish_plugin_manager::{config, github, install, lockfile, sync, verify};
+use yosh_plugin_manager::{config, github, install, lockfile, sync, verify};
 
 const VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (",
-    env!("KISH_GIT_HASH"),
+    env!("YOSH_GIT_HASH"),
     " ",
-    env!("KISH_BUILD_DATE"),
+    env!("YOSH_BUILD_DATE"),
     ")"
 );
 
 #[derive(Parser)]
-#[command(name = "kish-plugin", about = "Manage kish shell plugins")]
+#[command(name = "yosh-plugin", about = "Manage yosh shell plugins")]
 #[command(version = VERSION)]
 struct Cli {
     #[command(subcommand)]
@@ -65,12 +65,12 @@ fn cmd_install(source: &str, force: bool) -> i32 {
         Ok(msg) => {
             eprintln!("{}", msg);
             if source.starts_with("https://github.com/") {
-                eprintln!("Run 'kish plugin sync' to download.");
+                eprintln!("Run 'yosh plugin sync' to download.");
             }
             0
         }
         Err(e) => {
-            eprintln!("kish-plugin: {}", e);
+            eprintln!("yosh-plugin: {}", e);
             1
         }
     }
@@ -80,7 +80,7 @@ fn cmd_sync(prune: bool) -> i32 {
     let result = match sync::sync(prune) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("kish-plugin: {}", e);
+            eprintln!("yosh-plugin: {}", e);
             return 2;
         }
     };
@@ -94,13 +94,13 @@ fn cmd_sync(prune: bool) -> i32 {
 
     if result.failed.is_empty() {
         eprintln!(
-            "kish-plugin: sync complete ({} plugins)",
+            "yosh-plugin: sync complete ({} plugins)",
             result.succeeded.len()
         );
         0
     } else {
         eprintln!(
-            "kish-plugin: sync partial ({} succeeded, {} failed)",
+            "yosh-plugin: sync partial ({} succeeded, {} failed)",
             result.succeeded.len(),
             result.failed.len()
         );
@@ -113,7 +113,7 @@ fn cmd_update(name_filter: Option<&str>) -> i32 {
     let decls = match config::load_config(&config_path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("kish-plugin: {}", e);
+            eprintln!("yosh-plugin: {}", e);
             return 2;
         }
     };
@@ -123,7 +123,7 @@ fn cmd_update(name_filter: Option<&str>) -> i32 {
     let content = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("kish-plugin: {}: {}", config_path.display(), e);
+            eprintln!("yosh-plugin: {}: {}", config_path.display(), e);
             return 2;
         }
     };
@@ -161,7 +161,7 @@ fn cmd_update(name_filter: Option<&str>) -> i32 {
 
     if updated {
         if let Err(e) = std::fs::write(&config_path, &new_content) {
-            eprintln!("kish-plugin: write {}: {}", config_path.display(), e);
+            eprintln!("yosh-plugin: write {}: {}", config_path.display(), e);
             return 2;
         }
         return cmd_sync(false);
@@ -175,13 +175,13 @@ fn cmd_list() -> i32 {
     let lockfile = match lockfile::load_lockfile(&lock_path) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("kish-plugin: {}", e);
+            eprintln!("yosh-plugin: {}", e);
             return 2;
         }
     };
 
     if lockfile.plugin.is_empty() {
-        eprintln!("no plugins installed (run 'kish-plugin sync' first)");
+        eprintln!("no plugins installed (run 'yosh-plugin sync' first)");
         return 0;
     }
 
@@ -209,7 +209,7 @@ fn cmd_verify() -> i32 {
     let lockfile = match lockfile::load_lockfile(&lock_path) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("kish-plugin: {}", e);
+            eprintln!("yosh-plugin: {}", e);
             return 2;
         }
     };

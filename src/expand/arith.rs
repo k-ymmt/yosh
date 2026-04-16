@@ -17,7 +17,7 @@ pub fn evaluate(env: &mut ShellEnv, expr: &str) -> Result<String, String> {
     match parser.expr() {
         Ok(val) => Ok(val.to_string()),
         Err(msg) => {
-            eprintln!("kish: arithmetic: {}", msg);
+            eprintln!("yosh: arithmetic: {}", msg);
             Err(msg)
         }
     }
@@ -709,7 +709,7 @@ mod tests {
     use crate::env::ShellEnv;
 
     fn env() -> ShellEnv {
-        ShellEnv::new("kish", vec![])
+        ShellEnv::new("yosh", vec![])
     }
 
     #[test]
@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn test_positional_param_in_arith() {
         let mut e = ShellEnv::new(
-            "kish",
+            "yosh",
             vec!["10".to_string(), "20".to_string()],
         );
         assert_eq!(evaluate(&mut e, "$1 + $2"), Ok("30".to_string()));
@@ -800,17 +800,17 @@ mod tests {
     #[test]
     fn test_positional_param_zero() {
         let mut e = ShellEnv::new(
-            "kish",
+            "yosh",
             vec!["5".to_string()],
         );
-        // $0 is the shell name "kish", non-numeric → defaults to 0
+        // $0 is the shell name "yosh", non-numeric → defaults to 0
         assert_eq!(evaluate(&mut e, "$0"), Ok("0".to_string()));
     }
 
     #[test]
     fn test_special_param_hash_in_arith() {
         let mut e = ShellEnv::new(
-            "kish",
+            "yosh",
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
         );
         assert_eq!(evaluate(&mut e, "$# + 1"), Ok("4".to_string()));
@@ -826,7 +826,7 @@ mod tests {
     #[test]
     fn test_braced_positional_param_in_arith() {
         let mut e = ShellEnv::new(
-            "kish",
+            "yosh",
             vec!["100".to_string()],
         );
         assert_eq!(evaluate(&mut e, "${1} + 1"), Ok("101".to_string()));

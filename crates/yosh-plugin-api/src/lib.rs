@@ -1,7 +1,7 @@
 use std::ffi::{c_char, c_void};
 
-/// API version for compatibility checks between kish and plugins.
-pub const KISH_PLUGIN_API_VERSION: u32 = 2;
+/// API version for compatibility checks between yosh and plugins.
+pub const YOSH_PLUGIN_API_VERSION: u32 = 2;
 
 // ── Capability bitflags ───────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ pub const CAP_ALL: u32 = CAP_VARIABLES_READ
     | CAP_HOOK_ON_CD
     | CAP_HOOK_PRE_PROMPT;
 
-/// Plugin metadata returned by kish_plugin_decl().
+/// Plugin metadata returned by yosh_plugin_decl().
 #[repr(C)]
 pub struct PluginDecl {
     pub api_version: u32,
@@ -38,9 +38,9 @@ pub struct PluginDecl {
 unsafe impl Send for PluginDecl {}
 unsafe impl Sync for PluginDecl {}
 
-/// API callbacks kish provides to plugins.
+/// API callbacks yosh provides to plugins.
 ///
-/// `ctx` is an opaque pointer to kish internals. Plugins pass it back to each
+/// `ctx` is an opaque pointer to yosh internals. Plugins pass it back to each
 /// callback but must not dereference or store it beyond the current call.
 #[repr(C)]
 pub struct HostApi {

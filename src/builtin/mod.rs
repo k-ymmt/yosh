@@ -52,16 +52,16 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "kill" => regular::builtin_kill(args, env.process.shell_pgid),
         "wait" => {
             // Handled in Executor::exec_simple_command — should not reach here
-            eprintln!("kish: wait: internal error");
+            eprintln!("yosh: wait: internal error");
             1
         }
         "fg" | "bg" | "jobs" => {
             // Handled in Executor::exec_simple_command
-            eprintln!("kish: {}: internal error", name);
+            eprintln!("yosh: {}: internal error", name);
             1
         }
         _ => {
-            eprintln!("kish: {}: not a regular builtin", name);
+            eprintln!("yosh: {}: not a regular builtin", name);
             1
         }
     }
@@ -73,7 +73,7 @@ mod tests {
     use crate::env::ShellEnv;
 
     fn make_env() -> ShellEnv {
-        ShellEnv::new("kish", vec![])
+        ShellEnv::new("yosh", vec![])
     }
 
     #[test]

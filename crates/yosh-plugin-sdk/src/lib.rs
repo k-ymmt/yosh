@@ -1,6 +1,6 @@
 pub mod style;
 
-pub use kish_plugin_api as ffi;
+pub use yosh_plugin_api as ffi;
 
 /// Capabilities a plugin can request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,7 +162,7 @@ impl PluginApi {
 
 /// Generate all C ABI exports for a Plugin implementation.
 ///
-/// Usage: `kish_plugin_sdk::export!(MyPlugin);`
+/// Usage: `yosh_plugin_sdk::export!(MyPlugin);`
 ///
 /// The plugin type must implement `Plugin + Default`.
 /// Plugin name and version are taken from Cargo.toml at compile time.
@@ -184,7 +184,7 @@ macro_rules! export {
 
         #[allow(unsafe_attr_outside_unsafe)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn kish_plugin_decl() -> *const $crate::ffi::PluginDecl {
+        pub extern "C" fn yosh_plugin_decl() -> *const $crate::ffi::PluginDecl {
             PLUGIN_DECL_STATIC.get_or_init(|| {
                 let name = PLUGIN_NAME_CSTR.get_or_init(|| {
                     CString::new(env!("CARGO_PKG_NAME")).unwrap()
@@ -193,7 +193,7 @@ macro_rules! export {
                     CString::new(env!("CARGO_PKG_VERSION")).unwrap()
                 });
                 $crate::ffi::PluginDecl {
-                    api_version: $crate::ffi::KISH_PLUGIN_API_VERSION,
+                    api_version: $crate::ffi::YOSH_PLUGIN_API_VERSION,
                     name: name.as_ptr(),
                     version: version.as_ptr(),
                     required_capabilities: {
@@ -208,7 +208,7 @@ macro_rules! export {
 
         #[allow(unsafe_attr_outside_unsafe)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn kish_plugin_init(api: *const $crate::ffi::HostApi) -> i32 {
+        pub extern "C" fn yosh_plugin_init(api: *const $crate::ffi::HostApi) -> i32 {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let plugin_api = unsafe { $crate::PluginApi::from_raw(api) };
                 let mut plugin = <$plugin_type as Default>::default();
@@ -227,10 +227,10 @@ macro_rules! export {
 
         #[allow(unsafe_attr_outside_unsafe)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn kish_plugin_commands(count: *mut u32) -> *const *const c_char {
+        pub extern "C" fn yosh_plugin_commands(count: *mut u32) -> *const *const c_char {
             let cstrs = COMMAND_CSTRS.get_or_init(|| {
                 let plugin = PLUGIN_INSTANCE.lock().unwrap();
-                let p = plugin.as_ref().expect("kish_plugin_commands called before init");
+                let p = plugin.as_ref().expect("yosh_plugin_commands called before init");
                 $crate::Plugin::commands(p)
                     .iter()
                     .map(|s| CString::new(*s).unwrap())
@@ -246,7 +246,7 @@ macro_rules! export {
 
         #[allow(unsafe_attr_outside_unsafe)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn kish_plugin_exec(
+        pub extern "C" fn yosh_plugin_exec(
             api: *const $crate::ffi::HostApi,
             name: *const c_char,
             argc: i32,
@@ -271,7 +271,7 @@ macro_rules! export {
 
         #[allow(unsafe_attr_outside_unsafe)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn kish_plugin_hook_pre_exec(
+        pub extern "C" fn yosh_plugin_hook_pre_exec(
             api: *const $crate::ffi::HostApi,
             cmd: *const c_char,
         ) {
@@ -287,7 +287,7 @@ macro_rules! export {
 
         #[allow(unsafe_attr_outside_unsafe)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn kish_plugin_hook_post_exec(
+        pub extern "C" fn yosh_plugin_hook_post_exec(
             api: *const $crate::ffi::HostApi,
             cmd: *const c_char,
             exit_code: i32,
@@ -304,7 +304,7 @@ macro_rules! export {
 
         #[allow(unsafe_attr_outside_unsafe)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn kish_plugin_hook_on_cd(
+        pub extern "C" fn yosh_plugin_hook_on_cd(
             api: *const $crate::ffi::HostApi,
             old_dir: *const c_char,
             new_dir: *const c_char,
@@ -322,7 +322,7 @@ macro_rules! export {
 
         #[allow(unsafe_attr_outside_unsafe)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn kish_plugin_hook_pre_prompt(
+        pub extern "C" fn yosh_plugin_hook_pre_prompt(
             api: *const $crate::ffi::HostApi,
         ) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -336,7 +336,7 @@ macro_rules! export {
 
         #[allow(unsafe_attr_outside_unsafe)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn kish_plugin_destroy() {
+        pub extern "C" fn yosh_plugin_destroy() {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut plugin = PLUGIN_INSTANCE.lock().unwrap();
                 if let Some(p) = plugin.as_mut() {

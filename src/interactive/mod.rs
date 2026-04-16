@@ -46,7 +46,7 @@ impl Repl {
 
         // Set history variable defaults
         let home = executor.env.vars.get("HOME").unwrap_or("").to_string();
-        let histfile = format!("{}/.kish_history", home);
+        let histfile = format!("{}/.yosh_history", home);
         let _ = executor.env.vars.set("HISTFILE", &histfile);
         let _ = executor.env.vars.set("HISTSIZE", "500");
         let _ = executor.env.vars.set("HISTFILESIZE", "500");
@@ -133,7 +133,7 @@ impl Repl {
                 Ok(None) => {
                     // EOF (Ctrl+D)
                     if self.executor.env.mode.options.ignoreeof {
-                        eprintln!("\r\nkish: Use \"exit\" to leave the shell.");
+                        eprintln!("\r\nyosh: Use \"exit\" to leave the shell.");
                         input_buffer.clear();
                         continue;
                     }
@@ -192,7 +192,7 @@ impl Repl {
                     input_buffer.clear();
                 }
                 ParseStatus::Error(msg) => {
-                    eprintln!("kish: {}", msg);
+                    eprintln!("yosh: {}", msg);
                     input_buffer.clear();
                 }
             }

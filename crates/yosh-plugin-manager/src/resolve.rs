@@ -71,8 +71,8 @@ mod tests {
 
     #[test]
     fn resolve_custom_template() {
-        let result = resolve_template("kish_{name}-{os}-{arch}.{ext}", "auto-env");
-        let expected = format!("kish_auto_env-{}-{}.{}", current_os(), current_arch(), lib_ext());
+        let result = resolve_template("yosh_{name}-{os}-{arch}.{ext}", "auto-env");
+        let expected = format!("yosh_auto_env-{}-{}.{}", current_os(), current_arch(), lib_ext());
         assert_eq!(result, expected);
     }
 

@@ -187,7 +187,7 @@ mod tests {
     use crate::env::ShellEnv;
 
     fn make_env() -> ShellEnv {
-        ShellEnv::new("kish", vec![])
+        ShellEnv::new("yosh", vec![])
     }
 
     fn unquoted(s: &str) -> ExpandedField {

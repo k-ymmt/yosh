@@ -31,7 +31,7 @@ pub fn wait_child(child: Pid) -> i32 {
         Ok(WaitStatus::Signaled(_, sig, _)) => 128 + sig as i32,
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("kish: waitpid: {}", e);
+            eprintln!("yosh: waitpid: {}", e);
             1
         }
     }

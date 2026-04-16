@@ -8,7 +8,7 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
         match env.vars.get("HOME") {
             Some(h) => h.to_string(),
             None => {
-                eprintln!("kish: cd: HOME not set");
+                eprintln!("yosh: cd: HOME not set");
                 return 1;
             }
         }
@@ -16,7 +16,7 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
         match env.vars.get("OLDPWD") {
             Some(old) => old.to_string(),
             None => {
-                eprintln!("kish: cd: OLDPWD not set");
+                eprintln!("yosh: cd: OLDPWD not set");
                 return 1;
             }
         }
@@ -43,13 +43,13 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> i32 {
                     let _ = env.vars.set("PWD", cwd_str);
                 }
                 Err(e) => {
-                    eprintln!("kish: cd: could not determine new directory: {}", e);
+                    eprintln!("yosh: cd: could not determine new directory: {}", e);
                 }
             }
             0
         }
         Err(e) => {
-            eprintln!("kish: cd: {}: {}", target, e);
+            eprintln!("yosh: cd: {}: {}", target, e);
             1
         }
     }
@@ -81,7 +81,7 @@ pub fn builtin_alias(args: &[String], env: &mut ShellEnv) -> i32 {
             match env.aliases.get(arg) {
                 Some(value) => println!("alias {}='{}'", arg, value),
                 None => {
-                    eprintln!("kish: alias: {}: not found", arg);
+                    eprintln!("yosh: alias: {}: not found", arg);
                     status = 1;
                 }
             }
@@ -92,7 +92,7 @@ pub fn builtin_alias(args: &[String], env: &mut ShellEnv) -> i32 {
 
 pub fn builtin_unalias(args: &[String], env: &mut ShellEnv) -> i32 {
     if args.is_empty() {
-        eprintln!("kish: unalias: usage: unalias name [name ...]");
+        eprintln!("yosh: unalias: usage: unalias name [name ...]");
         return 2;
     }
     let mut status = 0;
@@ -100,7 +100,7 @@ pub fn builtin_unalias(args: &[String], env: &mut ShellEnv) -> i32 {
         if arg == "-a" {
             env.aliases.clear();
         } else if !env.aliases.remove(arg) {
-            eprintln!("kish: unalias: {}: not found", arg);
+            eprintln!("yosh: unalias: {}: not found", arg);
             status = 1;
         }
     }
@@ -109,7 +109,7 @@ pub fn builtin_unalias(args: &[String], env: &mut ShellEnv) -> i32 {
 
 pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> i32 {
     if args.is_empty() {
-        eprintln!("kish: kill: usage: kill [-s sigspec | -signum] pid...");
+        eprintln!("yosh: kill: usage: kill [-s sigspec | -signum] pid...");
         return 2;
     }
 
@@ -120,7 +120,7 @@ pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> i32 {
     let (sig_num, pid_args) = match parse_kill_signal(args) {
         Ok(v) => v,
         Err(msg) => {
-            eprintln!("kish: kill: {}", msg);
+            eprintln!("yosh: kill: {}", msg);
             return 2;
         }
     };
@@ -130,7 +130,7 @@ pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> i32 {
         let pid: i32 = match pid_str.parse() {
             Ok(n) => n,
             Err(_) => {
-                eprintln!("kish: kill: {}: invalid pid", pid_str);
+                eprintln!("yosh: kill: {}: invalid pid", pid_str);
                 status = 1;
                 continue;
             }
@@ -141,7 +141,7 @@ pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> i32 {
         let target = if pid == 0 {
             let gpid = shell_pgid.as_raw();
             if gpid <= 1 {
-                eprintln!("kish: kill: invalid shell process group");
+                eprintln!("yosh: kill: invalid shell process group");
                 status = 1;
                 continue;
             }
@@ -153,7 +153,7 @@ pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> i32 {
             target,
             nix::sys::signal::Signal::try_from(sig_num).ok(),
         ) {
-            eprintln!("kish: kill: ({}) - {}", pid_str, e);
+            eprintln!("yosh: kill: ({}) - {}", pid_str, e);
             status = 1;
         }
     }
@@ -197,7 +197,7 @@ fn kill_list(args: &[String]) -> i32 {
             match crate::signal::signal_number_to_name(sig) {
                 Some(name) => println!("{}", name),
                 None => {
-                    eprintln!("kish: kill: {}: invalid signal number", arg);
+                    eprintln!("yosh: kill: {}: invalid signal number", arg);
                     return 1;
                 }
             }
@@ -205,7 +205,7 @@ fn kill_list(args: &[String]) -> i32 {
             match crate::signal::signal_name_to_number(arg) {
                 Ok(num) => println!("{}", num),
                 Err(e) => {
-                    eprintln!("kish: kill: {}", e);
+                    eprintln!("yosh: kill: {}", e);
                     return 1;
                 }
             }
@@ -258,7 +258,7 @@ fn umask_to_symbolic(mask: libc::mode_t) -> String {
 fn umask_set_octal(s: &str) -> i32 {
     for c in s.chars() {
         if !('0'..='7').contains(&c) {
-            eprintln!("kish: umask: {}: invalid octal number", s);
+            eprintln!("yosh: umask: {}: invalid octal number", s);
             return 1;
         }
     }
@@ -268,7 +268,7 @@ fn umask_set_octal(s: &str) -> i32 {
             0
         }
         Err(_) => {
-            eprintln!("kish: umask: {}: invalid octal number", s);
+            eprintln!("yosh: umask: {}: invalid octal number", s);
             1
         }
     }
@@ -283,7 +283,7 @@ fn umask_set_symbolic(s: &str) -> i32 {
     for clause in s.split(',') {
         let bytes = clause.as_bytes();
         if bytes.is_empty() {
-            eprintln!("kish: umask: {}: invalid symbolic mode", s);
+            eprintln!("yosh: umask: {}: invalid symbolic mode", s);
             return 1;
         }
 
@@ -309,7 +309,7 @@ fn umask_set_symbolic(s: &str) -> i32 {
 
         // Parse operator (=, +, -)
         if i >= bytes.len() || !matches!(bytes[i], b'=' | b'+' | b'-') {
-            eprintln!("kish: umask: {}: invalid symbolic mode", s);
+            eprintln!("yosh: umask: {}: invalid symbolic mode", s);
             return 1;
         }
         let op = bytes[i] as char;
@@ -323,7 +323,7 @@ fn umask_set_symbolic(s: &str) -> i32 {
                 b'w' => perm_bits |= 0o222,
                 b'x' => perm_bits |= 0o111,
                 _ => {
-                    eprintln!("kish: umask: {}: invalid symbolic mode", s);
+                    eprintln!("yosh: umask: {}: invalid symbolic mode", s);
                     return 1;
                 }
             }

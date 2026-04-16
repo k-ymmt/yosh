@@ -35,7 +35,7 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
         "times" => builtin_times(),
         "fc" => builtin_fc(args, executor),
         _ => {
-            eprintln!("kish: {}: not a special builtin", name);
+            eprintln!("yosh: {}: not a special builtin", name);
             1
         }
     }
@@ -52,7 +52,7 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> i32 {
         match args[0].parse::<i32>() {
             Ok(n) => n & 0xFF,
             Err(_) => {
-                eprintln!("kish: exit: {}: numeric argument required", args[0]);
+                eprintln!("yosh: exit: {}: numeric argument required", args[0]);
                 2
             }
         }
@@ -84,7 +84,7 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> i32 {
             let name = &arg[..pos];
             let value = &arg[pos + 1..];
             if let Err(e) = env.vars.set(name, value) {
-                eprintln!("kish: export: {}", e);
+                eprintln!("yosh: export: {}", e);
                 status = 1;
                 continue;
             }
@@ -101,7 +101,7 @@ fn builtin_unset(args: &[String], env: &mut ShellEnv) -> i32 {
     let mut status = 0;
     for name in args {
         if let Err(e) = env.vars.unset(name) {
-            eprintln!("kish: unset: {}", e);
+            eprintln!("yosh: unset: {}", e);
             status = 1;
         }
     }
@@ -131,7 +131,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> i32 {
             let name = &arg[..pos];
             let value = &arg[pos + 1..];
             if let Err(e) = env.vars.set(name, value) {
-                eprintln!("kish: readonly: {}", e);
+                eprintln!("yosh: readonly: {}", e);
                 status = 1;
                 continue;
             }
@@ -145,7 +145,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> i32 {
 
 fn builtin_return(args: &[String], env: &mut ShellEnv) -> i32 {
     if env.vars.scope_depth() <= 1 && !env.mode.in_dot_script {
-        eprintln!("kish: return: can only return from a function or sourced script");
+        eprintln!("yosh: return: can only return from a function or sourced script");
         return 1;
     }
     let code = if args.is_empty() {
@@ -154,7 +154,7 @@ fn builtin_return(args: &[String], env: &mut ShellEnv) -> i32 {
         match args[0].parse::<i32>() {
             Ok(n) => n & 0xFF,
             Err(_) => {
-                eprintln!("kish: return: {}: numeric argument required", args[0]);
+                eprintln!("yosh: return: {}: numeric argument required", args[0]);
                 2
             }
         }
@@ -169,12 +169,12 @@ fn builtin_break(args: &[String], env: &mut ShellEnv) -> i32 {
     } else {
         match args[0].parse::<usize>() {
             Ok(0) => {
-                eprintln!("kish: break: loop count must be > 0");
+                eprintln!("yosh: break: loop count must be > 0");
                 return 1;
             }
             Ok(n) => n,
             Err(_) => {
-                eprintln!("kish: break: {}: numeric argument required", args[0]);
+                eprintln!("yosh: break: {}: numeric argument required", args[0]);
                 return 1;
             }
         }
@@ -189,12 +189,12 @@ fn builtin_continue(args: &[String], env: &mut ShellEnv) -> i32 {
     } else {
         match args[0].parse::<usize>() {
             Ok(0) => {
-                eprintln!("kish: continue: loop count must be > 0");
+                eprintln!("yosh: continue: loop count must be > 0");
                 return 1;
             }
             Ok(n) => n,
             Err(_) => {
-                eprintln!("kish: continue: {}: numeric argument required", args[0]);
+                eprintln!("yosh: continue: {}: numeric argument required", args[0]);
                 return 1;
             }
         }
@@ -243,7 +243,7 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
                 return 0;
             }
             if let Err(e) = env.mode.options.set_by_name(&args[i], on) {
-                eprintln!("kish: {}", e);
+                eprintln!("yosh: {}", e);
                 return 1;
             }
             i += 1;
@@ -253,7 +253,7 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> i32 {
             let on = arg.starts_with('-');
             for c in arg[1..].chars() {
                 if let Err(e) = env.mode.options.set_by_char(c, on) {
-                    eprintln!("kish: {}", e);
+                    eprintln!("yosh: {}", e);
                     return 1;
                 }
             }
@@ -275,7 +275,7 @@ fn builtin_eval(args: &[String], executor: &mut Executor) -> i32 {
     match crate::parser::Parser::new_with_aliases(&input, &executor.env.aliases).parse_program() {
         Ok(program) => executor.exec_program(&program),
         Err(e) => {
-            eprintln!("kish: eval: {}", e);
+            eprintln!("yosh: eval: {}", e);
             2
         }
     }
@@ -289,7 +289,7 @@ fn builtin_exec(args: &[String], _env: &mut ShellEnv) -> i32 {
     let c_cmd = match CString::new(cmd.as_str()) {
         Ok(s) => s,
         Err(_) => {
-            eprintln!("kish: exec: {}: invalid command name", cmd);
+            eprintln!("yosh: exec: {}: invalid command name", cmd);
             return 126;
         }
     };
@@ -298,7 +298,7 @@ fn builtin_exec(args: &[String], _env: &mut ShellEnv) -> i32 {
         match CString::new(a.as_str()) {
             Ok(s) => c_args.push(s),
             Err(_) => {
-                eprintln!("kish: exec: {}: invalid argument", a);
+                eprintln!("yosh: exec: {}: invalid argument", a);
                 return 126;
             }
         }
@@ -306,9 +306,9 @@ fn builtin_exec(args: &[String], _env: &mut ShellEnv) -> i32 {
     let err = execvp(&c_cmd, &c_args).unwrap_err();
     use nix::errno::Errno;
     match err {
-        Errno::ENOENT => { eprintln!("kish: exec: {}: not found", cmd); 127 }
-        Errno::EACCES => { eprintln!("kish: exec: {}: permission denied", cmd); 126 }
-        _ => { eprintln!("kish: exec: {}: {}", cmd, err); 126 }
+        Errno::ENOENT => { eprintln!("yosh: exec: {}: not found", cmd); 127 }
+        Errno::EACCES => { eprintln!("yosh: exec: {}: permission denied", cmd); 126 }
+        _ => { eprintln!("yosh: exec: {}: {}", cmd, err); 126 }
     }
 }
 
@@ -339,7 +339,7 @@ fn builtin_trap(args: &[String], env: &mut ShellEnv) -> i32 {
         if matches!(action, TrapAction::Default) {
             env.traps.remove_trap(sig);
         } else if let Err(e) = env.traps.set_trap(sig, action.clone()) {
-            eprintln!("kish: {}", e);
+            eprintln!("yosh: {}", e);
             status = 1;
         }
     }
@@ -348,7 +348,7 @@ fn builtin_trap(args: &[String], env: &mut ShellEnv) -> i32 {
 
 fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
     if args.is_empty() {
-        eprintln!("kish: .: filename argument required");
+        eprintln!("yosh: .: filename argument required");
         return 2;
     }
     let filename = &args[0];
@@ -366,7 +366,7 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
             }
             match found {
                 Some(p) => p,
-                None => { eprintln!("kish: .: {}: not found", filename); return 1; }
+                None => { eprintln!("yosh: .: {}: not found", filename); return 1; }
             }
         } else {
             std::path::PathBuf::from(filename)
@@ -374,7 +374,7 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
     };
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(e) => { eprintln!("kish: .: {}: {}", path.display(), e); return 1; }
+        Err(e) => { eprintln!("yosh: .: {}: {}", path.display(), e); return 1; }
     };
     let prev_dot_script = executor.env.mode.in_dot_script;
     executor.env.mode.in_dot_script = true;
@@ -389,7 +389,7 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> i32 {
             }
             s
         }
-        Err(e) => { eprintln!("kish: .: {}", e); 2 }
+        Err(e) => { eprintln!("yosh: .: {}", e); 2 }
     };
     executor.env.mode.in_dot_script = prev_dot_script;
     status
@@ -402,13 +402,13 @@ fn builtin_shift(args: &[String], env: &mut ShellEnv) -> i32 {
         match args[0].parse::<usize>() {
             Ok(n) => n,
             Err(_) => {
-                eprintln!("kish: shift: {}: numeric argument required", args[0]);
+                eprintln!("yosh: shift: {}: numeric argument required", args[0]);
                 return 1;
             }
         }
     };
     if n > env.vars.positional_params().len() {
-        eprintln!("kish: shift: shift count out of range");
+        eprintln!("yosh: shift: shift count out of range");
         return 1;
     }
     env.vars.set_positional_params(env.vars.positional_params()[n..].to_vec());
@@ -419,7 +419,7 @@ fn builtin_times() -> i32 {
     let mut tms: libc::tms = unsafe { std::mem::zeroed() };
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
     if unsafe { libc::times(&mut tms) } == u64::MAX {
-        eprintln!("kish: times: failed");
+        eprintln!("yosh: times: failed");
         return 1;
     }
     let fmt = |t: libc::clock_t| -> String {
@@ -439,7 +439,7 @@ fn builtin_times() -> i32 {
 
 fn builtin_fc(args: &[String], executor: &mut Executor) -> i32 {
     if executor.env.history.entries().is_empty() {
-        eprintln!("kish: fc: history is empty");
+        eprintln!("yosh: fc: history is empty");
         return 1;
     }
 
@@ -456,7 +456,7 @@ fn builtin_fc(args: &[String], executor: &mut Executor) -> i32 {
         if arg == "-e" {
             i += 1;
             if i >= args.len() {
-                eprintln!("kish: fc: -e: option requires an argument");
+                eprintln!("yosh: fc: -e: option requires an argument");
                 return 1;
             }
             editor = Some(args[i].clone());
@@ -468,7 +468,7 @@ fn builtin_fc(args: &[String], executor: &mut Executor) -> i32 {
                     'r' => reverse = true,
                     's' => substitute_mode = true,
                     _ => {
-                        eprintln!("kish: fc: -{}: invalid option", ch);
+                        eprintln!("yosh: fc: -{}: invalid option", ch);
                         return 2;
                     }
                 }
@@ -572,10 +572,10 @@ fn fc_edit(
         commands.reverse();
     }
 
-    let tmp_path = match create_secure_tempfile("kish_fc") {
+    let tmp_path = match create_secure_tempfile("yosh_fc") {
         Ok(path) => path,
         Err(e) => {
-            eprintln!("kish: fc: {}", e);
+            eprintln!("yosh: fc: {}", e);
             return 1;
         }
     };
@@ -585,7 +585,7 @@ fn fc_edit(
         let mut file = match OpenOptions::new().write(true).mode(0o600).open(&tmp_path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("kish: fc: cannot open temp file: {}", e);
+                eprintln!("yosh: fc: cannot open temp file: {}", e);
                 let _ = std::fs::remove_file(&tmp_path);
                 return 1;
             }
@@ -604,7 +604,7 @@ fn fc_edit(
             return s.code().unwrap_or(1);
         }
         Err(e) => {
-            eprintln!("kish: fc: {}: {}", editor_cmd, e);
+            eprintln!("yosh: fc: {}: {}", editor_cmd, e);
             let _ = std::fs::remove_file(&tmp_path);
             return 127;
         }
@@ -613,7 +613,7 @@ fn fc_edit(
     let content = match std::fs::read_to_string(&tmp_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("kish: fc: cannot read temp file: {}", e);
+            eprintln!("yosh: fc: cannot read temp file: {}", e);
             let _ = std::fs::remove_file(&tmp_path);
             return 1;
         }
@@ -631,7 +631,7 @@ fn fc_edit(
 fn fc_substitute(operands: &[String], executor: &mut Executor) -> i32 {
     let entries = executor.env.history.entries();
     if entries.is_empty() {
-        eprintln!("kish: fc: history is empty");
+        eprintln!("yosh: fc: history is empty");
         return 1;
     }
 
@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn exit_builtin_sets_exit_requested_in_interactive_mode() {
-        let mut executor = Executor::new("kish", vec![]);
+        let mut executor = Executor::new("yosh", vec![]);
         executor.env.mode.is_interactive = true;
         let status = exec_special_builtin("exit", &["42".to_string()], &mut executor);
         assert_eq!(status, 42);
@@ -685,7 +685,7 @@ mod tests {
 
     #[test]
     fn exit_builtin_uses_last_status_when_no_args() {
-        let mut executor = Executor::new("kish", vec![]);
+        let mut executor = Executor::new("yosh", vec![]);
         executor.env.mode.is_interactive = true;
         executor.env.exec.last_exit_status = 7;
         exec_special_builtin("exit", &[], &mut executor);
