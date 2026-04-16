@@ -70,6 +70,11 @@ impl Keymap {
                     EditAction::MoveForward
                 }
             }
+            // Ctrl+J (LF, 0x0A) is treated as Enter.  When input arrives via
+            // the PTY before raw mode is enabled, the kernel ICRNL flag converts
+            // CR to LF.  crossterm interprets a raw-mode LF as Ctrl+J rather
+            // than Enter, so we map it explicitly to avoid dropped input.
+            (KeyCode::Char('j'), true, false) => EditAction::Submit,
             (KeyCode::Char('k'), true, false) => EditAction::KillToEnd,
             (KeyCode::Char('l'), true, false) => EditAction::ClearScreen,
             (KeyCode::Char('r'), true, false) => EditAction::FuzzySearch,
