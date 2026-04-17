@@ -34,13 +34,14 @@ impl Executor {
 
         // Assignment-only command (no words)
         if expanded.is_empty() {
-            // Track the exit status from any command substitutions in the assignments.
-            // POSIX: the exit status of an assignment-only command is the exit status
-            // of the last command substitution performed during expansion.
-            let mut last_cmd_sub_status = 0i32;
+            // POSIX §2.9.1: exit status of an assignment-only command is the status
+            // of the last command substitution performed, or 0 if none.
+            //
+            // $? must remain visible to value expansions (e.g. `x=$?`) until a
+            // command substitution overwrites it, so we do NOT reset it up front.
+            let mut last_cmd_sub_status: Option<i32> = None;
             for assignment in &cmd.assignments {
-                // Reset before each expansion so we can capture per-assignment status
-                self.env.exec.last_exit_status = 0;
+                let status_before = self.env.exec.last_exit_status;
                 let value = match assignment.value.as_ref() {
                     Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
                         Ok(v) => v,
@@ -51,15 +52,19 @@ impl Executor {
                     },
                     None => String::new(),
                 };
-                // Capture the status set by any command substitution during expansion
-                last_cmd_sub_status = self.env.exec.last_exit_status;
+                // If expansion ran a command substitution, $? was updated to its
+                // exit status; remember that for the overall assignment-command status.
+                if self.env.exec.last_exit_status != status_before {
+                    last_cmd_sub_status = Some(self.env.exec.last_exit_status);
+                }
                 if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.mode.options.allexport) {
                     self.env.exec.last_exit_status = 1;
                     return Err(ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, format!("{}", e)));
                 }
             }
-            self.env.exec.last_exit_status = last_cmd_sub_status;
-            return Ok(last_cmd_sub_status);
+            let final_status = last_cmd_sub_status.unwrap_or(0);
+            self.env.exec.last_exit_status = final_status;
+            return Ok(final_status);
         }
 
         if self.env.mode.options.xtrace && !expanded.is_empty() {
