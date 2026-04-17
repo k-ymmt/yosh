@@ -63,6 +63,7 @@
 - [ ] `render_verbose` Function arm has no unit test — `command -V <function>` branch exercised only through E2E; add a focused unit test in `src/builtin/command.rs` tests module
 - [ ] `preview_command` has no direct unit tests — only exercised via E2E; add focused tests for compound-command / unexpandable-word fallback and pipeline first-command extraction (`src/exec/mod.rs`)
 - [ ] `JobSpecError::Ambiguous` fully qualified at 3 call sites in `src/exec/mod.rs` (builtin_wait/fg/bg) — add a module-level `use crate::env::jobs::JobSpecError;` for readability
+- [ ] `highlight_scanner.rs` `KEYWORDS` duplicates POSIX §2.4 list — `src/interactive/highlight_scanner.rs:66-69` defines its own copy of the 16 reserved words, separate from the canonical `crate::lexer::reserved::RESERVED_WORDS`. Consolidate once the contextual subsets (`COMMAND_POSITION_KEYWORDS` includes `"time"`, command-position restoration logic) are re-expressed in terms of the canonical list (`src/interactive/highlight_scanner.rs`)
 
 ## Future: E2E Test Expansion
 
