@@ -90,9 +90,14 @@ fn wait_for_raw_mode(session: &OsSession) {
             return;
         }
         if Instant::now() >= deadline {
+            let errno = if rc != 0 {
+                std::io::Error::last_os_error().to_string()
+            } else {
+                "ok".to_string()
+            };
             panic!(
-                "wait_for_raw_mode timed out: tcgetattr rc={}, c_lflag=0x{:x}",
-                rc, termios.c_lflag,
+                "wait_for_raw_mode timed out: tcgetattr rc={} ({}), c_lflag=0x{:x}",
+                rc, errno, termios.c_lflag,
             );
         }
         std::thread::sleep(Duration::from_millis(2));
