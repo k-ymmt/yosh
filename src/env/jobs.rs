@@ -271,24 +271,16 @@ impl JobTable {
 
     /// Resolve a job specification string to a JobId.
     ///
-    /// Supported forms:
-    /// - `%n`  — job by numeric id
-    /// - `%%`  — current job
-    /// - `%+`  — current job (same as `%%`)
-    /// - `%-`  — previous job
-    pub fn resolve_job_spec(&self, spec: &str) -> Option<JobId> {
-        if !spec.starts_with('%') {
-            return None;
-        }
-        let rest = &spec[1..];
-        match rest {
-            "%" | "+" => self.current,
-            "-" => self.previous,
-            _ => {
-                let n: JobId = rest.parse().ok()?;
-                if self.jobs.contains_key(&n) { Some(n) } else { None }
-            }
-        }
+    /// Supported forms (see `parse_job_spec` for syntax):
+    /// - `%%` / `%+` — current job
+    /// - `%-` — previous job
+    /// - `%n` — job by numeric id
+    /// - `%string` — command begins with string
+    /// - `%?string` — command contains string
+    ///
+    /// Returns `Err(Ambiguous)` when a Prefix/Substring spec matches 2+ jobs.
+    pub fn resolve_job_spec(&self, spec: &str) -> Result<JobId, JobSpecError> {
+        self.resolve(parse_job_spec(spec)?)
     }
 
     /// Resolve a parsed `JobSpec` to a `JobId`.
@@ -690,21 +682,21 @@ mod tests {
     fn test_resolve_job_spec_numeric() {
         let mut table = JobTable::default();
         let id = table.add_job(pid(1), vec![pid(1)], "x", false);
-        assert_eq!(table.resolve_job_spec("%1"), Some(id));
+        assert_eq!(table.resolve_job_spec("%1"), Ok(id));
     }
 
     #[test]
     fn test_resolve_job_spec_percent_percent() {
         let mut table = JobTable::default();
         let id = table.add_job(pid(1), vec![pid(1)], "x", false);
-        assert_eq!(table.resolve_job_spec("%%"), Some(id));
+        assert_eq!(table.resolve_job_spec("%%"), Ok(id));
     }
 
     #[test]
     fn test_resolve_job_spec_plus() {
         let mut table = JobTable::default();
         let id = table.add_job(pid(1), vec![pid(1)], "x", false);
-        assert_eq!(table.resolve_job_spec("%+"), Some(id));
+        assert_eq!(table.resolve_job_spec("%+"), Ok(id));
     }
 
     #[test]
@@ -712,15 +704,29 @@ mod tests {
         let mut table = JobTable::default();
         let id1 = table.add_job(pid(1), vec![pid(1)], "a", false);
         let _id2 = table.add_job(pid(2), vec![pid(2)], "b", false);
-        assert_eq!(table.resolve_job_spec("%-"), Some(id1));
+        assert_eq!(table.resolve_job_spec("%-"), Ok(id1));
     }
 
     #[test]
     fn test_resolve_job_spec_invalid() {
         let table = JobTable::default();
-        assert!(table.resolve_job_spec("%99").is_none());
-        assert!(table.resolve_job_spec("foo").is_none());
-        assert!(table.resolve_job_spec("%abc").is_none());
+        // "%99" — syntactically valid Numeric(99) but no such job
+        assert_eq!(table.resolve_job_spec("%99"), Err(JobSpecError::NoSuchJob));
+        // "foo" — doesn't start with '%'
+        assert_eq!(table.resolve_job_spec("foo"), Err(JobSpecError::Malformed));
+        // "%abc" — Prefix("abc") against empty table → NoSuchJob (previously Malformed)
+        assert_eq!(table.resolve_job_spec("%abc"), Err(JobSpecError::NoSuchJob));
+    }
+
+    #[test]
+    fn test_resolve_job_spec_ambiguous() {
+        let mut table = JobTable::default();
+        table.add_job(pid(1), vec![pid(1)], "sleep 10", false);
+        table.add_job(pid(2), vec![pid(2)], "sleep 20", false);
+        assert_eq!(
+            table.resolve_job_spec("%sleep"),
+            Err(JobSpecError::Ambiguous)
+        );
     }
 
     // -----------------------------------------------------------------------

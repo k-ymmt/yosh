@@ -379,11 +379,21 @@ impl Executor {
         } else {
             let mut pids = Vec::new();
             for arg in args {
-                if let Some(job_id) = self.env.process.jobs.resolve_job_spec(arg) {
-                    if let Some(job) = self.env.process.jobs.get(job_id) {
-                        pids.push(job.pgid);
-                    } else {
-                        return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: no such job", arg)));
+                if arg.starts_with('%') {
+                    match self.env.process.jobs.resolve_job_spec(arg) {
+                        Ok(job_id) => {
+                            if let Some(job) = self.env.process.jobs.get(job_id) {
+                                pids.push(job.pgid);
+                            } else {
+                                return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: no such job", arg)));
+                            }
+                        }
+                        Err(crate::env::jobs::JobSpecError::Ambiguous) => {
+                            return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("wait: {}: ambiguous job spec", arg)));
+                        }
+                        Err(_) => {
+                            return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: no such job", arg)));
+                        }
                     }
                 } else {
                     match arg.parse::<i32>() {
@@ -519,8 +529,11 @@ impl Executor {
             }
         } else {
             match self.env.process.jobs.resolve_job_spec(&args[0]) {
-                Some(id) => id,
-                None => {
+                Ok(id) => id,
+                Err(crate::env::jobs::JobSpecError::Ambiguous) => {
+                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("fg: {}: ambiguous job spec", args[0])));
+                }
+                Err(_) => {
                     return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("fg: {}: no such job", args[0])));
                 }
             }
@@ -579,8 +592,11 @@ impl Executor {
             }
         } else {
             match self.env.process.jobs.resolve_job_spec(&args[0]) {
-                Some(id) => id,
-                None => {
+                Ok(id) => id,
+                Err(crate::env::jobs::JobSpecError::Ambiguous) => {
+                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("bg: {}: ambiguous job spec", args[0])));
+                }
+                Err(_) => {
                     return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("bg: {}: no such job", args[0])));
                 }
             }
