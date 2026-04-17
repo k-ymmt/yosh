@@ -76,7 +76,10 @@ pub fn parse_flags(args: &[String]) -> Result<CommandFlags, String> {
 /// When `name` is unknown, stdout is empty and exit is 1.
 pub fn render_brief(env: &ShellEnv, name: &str) -> (String, i32) {
     match resolve_command_kind(env, name) {
-        CommandKind::Alias(val) => (format!("alias {}='{}'", name, val), 0),
+        CommandKind::Alias(val) => {
+            let escaped = val.replace('\'', r"'\''");
+            (format!("alias {}='{}'", name, escaped), 0)
+        }
         CommandKind::Keyword => (name.to_string(), 0),
         CommandKind::Function => (name.to_string(), 0),
         CommandKind::Builtin(_) => (name.to_string(), 0),
@@ -180,6 +183,17 @@ mod tests {
         env.aliases.set("ll", "ls -l");
         let (out, code) = render_brief(&env, "ll");
         assert_eq!(out, "alias ll='ls -l'");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn brief_alias_with_single_quote() {
+        // An alias value containing ' should be escaped as '\'' so the output
+        // round-trips through the shell's quoting rules (matches bash).
+        let mut env = env_with_path("/bin:/usr/bin");
+        env.aliases.set("weird", r"it's weird");
+        let (out, code) = render_brief(&env, "weird");
+        assert_eq!(out, r"alias weird='it'\''s weird'");
         assert_eq!(code, 0);
     }
 
