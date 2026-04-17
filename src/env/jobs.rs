@@ -960,6 +960,16 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_substring_none() {
+        let mut table = JobTable::default();
+        table.add_job(pid(1), vec![pid(1)], "sleep 30", false);
+        assert_eq!(
+            table.resolve(JobSpec::Substring("vim")),
+            Err(JobSpecError::NoSuchJob)
+        );
+    }
+
+    #[test]
     fn test_resolve_substring_ambiguous() {
         let mut table = JobTable::default();
         table.add_job(pid(1), vec![pid(1)], "cat foo", false);
