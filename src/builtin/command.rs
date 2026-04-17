@@ -113,6 +113,17 @@ mod tests {
     }
 
     #[test]
+    fn conflicting_v_flags_last_wins() {
+        // POSIX does not forbid -vV / -Vv. Lock "last wins" in (matches
+        // standard getopt-style behavior).
+        let p = parse_flags(&v(&["-vV", "ls"])).unwrap();
+        assert_eq!(p.verbose, Verbosity::Verbose);
+
+        let p = parse_flags(&v(&["-Vv", "ls"])).unwrap();
+        assert_eq!(p.verbose, Verbosity::Brief);
+    }
+
+    #[test]
     fn double_dash_stops_parsing() {
         let p = parse_flags(&v(&["--", "-v", "arg"])).unwrap();
         assert_eq!(p.verbose, Verbosity::Execute);

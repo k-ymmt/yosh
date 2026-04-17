@@ -62,6 +62,11 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
             eprintln!("yosh: {}: internal error", name);
             Ok(1)
         }
+        "command" => {
+            // Dispatched from exec/simple.rs — should not reach here.
+            eprintln!("yosh: command: internal error");
+            Ok(1)
+        }
         _ => {
             eprintln!("yosh: {}: not a regular builtin", name);
             Ok(1)
