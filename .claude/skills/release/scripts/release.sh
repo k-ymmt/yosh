@@ -139,7 +139,59 @@ phase_bump() {
 }
 
 phase_publish() {
-  fail "publish phase not implemented yet"
+  local from=""
+  if [[ "${1:-}" == "--from" ]]; then
+    from="${2:-}"
+    [[ -n "$from" ]] || fail "--from requires a crate name (one of: ${CRATES[*]})"
+    shift 2 || true
+  fi
+
+  # Validate --from value if given.
+  if [[ -n "$from" ]]; then
+    local valid=0
+    local c
+    for c in "${CRATES[@]}"; do
+      [[ "$c" == "$from" ]] && valid=1 && break
+    done
+    [[ $valid -eq 1 ]] || fail "--from '$from' is not a known crate (expected one of: ${CRATES[*]})"
+  fi
+
+  local started=0
+  [[ -z "$from" ]] && started=1
+
+  local crate cmd
+  for crate in "${CRATES[@]}"; do
+    if [[ $started -eq 0 ]]; then
+      if [[ "$crate" == "$from" ]]; then
+        started=1
+      else
+        echo "yosh-release: skipping $crate (resuming from $from)" >&2
+        continue
+      fi
+    fi
+
+    echo "yosh-release: publishing $crate..." >&2
+    if [[ "$crate" == "yosh" ]]; then
+      cmd=(cargo publish)
+    else
+      cmd=(cargo publish -p "$crate")
+    fi
+
+    if ! "${cmd[@]}"; then
+      cat >&2 <<EOF
+yosh-release: 'cargo publish' failed for $crate.
+  - Earlier crates in this run are already on crates.io and cannot be unpublished (only yanked).
+  - After fixing the cause, resume with:
+      .claude/skills/release/scripts/release.sh publish --from $crate
+  - If you need to restart from the beginning of the publish phase:
+      .claude/skills/release/scripts/release.sh publish
+    (earlier crates will fail with 'already published' — use --from instead.)
+EOF
+      exit 1
+    fi
+  done
+
+  echo "yosh-release: all crates published" >&2
 }
 
 phase_push() {
