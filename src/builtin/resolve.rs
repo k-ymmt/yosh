@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use crate::builtin::{classify_builtin, BuiltinKind};
 use crate::env::ShellEnv;
 use crate::exec::command::find_in_path;
+use crate::lexer::reserved::is_posix_reserved_word;
 
 /// Classification of a command name against the current shell state.
 #[derive(Debug, PartialEq, Eq)]
@@ -24,16 +25,6 @@ pub enum CommandKind {
     NotFound,
 }
 
-/// POSIX reserved words per IEEE Std 1003.1-2017 §2.4.
-const RESERVED_WORDS: &[&str] = &[
-    "!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi",
-    "for", "if", "in", "then", "until", "while",
-];
-
-fn is_reserved_word(name: &str) -> bool {
-    RESERVED_WORDS.contains(&name)
-}
-
 /// Walk yosh's name-resolution order and report what `name` would bind to.
 ///
 /// Order (matches bash `command -V` reporting order):
@@ -46,7 +37,7 @@ pub fn resolve_command_kind(env: &ShellEnv, name: &str) -> CommandKind {
     if let Some(val) = env.aliases.get(name) {
         return CommandKind::Alias(val.to_string());
     }
-    if is_reserved_word(name) {
+    if is_posix_reserved_word(name) {
         return CommandKind::Keyword;
     }
     if env.functions.contains_key(name) {
