@@ -13,6 +13,7 @@
 //! `Executor` for redirects/assignments.
 
 use crate::builtin::resolve::{resolve_command_kind, CommandKind};
+use crate::builtin::BuiltinKind;
 use crate::env::ShellEnv;
 
 /// Parsed form of a `command [...]` invocation.
@@ -85,6 +86,40 @@ pub fn render_brief(env: &ShellEnv, name: &str) -> (String, i32) {
         CommandKind::Builtin(_) => (name.to_string(), 0),
         CommandKind::External(p) => (p.to_string_lossy().into_owned(), 0),
         CommandKind::NotFound => (String::new(), 1),
+    }
+}
+
+/// Render `-V` verbose output. Returns `(stdout_or_empty, stderr_or_empty, exit_status)`.
+/// For NotFound, stdout is empty and stderr holds the "not found" message.
+pub fn render_verbose(env: &ShellEnv, name: &str) -> (String, String, i32) {
+    match resolve_command_kind(env, name) {
+        CommandKind::Alias(val) => (format!("{} is aliased to '{}'", name, val), String::new(), 0),
+        CommandKind::Keyword => (format!("{} is a shell keyword", name), String::new(), 0),
+        CommandKind::Function => (format!("{} is a function", name), String::new(), 0),
+        CommandKind::Builtin(BuiltinKind::Special) => (
+            format!("{} is a special shell builtin", name),
+            String::new(),
+            0,
+        ),
+        CommandKind::Builtin(BuiltinKind::Regular) => (
+            format!("{} is a shell builtin", name),
+            String::new(),
+            0,
+        ),
+        CommandKind::Builtin(BuiltinKind::NotBuiltin) => {
+            // Cannot happen — resolve_command_kind never returns this.
+            (String::new(), format!("yosh: command: {}: not found", name), 1)
+        }
+        CommandKind::External(p) => (
+            format!("{} is {}", name, p.to_string_lossy()),
+            String::new(),
+            0,
+        ),
+        CommandKind::NotFound => (
+            String::new(),
+            format!("yosh: command: {}: not found", name),
+            1,
+        ),
     }
 }
 
@@ -223,6 +258,58 @@ mod tests {
         let env = env_with_path("/bin:/usr/bin");
         let (out, code) = render_brief(&env, "definitely_not_a_real_cmd_xyz");
         assert_eq!(out, "");
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn verbose_alias() {
+        let mut env = env_with_path("/bin:/usr/bin");
+        env.aliases.set("ll", "ls -l");
+        let (out, err, code) = render_verbose(&env, "ll");
+        assert_eq!(out, "ll is aliased to 'ls -l'");
+        assert_eq!(err, "");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn verbose_keyword() {
+        let env = env_with_path("/bin:/usr/bin");
+        let (out, _, code) = render_verbose(&env, "if");
+        assert_eq!(out, "if is a shell keyword");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn verbose_special_builtin() {
+        let env = env_with_path("/bin:/usr/bin");
+        let (out, _, code) = render_verbose(&env, "export");
+        assert_eq!(out, "export is a special shell builtin");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn verbose_regular_builtin() {
+        let env = env_with_path("/bin:/usr/bin");
+        let (out, _, code) = render_verbose(&env, "cd");
+        assert_eq!(out, "cd is a shell builtin");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn verbose_external() {
+        let env = env_with_path("/bin:/usr/bin");
+        let (out, _, code) = render_verbose(&env, "sh");
+        assert!(out.starts_with("sh is "), "got: {out}");
+        assert!(out.contains("/sh"), "got: {out}");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn verbose_not_found() {
+        let env = env_with_path("/bin:/usr/bin");
+        let (out, err, code) = render_verbose(&env, "definitely_not_a_real_cmd_xyz");
+        assert_eq!(out, "");
+        assert!(err.contains("not found"), "got stderr: {err}");
         assert_eq!(code, 1);
     }
 }
