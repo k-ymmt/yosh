@@ -12,7 +12,7 @@ use crate::error::{ShellError, RuntimeErrorKind};
 use crate::plugin::PluginManager;
 use crate::signal;
 use crate::parser::ast::{
-    AndOrList, AndOrOp, Command, CompleteCommand, Program, SeparatorOp,
+    AndOrList, AndOrOp, Command, CompleteCommand, Program, SeparatorOp, WordPart,
 };
 
 /// Result of waiting for a foreground job.
@@ -23,6 +23,37 @@ pub(crate) struct ForegroundWaitResult {
     pub process_statuses: Vec<(nix::unistd::Pid, i32)>,
     /// Whether the job was stopped (e.g., Ctrl+Z) rather than exiting.
     pub stopped: bool,
+}
+
+/// Reconstruct a short, human-readable preview of an AndOrList for display in
+/// `jobs` output. Uses the literal words of the first simple command when the
+/// pipeline starts with one and every word is purely literal; falls back to
+/// "(background)" otherwise (compound commands, unexpanded parameters, command
+/// substitutions in the command word, etc.).
+fn preview_command(and_or: &AndOrList) -> String {
+    let Some(Command::Simple(sc)) = and_or.first.commands.first() else {
+        return "(background)".to_string();
+    };
+    if sc.words.is_empty() {
+        return "(background)".to_string();
+    }
+    let mut words = Vec::with_capacity(sc.words.len());
+    for w in &sc.words {
+        let mut s = String::new();
+        for part in &w.parts {
+            match part {
+                WordPart::Literal(lit) => s.push_str(lit),
+                WordPart::SingleQuoted(lit) => {
+                    s.push('\'');
+                    s.push_str(lit);
+                    s.push('\'');
+                }
+                _ => return "(background)".to_string(),
+            }
+        }
+        words.push(s);
+    }
+    words.join(" ")
 }
 
 pub struct Executor {
@@ -308,7 +339,8 @@ impl Executor {
             }
             Ok(ForkResult::Parent { child }) => {
                 nix::unistd::setpgid(child, child).ok();
-                let job_id = self.env.process.jobs.add_job(child, vec![child], "(background)", false);
+                let command_name = preview_command(and_or);
+                let job_id = self.env.process.jobs.add_job(child, vec![child], command_name, false);
                 eprintln!("[{}] {}", job_id, child.as_raw());
                 Ok(0)
             }
