@@ -41,6 +41,18 @@ pub fn call_confstr() -> Option<String> {
     String::from_utf8(buf).ok()
 }
 
+use crate::env::ShellEnv;
+
+/// Return the POSIX default PATH, cached per `ShellEnv`.
+///
+/// Computed once via `call_confstr()`; falls back to `fallback_default_path()`
+/// if `confstr` fails. Never panics.
+pub fn default_path(env: &ShellEnv) -> &str {
+    env.default_path_cache
+        .get_or_init(|| call_confstr().unwrap_or_else(fallback_default_path))
+        .as_str()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,5 +87,41 @@ mod tests {
         // POSIX _CS_PATH never includes "." or empty segments.
         let p = call_confstr().expect("confstr should succeed");
         assert!(!p.split(':').any(|d| d == "." || d.is_empty()));
+    }
+
+    use crate::env::ShellEnv;
+
+    #[test]
+    fn default_path_is_non_empty() {
+        let env = ShellEnv::new("yosh", vec![]);
+        assert!(!default_path(&env).is_empty());
+    }
+
+    #[test]
+    fn default_path_contains_bin_or_usr_bin() {
+        let env = ShellEnv::new("yosh", vec![]);
+        let dp = default_path(&env);
+        assert!(
+            dp.split(':').any(|d| d == "/bin" || d == "/usr/bin"),
+            "expected /bin or /usr/bin in default path, got: {dp}"
+        );
+    }
+
+    #[test]
+    fn default_path_finds_sh() {
+        // /bin/sh is POSIX-mandatory on every conforming system (macOS + Linux).
+        use crate::exec::command::find_in_path;
+        let env = ShellEnv::new("yosh", vec![]);
+        let dp = default_path(&env);
+        assert!(find_in_path("sh", dp).is_some(), "expected to find sh in: {dp}");
+    }
+
+    #[test]
+    fn default_path_is_cached() {
+        // Two calls return the same slice — proves OnceLock caches.
+        let env = ShellEnv::new("yosh", vec![]);
+        let a = default_path(&env).as_ptr();
+        let b = default_path(&env).as_ptr();
+        assert_eq!(a, b, "default_path should return the same cached string");
     }
 }
