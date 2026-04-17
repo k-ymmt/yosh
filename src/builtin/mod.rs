@@ -1,3 +1,4 @@
+pub mod command;
 pub mod regular;
 pub mod resolve;
 pub mod special;
@@ -10,8 +11,8 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "break", ":", "continue", ".", "eval", "exec", "exit", "export",
     "readonly", "return", "set", "shift", "times", "trap", "unset", "fc",
     // Regular builtins
-    "cd", "echo", "true", "false", "alias", "unalias", "kill", "wait",
-    "fg", "bg", "jobs", "umask",
+    "cd", "command", "echo", "true", "false", "alias", "unalias", "kill",
+    "wait", "fg", "bg", "jobs", "umask",
 ];
 
 /// Classification of a command name as a POSIX builtin kind.
@@ -34,8 +35,8 @@ pub fn classify_builtin(name: &str) -> BuiltinKind {
         | "fc" => {
             BuiltinKind::Special
         }
-        "cd" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait"
-        | "fg" | "bg" | "jobs" | "umask" => BuiltinKind::Regular,
+        "cd" | "command" | "echo" | "true" | "false" | "alias" | "unalias"
+        | "kill" | "wait" | "fg" | "bg" | "jobs" | "umask" => BuiltinKind::Regular,
         _ => BuiltinKind::NotBuiltin,
     }
 }
