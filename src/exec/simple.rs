@@ -464,10 +464,120 @@ impl Executor {
                 code
             }
             Verbosity::Execute => {
-                // TODO (next tasks): -p path and no-flag path.
-                eprintln!("yosh: command: execution path not yet implemented");
+                if parsed.use_default_path {
+                    self.exec_command_with_default_path(&parsed.name, &parsed.rest)
+                } else {
+                    // No-flag path (function-skip): implemented in the next task.
+                    self.exec_command_skip_functions(&parsed.name, &parsed.rest)
+                }
+            }
+        }
+    }
+
+    /// `command -p name args...`: look up `name` via the POSIX default PATH
+    /// (ignoring $PATH entirely) and exec it. Builtins are still honored
+    /// for the name: POSIX says `command -p` runs the named utility in
+    /// preference over functions, but builtins are part of the utility set.
+    pub(crate) fn exec_command_with_default_path(
+        &mut self,
+        name: &str,
+        args: &[String],
+    ) -> i32 {
+        use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
+        use crate::builtin::special::exec_special_builtin;
+        use crate::env::default_path::default_path;
+
+        // If `name` is a builtin, run the builtin (POSIX: command -p still
+        // runs builtins; -p only affects external lookup).
+        match classify_builtin(name) {
+            BuiltinKind::Special => {
+                let status = exec_special_builtin(name, args, self);
+                return status;
+            }
+            BuiltinKind::Regular => {
+                // Don't re-enter special-cased handlers (wait/fg/bg/jobs/command).
+                // If we get here with one of those, fall through to external.
+                if !matches!(name, "wait" | "fg" | "bg" | "jobs" | "command") {
+                    return exec_regular_builtin(name, args, &mut self.env);
+                }
+            }
+            BuiltinKind::NotBuiltin => {}
+        }
+
+        let dp = default_path(&self.env).to_string();
+        let resolved = match crate::exec::command::find_in_path(name, &dp) {
+            Some(p) => p,
+            None => {
+                eprintln!("yosh: command: {}: not found", name);
+                return 127;
+            }
+        };
+        exec_external_absolute(&resolved, name, args, &mut self.env)
+    }
+
+    /// `command name args...` (no flags): execute `name` bypassing shell
+    /// functions. Implemented in the next task — this is a stub so the
+    /// build stays green between tasks.
+    pub(crate) fn exec_command_skip_functions(
+        &mut self,
+        _name: &str,
+        _args: &[String],
+    ) -> i32 {
+        eprintln!("yosh: command: function-skip path not yet implemented");
+        1
+    }
+}
+
+/// Spawn an absolute path with `args`, inheriting the shell's exported
+/// environment. Used by `command -p` (after default-PATH lookup) and by
+/// `command name` (after current-PATH lookup).
+///
+/// Uses `std::process::Command` rather than manual fork+execvp because
+/// yosh's existing external-command pipeline is tightly coupled to job
+/// control, redirects, and env-sync concerns that we don't need here
+/// (command -p / no-flag forms always run in the foreground with the
+/// simple-command redirects already applied by the special-case handler).
+fn exec_external_absolute(
+    resolved: &std::path::Path,
+    display_name: &str,
+    args: &[String],
+    env: &mut crate::env::ShellEnv,
+) -> i32 {
+    use std::os::unix::process::CommandExt;
+    use std::os::unix::process::ExitStatusExt;
+
+    let env_pairs: Vec<(String, String)> = env.vars.environ().to_vec();
+
+    let result = std::process::Command::new(resolved)
+        .arg0(display_name)
+        .args(args)
+        .env_clear()
+        .envs(env_pairs)
+        .status();
+
+    match result {
+        Ok(s) => {
+            if let Some(code) = s.code() {
+                code
+            } else if let Some(sig) = s.signal() {
+                128 + sig
+            } else {
                 1
             }
         }
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                eprintln!("yosh: command: {}: not found", display_name);
+                127
+            }
+            std::io::ErrorKind::PermissionDenied => {
+                eprintln!("yosh: command: {}: permission denied", display_name);
+                126
+            }
+            _ => {
+                eprintln!("yosh: command: {}: {}", display_name, e);
+                1
+            }
+        },
     }
 }
