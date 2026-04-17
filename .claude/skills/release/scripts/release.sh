@@ -134,8 +134,8 @@ phase_bump() {
     || fail "git commit failed after bump — resolve manually and rerun 'release.sh bump'"
 
   echo "yosh-release: bump complete ($old -> $new, committed)" >&2
-  # Expose new version to later phases / to callers via stdout as last line.
-  echo "$new"
+  # Expose new version to callers. Format is stable for grep: `NEW_VERSION=<ver>`.
+  echo "NEW_VERSION=$new"
 }
 
 phase_publish() {

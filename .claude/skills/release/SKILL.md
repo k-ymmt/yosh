@@ -45,13 +45,15 @@ If exit code is non-zero, surface stderr verbatim and stop.
 
 Run: `.claude/skills/release/scripts/release.sh bump`
 
-If exit code is non-zero, surface stderr verbatim and stop. On success, the last line of stdout is the new version (e.g. `0.1.2`); remember it for the summary.
+If exit code is non-zero, surface stderr verbatim and stop. On success, stdout contains a line of the form `NEW_VERSION=<version>` (e.g. `NEW_VERSION=0.1.2`); extract the version from it and remember it for the Phase 5 tag and the completion summary.
 
 ### Phase 4: Publish
 
+Precondition: the user must have a valid crates.io token in `~/.cargo/credentials.toml`. If the script fails with an auth-related message, ask the user to run `cargo login` and rerun `/release`.
+
 Run: `.claude/skills/release/scripts/release.sh publish`
 
-If exit code is non-zero, surface stderr verbatim (it already includes the `--from <crate>` resume hint) and stop. Do NOT attempt the push phase.
+If exit code is non-zero, the publish sequence is in a partial state: some crates may already be on crates.io, others are not. Surface stderr verbatim (it includes the `--from <crate>` resume hint) and STOP. Do NOT run the push phase under any circumstances — pushing main and a version tag that references an incomplete publish would leave a released-but-broken version. The user must either resume with the script's suggested `publish --from <crate>` command until it fully succeeds and then run push, or abandon the release.
 
 ### Phase 5: Push
 
