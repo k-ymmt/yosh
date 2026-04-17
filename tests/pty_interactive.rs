@@ -1,11 +1,13 @@
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use expectrl::{session::OsSession, Eof, Expect, Regex, Session};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
+const RAW_MODE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ── TempDir (inline, avoids pulling in mock_terminal via mod helpers) ─────
 
@@ -58,20 +60,43 @@ fn spawn_yosh() -> (OsSession, TempDir) {
 
 fn wait_for_prompt(session: &mut OsSession) {
     session.expect("$ ").expect("prompt not found");
-    wait_for_raw_mode();
+    wait_for_raw_mode(session);
 }
 
 fn wait_for_ps2(session: &mut OsSession) {
     session.expect("> ").expect("PS2 prompt not found");
-    wait_for_raw_mode();
+    wait_for_raw_mode(session);
 }
 
-/// Brief pause to let yosh finish enable_raw_mode() before the next send.
-/// Without this, input sent immediately after the prompt may arrive while
-/// yosh is still transitioning from canonical to raw mode, causing the PTY
-/// line discipline to buffer or transform input unexpectedly.
-fn wait_for_raw_mode() {
-    std::thread::sleep(Duration::from_millis(50));
+/// Block until yosh has called `enable_raw_mode()` on the PTY slave.
+///
+/// The previous implementation used a fixed 50ms sleep, which is a classic
+/// flaky-test pattern — under load the child can take longer than that to
+/// transition from canonical to raw mode, and input sent in the race window
+/// gets processed by the cooked line discipline (ICRNL translation, ECHO,
+/// ICANON buffering) instead of yosh's LineEditor.
+///
+/// Both ends of a PTY share one termios struct, so `tcgetattr` on the master
+/// fd (which expectrl exposes via `AsRawFd`) observes the slave-side settings.
+/// Poll for `ICANON` cleared — raw mode disables it — and return as soon as
+/// the transition is visible.
+fn wait_for_raw_mode(session: &OsSession) {
+    let fd = session.as_raw_fd();
+    let deadline = Instant::now() + RAW_MODE_WAIT_TIMEOUT;
+    loop {
+        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::tcgetattr(fd, &mut termios) };
+        if rc == 0 && (termios.c_lflag & (libc::ICANON as libc::tcflag_t)) == 0 {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "wait_for_raw_mode timed out: tcgetattr rc={}, c_lflag=0x{:x}",
+                rc, termios.c_lflag,
+            );
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }
 
 /// Wait for command output (a line following a newline, not the input echo).
@@ -209,7 +234,7 @@ fn test_pty_ctrl_r_history_search() {
     // Wait for the search UI query line to appear
     s.expect("2/2 > ").expect("Ctrl+R search UI did not appear");
     // FuzzySearchUI::run() draws UI then enables raw mode — wait for transition
-    wait_for_raw_mode();
+    wait_for_raw_mode(&s);
 
     // Type "echo alpha" to uniquely select it
     s.send("echo alpha").unwrap();
@@ -218,7 +243,7 @@ fn test_pty_ctrl_r_history_search() {
 
     s.send("\r").unwrap(); // Select from search
     // After selection, FuzzySearchUI exits and LineEditor re-enables raw mode
-    wait_for_raw_mode();
+    wait_for_raw_mode(&s);
     s.send("\r").unwrap(); // Execute
     expect_output(&mut s, "alpha", "Ctrl+R history search failed");
     wait_for_prompt(&mut s);
@@ -407,11 +432,11 @@ fn ansi_colored_prompt() {
 
     // Set PS1 to an ANSI-colored prompt using command substitution with printf
     session.send("PS1=$(printf '\\033[32m$ \\033[0m')\r").unwrap();
-    wait_for_raw_mode();
+    wait_for_raw_mode(&session);
 
     // The prompt should render and accept input
     session.expect("$").expect("colored prompt not found");
-    wait_for_raw_mode();
+    wait_for_raw_mode(&session);
 
     session.send("echo hello\r").unwrap();
     expect_output(&mut session, "hello", "echo after colored prompt");
@@ -427,10 +452,10 @@ fn multi_line_prompt() {
     // Set a two-line PS1: info line + prompt char
     // Use printf to get the newline in the prompt
     session.send("PS1=$(printf 'info line\\n> ')\r").unwrap();
-    wait_for_raw_mode();
+    wait_for_raw_mode(&session);
 
     session.expect(">").expect("multi-line prompt char not found");
-    wait_for_raw_mode();
+    wait_for_raw_mode(&session);
 
     session.send("echo works\r").unwrap();
     expect_output(&mut session, "works", "echo after multi-line prompt");
