@@ -1,4 +1,5 @@
 pub mod token;
+pub mod reserved;
 mod alias;
 mod heredoc;
 mod scanner;
