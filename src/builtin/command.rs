@@ -12,6 +12,9 @@
 //! `exec/simple.rs` so the `command` invocation has access to the
 //! `Executor` for redirects/assignments.
 
+use crate::builtin::resolve::{resolve_command_kind, CommandKind};
+use crate::env::ShellEnv;
+
 /// Parsed form of a `command [...]` invocation.
 #[derive(Debug, PartialEq, Eq)]
 pub struct CommandFlags {
@@ -69,12 +72,31 @@ pub fn parse_flags(args: &[String]) -> Result<CommandFlags, String> {
     Ok(CommandFlags { use_default_path, verbose, name, rest })
 }
 
+/// Render `-v` concise output. Returns `(stdout, exit_status)`.
+/// When `name` is unknown, stdout is empty and exit is 1.
+pub fn render_brief(env: &ShellEnv, name: &str) -> (String, i32) {
+    match resolve_command_kind(env, name) {
+        CommandKind::Alias(val) => (format!("alias {}='{}'", name, val), 0),
+        CommandKind::Keyword => (name.to_string(), 0),
+        CommandKind::Function => (name.to_string(), 0),
+        CommandKind::Builtin(_) => (name.to_string(), 0),
+        CommandKind::External(p) => (p.to_string_lossy().into_owned(), 0),
+        CommandKind::NotFound => (String::new(), 1),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn v(s: &[&str]) -> Vec<String> {
         s.iter().map(|x| x.to_string()).collect()
+    }
+
+    fn env_with_path(path: &str) -> ShellEnv {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let _ = env.vars.set("PATH", path);
+        env
     }
 
     #[test]
@@ -150,5 +172,43 @@ mod tests {
 
         let err = parse_flags(&v(&["-v"])).unwrap_err();
         assert!(err.to_lowercase().contains("missing"));
+    }
+
+    #[test]
+    fn brief_alias() {
+        let mut env = env_with_path("/bin:/usr/bin");
+        env.aliases.set("ll", "ls -l");
+        let (out, code) = render_brief(&env, "ll");
+        assert_eq!(out, "alias ll='ls -l'");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn brief_keyword() {
+        let env = env_with_path("/bin:/usr/bin");
+        assert_eq!(render_brief(&env, "if"), ("if".to_string(), 0));
+    }
+
+    #[test]
+    fn brief_builtin() {
+        let env = env_with_path("/bin:/usr/bin");
+        assert_eq!(render_brief(&env, "cd"), ("cd".to_string(), 0));
+        assert_eq!(render_brief(&env, "export"), ("export".to_string(), 0));
+    }
+
+    #[test]
+    fn brief_external() {
+        let env = env_with_path("/bin:/usr/bin");
+        let (out, code) = render_brief(&env, "sh");
+        assert!(out.ends_with("/sh"), "expected path ending in /sh, got: {out}");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn brief_not_found() {
+        let env = env_with_path("/bin:/usr/bin");
+        let (out, code) = render_brief(&env, "definitely_not_a_real_cmd_xyz");
+        assert_eq!(out, "");
+        assert_eq!(code, 1);
     }
 }
