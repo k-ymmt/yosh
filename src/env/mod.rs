@@ -7,6 +7,7 @@ pub mod traps;
 pub mod vars;
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use nix::unistd::{Pid, getpid};
 use jobs::JobTable;
@@ -39,6 +40,9 @@ pub struct ShellEnv {
     pub aliases: AliasStore,
     pub history: History,
     pub shell_name: String,
+    /// Cache of the POSIX default PATH (`confstr(_CS_PATH)`), computed
+    /// lazily on first use. See `env::default_path::default_path()`.
+    pub default_path_cache: OnceLock<String>,
 }
 
 impl ShellEnv {
@@ -69,6 +73,7 @@ impl ShellEnv {
             traps: TrapStore::default(),
             aliases: AliasStore::default(),
             history: History::new(),
+            default_path_cache: OnceLock::new(),
         }
     }
 }
