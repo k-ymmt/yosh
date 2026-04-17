@@ -1,4 +1,5 @@
 pub mod regular;
+pub mod resolve;
 pub mod special;
 
 use crate::env::ShellEnv;
