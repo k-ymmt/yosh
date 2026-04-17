@@ -63,7 +63,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 traps: env.traps.clone(),
                 aliases: env.aliases.clone(),
                 history: env.history.clone(),
-                default_path_cache: std::sync::OnceLock::new(),
+                default_path_cache: env.default_path_cache.clone(),
             };
             child_env.traps.reset_for_command_sub();
             let mut executor = Executor::from_env(child_env);
