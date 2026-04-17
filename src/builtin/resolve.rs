@@ -57,10 +57,10 @@ pub fn resolve_command_kind(env: &ShellEnv, name: &str) -> CommandKind {
         kind => return CommandKind::Builtin(kind),
     }
     // External: search $PATH.
-    if let Some(path_var) = env.vars.get("PATH") {
-        if let Some(p) = find_in_path(name, path_var) {
-            return CommandKind::External(p);
-        }
+    if let Some(path_var) = env.vars.get("PATH")
+        && let Some(p) = find_in_path(name, path_var)
+    {
+        return CommandKind::External(p);
     }
     CommandKind::NotFound
 }

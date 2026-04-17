@@ -144,9 +144,8 @@ impl Executor {
 
         // `command` needs Executor access for -p / no-flag execution paths.
         if command_name == "command" {
-            let saved = self.apply_temp_assignments(&cmd.assignments).map_err(|e| {
+            let saved = self.apply_temp_assignments(&cmd.assignments).inspect_err(|_| {
                 self.env.exec.last_exit_status = 1;
-                e
             })?;
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
