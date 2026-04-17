@@ -389,7 +389,7 @@ impl Executor {
                             }
                         }
                         Err(crate::env::jobs::JobSpecError::Ambiguous) => {
-                            return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("wait: {}: ambiguous job spec", arg)));
+                            return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: ambiguous job spec", arg)));
                         }
                         Err(_) => {
                             return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: no such job", arg)));
