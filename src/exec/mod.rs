@@ -25,8 +25,20 @@ pub(crate) struct ForegroundWaitResult {
     pub stopped: bool,
 }
 
+/// Strip the leading `%` (and optional `?`) from a job spec string for
+/// inclusion in error messages. Matches bash: `wait %sleep` with ambiguous
+/// match reports `wait: sleep: ambiguous job spec`, not `%sleep:`.
+/// Inputs that don't start with `%` are returned unchanged.
+fn strip_job_spec_prefix(spec: &str) -> &str {
+    match spec.strip_prefix('%') {
+        Some(rest) => rest.strip_prefix('?').unwrap_or(rest),
+        None => spec,
+    }
+}
+
 /// Reconstruct a short, human-readable preview of an AndOrList for display in
-/// `jobs` output. Uses the literal words of the first simple command when the
+/// `jobs` output and for `%string` / `%?string` job-spec matching against
+/// `Job.command`. Uses the literal words of the first simple command when the
 /// pipeline starts with one and every word is purely literal; falls back to
 /// "(background)" otherwise (compound commands, unexpanded parameters, command
 /// substitutions in the command word, etc.).
@@ -421,7 +433,8 @@ impl Executor {
                             }
                         }
                         Err(crate::env::jobs::JobSpecError::Ambiguous) => {
-                            return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: ambiguous job spec", arg)));
+                            let display = strip_job_spec_prefix(arg);
+                            return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: ambiguous job spec", display)));
                         }
                         Err(_) => {
                             return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: no such job", arg)));
@@ -563,7 +576,8 @@ impl Executor {
             match self.env.process.jobs.resolve_job_spec(&args[0]) {
                 Ok(id) => id,
                 Err(crate::env::jobs::JobSpecError::Ambiguous) => {
-                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("fg: {}: ambiguous job spec", args[0])));
+                    let display = strip_job_spec_prefix(&args[0]);
+                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("fg: {}: ambiguous job spec", display)));
                 }
                 Err(_) => {
                     return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("fg: {}: no such job", args[0])));
@@ -626,7 +640,8 @@ impl Executor {
             match self.env.process.jobs.resolve_job_spec(&args[0]) {
                 Ok(id) => id,
                 Err(crate::env::jobs::JobSpecError::Ambiguous) => {
-                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("bg: {}: ambiguous job spec", args[0])));
+                    let display = strip_job_spec_prefix(&args[0]);
+                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("bg: {}: ambiguous job spec", display)));
                 }
                 Err(_) => {
                     return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("bg: {}: no such job", args[0])));
