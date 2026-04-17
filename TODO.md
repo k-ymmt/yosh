@@ -58,7 +58,6 @@
 
 - [ ] `JobTable::update_status` per-process status tracking — currently overwrites the overall `job.status` on each child exit; if per-process status tracking (e.g., `$PIPESTATUS` array) is needed in the future, the `Job` struct will need a `Vec<(Pid, JobStatus)>` field instead of a single `status` (`src/env/jobs.rs`)
 - [ ] `skip_balanced_*` unterminated input tests — `skip_balanced_parens`, `skip_balanced_braces`, `skip_balanced_double_parens` all return `bytes.len()` on unterminated input but none have tests for this behavior (`src/expand/mod.rs`)
-- [ ] POSIX reserved-word list duplicated — `RESERVED_WORDS` in `src/builtin/resolve.rs` and `Token::is_reserved_word` in `src/lexer/token.rs` each maintain their own POSIX §2.4 keyword list; consolidate into a single source of truth
 - [ ] `find_in_path` vs `lookup_in_path` — `find_in_path` returns `Option<PathBuf>` (exec-only); `lookup_in_path` returns 3-state `PathLookup` for 126/127 distinction. Consider making `find_in_path` a thin wrapper over `lookup_in_path` to remove the near-duplicate directory walk (`src/exec/command.rs`)
 - [ ] `exec_regular_builtin` "internal error" guards for `wait` / `fg`/`bg`/`jobs` / `command` are growing — consider factoring "Executor-requiring builtins" into an explicit classification or dispatch table instead of per-name guards (`src/builtin/mod.rs`)
 - [ ] `render_verbose` Function arm has no unit test — `command -V <function>` branch exercised only through E2E; add a focused unit test in `src/builtin/command.rs` tests module
