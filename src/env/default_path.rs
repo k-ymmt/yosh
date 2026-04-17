@@ -59,6 +59,10 @@ pub fn default_path(env: &ShellEnv) -> &str {
 ///
 /// When `PATH` is already set (the common case), this is a single HashMap
 /// lookup — the `confstr` call is skipped entirely.
+///
+/// Note: `PATH=""` (set to empty string) is preserved — an empty PATH
+/// means "search current directory only" per POSIX. This matches bash
+/// behaviour. Only a truly unset PATH triggers population.
 pub fn ensure_default_path(env: &mut ShellEnv) {
     if env.vars.get("PATH").is_some() {
         return;
