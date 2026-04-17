@@ -70,3 +70,10 @@
 - [ ] Builtin test POSIX_REF values could use more specific section numbers (e.g., `2.14.3` instead of `2.14 Special Built-In Utilities`)
 - [ ] `fd_close.sh` test only checks exit code, not actual fd close effect
 - [ ] `e2e/command_execution/echo_simple.sh` has `755` permissions — should be `644` to match project convention
+
+## Future: Release Skill Enhancements
+
+- [ ] `phase_push` remote tag upsert — currently only checks local tag existence; if the same tag already exists on origin, `git push origin <tag>` rejects. Add `git ls-remote --exit-code --tags origin <tag>` check before pushing (`.claude/skills/release/scripts/release.sh`)
+- [ ] `test_plugin/Cargo.toml` version lag risk — `tests/plugins/test_plugin` is a workspace member but not in the `phase_bump` manifests list (not publishable). Currently safe because it depends on workspace crates only via `path =`; breaks if it ever adds `version = "..."` pins (`.claude/skills/release/scripts/release.sh`)
+- [ ] `CRATES` array comment — `yosh-plugin-manager` has no dependency on `yosh-plugin-api`/`yosh-plugin-sdk`, so its position in `api → sdk → manager → yosh` is convention, not dependency-ordered. Add a comment clarifying this (`.claude/skills/release/scripts/release.sh`)
+- [ ] `phase_publish` root-crate branch — the `if [[ "$crate" == "yosh" ]]` special case (bare `cargo publish` for root vs `cargo publish -p` for members) can be simplified to uniform `cmd=(cargo publish -p "$crate")` since cargo accepts `-p` on root crates too (`.claude/skills/release/scripts/release.sh`)
