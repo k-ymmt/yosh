@@ -503,15 +503,20 @@ impl Executor {
             BuiltinKind::NotBuiltin => {}
         }
 
+        use crate::exec::command::{lookup_in_path, PathLookup};
+
         let dp = default_path(&self.env).to_string();
-        let resolved = match crate::exec::command::find_in_path(name, &dp) {
-            Some(p) => p,
-            None => {
-                eprintln!("yosh: command: {}: not found", name);
-                return 127;
+        match lookup_in_path(name, &dp) {
+            PathLookup::Executable(p) => exec_external_absolute(&p, name, args, &mut self.env),
+            PathLookup::NotExecutable(p) => {
+                eprintln!("yosh: command: {}: permission denied", p.display());
+                126
             }
-        };
-        exec_external_absolute(&resolved, name, args, &mut self.env)
+            PathLookup::NotFound => {
+                eprintln!("yosh: command: {}: not found", name);
+                127
+            }
+        }
     }
 
     /// `command name args...`: execute `name` using the current $PATH but
@@ -543,15 +548,20 @@ impl Executor {
         }
 
         // External: resolve via $PATH (not the POSIX default path).
-        let path_var = self.env.vars.get("PATH").map(|s| s.to_string());
-        let resolved = match path_var.as_deref().and_then(|pv| crate::exec::command::find_in_path(name, pv)) {
-            Some(p) => p,
-            None => {
-                eprintln!("yosh: command: {}: not found", name);
-                return 127;
+        use crate::exec::command::{lookup_in_path, PathLookup};
+
+        let path_var = self.env.vars.get("PATH").map(|s| s.to_string()).unwrap_or_default();
+        match lookup_in_path(name, &path_var) {
+            PathLookup::Executable(p) => exec_external_absolute(&p, name, args, &mut self.env),
+            PathLookup::NotExecutable(p) => {
+                eprintln!("yosh: command: {}: permission denied", p.display());
+                126
             }
-        };
-        exec_external_absolute(&resolved, name, args, &mut self.env)
+            PathLookup::NotFound => {
+                eprintln!("yosh: command: {}: not found", name);
+                127
+            }
+        }
     }
 }
 
