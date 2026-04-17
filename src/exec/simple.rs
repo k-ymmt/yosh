@@ -7,7 +7,7 @@ use crate::builtin::special::exec_special_builtin;
 use crate::env::jobs;
 use crate::error::{ShellError, RuntimeErrorKind};
 use crate::expand::expand_words;
-use crate::parser::ast::{Assignment, SimpleCommand};
+use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
 use crate::signal;
 
 use super::command::wait_child;
@@ -41,7 +41,10 @@ impl Executor {
             // command substitution overwrites it, so we do NOT reset it up front.
             let mut last_cmd_sub_status: Option<i32> = None;
             for assignment in &cmd.assignments {
-                let status_before = self.env.exec.last_exit_status;
+                let has_cmd_sub = assignment
+                    .value
+                    .as_ref()
+                    .is_some_and(word_has_command_sub);
                 let value = match assignment.value.as_ref() {
                     Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
                         Ok(v) => v,
@@ -52,9 +55,12 @@ impl Executor {
                     },
                     None => String::new(),
                 };
-                // If expansion ran a command substitution, $? was updated to its
-                // exit status; remember that for the overall assignment-command status.
-                if self.env.exec.last_exit_status != status_before {
+                // If the value expansion contained a command substitution, $?
+                // now reflects its exit status. Record it regardless of whether
+                // the delta was non-zero — the substitution may coincidentally
+                // return the same status as the prior command (e.g.
+                // `false; x=$(false)`).
+                if has_cmd_sub {
                     last_cmd_sub_status = Some(self.env.exec.last_exit_status);
                 }
                 if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.mode.options.allexport) {
@@ -621,5 +627,43 @@ fn exec_external_absolute(
                 1
             }
         },
+    }
+}
+
+/// True if the word (or any nested word inside quoting/parameter expansion)
+/// contains a command substitution. Used by the assignment-only command path
+/// to decide whether `$?` must be updated to reflect the substitution.
+fn word_has_command_sub(word: &Word) -> bool {
+    word.parts.iter().any(part_has_command_sub)
+}
+
+fn part_has_command_sub(part: &WordPart) -> bool {
+    match part {
+        WordPart::Literal(_)
+        | WordPart::SingleQuoted(_)
+        | WordPart::DollarSingleQuoted(_)
+        | WordPart::Tilde(_) => false,
+        WordPart::CommandSub(_) | WordPart::ArithSub(_) => true,
+        WordPart::DoubleQuoted(parts) => parts.iter().any(part_has_command_sub),
+        WordPart::Parameter(p) => param_has_command_sub(p),
+    }
+}
+
+fn param_has_command_sub(p: &ParamExpr) -> bool {
+    match p {
+        ParamExpr::Simple(_)
+        | ParamExpr::Positional(_)
+        | ParamExpr::Special(_)
+        | ParamExpr::Length(_) => false,
+        ParamExpr::Default { word, .. }
+        | ParamExpr::Assign { word, .. }
+        | ParamExpr::Error { word, .. }
+        | ParamExpr::Alt { word, .. } => {
+            word.as_ref().is_some_and(word_has_command_sub)
+        }
+        ParamExpr::StripShortSuffix(_, w)
+        | ParamExpr::StripLongSuffix(_, w)
+        | ParamExpr::StripShortPrefix(_, w)
+        | ParamExpr::StripLongPrefix(_, w) => word_has_command_sub(w),
     }
 }
