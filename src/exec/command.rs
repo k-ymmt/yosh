@@ -7,7 +7,6 @@ use crate::error::{ShellError, RuntimeErrorKind};
 
 /// Search each directory in `path_var` for `cmd`.
 /// Returns the full path if found and executable, otherwise None.
-#[allow(dead_code)]
 pub fn find_in_path(cmd: &str, path_var: &str) -> Option<PathBuf> {
     for dir in path_var.split(':') {
         if dir.is_empty() {

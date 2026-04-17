@@ -8,7 +8,7 @@ use crate::env::ShellEnv;
 use crate::exec::command::find_in_path;
 
 /// Classification of a command name against the current shell state.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CommandKind {
     /// The name is an alias; payload is the alias value (the right-hand side).
     Alias(String),

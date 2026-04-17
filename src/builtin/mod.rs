@@ -15,7 +15,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
 ];
 
 /// Classification of a command name as a POSIX builtin kind.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum BuiltinKind {
     /// POSIX special builtin: prefix assignments persist in current env,
     /// errors in assignments are fatal.
