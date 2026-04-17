@@ -515,16 +515,44 @@ impl Executor {
         exec_external_absolute(&resolved, name, args, &mut self.env)
     }
 
-    /// `command name args...` (no flags): execute `name` bypassing shell
-    /// functions. Implemented in the next task — this is a stub so the
-    /// build stays green between tasks.
+    /// `command name args...`: execute `name` using the current $PATH but
+    /// bypassing shell functions. Aliases are already handled (they're
+    /// expanded at parse time, so `command` arrived here only if the
+    /// parser saw `command` itself, not the expanded alias).
     pub(crate) fn exec_command_skip_functions(
         &mut self,
-        _name: &str,
-        _args: &[String],
+        name: &str,
+        args: &[String],
     ) -> i32 {
-        eprintln!("yosh: command: function-skip path not yet implemented");
-        1
+        use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
+        use crate::builtin::special::exec_special_builtin;
+
+        // Builtins take precedence over external; functions are deliberately
+        // skipped.
+        match classify_builtin(name) {
+            BuiltinKind::Special => return exec_special_builtin(name, args, self),
+            BuiltinKind::Regular => {
+                if !matches!(name, "wait" | "fg" | "bg" | "jobs" | "command") {
+                    return exec_regular_builtin(name, args, &mut self.env);
+                }
+                // For the special-cased regular builtins, fall through to
+                // external lookup (running `command wait` via PATH would be
+                // surprising, but this matches how yosh currently dispatches
+                // those names only when invoked as direct simple commands).
+            }
+            BuiltinKind::NotBuiltin => {}
+        }
+
+        // External: resolve via $PATH (not the POSIX default path).
+        let path_var = self.env.vars.get("PATH").map(|s| s.to_string());
+        let resolved = match path_var.as_deref().and_then(|pv| crate::exec::command::find_in_path(name, pv)) {
+            Some(p) => p,
+            None => {
+                eprintln!("yosh: command: {}: not found", name);
+                return 127;
+            }
+        };
+        exec_external_absolute(&resolved, name, args, &mut self.env)
     }
 }
 
