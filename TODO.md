@@ -2,7 +2,6 @@
 
 ## Job Control: Known Limitations
 
-- [ ] `%string` / `%?string` job specifiers — prefix/substring matching not implemented
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
 - [ ] `suspend` builtin — not implemented
 - [ ] Terminal state save/restore (tcgetattr/tcsetattr) — jobs that modify terminal settings may leave terminal in bad state
