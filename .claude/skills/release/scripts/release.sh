@@ -195,7 +195,28 @@ EOF
 }
 
 phase_push() {
-  fail "push phase not implemented yet"
+  local ver
+  ver="$(read_package_version "Cargo.toml")"
+  [[ -n "$ver" ]] || fail "could not read version from Cargo.toml"
+  local tag="v${ver}"
+
+  echo "yosh-release: pushing main to origin..." >&2
+  git push origin main \
+    || fail "git push origin main failed — resolve remote divergence then rerun 'release.sh push'"
+
+  if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+    echo "yosh-release: tag ${tag} already exists locally, skipping tag creation" >&2
+  else
+    echo "yosh-release: creating tag ${tag}..." >&2
+    git tag "${tag}" \
+      || fail "git tag ${tag} failed — create manually and rerun 'git push origin ${tag}'"
+  fi
+
+  echo "yosh-release: pushing tag ${tag}..." >&2
+  git push origin "${tag}" \
+    || fail "git push origin ${tag} failed — rerun 'git push origin ${tag}' manually"
+
+  echo "yosh-release: push complete (main + ${tag})" >&2
 }
 
 main() {
