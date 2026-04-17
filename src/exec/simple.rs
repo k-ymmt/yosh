@@ -142,6 +142,26 @@ impl Executor {
             return Ok(status);
         }
 
+        // `command` needs Executor access for -p / no-flag execution paths.
+        if command_name == "command" {
+            let saved = self.apply_temp_assignments(&cmd.assignments).map_err(|e| {
+                self.env.exec.last_exit_status = 1;
+                e
+            })?;
+            let mut redirect_state = RedirectState::new();
+            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
+                self.restore_assignments(saved);
+                self.env.exec.last_exit_status = 1;
+                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
+            }
+            let status = self.builtin_command(&args);
+            redirect_state.restore();
+            self.restore_assignments(saved);
+            self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+            self.env.exec.last_exit_status = status;
+            return Ok(status);
+        }
+
         match classify_builtin(&command_name) {
             BuiltinKind::Special => {
                 // Special builtins: prefix assignments persist in current env
@@ -405,6 +425,48 @@ impl Executor {
                 None => {
                     let _ = self.env.vars.unset(&name);
                 }
+            }
+        }
+    }
+}
+
+impl Executor {
+    /// POSIX `command` builtin. Dispatches by verbosity:
+    /// - Brief (`-v`) / Verbose (`-V`) → print and return exit status
+    /// - Execute (`-p` or no flag) → handled in later tasks (returns 1 for now)
+    pub(crate) fn builtin_command(&mut self, args: &[String]) -> i32 {
+        use crate::builtin::command::{parse_flags, render_brief, render_verbose, Verbosity};
+
+        let parsed = match parse_flags(args) {
+            Ok(p) => p,
+            Err(msg) => {
+                eprintln!("yosh: {}", msg);
+                return 2;
+            }
+        };
+
+        match parsed.verbose {
+            Verbosity::Brief => {
+                let (out, code) = render_brief(&self.env, &parsed.name);
+                if !out.is_empty() {
+                    println!("{}", out);
+                }
+                code
+            }
+            Verbosity::Verbose => {
+                let (out, err, code) = render_verbose(&self.env, &parsed.name);
+                if !out.is_empty() {
+                    println!("{}", out);
+                }
+                if !err.is_empty() {
+                    eprintln!("{}", err);
+                }
+                code
+            }
+            Verbosity::Execute => {
+                // TODO (next tasks): -p path and no-flag path.
+                eprintln!("yosh: command: execution path not yet implemented");
+                1
             }
         }
     }
