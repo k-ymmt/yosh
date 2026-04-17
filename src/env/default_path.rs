@@ -53,6 +53,22 @@ pub fn default_path(env: &ShellEnv) -> &str {
         .as_str()
 }
 
+/// If `PATH` is not set on the environment, populate it with the POSIX
+/// default (from `confstr(_CS_PATH)`) and mark it exported so children
+/// inherit it. Called once at shell startup.
+///
+/// When `PATH` is already set (the common case), this is a single HashMap
+/// lookup — the `confstr` call is skipped entirely.
+pub fn ensure_default_path(env: &mut ShellEnv) {
+    if env.vars.get("PATH").is_some() {
+        return;
+    }
+    let dp = default_path(env).to_string();
+    // set() never fails here because PATH is not readonly in a fresh env.
+    let _ = env.vars.set("PATH", dp);
+    env.vars.export("PATH");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +139,26 @@ mod tests {
         let a = default_path(&env).as_ptr();
         let b = default_path(&env).as_ptr();
         assert_eq!(a, b, "default_path should return the same cached string");
+    }
+
+    #[test]
+    fn ensure_default_path_populates_when_unset() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        // Simulate env -i startup: remove any inherited PATH.
+        let _ = env.vars.unset("PATH");
+        assert!(env.vars.get("PATH").is_none());
+        ensure_default_path(&mut env);
+        let pv = env.vars.get("PATH").expect("PATH should be set now");
+        assert!(!pv.is_empty());
+        let v = env.vars.get_var("PATH").expect("variable exists");
+        assert!(v.exported, "PATH should be exported so children inherit it");
+    }
+
+    #[test]
+    fn ensure_default_path_preserves_existing() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let _ = env.vars.set("PATH", "/custom/path");
+        ensure_default_path(&mut env);
+        assert_eq!(env.vars.get("PATH"), Some("/custom/path"));
     }
 }

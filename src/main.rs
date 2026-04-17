@@ -181,6 +181,7 @@ fn try_subcommand(args: &[String]) -> Option<i32> {
 fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_string: bool) -> i32 {
     signal::init_signal_handling();
     let mut executor = Executor::new(shell_name, positional);
+    env::default_path::ensure_default_path(&mut executor.env);
     executor.load_plugins();
     executor.env.mode.options.cmd_string = cmd_string;
     executor.verbose_print(input);

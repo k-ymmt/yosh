@@ -40,6 +40,7 @@ impl Repl {
     pub fn new(shell_name: String) -> Self {
         signal::init_signal_handling();
         let mut executor = Executor::new(shell_name, vec![]);
+        crate::env::default_path::ensure_default_path(&mut executor.env);
         executor.env.mode.is_interactive = true;
         executor.env.mode.options.monitor = true;
         signal::init_job_control_signals();
