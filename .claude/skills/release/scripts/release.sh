@@ -21,7 +21,11 @@ fail() {
 }
 
 phase_test() {
-  fail "test phase not implemented yet"
+  echo "yosh-release: running cargo test..." >&2
+  cargo test || fail "cargo test failed — fix tests and rerun"
+  echo "yosh-release: running e2e tests..." >&2
+  ./e2e/run_tests.sh || fail "e2e tests failed — fix tests and rerun"
+  echo "yosh-release: all tests passed" >&2
 }
 
 phase_bump() {
