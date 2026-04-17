@@ -70,7 +70,7 @@ impl Parser {
 
     /// Advance if current token is reserved word matching keyword, else error.
     pub fn expect_reserved(&mut self, keyword: &str) -> error::Result<()> {
-        if self.current.token.is_reserved_word(keyword) {
+        if self.current.token.matches_keyword(keyword) {
             self.advance()?;
             Ok(())
         } else {
@@ -100,7 +100,7 @@ impl Parser {
     }
 
     pub fn is_reserved(&self, keyword: &str) -> bool {
-        self.current.token.is_reserved_word(keyword)
+        self.current.token.matches_keyword(keyword)
     }
 
     // ---- Grammar productions ----

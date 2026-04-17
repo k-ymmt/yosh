@@ -39,7 +39,8 @@ pub enum Token {
 }
 
 impl Token {
-    pub fn is_reserved_word(&self, keyword: &str) -> bool {
+    /// True if this token is an unquoted literal word equal to `keyword`.
+    pub fn matches_keyword(&self, keyword: &str) -> bool {
         if let Token::Word(w) = self {
             w.as_literal() == Some(keyword)
         } else {
@@ -54,22 +55,22 @@ mod tests {
     use crate::parser::ast::{Word, WordPart};
 
     #[test]
-    fn test_is_reserved_word_literal() {
+    fn test_matches_keyword_literal() {
         let tok = Token::Word(Word::literal("if"));
-        assert!(tok.is_reserved_word("if"));
-        assert!(!tok.is_reserved_word("then"));
+        assert!(tok.matches_keyword("if"));
+        assert!(!tok.matches_keyword("then"));
     }
 
     #[test]
-    fn test_is_reserved_word_quoted_not_reserved() {
+    fn test_matches_keyword_quoted_not_matched() {
         let tok = Token::Word(Word {
             parts: vec![WordPart::SingleQuoted("if".to_string())],
         });
-        assert!(!tok.is_reserved_word("if"));
+        assert!(!tok.matches_keyword("if"));
     }
 
     #[test]
-    fn test_is_reserved_word_non_word_token() {
-        assert!(!Token::Pipe.is_reserved_word("if"));
+    fn test_matches_keyword_non_word_token() {
+        assert!(!Token::Pipe.matches_keyword("if"));
     }
 }
