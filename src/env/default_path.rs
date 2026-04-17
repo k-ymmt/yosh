@@ -2,6 +2,8 @@
 
 use std::ptr;
 
+use crate::env::ShellEnv;
+
 /// Hardcoded fallback PATH used when `confstr(_CS_PATH)` is unavailable or fails.
 ///
 /// Chosen to be minimal and work on any POSIX-like system without depending
@@ -40,8 +42,6 @@ pub fn call_confstr() -> Option<String> {
     buf.truncate(written.saturating_sub(1));
     String::from_utf8(buf).ok()
 }
-
-use crate::env::ShellEnv;
 
 /// Return the POSIX default PATH, cached per `ShellEnv`.
 ///
