@@ -3,7 +3,6 @@
 # DESCRIPTION: PWD reflects the current working directory after cd
 # EXPECT_OUTPUT: /tmp
 # EXPECT_EXIT: 0
-# XFAIL: yosh resolves PWD to the physical path (e.g., /private/tmp on macOS);
-# POSIX cd without -P shall preserve the logical path unless dot-dot resolution occurs
+# XFAIL: PWD resolved to physical path (e.g. /private/tmp on macOS); POSIX 'cd' without -P shall preserve logical path
 cd /tmp
 echo "$PWD"

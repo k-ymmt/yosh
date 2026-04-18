@@ -260,7 +260,6 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 - Tests:
   - e2e/posix_spec/2_11_signals_and_error_handling/trap_exit_runs_on_exit.sh
   - e2e/posix_spec/2_11_signals_and_error_handling/trap_dash_resets_default.sh
-  - e2e/posix_spec/2_11_signals_and_error_handling/trap_ignored_signal_inherited.sh
   - e2e/posix_spec/2_11_signals_and_error_handling/trap_int_by_name.sh
   - e2e/signal_and_trap/trap_ignore_signal.sh
   - e2e/signal_and_trap/trap_in_subshell_reset.sh
