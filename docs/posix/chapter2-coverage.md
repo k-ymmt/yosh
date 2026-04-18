@@ -9,7 +9,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 - `informational` — descriptive/structural section; minimal observation test is enough
 
 ## 2.1 Shell Introduction
-- Status: informational
+- Status: covered
 - Tests:
   - e2e/command_execution/script_file.sh
 
@@ -373,16 +373,16 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 
 | Status | Count |
 |---|---|
-| covered | 25 |
+| covered | 26 |
 | thin | 19 |
 | missing | 12 |
-| informational | 6 |
+| informational | 5 |
 
 ### Per-section status
 
 | Section | Status |
 |---|---|
-| 2.1 | informational |
+| 2.1 | covered |
 | 2.2 | covered |
 | 2.2.1 | covered |
 | 2.2.2 | thin |
