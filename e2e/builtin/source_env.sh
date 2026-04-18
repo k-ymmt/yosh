@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.5.3 Shell Execution Environment
+# POSIX_REF: 2.5.3 Shell Variables
 # DESCRIPTION: ENV variable file is sourced on interactive startup
 # EXPECT_OUTPUT: env_loaded
 # EXPECT_EXIT: 0

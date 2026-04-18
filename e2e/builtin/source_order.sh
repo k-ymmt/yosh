@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.5.3 Shell Execution Environment
+# POSIX_REF: 2.5.3 Shell Variables
 # DESCRIPTION: ~/.yoshrc is sourced before $ENV
 # EXPECT_OUTPUT: second
 # EXPECT_EXIT: 0

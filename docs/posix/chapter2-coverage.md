@@ -92,7 +92,11 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
   - e2e/builtin/source_env.sh
   - e2e/builtin/source_order.sh
   - e2e/builtin/source_yoshrc.sh
-  - Note: POSIX_REF header in these files uses legacy label "2.5.3 Shell Execution Environment"; fix scheduled in Task 11.
+  - e2e/posix_spec/2_05_03_shell_variables/home_default_and_override.sh
+  - e2e/posix_spec/2_05_03_shell_variables/ifs_custom_splitting.sh
+  - e2e/posix_spec/2_05_03_shell_variables/ifs_default_whitespace.sh
+  - e2e/posix_spec/2_05_03_shell_variables/lineno_in_script.sh (XFAIL)
+  - e2e/posix_spec/2_05_03_shell_variables/pwd_after_cd.sh (XFAIL)
 
 ## 2.6 Word Expansions
 - Status: informational
