@@ -268,18 +268,28 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
   - e2e/subshell/*.sh (11 files: alias_isolation, basic_execution, exit_status, function_isolation, nested_subshell, option_isolation, subshell_cd_no_parent, subshell_exit_no_parent, subshell_nested_exit_code, subshell_trap_inherit_ignore, variable_isolation; excludes dollar_dollar_same which is §2.5.2)
 
 ## 2.13 Pattern Matching Notation
-- Status: thin
+- Status: covered
 - Tests:
   - e2e/field_splitting/glob_char_class.sh
   - e2e/field_splitting/glob_negated_class.sh
+  - e2e/posix_spec/2_13_pattern_matching/star_matches_any_string.sh
+  - e2e/posix_spec/2_13_pattern_matching/question_matches_single_char.sh
+  - e2e/posix_spec/2_13_pattern_matching/bracket_char_class.sh
+  - e2e/posix_spec/2_13_pattern_matching/bracket_negated_class.sh
+  - e2e/posix_spec/2_13_pattern_matching/quoted_glob_literal.sh
 
 ### 2.13.1 Patterns Matching a Single Character
-- Status: missing
-- Tests: (none)
+- Status: covered
+- Tests:
+  - e2e/posix_spec/2_13_pattern_matching/question_matches_single_char.sh
+  - e2e/posix_spec/2_13_pattern_matching/bracket_char_class.sh
+  - e2e/posix_spec/2_13_pattern_matching/bracket_negated_class.sh
 
 ### 2.13.2 Patterns Matching Multiple Characters
-- Status: missing
-- Tests: (none)
+- Status: covered
+- Tests:
+  - e2e/posix_spec/2_13_pattern_matching/star_matches_any_string.sh
+  - e2e/posix_spec/2_13_pattern_matching/quoted_glob_literal.sh
 
 ### 2.13.3 Patterns Used for Filename Expansion
 - Status: thin
@@ -394,9 +404,9 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 
 | Status | Count |
 |---|---|
-| covered | 32 |
-| thin | 18 |
-| missing | 7 |
+| covered | 35 |
+| thin | 17 |
+| missing | 5 |
 | informational | 5 |
 
 ### Per-section status
@@ -445,9 +455,9 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 | 2.10.2 | missing |
 | 2.11 | covered |
 | 2.12 | covered |
-| 2.13 | thin |
-| 2.13.1 | missing |
-| 2.13.2 | missing |
+| 2.13 | covered |
+| 2.13.1 | covered |
+| 2.13.2 | covered |
 | 2.13.3 | thin |
 | 2.14 | covered |
 | 2.14.1 | covered |
