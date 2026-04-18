@@ -76,6 +76,7 @@
 ## Future: POSIX Conformance Gaps (Chapter 2)
 
 - [ ] §2.6.1 Tilde expansion on assignment RHS — `x=~/bin` does not expand `~` to `$HOME` (see `e2e/posix_spec/2_06_01_tilde_expansion/tilde_assignment_rhs.sh` XFAIL)
+- [ ] §2.10 Shell Grammar — parser accepts an empty `compound_list` inside `if ... then fi` (exit 0) instead of rejecting it as a syntax error; POSIX BNF `term : term separator and_or | and_or` requires at least one `and_or` (see `e2e/posix_spec/2_10_shell_grammar/empty_compound_list_in_if_is_error.sh` XFAIL)
 
 ## Future: Release Skill Enhancements
 

@@ -237,8 +237,11 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
   - e2e/function/*.sh (11 files: basic_definition, dollar_at_in_function, function_exit_vs_return, function_local_positional, function_nested_definition, function_override_builtin, function_redirect, global_variable, positional_params_restore, recursion, with_arguments)
 
 ## 2.10 Shell Grammar
-- Status: missing
-- Tests: (none)
+- Status: covered
+- Tests:
+  - e2e/posix_spec/2_10_shell_grammar/terminator_semicolon_equals_newline.sh
+  - e2e/posix_spec/2_10_shell_grammar/compound_list_newline_between_commands.sh
+  - e2e/posix_spec/2_10_shell_grammar/empty_compound_list_in_if_is_error.sh (XFAIL)
 
 ### 2.10.1 Shell Grammar Lexical Conventions
 - Status: missing
@@ -387,9 +390,9 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 
 | Status | Count |
 |---|---|
-| covered | 30 |
+| covered | 31 |
 | thin | 19 |
-| missing | 8 |
+| missing | 7 |
 | informational | 5 |
 
 ### Per-section status
@@ -433,7 +436,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 | 2.9.3 | covered |
 | 2.9.4 | covered |
 | 2.9.5 | covered |
-| 2.10 | missing |
+| 2.10 | covered |
 | 2.10.1 | missing |
 | 2.10.2 | missing |
 | 2.11 | thin |
