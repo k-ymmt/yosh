@@ -98,7 +98,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 ### 2.6.2 Parameter Expansion
 - Status: covered
 - Tests:
-  - e2e/variable_and_expansion/*.sh (15 files: alternate_value, assign_default, default_value_set, default_value, error_if_unset_message, error_if_unset, nested_expansion, string_length, strip_pattern_complex, strip_prefix_long, strip_prefix_short, strip_suffix_long, strip_suffix_short, unset_variable, unset_vs_empty_*, variable_reference)
+  - e2e/variable_and_expansion/*.sh (18 files: alternate_value, assign_default, default_value_set, default_value, error_if_unset_message, error_if_unset, nested_expansion, string_length, strip_pattern_complex, strip_prefix_long, strip_prefix_short, strip_suffix_long, strip_suffix_short, unset_variable, unset_vs_empty_alternate, unset_vs_empty_assign, unset_vs_empty_default, variable_reference)
 
 ### 2.6.3 Command Substitution
 - Status: covered
@@ -244,7 +244,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 ## 2.12 Shell Execution Environment
 - Status: covered
 - Tests:
-  - e2e/subshell/*.sh (11 files: alias_isolation, basic_execution, exit_status, function_isolation, nested_subshell, option_isolation, subshell_cd_no_parent, subshell_exit_no_parent, subshell_nested_exit_code, subshell_trap_inherit_ignore, variable_isolation)
+  - e2e/subshell/*.sh (11 files: alias_isolation, basic_execution, exit_status, function_isolation, nested_subshell, option_isolation, subshell_cd_no_parent, subshell_exit_no_parent, subshell_nested_exit_code, subshell_trap_inherit_ignore, variable_isolation; excludes dollar_dollar_same which is §2.5.2)
 
 ## 2.13 Pattern Matching Notation
 - Status: thin
@@ -268,7 +268,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 ## 2.14 Special Built-In Utilities
 - Status: covered
 - Tests:
-  - e2e/builtin/*.sh (14 files: colon_noop, echo_no_args, eval_basic, eval_variable, exec_no_args, exec_replace, export_basic, export_format, readonly_basic, set_dash_dash, set_monitor_flag, set_positional, shift_basic, source_file, unset_readonly_error, unset_variable)
+  - e2e/builtin/*.sh (16 files: colon_noop, echo_no_args, eval_basic, eval_variable, exec_no_args, exec_replace, export_basic, export_format, readonly_basic, set_dash_dash, set_monitor_flag, set_positional, shift_basic, source_file, unset_readonly_error, unset_variable)
   - e2e/control_flow/break_continue.sh, e2e/control_flow/break_nested.sh
   - e2e/function/return_default.sh, e2e/function/return_value.sh
   - e2e/signal_and_trap/trap_*.sh (7 files: trap_display, trap_exit_in_function, trap_exit_on_error, trap_exit, trap_ignore_empty, trap_multiple_commands, trap_reset)
@@ -338,8 +338,8 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 - Tests:
   - e2e/builtin/set_dash_dash.sh
   - e2e/builtin/set_monitor_flag.sh
-  - e2e/builtin/set_monitor_off.sh
   - e2e/builtin/set_positional.sh
+- Note: set_monitor_off.sh is tagged `POSIX_REF: 2.11 Job Control` and excluded here per Open Questions #1 policy.
 
 ### 2.14.12 shift
 - Status: thin
