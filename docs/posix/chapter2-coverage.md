@@ -40,8 +40,11 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
   - e2e/quoting/*.sh (8 files: backslash_in_double_quotes, backslash_non_special_in_dquotes, backslash_special_in_dquotes, dollar_at_end_of_dquotes, double_quotes_expansion, double_quotes, single_quote_in_dquotes, spaces_preserved)
 
 ## 2.3 Token Recognition
-- Status: missing
-- Tests: (none)
+- Status: covered
+- Tests:
+  - e2e/posix_spec/2_03_token_recognition/operator_terminates_word.sh
+  - e2e/posix_spec/2_03_token_recognition/line_continuation_in_word.sh
+  - e2e/posix_spec/2_03_token_recognition/quoted_operator_not_token.sh
 
 ### 2.3.1 Alias Substitution
 - Status: thin
@@ -373,9 +376,9 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 
 | Status | Count |
 |---|---|
-| covered | 26 |
+| covered | 27 |
 | thin | 19 |
-| missing | 12 |
+| missing | 11 |
 | informational | 5 |
 
 ### Per-section status
@@ -387,7 +390,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 | 2.2.1 | covered |
 | 2.2.2 | thin |
 | 2.2.3 | covered |
-| 2.3 | missing |
+| 2.3 | covered |
 | 2.3.1 | thin |
 | 2.4 | missing |
 | 2.5 | thin |
