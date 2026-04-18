@@ -184,8 +184,11 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 - Tests: (none)
 
 ### 2.8.1 Consequences of Shell Errors
-- Status: missing
-- Tests: (none)
+- Status: covered
+- Tests:
+  - e2e/posix_spec/2_08_01_consequences_of_shell_errors/special_builtin_syntax_error.sh
+  - e2e/posix_spec/2_08_01_consequences_of_shell_errors/redirection_error_regular_command.sh
+  - e2e/posix_spec/2_08_01_consequences_of_shell_errors/command_not_found_continues.sh
 
 ### 2.8.2 Exit Status for Commands
 - Status: covered
@@ -384,9 +387,9 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 
 | Status | Count |
 |---|---|
-| covered | 29 |
+| covered | 30 |
 | thin | 19 |
-| missing | 9 |
+| missing | 8 |
 | informational | 5 |
 
 ### Per-section status
@@ -422,7 +425,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 | 2.7.6 | thin |
 | 2.7.7 | missing |
 | 2.8 | informational |
-| 2.8.1 | missing |
+| 2.8.1 | covered |
 | 2.8.2 | covered |
 | 2.9 | informational |
 | 2.9.1 | covered |
