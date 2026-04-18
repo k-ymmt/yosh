@@ -403,6 +403,65 @@ pub(crate) fn lexical_canonicalize(path: &str, pwd: &str) -> String {
     }
 }
 
+/// Resolve a cd operand (or None for HOME) to the target path plus a
+/// boolean indicating whether the result came from CDPATH (or was
+/// `cd -`); when true the caller must print the new PWD.
+pub(crate) fn resolve_target(
+    operand: Option<&str>,
+    env: &ShellEnv,
+) -> Result<(String, bool), ShellError> {
+    // Case 1: no operand -> HOME
+    let op = match operand {
+        None => {
+            return match env.vars.get("HOME") {
+                Some(h) if !h.is_empty() => Ok((h.to_string(), false)),
+                _ => Err(ShellError::runtime(
+                    RuntimeErrorKind::IoError,
+                    "cd: HOME not set",
+                )),
+            };
+        }
+        Some(o) => o,
+    };
+
+    // Case 2: `cd -` -> OLDPWD, print the new PWD
+    if op == "-" {
+        return match env.vars.get("OLDPWD") {
+            Some(p) if !p.is_empty() => Ok((p.to_string(), true)),
+            _ => Err(ShellError::runtime(
+                RuntimeErrorKind::IoError,
+                "cd: OLDPWD not set",
+            )),
+        };
+    }
+
+    // Case 3: absolute path -> as-is, no CDPATH
+    if op.starts_with('/') {
+        return Ok((op.to_string(), false));
+    }
+
+    // Case 4: dot-prefixed -> skip CDPATH
+    if op == "." || op == ".." || op.starts_with("./") || op.starts_with("../") {
+        return Ok((op.to_string(), false));
+    }
+
+    // Case 5: CDPATH search
+    if let Some(cdpath) = env.vars.get("CDPATH") {
+        for entry in cdpath.split(':') {
+            let dir = if entry.is_empty() { "." } else { entry };
+            let candidate = format!("{}/{}", dir.trim_end_matches('/'), op);
+            if let Ok(meta) = std::fs::metadata(&candidate)
+                && meta.is_dir()
+            {
+                return Ok((candidate, true));
+            }
+        }
+    }
+
+    // No CDPATH match: return operand as-is (PWD prefix applied by caller)
+    Ok((op.to_string(), false))
+}
+
 fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
     let current = unsafe { libc::umask(0) };
     unsafe { libc::umask(current) };
@@ -619,5 +678,126 @@ mod tests {
     #[test]
     fn lex_trailing_slash_dropped() {
         assert_eq!(lexical_canonicalize("/tmp/", "/"), "/tmp");
+    }
+
+    // ── resolve_target ───────────────────────────────────────────
+
+    use crate::env::ShellEnv;
+
+    fn make_env(pairs: &[(&str, &str)]) -> ShellEnv {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        for name in &["HOME", "OLDPWD", "PWD", "CDPATH"] {
+            let _ = env.vars.unset(name);
+        }
+        for (k, v) in pairs {
+            let _ = env.vars.set(*k, (*v).to_string());
+        }
+        env
+    }
+
+    #[test]
+    fn resolve_none_uses_home() {
+        let env = make_env(&[("HOME", "/home/x")]);
+        let (target, from_cdpath) = resolve_target(None, &env).unwrap();
+        assert_eq!(target, "/home/x");
+        assert!(!from_cdpath);
+    }
+
+    #[test]
+    fn resolve_none_home_unset_errors() {
+        let env = make_env(&[]);
+        let err = resolve_target(None, &env).unwrap_err();
+        assert!(err.to_string().contains("HOME not set"));
+    }
+
+    #[test]
+    fn resolve_dash_uses_oldpwd_and_sets_from_cdpath() {
+        let env = make_env(&[("OLDPWD", "/prev")]);
+        let (target, from_cdpath) = resolve_target(Some("-"), &env).unwrap();
+        assert_eq!(target, "/prev");
+        assert!(from_cdpath, "cd - must print the new PWD");
+    }
+
+    #[test]
+    fn resolve_dash_oldpwd_unset_errors() {
+        let env = make_env(&[]);
+        let err = resolve_target(Some("-"), &env).unwrap_err();
+        assert!(err.to_string().contains("OLDPWD not set"));
+    }
+
+    #[test]
+    fn resolve_absolute_passes_through() {
+        let env = make_env(&[("CDPATH", "/etc")]);
+        let (target, from_cdpath) = resolve_target(Some("/tmp"), &env).unwrap();
+        assert_eq!(target, "/tmp");
+        assert!(!from_cdpath, "absolute paths skip CDPATH");
+    }
+
+    #[test]
+    fn resolve_dot_prefix_skips_cdpath() {
+        let env = make_env(&[("CDPATH", "/etc")]);
+        let (target, from_cdpath) = resolve_target(Some("./foo"), &env).unwrap();
+        assert_eq!(target, "./foo");
+        assert!(!from_cdpath);
+    }
+
+    #[test]
+    fn resolve_dotdot_prefix_skips_cdpath() {
+        let env = make_env(&[("CDPATH", "/etc")]);
+        let (target, from_cdpath) = resolve_target(Some("../foo"), &env).unwrap();
+        assert_eq!(target, "../foo");
+        assert!(!from_cdpath);
+    }
+
+    #[test]
+    fn resolve_cdpath_hit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let cdpath = tmp.path().to_string_lossy().to_string();
+
+        let env = make_env(&[("CDPATH", cdpath.as_str())]);
+        let (target, from_cdpath) = resolve_target(Some("sub"), &env).unwrap();
+        assert_eq!(target, sub.to_string_lossy());
+        assert!(from_cdpath);
+    }
+
+    #[test]
+    fn resolve_cdpath_miss_falls_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cdpath = tmp.path().to_string_lossy().to_string();
+        let env = make_env(&[("CDPATH", cdpath.as_str())]);
+        let (target, from_cdpath) =
+            resolve_target(Some("nonexistent_xyz"), &env).unwrap();
+        assert_eq!(target, "nonexistent_xyz");
+        assert!(!from_cdpath);
+    }
+
+    #[test]
+    fn resolve_cdpath_empty_entry_is_dot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let env = make_env(&[("CDPATH", ":/nonexistent")]);
+        let (target, from_cdpath) = resolve_target(Some("sub"), &env).unwrap();
+        assert!(target.ends_with("sub") || target == "./sub",
+                "got: {}", target);
+        assert!(from_cdpath);
+    }
+
+    #[test]
+    fn resolve_cdpath_skips_non_directory_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("regular_file");
+        std::fs::write(&file_path, "x").unwrap();
+
+        let cdpath = tmp.path().to_string_lossy().to_string();
+        let env = make_env(&[("CDPATH", cdpath.as_str())]);
+        let (target, from_cdpath) =
+            resolve_target(Some("regular_file"), &env).unwrap();
+        assert_eq!(target, "regular_file");
+        assert!(!from_cdpath);
     }
 }
