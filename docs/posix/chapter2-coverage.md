@@ -99,8 +99,12 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 - Tests: (none)
 
 ### 2.6.1 Tilde Expansion
-- Status: missing
-- Tests: (none)
+- Status: covered
+- Tests:
+  - e2e/posix_spec/2_06_01_tilde_expansion/tilde_home.sh
+  - e2e/posix_spec/2_06_01_tilde_expansion/tilde_slash_path.sh
+  - e2e/posix_spec/2_06_01_tilde_expansion/tilde_assignment_rhs.sh (XFAIL)
+  - e2e/posix_spec/2_06_01_tilde_expansion/tilde_quoted_no_expansion.sh
 
 ### 2.6.2 Parameter Expansion
 - Status: covered
@@ -380,9 +384,9 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 
 | Status | Count |
 |---|---|
-| covered | 28 |
+| covered | 29 |
 | thin | 19 |
-| missing | 10 |
+| missing | 9 |
 | informational | 5 |
 
 ### Per-section status
@@ -402,7 +406,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 | 2.5.2 | covered |
 | 2.5.3 | covered |
 | 2.6 | informational |
-| 2.6.1 | missing |
+| 2.6.1 | covered |
 | 2.6.2 | covered |
 | 2.6.3 | covered |
 | 2.6.4 | covered |
