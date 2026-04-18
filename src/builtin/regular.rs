@@ -9,61 +9,65 @@ pub(crate) enum CdMode {
 }
 
 pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
-    let is_dash = !args.is_empty() && args[0] == "-";
+    // 1. Parse options
+    let (mode, operand) = parse_cd_options(args)?;
 
-    let target = if args.is_empty() {
-        match env.vars.get("HOME") {
-            Some(h) => h.to_string(),
-            None => {
+    // 2. Resolve operand -> target path
+    let (target, from_cdpath) = resolve_target(operand.as_deref(), env)?;
+
+    // 3. Capture old PWD (logical if available, else from the kernel)
+    let old_pwd = env
+        .vars
+        .get("PWD")
+        .map(|s| s.to_string())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "/".to_string());
+
+    // 4. Compute and apply the chdir per mode
+    let new_pwd = match mode {
+        CdMode::Logical => {
+            let candidate = lexical_canonicalize(&target, &old_pwd);
+            if let Err(e) = std::env::set_current_dir(&candidate) {
                 return Err(ShellError::runtime(
-                    RuntimeErrorKind::InvalidArgument,
-                    "cd: HOME not set",
+                    RuntimeErrorKind::IoError,
+                    format!("cd: {}: {}", target, e),
                 ));
             }
+            candidate
         }
-    } else if args[0] == "-" {
-        match env.vars.get("OLDPWD") {
-            Some(old) => old.to_string(),
-            None => {
+        CdMode::Physical => {
+            if let Err(e) = std::env::set_current_dir(&target) {
                 return Err(ShellError::runtime(
-                    RuntimeErrorKind::InvalidArgument,
-                    "cd: OLDPWD not set",
+                    RuntimeErrorKind::IoError,
+                    format!("cd: {}: {}", target, e),
                 ));
             }
+            match std::env::current_dir() {
+                Ok(p) => p.to_string_lossy().into_owned(),
+                Err(e) => {
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::IoError,
+                        format!("cd: {}: {}", target, e),
+                    ));
+                }
+            }
         }
-    } else {
-        args[0].clone()
     };
 
-    // Save current directory BEFORE attempting chdir
-    let old_pwd = std::env::current_dir().ok();
+    // 5. Update PWD / OLDPWD
+    let _ = env.vars.set("OLDPWD", old_pwd);
+    let _ = env.vars.set("PWD", new_pwd.clone());
 
-    match std::env::set_current_dir(&target) {
-        Ok(_) => {
-            // Only update OLDPWD after successful chdir
-            if let Some(old) = old_pwd {
-                let _ = env.vars.set("OLDPWD", old.to_string_lossy().to_string());
-            }
-            if is_dash {
-                println!("{}", target);
-            }
-            // Update $PWD
-            match std::env::current_dir() {
-                Ok(cwd) => {
-                    let cwd_str = cwd.to_string_lossy().into_owned();
-                    let _ = env.vars.set("PWD", cwd_str);
-                }
-                Err(e) => {
-                    eprintln!("yosh: cd: could not determine new directory: {}", e);
-                }
-            }
-            Ok(0)
-        }
-        Err(e) => Err(ShellError::runtime(
-            RuntimeErrorKind::IoError,
-            format!("cd: {}: {}", target, e),
-        )),
+    // 6. Print new PWD if the operand came from CDPATH or was "-"
+    if from_cdpath {
+        println!("{}", new_pwd);
     }
+
+    Ok(0)
 }
 
 pub fn builtin_echo(args: &[String]) -> Result<i32, ShellError> {
