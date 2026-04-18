@@ -52,8 +52,12 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
   - e2e/builtin/alias_basic.sh
 
 ## 2.4 Reserved Words
-- Status: missing
-- Tests: (none)
+- Status: covered
+- Tests:
+  - e2e/posix_spec/2_04_reserved_words/if_in_command_position.sh
+  - e2e/posix_spec/2_04_reserved_words/if_as_argument.sh
+  - e2e/posix_spec/2_04_reserved_words/quoted_if_not_reserved.sh
+  - e2e/posix_spec/2_04_reserved_words/brace_group_in_command_position.sh
 
 ## 2.5 Parameters and Variables
 - Status: thin
@@ -376,9 +380,9 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 
 | Status | Count |
 |---|---|
-| covered | 27 |
+| covered | 28 |
 | thin | 19 |
-| missing | 11 |
+| missing | 10 |
 | informational | 5 |
 
 ### Per-section status
@@ -392,7 +396,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 | 2.2.3 | covered |
 | 2.3 | covered |
 | 2.3.1 | thin |
-| 2.4 | missing |
+| 2.4 | covered |
 | 2.5 | thin |
 | 2.5.1 | covered |
 | 2.5.2 | covered |
