@@ -361,6 +361,48 @@ pub(crate) fn parse_cd_options(
     Ok((mode, operand))
 }
 
+/// Lexical path canonicalization per POSIX §4 cd step 8 (logical mode).
+/// Pure string operation: does not touch the filesystem.
+/// Handles: leading-`/` absolute vs relative (prepend `pwd`), `.` skip,
+/// `..` lexical pop, `//` collapse. When popping past the root, stays
+/// at `/`.
+pub(crate) fn lexical_canonicalize(path: &str, pwd: &str) -> String {
+    let combined: String = if path.starts_with('/') {
+        path.to_string()
+    } else if path.is_empty() {
+        pwd.to_string()
+    } else {
+        format!("{}/{}", pwd.trim_end_matches('/'), path)
+    };
+
+    let mut stack: Vec<&str> = Vec::new();
+    for comp in combined.split('/') {
+        match comp {
+            "" | "." => continue,
+            ".." => {
+                if stack.last().map(|s| *s != "..").unwrap_or(false) {
+                    stack.pop();
+                } else if !combined.starts_with('/') {
+                    stack.push("..");
+                }
+                // absolute path: dotdot above root is a no-op
+            }
+            other => stack.push(other),
+        }
+    }
+
+    if stack.is_empty() {
+        "/".to_string()
+    } else {
+        let mut out = String::new();
+        for c in &stack {
+            out.push('/');
+            out.push_str(c);
+        }
+        out
+    }
+}
+
 fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
     let current = unsafe { libc::umask(0) };
     unsafe { libc::umask(current) };
@@ -525,5 +567,57 @@ mod tests {
     fn parse_too_many_operands_errors() {
         let err = parse_cd_options(&s(&["a", "b"])).unwrap_err();
         assert!(err.to_string().contains("too many arguments"));
+    }
+
+    // ── lexical_canonicalize ─────────────────────────────────────
+
+    #[test]
+    fn lex_absolute_returned_as_is() {
+        assert_eq!(lexical_canonicalize("/tmp", "/Users/foo"), "/tmp");
+    }
+
+    #[test]
+    fn lex_absolute_with_dotdot() {
+        assert_eq!(lexical_canonicalize("/tmp/../etc", "/"), "/etc");
+    }
+
+    #[test]
+    fn lex_relative_resolves_against_pwd() {
+        assert_eq!(lexical_canonicalize("../bar", "/tmp/foo"), "/tmp/bar");
+    }
+
+    #[test]
+    fn lex_single_dots_skipped() {
+        assert_eq!(lexical_canonicalize("./foo/./bar", "/tmp"), "/tmp/foo/bar");
+    }
+
+    #[test]
+    fn lex_repeated_slashes_collapsed() {
+        assert_eq!(lexical_canonicalize("/tmp//foo", "/"), "/tmp/foo");
+    }
+
+    #[test]
+    fn lex_dotdot_above_root_stays_at_root() {
+        assert_eq!(lexical_canonicalize("/..", "/"), "/");
+    }
+
+    #[test]
+    fn lex_multiple_dotdots_pop_correctly() {
+        assert_eq!(lexical_canonicalize("a/b/../..", "/tmp/x"), "/tmp/x");
+    }
+
+    #[test]
+    fn lex_empty_operand_returns_pwd() {
+        assert_eq!(lexical_canonicalize("", "/tmp"), "/tmp");
+    }
+
+    #[test]
+    fn lex_root_stays_root() {
+        assert_eq!(lexical_canonicalize("/", "/tmp"), "/");
+    }
+
+    #[test]
+    fn lex_trailing_slash_dropped() {
+        assert_eq!(lexical_canonicalize("/tmp/", "/"), "/tmp");
     }
 }
