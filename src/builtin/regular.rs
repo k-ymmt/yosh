@@ -2,6 +2,12 @@ use crate::env::ShellEnv;
 use crate::error::{RuntimeErrorKind, ShellError};
 use nix::unistd::Pid;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CdMode {
+    Logical,
+    Physical,
+}
+
 pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     let is_dash = !args.is_empty() && args[0] == "-";
 
@@ -291,6 +297,70 @@ fn umask_set_octal(s: &str) -> Result<i32, ShellError> {
     }
 }
 
+pub(crate) fn parse_cd_options(
+    args: &[String],
+) -> Result<(CdMode, Option<String>), ShellError> {
+    let mut mode = CdMode::Logical;
+    let mut iter = args.iter();
+    let operand: Option<String>;
+
+    loop {
+        match iter.next() {
+            None => {
+                operand = None;
+                break;
+            }
+            Some(a) if a == "--" => {
+                operand = iter.next().cloned();
+                if iter.next().is_some() {
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::IoError,
+                        "cd: too many arguments",
+                    ));
+                }
+                break;
+            }
+            Some(a) if a == "-" => {
+                operand = Some(a.clone());
+                if iter.next().is_some() {
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::IoError,
+                        "cd: too many arguments",
+                    ));
+                }
+                break;
+            }
+            Some(a) if a.starts_with('-') && a.len() >= 2 => {
+                for ch in a[1..].chars() {
+                    match ch {
+                        'L' => mode = CdMode::Logical,
+                        'P' => mode = CdMode::Physical,
+                        other => {
+                            return Err(ShellError::runtime(
+                                RuntimeErrorKind::InvalidArgument,
+                                format!("cd: -{}: invalid option", other),
+                            ));
+                        }
+                    }
+                }
+                // continue parsing
+            }
+            Some(a) => {
+                operand = Some(a.clone());
+                if iter.next().is_some() {
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::IoError,
+                        "cd: too many arguments",
+                    ));
+                }
+                break;
+            }
+        }
+    }
+
+    Ok((mode, operand))
+}
+
 fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
     let current = unsafe { libc::umask(0) };
     unsafe { libc::umask(current) };
@@ -375,4 +445,85 @@ fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
 
     unsafe { libc::umask(mask) };
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    // ── parse_cd_options ─────────────────────────────────────────
+
+    #[test]
+    fn parse_no_args_defaults_to_logical_none() {
+        let (mode, op) = parse_cd_options(&[]).unwrap();
+        assert_eq!(mode, CdMode::Logical);
+        assert_eq!(op, None);
+    }
+
+    #[test]
+    fn parse_dash_is_operand_not_option() {
+        let (mode, op) = parse_cd_options(&s(&["-"])).unwrap();
+        assert_eq!(mode, CdMode::Logical);
+        assert_eq!(op.as_deref(), Some("-"));
+    }
+
+    #[test]
+    fn parse_l_flag() {
+        let (mode, op) = parse_cd_options(&s(&["-L"])).unwrap();
+        assert_eq!(mode, CdMode::Logical);
+        assert_eq!(op, None);
+    }
+
+    #[test]
+    fn parse_p_flag() {
+        let (mode, op) = parse_cd_options(&s(&["-P"])).unwrap();
+        assert_eq!(mode, CdMode::Physical);
+        assert_eq!(op, None);
+    }
+
+    #[test]
+    fn parse_flag_with_operand() {
+        let (mode, op) = parse_cd_options(&s(&["-P", "/tmp"])).unwrap();
+        assert_eq!(mode, CdMode::Physical);
+        assert_eq!(op.as_deref(), Some("/tmp"));
+    }
+
+    #[test]
+    fn parse_combined_flags_last_wins() {
+        let (mode, _) = parse_cd_options(&s(&["-LP"])).unwrap();
+        assert_eq!(mode, CdMode::Physical);
+        let (mode, _) = parse_cd_options(&s(&["-PL"])).unwrap();
+        assert_eq!(mode, CdMode::Logical);
+    }
+
+    #[test]
+    fn parse_separate_flags_last_wins() {
+        let (mode, op) = parse_cd_options(&s(&["-L", "-P", "foo"])).unwrap();
+        assert_eq!(mode, CdMode::Physical);
+        assert_eq!(op.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn parse_double_dash_terminates_options() {
+        let (mode, op) = parse_cd_options(&s(&["--", "-foo"])).unwrap();
+        assert_eq!(mode, CdMode::Logical);
+        assert_eq!(op.as_deref(), Some("-foo"));
+    }
+
+    #[test]
+    fn parse_invalid_option_errors() {
+        let err = parse_cd_options(&s(&["-x"])).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains("invalid option"));
+    }
+
+    #[test]
+    fn parse_too_many_operands_errors() {
+        let err = parse_cd_options(&s(&["a", "b"])).unwrap_err();
+        assert!(err.to_string().contains("too many arguments"));
+    }
 }
