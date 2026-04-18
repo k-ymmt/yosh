@@ -252,8 +252,12 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 - Tests: (none)
 
 ## 2.11 Signals and Error Handling
-- Status: thin
+- Status: covered
 - Tests:
+  - e2e/posix_spec/2_11_signals_and_error_handling/trap_exit_runs_on_exit.sh
+  - e2e/posix_spec/2_11_signals_and_error_handling/trap_dash_resets_default.sh
+  - e2e/posix_spec/2_11_signals_and_error_handling/trap_ignored_signal_inherited.sh
+  - e2e/posix_spec/2_11_signals_and_error_handling/trap_int_by_name.sh
   - e2e/signal_and_trap/trap_ignore_signal.sh
   - e2e/signal_and_trap/trap_in_subshell_reset.sh
 - Note: Additional trap-related tests exist under §2.14.14 trap. Tests labeled "2.11 Job Control" (jobs/bg/fg/set_monitor) are a separate POSIX topic (XCU §2.13 Job Control) and are not counted here; see Open Questions.
@@ -390,8 +394,8 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 
 | Status | Count |
 |---|---|
-| covered | 31 |
-| thin | 19 |
+| covered | 32 |
+| thin | 18 |
 | missing | 7 |
 | informational | 5 |
 
@@ -439,7 +443,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 | 2.10 | covered |
 | 2.10.1 | missing |
 | 2.10.2 | missing |
-| 2.11 | thin |
+| 2.11 | covered |
 | 2.12 | covered |
 | 2.13 | thin |
 | 2.13.1 | missing |
