@@ -172,6 +172,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 ### 2.7.5 Duplicating an Input File Descriptor
 - Status: missing
 - Tests: (none)
+- Note: '<&digit' FD duplication for input not exercised; follow-up test needed.
 
 ### 2.7.6 Duplicating an Output File Descriptor
 - Status: thin
@@ -182,6 +183,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 ### 2.7.7 Open File Descriptors for Reading and Writing
 - Status: missing
 - Tests: (none)
+- Note: '<>' (open for read/write) mode not exercised; follow-up test needed.
 
 ## 2.8 Exit Status and Errors
 - Status: informational
@@ -250,10 +252,12 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 ### 2.10.1 Shell Grammar Lexical Conventions
 - Status: missing
 - Tests: (none)
+- Note: Lexical conventions are exercised indirectly via §2.3 Token Recognition tests (e2e/posix_spec/2_03_token_recognition/); no dedicated dedicated tests yet.
 
 ### 2.10.2 Shell Grammar Rules
 - Status: missing
 - Tests: (none)
+- Note: Grammar rules are exercised indirectly via §2.9 Shell Commands tests (e2e/control_flow/, e2e/pipeline_and_list/, etc.); no dedicated tests yet.
 
 ## 2.11 Signals and Error Handling
 - Status: covered
@@ -383,6 +387,7 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 ### 2.14.13 times
 - Status: missing
 - Tests: (none)
+- Note: 'times' builtin not implemented in yosh.
 
 ### 2.14.14 trap
 - Status: covered

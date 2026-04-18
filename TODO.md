@@ -80,6 +80,11 @@
 - [ ] §2.5.3 LINENO — `$LINENO` expands to an empty string; POSIX requires it to be set to the current script/function line number before each command (see `e2e/posix_spec/2_05_03_shell_variables/lineno_in_script.sh` XFAIL)
 - [ ] §2.5.3 PWD logical path — `cd` resolves PWD to the physical path (e.g., `/tmp` -> `/private/tmp` on macOS); POSIX `cd` without `-P` shall preserve the logical path unless dot-dot resolution occurs (see `e2e/posix_spec/2_05_03_shell_variables/pwd_after_cd.sh` XFAIL)
 - [ ] §2.11 ignored-on-entry signal inheritance — no in-harness test yet (nested `sh -c` escapes yosh); revisit after a yosh-aware subshell helper lands
+- [ ] §2.7.5 Duplicating an Input File Descriptor — no dedicated test; add when FD dup tests are expanded
+- [ ] §2.7.7 Open File Descriptors for Reading and Writing — no dedicated '<>' test
+- [ ] §2.10.1 Shell Grammar Lexical Conventions — dedicated tests to be added when lexer spec-compliance is revisited
+- [ ] §2.10.2 Shell Grammar Rules — dedicated grammar-rule tests to be added
+- [ ] §2.14.13 times builtin not implemented
 
 ## Future: Release Skill Enhancements
 
