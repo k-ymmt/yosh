@@ -170,10 +170,9 @@ pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> Result<i32, ShellError>
         } else {
             Pid::from_raw(pid)
         };
-        if let Err(e) = nix::sys::signal::kill(
-            target,
-            nix::sys::signal::Signal::try_from(sig_num).ok(),
-        ) {
+        if let Err(e) =
+            nix::sys::signal::kill(target, nix::sys::signal::Signal::try_from(sig_num).ok())
+        {
             eprintln!("yosh: kill: ({}) - {}", pid_str, e);
             status = 1;
         }
@@ -267,9 +266,15 @@ fn umask_to_symbolic(mask: libc::mode_t) -> String {
     let perms = 0o777 & !mask;
     let fmt = |bits: libc::mode_t| -> String {
         let mut s = String::new();
-        if bits & 4 != 0 { s.push('r'); }
-        if bits & 2 != 0 { s.push('w'); }
-        if bits & 1 != 0 { s.push('x'); }
+        if bits & 4 != 0 {
+            s.push('r');
+        }
+        if bits & 2 != 0 {
+            s.push('w');
+        }
+        if bits & 1 != 0 {
+            s.push('x');
+        }
         s
     };
     format!(
@@ -301,9 +306,7 @@ fn umask_set_octal(s: &str) -> Result<i32, ShellError> {
     }
 }
 
-pub(crate) fn parse_cd_options(
-    args: &[String],
-) -> Result<(CdMode, Option<String>), ShellError> {
+pub(crate) fn parse_cd_options(args: &[String]) -> Result<(CdMode, Option<String>), ShellError> {
     let mut mode = CdMode::Logical;
     let mut iter = args.iter();
     let operand: Option<String>;
@@ -771,8 +774,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cdpath = tmp.path().to_string_lossy().to_string();
         let env = make_env(&[("CDPATH", cdpath.as_str())]);
-        let (target, from_cdpath) =
-            resolve_target(Some("nonexistent_xyz"), &env).unwrap();
+        let (target, from_cdpath) = resolve_target(Some("nonexistent_xyz"), &env).unwrap();
         assert_eq!(target, "nonexistent_xyz");
         assert!(!from_cdpath);
     }
@@ -786,8 +788,11 @@ mod tests {
 
         let env = make_env(&[("CDPATH", ":/nonexistent")]);
         let (target, from_cdpath) = resolve_target(Some("sub"), &env).unwrap();
-        assert!(target.ends_with("sub") || target == "./sub",
-                "got: {}", target);
+        assert!(
+            target.ends_with("sub") || target == "./sub",
+            "got: {}",
+            target
+        );
         assert!(from_cdpath);
     }
 
@@ -799,8 +804,7 @@ mod tests {
 
         let cdpath = tmp.path().to_string_lossy().to_string();
         let env = make_env(&[("CDPATH", cdpath.as_str())]);
-        let (target, from_cdpath) =
-            resolve_target(Some("regular_file"), &env).unwrap();
+        let (target, from_cdpath) = resolve_target(Some("regular_file"), &env).unwrap();
         assert_eq!(target, "regular_file");
         assert!(!from_cdpath);
     }
