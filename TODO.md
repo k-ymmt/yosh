@@ -97,7 +97,6 @@
 
 ## Future: POSIX Conformance Gaps (Chapter 2)
 
-- [ ] §2.6.1 Tilde expansion across mixed WordPart boundaries — `x=$var:~/bin` or `x=$var~/bin` does not expand `~` because the colon is in a Literal part that sits after a Parameter part; currently only the first Literal derived from `after_eq` is scanned by `split_tildes_in_literal`
 - [ ] §2.6.1 Tilde escape info lost at export/readonly — `export NAME=\~/val` wrongly expands because word expansion drops the backslash before `expand_tilde_in_assignment_value` sees the argument; would require preserving escape metadata through word expansion or routing export/readonly args through the parser's assignment path
 - [ ] §2.6.1 Line-continuation tilde after unquoted `:` — `x=foo:\<newline>~/bin` does not expand the tilde because the `\<newline>` line-continuation causes the lexer to split into adjacent `WordPart::Literal` entries, which the parser's `prev_was_literal` heuristic (introduced in sub-project 3) then suppresses. Pre-existing (pre-sub-project 3 also produced the same wrong output, via a different code path). Pinned by `assignment_rhs_line_continuation_tilde_known_regression` in `src/parser/mod.rs`. Sub-project 4's escape-metadata work should replace `prev_was_literal` with a precise escape check and fix this case.
 - [ ] §2.11 ignored-on-entry signal inheritance — no in-harness test yet (nested `sh -c` escapes yosh); revisit after a yosh-aware subshell helper lands
