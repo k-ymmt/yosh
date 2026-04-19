@@ -90,7 +90,6 @@
 - [ ] §2.7.7 Open File Descriptors for Reading and Writing — no dedicated '<>' test
 - [ ] §2.10.1 Shell Grammar Lexical Conventions — dedicated tests to be added when lexer spec-compliance is revisited
 - [ ] §2.10.2 Shell Grammar Rules — dedicated grammar-rule tests to be added
-- [ ] §2.14.13 times builtin not implemented
 
 ## Future: Release Skill Enhancements
 
