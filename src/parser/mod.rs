@@ -415,10 +415,7 @@ impl Parser {
     /// empty, returns a parse error of the form
     /// `syntax error: empty compound list in {context}` so callers can
     /// surface context-aware diagnostics.
-    pub fn parse_compound_list(
-        &mut self,
-        context: &str,
-    ) -> error::Result<Vec<CompleteCommand>> {
+    pub fn parse_compound_list(&mut self, context: &str) -> error::Result<Vec<CompleteCommand>> {
         self.skip_newlines()?;
         let mut commands = Vec::new();
         while !self.is_at_end() && !self.is_complete_command_end() {
