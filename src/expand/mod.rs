@@ -186,7 +186,9 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                     let start = i;
                     i = skip_balanced_braces(bytes, i);
                     let name = &s[start..i];
-                    if i < bytes.len() { i += 1; } // skip }
+                    if i < bytes.len() {
+                        i += 1;
+                    } // skip }
                     // Simple lookup (conditional forms not supported in heredoc string expansion)
                     result.push_str(env.vars.get(name).unwrap_or(""));
                 }
@@ -197,7 +199,9 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                         let start = i;
                         i = skip_balanced_double_parens(bytes, i);
                         let expr = &s[start..i];
-                        if i + 1 < bytes.len() { i += 2; } // skip ))
+                        if i + 1 < bytes.len() {
+                            i += 2;
+                        } // skip ))
                         match arith::evaluate(env, expr) {
                             Ok(val) => result.push_str(&val),
                             Err(msg) => {
@@ -212,7 +216,9 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                         let start = i;
                         i = skip_balanced_parens(bytes, i);
                         let cmd_str = &s[start..i];
-                        if i < bytes.len() { i += 1; } // skip )
+                        if i < bytes.len() {
+                            i += 1;
+                        } // skip )
                         // Parse and execute
                         if let Ok(program) = crate::parser::Parser::new(cmd_str).parse_program() {
                             result.push_str(&command_sub::execute(env, &program));
@@ -231,17 +237,21 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
                         b'0' => crate::parser::ast::SpecialParam::Zero,
                         _ => unreachable!(),
                     };
-                    result.push_str(&param::expand(env, &ParamExpr::Special(sp)).unwrap_or_default());
+                    result
+                        .push_str(&param::expand(env, &ParamExpr::Special(sp)).unwrap_or_default());
                     i += 1;
                 }
                 ch if (b'1'..=b'9').contains(&ch) => {
                     let n = (ch - b'0') as usize;
-                    result.push_str(&param::expand(env, &ParamExpr::Positional(n)).unwrap_or_default());
+                    result.push_str(
+                        &param::expand(env, &ParamExpr::Positional(n)).unwrap_or_default(),
+                    );
                     i += 1;
                 }
                 ch if ch.is_ascii_alphabetic() || ch == b'_' => {
                     let start = i;
-                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                    {
                         i += 1;
                     }
                     let name = &s[start..i];
@@ -274,11 +284,15 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
             i += 1;
             let start = i;
             while i < bytes.len() && bytes[i] != b'`' {
-                if bytes[i] == b'\\' { i += 1; }
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
                 i += 1;
             }
             let cmd_str = &s[start..i];
-            if i < bytes.len() { i += 1; } // skip closing `
+            if i < bytes.len() {
+                i += 1;
+            } // skip closing `
             if let Ok(program) = crate::parser::Parser::new(cmd_str).parse_program() {
                 result.push_str(&command_sub::execute(env, &program));
             }
@@ -301,16 +315,14 @@ fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
             let output = command_sub::execute(env, program);
             out.push_str(&output);
         }
-        WordPart::ArithSub(expr) => {
-            match arith::evaluate(env, expr) {
-                Ok(val) => out.push_str(&val),
-                Err(msg) => {
-                    eprintln!("yosh: arithmetic: {}", msg);
-                    env.exec.last_exit_status = 1;
-                    out.push('0');
-                }
+        WordPart::ArithSub(expr) => match arith::evaluate(env, expr) {
+            Ok(val) => out.push_str(&val),
+            Err(msg) => {
+                eprintln!("yosh: arithmetic: {}", msg);
+                env.exec.last_exit_status = 1;
+                out.push('0');
             }
-        }
+        },
         WordPart::SingleQuoted(s) | WordPart::DollarSingleQuoted(s) => out.push_str(s),
         WordPart::DoubleQuoted(parts) => {
             for p in parts {
@@ -330,7 +342,10 @@ fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
 // ─── Stage 1: expand to ExpandedField list ──────────────────────────────────
 
 /// Expand a `Word` into a list of `ExpandedField`s (before field splitting).
-fn expand_word_to_fields(env: &mut ShellEnv, word: &Word) -> crate::error::Result<Vec<ExpandedField>> {
+fn expand_word_to_fields(
+    env: &mut ShellEnv,
+    word: &Word,
+) -> crate::error::Result<Vec<ExpandedField>> {
     let mut fields = vec![ExpandedField::new()];
     for part in &word.parts {
         expand_part_to_fields(env, part, &mut fields, false)?;
@@ -400,23 +415,21 @@ fn expand_part_to_fields(
         }
 
         // ── Arithmetic expansion ──────────────────────────────────────────
-        WordPart::ArithSub(expr) => {
-            match arith::evaluate(env, expr) {
-                Ok(result) => {
-                    if in_double_quote {
-                        fields.last_mut().unwrap().push_quoted(&result);
-                    } else {
-                        fields.last_mut().unwrap().push_unquoted(&result);
-                    }
-                }
-                Err(msg) => {
-                    return Err(crate::error::ShellError::expansion(
-                        crate::error::ExpansionErrorKind::InvalidArithmetic,
-                        msg,
-                    ));
+        WordPart::ArithSub(expr) => match arith::evaluate(env, expr) {
+            Ok(result) => {
+                if in_double_quote {
+                    fields.last_mut().unwrap().push_quoted(&result);
+                } else {
+                    fields.last_mut().unwrap().push_unquoted(&result);
                 }
             }
-        }
+            Err(msg) => {
+                return Err(crate::error::ShellError::expansion(
+                    crate::error::ExpansionErrorKind::InvalidArithmetic,
+                    msg,
+                ));
+            }
+        },
     }
     Ok(())
 }
@@ -740,7 +753,10 @@ mod tests {
                 parts: vec![WordPart::Parameter(ParamExpr::Simple("A".to_string()))],
             },
         ];
-        assert_eq!(expand_words(&mut env, &words).unwrap(), vec!["hello", "foo"]);
+        assert_eq!(
+            expand_words(&mut env, &words).unwrap(),
+            vec!["hello", "foo"]
+        );
     }
 
     // ── "$@" splitting ──
@@ -858,7 +874,10 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::SingleQuoted("hello world".to_string())],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "hello world");
+        assert_eq!(
+            expand_word_to_string(&mut env, &word).unwrap(),
+            "hello world"
+        );
     }
 
     #[test]
@@ -921,7 +940,9 @@ mod tests {
     fn test_special_dollar() {
         let mut env = make_env();
         let word = Word {
-            parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::Dollar))],
+            parts: vec![WordPart::Parameter(ParamExpr::Special(
+                SpecialParam::Dollar,
+            ))],
         };
         let result = expand_word_to_string(&mut env, &word).unwrap();
         let pid: i32 = result.parse().expect("PID should be an integer");
@@ -961,8 +982,10 @@ mod tests {
 
     #[test]
     fn test_special_hash() {
-        let mut env =
-            ShellEnv::new("yosh", vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let mut env = ShellEnv::new(
+            "yosh",
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        );
         let word = Word {
             parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::Hash))],
         };
@@ -976,7 +999,10 @@ mod tests {
         let word = Word {
             parts: vec![WordPart::Tilde(None)],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "/home/user");
+        assert_eq!(
+            expand_word_to_string(&mut env, &word).unwrap(),
+            "/home/user"
+        );
     }
 
     #[test]
@@ -1000,7 +1026,10 @@ mod tests {
                 WordPart::Literal("!".to_string()),
             ],
         };
-        assert_eq!(expand_word_to_string(&mut env, &word).unwrap(), "hello world!");
+        assert_eq!(
+            expand_word_to_string(&mut env, &word).unwrap(),
+            "hello world!"
+        );
     }
 
     #[test]
@@ -1067,7 +1096,10 @@ mod tests {
         let mut env = make_env();
         env.vars.set("FOO", "bar").unwrap();
         let parts = vec![WordPart::Literal("value is $FOO\n".to_string())];
-        assert_eq!(expand_heredoc_body(&mut env, &parts, true), "value is $FOO\n");
+        assert_eq!(
+            expand_heredoc_body(&mut env, &parts, true),
+            "value is $FOO\n"
+        );
     }
 
     #[test]
@@ -1079,12 +1111,18 @@ mod tests {
             WordPart::Parameter(ParamExpr::Simple("FOO".to_string())),
             WordPart::Literal("\n".to_string()),
         ];
-        assert_eq!(expand_heredoc_body(&mut env, &parts, false), "value is bar\n");
+        assert_eq!(
+            expand_heredoc_body(&mut env, &parts, false),
+            "value is bar\n"
+        );
     }
 
     #[test]
     fn test_expand_tilde_prefix_home() {
-        assert_eq!(expand_tilde_prefix(Some("/home/user"), "~/docs"), "/home/user/docs");
+        assert_eq!(
+            expand_tilde_prefix(Some("/home/user"), "~/docs"),
+            "/home/user/docs"
+        );
     }
 
     #[test]
@@ -1099,7 +1137,10 @@ mod tests {
 
     #[test]
     fn test_expand_tilde_prefix_no_tilde() {
-        assert_eq!(expand_tilde_prefix(Some("/home/user"), "/abs/path"), "/abs/path");
+        assert_eq!(
+            expand_tilde_prefix(Some("/home/user"), "/abs/path"),
+            "/abs/path"
+        );
     }
 
     #[test]

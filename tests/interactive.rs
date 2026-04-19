@@ -1,16 +1,16 @@
-use std::fs;
 use crossterm::event::KeyCode;
+use std::fs;
 use yosh::env::ShellEnv;
 use yosh::env::aliases::AliasStore;
-use yosh::interactive::completion::CompletionContext;
 use yosh::interactive::command_completion::{CommandCompleter, CommandCompletionContext};
+use yosh::interactive::completion::CompletionContext;
 use yosh::interactive::edit_action::EditAction;
 use yosh::interactive::fuzzy_search::FuzzySearchUI;
 use yosh::interactive::highlight::{CheckerEnv, HighlightScanner};
 use yosh::interactive::history::History;
 use yosh::interactive::keymap::{BufferState, Keymap};
 use yosh::interactive::line_editor::LineEditor;
-use yosh::interactive::parse_status::{classify_parse, ParseStatus};
+use yosh::interactive::parse_status::{ParseStatus, classify_parse};
 use yosh::interactive::prompt::expand_prompt;
 
 mod helpers;
@@ -332,22 +332,22 @@ fn test_mock_basic_input() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("hello".to_string()));
 }
 
 #[test]
 fn test_mock_ctrl_c_returns_empty() {
-    let events = vec![
-        key(KeyCode::Char('a')),
-        key(KeyCode::Char('b')),
-        ctrl('c'),
-    ];
+    let events = vec![key(KeyCode::Char('a')), key(KeyCode::Char('b')), ctrl('c')];
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some(String::new()));
 }
 
@@ -358,7 +358,9 @@ fn test_mock_ctrl_d_empty_returns_none() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, None);
 }
 
@@ -376,7 +378,9 @@ fn test_mock_ctrl_d_nonempty_deletes_char() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("a".to_string()));
 }
 
@@ -397,7 +401,9 @@ fn test_mock_ctrl_a_and_ctrl_e() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("xabcy".to_string()));
 }
 
@@ -419,7 +425,9 @@ fn test_mock_ctrl_b_and_ctrl_f() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("axbyc".to_string()));
 }
 
@@ -440,7 +448,9 @@ fn test_mock_home_end_keys() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("xabcy".to_string()));
 }
 
@@ -459,7 +469,9 @@ fn test_mock_backspace() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("a".to_string()));
 }
 
@@ -478,7 +490,9 @@ fn test_mock_delete_key() {
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     let mut history = History::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("bc".to_string()));
 }
 
@@ -498,7 +512,9 @@ fn test_mock_history_up_down() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("second".to_string()));
 }
 
@@ -515,7 +531,9 @@ fn test_mock_history_up_and_edit() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("echo new".to_string()));
 }
 
@@ -532,7 +550,9 @@ fn test_mock_history_preserves_typed_text() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("partial".to_string()));
 }
 
@@ -553,7 +573,9 @@ fn test_mock_ctrl_r_selects_matching_entry() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("git commit -m 'fix'".to_string()));
 }
 
@@ -572,7 +594,9 @@ fn test_mock_ctrl_r_cancel_with_esc() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     // After Esc, buffer should retain pre-search content "hello"
     assert_eq!(result, Some("hello".to_string()));
 }
@@ -589,14 +613,16 @@ fn test_mock_ctrl_r_navigate_up() {
     // Enter selects "echo second"
     let events = vec![
         ctrl('r'),
-        key(KeyCode::Up),     // select "echo second" (index 1)
-        key(KeyCode::Enter),  // select from search
-        key(KeyCode::Enter),  // submit
+        key(KeyCode::Up),    // select "echo second" (index 1)
+        key(KeyCode::Enter), // select from search
+        key(KeyCode::Enter), // submit
     ];
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("echo second".to_string()));
 }
 
@@ -615,13 +641,15 @@ fn test_mock_ctrl_r_backspace_updates_candidates() {
         key(KeyCode::Backspace),
         key(KeyCode::Char('c')),
         key(KeyCode::Char('a')),
-        key(KeyCode::Enter),  // select from search
-        key(KeyCode::Enter),  // submit
+        key(KeyCode::Enter), // select from search
+        key(KeyCode::Enter), // submit
     ];
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("cargo test".to_string()));
 }
 
@@ -670,13 +698,15 @@ fn test_mock_ctrl_r_with_ctrl_g_cancel() {
     // Ctrl+R -> Ctrl+G (cancel) -> Enter (submit empty)
     let events = vec![
         ctrl('r'),
-        ctrl('g'),            // cancel search
-        key(KeyCode::Enter),  // submit
+        ctrl('g'),           // cancel search
+        key(KeyCode::Enter), // submit
     ];
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     // Buffer is empty since Ctrl+R was triggered from empty state and cancelled
     assert_eq!(result, Some(String::new()));
 }
@@ -757,7 +787,9 @@ fn test_suggest_accept_full_with_right_arrow() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("git commit -m 'fix'".to_string()));
 }
 
@@ -773,7 +805,9 @@ fn test_suggest_accept_full_with_ctrl_f() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("cargo test --release".to_string()));
 }
 
@@ -790,7 +824,9 @@ fn test_right_arrow_normal_when_no_suggestion() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("abc".to_string()));
 }
 
@@ -805,7 +841,9 @@ fn test_suggest_appears_on_typing() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("git c".to_string()));
 
     // Check that dim suggestion text was rendered
@@ -832,7 +870,9 @@ fn test_suggest_hidden_when_cursor_not_at_end() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let _ = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let _ = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
 
     let output_parts = term.output();
     let last_outputs = output_parts.iter().rev().take(10).collect::<Vec<_>>();
@@ -840,7 +880,10 @@ fn test_suggest_hidden_when_cursor_not_at_end() {
     let last_dim_pos = last_chunk.rfind("[DIM]");
     let last_nodim_pos = last_chunk.rfind("[/DIM]");
     match (last_dim_pos, last_nodim_pos) {
-        (Some(d), Some(nd)) => assert!(d < nd, "suggestion should not be active after cursor moved left"),
+        (Some(d), Some(nd)) => assert!(
+            d < nd,
+            "suggestion should not be active after cursor moved left"
+        ),
         (None, _) => {}
         (Some(_), None) => panic!("unclosed [DIM] in output"),
     }
@@ -859,7 +902,9 @@ fn test_suggest_cleared_on_history_navigation() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     // Up replaces buffer with "echo world" (most recent)
     assert_eq!(result, Some("echo world".to_string()));
 }
@@ -876,7 +921,9 @@ fn test_suggest_accept_word_with_alt_f() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("git commit".to_string()));
 }
 
@@ -894,7 +941,9 @@ fn test_suggest_accept_word_stepwise() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("git commit -m 'fix'".to_string()));
 }
 
@@ -909,7 +958,9 @@ fn test_alt_f_noop_without_suggestion() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("hello".to_string()));
 }
 
@@ -928,7 +979,9 @@ fn test_ctrl_r_redraws_prompt_after_selection() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("mysh$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("mysh$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("echo hello".to_string()));
 
     // The prompt "mysh$ " must appear in the terminal output after
@@ -956,7 +1009,9 @@ fn test_suggest_updates_on_backspace() {
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
-    let result = editor.read_line("$ ", &[], &mut history, &mut term).unwrap();
+    let result = editor
+        .read_line("$ ", &[], &mut history, &mut term)
+        .unwrap();
     assert_eq!(result, Some("echo world".to_string()));
 }
 
@@ -990,9 +1045,22 @@ fn test_tab_completes_single_candidate() {
         aliases: &aliases,
     };
     let mut scanner = HighlightScanner::new();
-    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
         .unwrap();
     assert_eq!(result, Some("ls unique_file.txt ".to_string()));
 }
@@ -1026,9 +1094,22 @@ fn test_tab_completes_common_prefix() {
         aliases: &aliases,
     };
     let mut scanner = HighlightScanner::new();
-    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
         .unwrap();
     assert_eq!(result, Some("ls file_".to_string()));
 }
@@ -1061,9 +1142,22 @@ fn test_tab_directory_appends_slash() {
         aliases: &aliases,
     };
     let mut scanner = HighlightScanner::new();
-    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
         .unwrap();
     assert_eq!(result, Some("ls mydir/".to_string()));
 }
@@ -1096,9 +1190,22 @@ fn test_tab_no_match_does_nothing() {
         aliases: &aliases,
     };
     let mut scanner = HighlightScanner::new();
-    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
         .unwrap();
     assert_eq!(result, Some("ls xyz".to_string()));
 }
@@ -1121,11 +1228,11 @@ fn test_double_tab_opens_completion_ui() {
     // Tab again (opens CompletionUI), Up (select file_beta.rs), Enter (confirm), Enter (submit)
     // Using "ls " prefix puts "file_" in argument position to ensure path completion
     let mut events = chars("ls file_");
-    events.push(key(KeyCode::Tab));     // first tab: completes common prefix (already "file_")
-    events.push(key(KeyCode::Tab));     // second tab: opens CompletionUI
-    events.push(key(KeyCode::Up));      // select file_beta.rs
-    events.push(key(KeyCode::Enter));   // confirm selection in UI
-    events.push(key(KeyCode::Enter));   // submit line
+    events.push(key(KeyCode::Tab)); // first tab: completes common prefix (already "file_")
+    events.push(key(KeyCode::Tab)); // second tab: opens CompletionUI
+    events.push(key(KeyCode::Up)); // select file_beta.rs
+    events.push(key(KeyCode::Enter)); // confirm selection in UI
+    events.push(key(KeyCode::Enter)); // submit line
 
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
@@ -1139,8 +1246,23 @@ fn test_double_tab_opens_completion_ui() {
         aliases: &aliases,
     };
     let mut scanner = HighlightScanner::new();
-    let checker_env = CheckerEnv { path: "", aliases: &aliases };
-    let result = editor.read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "").unwrap();
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
+    let result = editor
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
+        .unwrap();
     assert_eq!(result, Some("ls file_beta.rs ".to_string()));
 
     let _ = fs::remove_dir_all(&dir);
@@ -1184,9 +1306,22 @@ fn test_tab_command_completion_at_line_start() {
     let mut editor = LineEditor::new();
     let mut history = History::new();
     let mut scanner = HighlightScanner::new();
-    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
         .unwrap();
     assert_eq!(result, Some("yosh_test_mycmd ".to_string()));
 }
@@ -1221,9 +1356,22 @@ fn test_tab_command_position_path_fallback() {
     let mut editor = LineEditor::new();
     let mut history = History::new();
     let mut scanner = HighlightScanner::new();
-    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
         .unwrap();
     assert_eq!(result, Some("./myscript.sh ".to_string()));
 }
@@ -1257,9 +1405,22 @@ fn test_tab_argument_position_uses_path_completion() {
     let mut editor = LineEditor::new();
     let mut history = History::new();
     let mut scanner = HighlightScanner::new();
-    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
         .unwrap();
     assert_eq!(result, Some("cat testfile.txt ".to_string()));
 }
@@ -1292,9 +1453,22 @@ fn test_tab_completes_builtin() {
     let mut editor = LineEditor::new();
     let mut history = History::new();
     let mut scanner = HighlightScanner::new();
-    let checker_env = CheckerEnv { path: "", aliases: &aliases };
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
     let result = editor
-        .read_line_with_completion("$ ", &[], &mut history, &mut term, &ctx, &mut cmd_ctx, &mut scanner, &checker_env, "")
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
         .unwrap();
     assert_eq!(result, Some("export ".to_string()));
 }
@@ -1449,7 +1623,10 @@ fn default_state() -> BufferState {
     }
 }
 
-fn key_event(code: KeyCode, modifiers: crossterm::event::KeyModifiers) -> crossterm::event::KeyEvent {
+fn key_event(
+    code: KeyCode,
+    modifiers: crossterm::event::KeyModifiers,
+) -> crossterm::event::KeyEvent {
     crossterm::event::KeyEvent::new(code, modifiers)
 }
 
@@ -1621,7 +1798,10 @@ fn test_keymap_ctrl_g_cancel() {
 #[test]
 fn test_keymap_ctrl_d_empty_is_eof() {
     let mut km = Keymap::new();
-    let state = BufferState { is_empty: true, ..default_state() };
+    let state = BufferState {
+        is_empty: true,
+        ..default_state()
+    };
     let (action, _) = km.resolve(
         key_event(KeyCode::Char('d'), crossterm::event::KeyModifiers::CONTROL),
         &state,
@@ -1792,7 +1972,9 @@ fn test_keymap_alt_backspace() {
 #[test]
 fn test_move_backward_word() {
     let mut ed = LineEditor::new();
-    for ch in "hello world".chars() { ed.insert_char(ch); }
+    for ch in "hello world".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_backward_word();
     assert_eq!(ed.cursor(), 6);
     ed.move_backward_word();
@@ -1804,7 +1986,9 @@ fn test_move_backward_word() {
 #[test]
 fn test_move_forward_word() {
     let mut ed = LineEditor::new();
-    for ch in "hello world".chars() { ed.insert_char(ch); }
+    for ch in "hello world".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
     ed.move_forward_word();
     assert_eq!(ed.cursor(), 5);
@@ -1817,7 +2001,9 @@ fn test_move_forward_word() {
 #[test]
 fn test_move_backward_word_with_multiple_spaces() {
     let mut ed = LineEditor::new();
-    for ch in "foo   bar".chars() { ed.insert_char(ch); }
+    for ch in "foo   bar".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_backward_word();
     assert_eq!(ed.cursor(), 6);
 }
@@ -1825,7 +2011,9 @@ fn test_move_backward_word_with_multiple_spaces() {
 #[test]
 fn test_move_forward_word_with_symbols() {
     let mut ed = LineEditor::new();
-    for ch in "foo--bar".chars() { ed.insert_char(ch); }
+    for ch in "foo--bar".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
     ed.move_forward_word();
     assert_eq!(ed.cursor(), 3);
@@ -1836,9 +2024,13 @@ fn test_move_forward_word_with_symbols() {
 #[test]
 fn test_kill_to_end() {
     let mut ed = LineEditor::new();
-    for ch in "hello world".chars() { ed.insert_char(ch); }
+    for ch in "hello world".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
-    for _ in 0..5 { ed.move_cursor_right(); }
+    for _ in 0..5 {
+        ed.move_cursor_right();
+    }
     let killed = ed.kill_to_end();
     assert_eq!(ed.buffer(), "hello");
     assert_eq!(killed, " world");
@@ -1847,9 +2039,13 @@ fn test_kill_to_end() {
 #[test]
 fn test_kill_to_start() {
     let mut ed = LineEditor::new();
-    for ch in "hello world".chars() { ed.insert_char(ch); }
+    for ch in "hello world".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
-    for _ in 0..5 { ed.move_cursor_right(); }
+    for _ in 0..5 {
+        ed.move_cursor_right();
+    }
     let killed = ed.kill_to_start();
     assert_eq!(ed.buffer(), " world");
     assert_eq!(ed.cursor(), 0);
@@ -1859,7 +2055,9 @@ fn test_kill_to_start() {
 #[test]
 fn test_kill_backward_word() {
     let mut ed = LineEditor::new();
-    for ch in "hello world".chars() { ed.insert_char(ch); }
+    for ch in "hello world".chars() {
+        ed.insert_char(ch);
+    }
     let killed = ed.kill_backward_word();
     assert_eq!(ed.buffer(), "hello ");
     assert_eq!(killed, "world");
@@ -1868,7 +2066,9 @@ fn test_kill_backward_word() {
 #[test]
 fn test_kill_forward_word() {
     let mut ed = LineEditor::new();
-    for ch in "hello world".chars() { ed.insert_char(ch); }
+    for ch in "hello world".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
     let killed = ed.kill_forward_word();
     assert_eq!(ed.buffer(), " world");
@@ -1878,7 +2078,9 @@ fn test_kill_forward_word() {
 #[test]
 fn test_transpose_chars_middle() {
     let mut ed = LineEditor::new();
-    for ch in "abc".chars() { ed.insert_char(ch); }
+    for ch in "abc".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
     ed.move_cursor_right();
     ed.transpose_chars();
@@ -1889,7 +2091,9 @@ fn test_transpose_chars_middle() {
 #[test]
 fn test_transpose_chars_at_end() {
     let mut ed = LineEditor::new();
-    for ch in "abc".chars() { ed.insert_char(ch); }
+    for ch in "abc".chars() {
+        ed.insert_char(ch);
+    }
     ed.transpose_chars();
     assert_eq!(ed.buffer(), "acb");
     assert_eq!(ed.cursor(), 3);
@@ -1898,7 +2102,9 @@ fn test_transpose_chars_at_end() {
 #[test]
 fn test_transpose_chars_at_start_noop() {
     let mut ed = LineEditor::new();
-    for ch in "abc".chars() { ed.insert_char(ch); }
+    for ch in "abc".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
     ed.transpose_chars();
     assert_eq!(ed.buffer(), "abc");
@@ -1908,7 +2114,9 @@ fn test_transpose_chars_at_start_noop() {
 #[test]
 fn test_upcase_word() {
     let mut ed = LineEditor::new();
-    for ch in "hello world".chars() { ed.insert_char(ch); }
+    for ch in "hello world".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
     ed.upcase_word();
     assert_eq!(ed.buffer(), "HELLO world");
@@ -1918,7 +2126,9 @@ fn test_upcase_word() {
 #[test]
 fn test_downcase_word() {
     let mut ed = LineEditor::new();
-    for ch in "HELLO WORLD".chars() { ed.insert_char(ch); }
+    for ch in "HELLO WORLD".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
     ed.downcase_word();
     assert_eq!(ed.buffer(), "hello WORLD");
@@ -1928,7 +2138,9 @@ fn test_downcase_word() {
 #[test]
 fn test_capitalize_word() {
     let mut ed = LineEditor::new();
-    for ch in "hello world".chars() { ed.insert_char(ch); }
+    for ch in "hello world".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
     ed.capitalize_word();
     assert_eq!(ed.buffer(), "Hello world");
@@ -1938,7 +2150,9 @@ fn test_capitalize_word() {
 #[test]
 fn test_transpose_words() {
     let mut ed = LineEditor::new();
-    for ch in "hello world".chars() { ed.insert_char(ch); }
+    for ch in "hello world".chars() {
+        ed.insert_char(ch);
+    }
     ed.transpose_words();
     assert_eq!(ed.buffer(), "world hello");
     assert_eq!(ed.cursor(), 11);
@@ -1947,9 +2161,13 @@ fn test_transpose_words() {
 #[test]
 fn test_transpose_words_cursor_in_middle() {
     let mut ed = LineEditor::new();
-    for ch in "aaa bbb ccc".chars() { ed.insert_char(ch); }
+    for ch in "aaa bbb ccc".chars() {
+        ed.insert_char(ch);
+    }
     ed.move_to_start();
-    for _ in 0..5 { ed.move_cursor_right(); }
+    for _ in 0..5 {
+        ed.move_cursor_right();
+    }
     ed.transpose_words();
     assert_eq!(ed.buffer(), "bbb aaa ccc");
     assert_eq!(ed.cursor(), 7);
@@ -1967,7 +2185,8 @@ fn test_mock_ctrl_k_kills_to_end() {
         vec![key(KeyCode::Right); 5],
         vec![ctrl('k')],
         vec![key(KeyCode::Enter)],
-    ].concat();
+    ]
+    .concat();
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "hello");
@@ -1983,7 +2202,8 @@ fn test_mock_ctrl_u_kills_to_start() {
         vec![key(KeyCode::Right); 5],
         vec![ctrl('u')],
         vec![key(KeyCode::Enter)],
-    ].concat();
+    ]
+    .concat();
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), " world");
@@ -1997,7 +2217,8 @@ fn test_mock_ctrl_w_kills_backward_word() {
         chars("hello world"),
         vec![ctrl('w')],
         vec![key(KeyCode::Enter)],
-    ].concat();
+    ]
+    .concat();
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "hello ");
@@ -2013,7 +2234,8 @@ fn test_mock_ctrl_y_yanks() {
         vec![ctrl('a')],
         vec![ctrl('y')],
         vec![key(KeyCode::Enter)],
-    ].concat();
+    ]
+    .concat();
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "worldhello ");
@@ -2029,7 +2251,8 @@ fn test_mock_ctrl_underscore_undo() {
         vec![ctrl('k')],
         vec![ctrl('_')],
         vec![key(KeyCode::Enter)],
-    ].concat();
+    ]
+    .concat();
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "hello");
@@ -2044,7 +2267,8 @@ fn test_mock_alt_b_word_backward() {
         vec![alt('b')],
         vec![ctrl('k')],
         vec![key(KeyCode::Enter)],
-    ].concat();
+    ]
+    .concat();
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "hello ");
@@ -2054,11 +2278,7 @@ fn test_mock_alt_b_word_backward() {
 fn test_mock_ctrl_l_clears_screen() {
     let mut ed = LineEditor::new();
     let mut history = History::new();
-    let events = [
-        chars("test"),
-        vec![ctrl('l')],
-        vec![key(KeyCode::Enter)],
-    ].concat();
+    let events = [chars("test"), vec![ctrl('l')], vec![key(KeyCode::Enter)]].concat();
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "test");
@@ -2068,11 +2288,7 @@ fn test_mock_ctrl_l_clears_screen() {
 fn test_mock_ctrl_t_transpose() {
     let mut ed = LineEditor::new();
     let mut history = History::new();
-    let events = [
-        chars("ab"),
-        vec![ctrl('t')],
-        vec![key(KeyCode::Enter)],
-    ].concat();
+    let events = [chars("ab"), vec![ctrl('t')], vec![key(KeyCode::Enter)]].concat();
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "ba");
@@ -2087,7 +2303,8 @@ fn test_mock_alt_u_upcase() {
         vec![ctrl('a')],
         vec![alt('u')],
         vec![key(KeyCode::Enter)],
-    ].concat();
+    ]
+    .concat();
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "HELLO");
@@ -2104,7 +2321,8 @@ fn test_mock_numeric_arg_movement() {
         vec![ctrl('f')],
         vec![ctrl('k')],
         vec![key(KeyCode::Enter)],
-    ].concat();
+    ]
+    .concat();
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "abc");

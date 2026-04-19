@@ -55,9 +55,7 @@ impl History {
         }
 
         // ignorespace: skip lines starting with a space
-        if (histcontrol == "ignorespace" || histcontrol == "ignoreboth")
-            && line.starts_with(' ')
-        {
+        if (histcontrol == "ignorespace" || histcontrol == "ignoreboth") && line.starts_with(' ') {
             return;
         }
 

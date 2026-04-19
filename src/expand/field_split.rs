@@ -1,5 +1,5 @@
-use crate::env::ShellEnv;
 use super::ExpandedField;
+use crate::env::ShellEnv;
 
 // ─── IFS helper ─────────────────────────────────────────────────────────────
 
@@ -26,7 +26,10 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
 
     // IFS empty: no splitting; drop fully-empty unquoted fields.
     if ifs.is_empty() {
-        return fields.into_iter().filter(|f| !f.value.is_empty() || f.was_quoted).collect();
+        return fields
+            .into_iter()
+            .filter(|f| !f.value.is_empty() || f.was_quoted)
+            .collect();
     }
 
     // Partition IFS characters.
@@ -57,12 +60,7 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
 ///   AfterWs     – just consumed one-or-more IFS-whitespace chars.
 ///   AfterNws    – just consumed an IFS non-whitespace delimiter; leading
 ///                 whitespace of the next token should be skipped.
-fn split_field(
-    field: &ExpandedField,
-    ifs_ws: &[u8],
-    ifs_nws: &[u8],
-    out: &mut Vec<ExpandedField>,
-) {
+fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut Vec<ExpandedField>) {
     #[derive(Clone, Copy, PartialEq)]
     enum State {
         Start,
@@ -76,7 +74,10 @@ fn split_field(
 
     // A quoted empty field (e.g. '' or "") should be preserved as-is.
     if len == 0 && field.was_quoted {
-        out.push(ExpandedField { was_quoted: true, ..ExpandedField::new() });
+        out.push(ExpandedField {
+            was_quoted: true,
+            ..ExpandedField::new()
+        });
         return;
     }
 
@@ -97,11 +98,13 @@ fn split_field(
                     // Skip leading / trailing whitespace around a delimiter.
                     i += 1;
                     // Stay in Start/AfterNws to keep skipping whitespace.
-                }
-                else if is_nws {
+                } else if is_nws {
                     // An IFS non-whitespace delimiter immediately after
                     // Start/AfterNws → emit an empty field.
-                    out.push(ExpandedField { was_quoted: true, ..ExpandedField::new() });
+                    out.push(ExpandedField {
+                        was_quoted: true,
+                        ..ExpandedField::new()
+                    });
                     state = State::AfterNws;
                     i += 1;
                 } else {

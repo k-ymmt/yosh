@@ -1,16 +1,16 @@
 /// POSIX shell option flags (set -o / set +o).
 #[derive(Debug, Clone, Default)]
 pub struct ShellOptions {
-    pub allexport: bool,  // -a
-    pub notify: bool,     // -b
-    pub noclobber: bool,  // -C
-    pub errexit: bool,    // -e
-    pub noglob: bool,     // -f
-    pub noexec: bool,     // -n
-    pub monitor: bool,    // -m
-    pub nounset: bool,    // -u
-    pub verbose: bool,    // -v
-    pub xtrace: bool,     // -x
+    pub allexport: bool, // -a
+    pub notify: bool,    // -b
+    pub noclobber: bool, // -C
+    pub errexit: bool,   // -e
+    pub noglob: bool,    // -f
+    pub noexec: bool,    // -n
+    pub monitor: bool,   // -m
+    pub nounset: bool,   // -u
+    pub verbose: bool,   // -v
+    pub xtrace: bool,    // -x
     pub ignoreeof: bool,
     pub pipefail: bool,
     pub cmd_string: bool, // -c
@@ -21,17 +21,39 @@ impl ShellOptions {
     /// Order: a, b, C, e, f, m, n, u, v, x
     pub fn to_flag_string(&self) -> String {
         let mut s = String::new();
-        if self.allexport  { s.push('a'); }
-        if self.notify     { s.push('b'); }
-        if self.cmd_string { s.push('c'); }
-        if self.noclobber  { s.push('C'); }
-        if self.errexit    { s.push('e'); }
-        if self.noglob     { s.push('f'); }
-        if self.monitor    { s.push('m'); }
-        if self.noexec     { s.push('n'); }
-        if self.nounset    { s.push('u'); }
-        if self.verbose    { s.push('v'); }
-        if self.xtrace     { s.push('x'); }
+        if self.allexport {
+            s.push('a');
+        }
+        if self.notify {
+            s.push('b');
+        }
+        if self.cmd_string {
+            s.push('c');
+        }
+        if self.noclobber {
+            s.push('C');
+        }
+        if self.errexit {
+            s.push('e');
+        }
+        if self.noglob {
+            s.push('f');
+        }
+        if self.monitor {
+            s.push('m');
+        }
+        if self.noexec {
+            s.push('n');
+        }
+        if self.nounset {
+            s.push('u');
+        }
+        if self.verbose {
+            s.push('v');
+        }
+        if self.xtrace {
+            s.push('x');
+        }
         s
     }
 
@@ -39,16 +61,16 @@ impl ShellOptions {
     pub fn set_by_char(&mut self, c: char, on: bool) -> Result<(), String> {
         match c {
             'a' => self.allexport = on,
-            'b' => self.notify    = on,
+            'b' => self.notify = on,
             'C' => self.noclobber = on,
-            'e' => self.errexit   = on,
-            'f' => self.noglob    = on,
-            'm' => self.monitor   = on,
-            'n' => self.noexec    = on,
-            'u' => self.nounset   = on,
-            'v' => self.verbose   = on,
-            'x' => self.xtrace    = on,
-            _   => return Err(format!("unknown option: -{}", c)),
+            'e' => self.errexit = on,
+            'f' => self.noglob = on,
+            'm' => self.monitor = on,
+            'n' => self.noexec = on,
+            'u' => self.nounset = on,
+            'v' => self.verbose = on,
+            'x' => self.xtrace = on,
+            _ => return Err(format!("unknown option: -{}", c)),
         }
         Ok(())
     }
@@ -56,19 +78,19 @@ impl ShellOptions {
     /// Set or unset a flag by its long name.
     pub fn set_by_name(&mut self, name: &str, on: bool) -> Result<(), String> {
         match name {
-            "allexport"  => self.allexport  = on,
-            "notify"     => self.notify     = on,
-            "noclobber"  => self.noclobber  = on,
-            "errexit"    => self.errexit    = on,
-            "noglob"     => self.noglob     = on,
-            "monitor"    => self.monitor    = on,
-            "noexec"     => self.noexec     = on,
-            "nounset"    => self.nounset    = on,
-            "verbose"    => self.verbose    = on,
-            "xtrace"     => self.xtrace     = on,
-            "ignoreeof"  => self.ignoreeof  = on,
-            "pipefail"   => self.pipefail   = on,
-            _            => return Err(format!("unknown option: {}", name)),
+            "allexport" => self.allexport = on,
+            "notify" => self.notify = on,
+            "noclobber" => self.noclobber = on,
+            "errexit" => self.errexit = on,
+            "noglob" => self.noglob = on,
+            "monitor" => self.monitor = on,
+            "noexec" => self.noexec = on,
+            "nounset" => self.nounset = on,
+            "verbose" => self.verbose = on,
+            "xtrace" => self.xtrace = on,
+            "ignoreeof" => self.ignoreeof = on,
+            "pipefail" => self.pipefail = on,
+            _ => return Err(format!("unknown option: {}", name)),
         }
         Ok(())
     }
@@ -96,18 +118,18 @@ impl ShellOptions {
     /// Returns all options as sorted (name, value) pairs.
     fn all_entries(&self) -> Vec<(&'static str, bool)> {
         let mut entries: Vec<(&'static str, bool)> = vec![
-            ("allexport",  self.allexport),
-            ("errexit",    self.errexit),
-            ("ignoreeof",  self.ignoreeof),
-            ("monitor",    self.monitor),
-            ("noclobber",  self.noclobber),
-            ("noexec",     self.noexec),
-            ("noglob",     self.noglob),
-            ("notify",     self.notify),
-            ("nounset",    self.nounset),
-            ("pipefail",   self.pipefail),
-            ("verbose",    self.verbose),
-            ("xtrace",     self.xtrace),
+            ("allexport", self.allexport),
+            ("errexit", self.errexit),
+            ("ignoreeof", self.ignoreeof),
+            ("monitor", self.monitor),
+            ("noclobber", self.noclobber),
+            ("noexec", self.noexec),
+            ("noglob", self.noglob),
+            ("notify", self.notify),
+            ("nounset", self.nounset),
+            ("pipefail", self.pipefail),
+            ("verbose", self.verbose),
+            ("xtrace", self.xtrace),
         ];
         entries.sort_by_key(|(name, _)| *name);
         entries

@@ -26,8 +26,7 @@ pub fn write_plugin_entry(
     target: &InstallTarget,
     force: bool,
 ) -> Result<(), String> {
-    let content = std::fs::read_to_string(config_path)
-        .unwrap_or_default();
+    let content = std::fs::read_to_string(config_path).unwrap_or_default();
 
     let mut doc: DocumentMut = content
         .parse()
@@ -144,12 +143,22 @@ fn parse_local(arg: &str) -> Result<InstallTarget, String> {
     let name = canonical
         .file_stem()
         .and_then(|s| s.to_str())
-        .ok_or_else(|| format!("cannot determine plugin name from path '{}'", canonical.display()))?
+        .ok_or_else(|| {
+            format!(
+                "cannot determine plugin name from path '{}'",
+                canonical.display()
+            )
+        })?
         .to_string();
 
     let path_str = canonical
         .to_str()
-        .ok_or_else(|| format!("path '{}' contains non-UTF-8 characters", canonical.display()))?
+        .ok_or_else(|| {
+            format!(
+                "path '{}' contains non-UTF-8 characters",
+                canonical.display()
+            )
+        })?
         .to_string();
 
     Ok(InstallTarget {
@@ -445,7 +454,11 @@ mod tests {
         std::fs::write(&lib_file, b"fake").unwrap();
         let lib_path = lib_file.to_string_lossy().to_string();
         // canonicalize resolves symlinks (e.g. /var -> /private/var on macOS)
-        let canonical_lib_path = lib_file.canonicalize().unwrap().to_string_lossy().to_string();
+        let canonical_lib_path = lib_file
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
 
         install(&lib_path, false, &config_path, None).unwrap();
 

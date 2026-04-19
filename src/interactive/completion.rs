@@ -46,9 +46,7 @@ pub fn extract_completion_word(buf: &str, cursor: usize) -> (usize, &str) {
                 in_single_quote = !in_single_quote;
             }
             b'"' if !in_single_quote => {
-                if !in_double_quote
-                    && (i == 0 || is_unquoted_delimiter(bytes[i - 1]))
-                {
+                if !in_double_quote && (i == 0 || is_unquoted_delimiter(bytes[i - 1])) {
                     word_start = i;
                 }
                 in_double_quote = !in_double_quote;
@@ -83,7 +81,10 @@ pub fn is_command_position(buf: &str, word_start: usize) -> bool {
     if before.is_empty() {
         return true;
     }
-    matches!(before.as_bytes().last(), Some(b'|' | b';' | b'&' | b'(' | b'!'))
+    matches!(
+        before.as_bytes().last(),
+        Some(b'|' | b';' | b'&' | b'(' | b'!')
+    )
 }
 
 /// Split a completion word at the last `/` into (directory_part, prefix).
@@ -793,9 +794,9 @@ mod tests {
 
     impl TerminalTrait for MockTerm {
         fn read_event(&mut self) -> std::io::Result<Event> {
-            self.events.pop_front().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "no events")
-            })
+            self.events
+                .pop_front()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "no events"))
         }
         fn size(&self) -> std::io::Result<(u16, u16)> {
             Ok((80, 24))
@@ -896,10 +897,7 @@ mod tests {
 
     #[test]
     fn test_completion_ui_cancel() {
-        let candidates = vec![
-            "file_a.rs".to_string(),
-            "file_b.rs".to_string(),
-        ];
+        let candidates = vec!["file_a.rs".to_string(), "file_b.rs".to_string()];
         let events = vec![MockTerm::mk_key(KeyCode::Esc)];
         let mut term = MockTerm::new(events);
         let result = CompletionUI::run(&candidates, &mut term).unwrap();
@@ -908,10 +906,7 @@ mod tests {
 
     #[test]
     fn test_completion_ui_tab_confirms() {
-        let candidates = vec![
-            "file_a.rs".to_string(),
-            "file_b.rs".to_string(),
-        ];
+        let candidates = vec!["file_a.rs".to_string(), "file_b.rs".to_string()];
         let events = vec![MockTerm::mk_key(KeyCode::Tab)];
         let mut term = MockTerm::new(events);
         let result = CompletionUI::run(&candidates, &mut term).unwrap();

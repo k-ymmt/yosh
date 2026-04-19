@@ -11,10 +11,9 @@ use yosh::plugin::PluginManager;
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn build_test_plugin() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/plugins/test_plugin/Cargo.toml");
-    let target_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/plugins/test_plugin/target");
+    let manifest =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/plugins/test_plugin/Cargo.toml");
+    let target_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/plugins/test_plugin/target");
     let status = Command::new("cargo")
         .args(["build", "--manifest-path", manifest.to_str().unwrap()])
         .env("CARGO_TARGET_DIR", &target_dir)

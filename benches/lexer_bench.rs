@@ -31,12 +31,8 @@ fn lex_all(input: &str) {
 }
 
 fn bench_lexer(c: &mut Criterion) {
-    c.bench_function("lex_small", |b| {
-        b.iter(|| lex_all(black_box(SMALL_SCRIPT)))
-    });
-    c.bench_function("lex_large", |b| {
-        b.iter(|| lex_all(black_box(LARGE_SCRIPT)))
-    });
+    c.bench_function("lex_small", |b| b.iter(|| lex_all(black_box(SMALL_SCRIPT))));
+    c.bench_function("lex_large", |b| b.iter(|| lex_all(black_box(LARGE_SCRIPT))));
 }
 
 criterion_group!(benches, bench_lexer);

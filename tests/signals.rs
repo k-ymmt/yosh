@@ -169,8 +169,7 @@ fn test_kill_list_status() {
 
 #[test]
 fn test_wait_basic() {
-    let (stdout, _stderr, code) =
-        yosh_exec_timeout("exec sleep 0.1 & wait; echo done", 10);
+    let (stdout, _stderr, code) = yosh_exec_timeout("exec sleep 0.1 & wait; echo done", 10);
     assert_eq!(code, Some(0));
     assert_eq!(stdout.trim(), "done");
 }
@@ -202,16 +201,23 @@ fn test_kill_0_targets_shell_pgid() {
     assert_eq!(code, Some(0));
     let stdout_str = stdout.trim();
     // The trap should fire because kill 0 targets the shell's process group
-    assert!(stdout_str.contains("trapped"), "expected trap to fire, got: {}", stdout_str);
-    assert!(stdout_str.contains("after"), "expected execution to continue, got: {}", stdout_str);
+    assert!(
+        stdout_str.contains("trapped"),
+        "expected trap to fire, got: {}",
+        stdout_str
+    );
+    assert!(
+        stdout_str.contains("after"),
+        "expected execution to continue, got: {}",
+        stdout_str
+    );
 }
 
 // Background job tracking
 
 #[test]
 fn test_background_job_last_pid() {
-    let (stdout, _stderr, code) =
-        yosh_exec_timeout("true & echo $!", 5);
+    let (stdout, _stderr, code) = yosh_exec_timeout("true & echo $!", 5);
     assert_eq!(code, Some(0));
     let pid: i32 = stdout.trim().parse().expect("$! should be a number");
     assert!(pid > 0);

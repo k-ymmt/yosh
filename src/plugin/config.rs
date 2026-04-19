@@ -29,10 +29,9 @@ fn default_true() -> bool {
 
 impl PluginConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("{}: {}", path.display(), e))?;
-        toml::from_str(&content)
-            .map_err(|e| format!("{}: {}", path.display(), e))
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))?;
+        toml::from_str(&content).map_err(|e| format!("{}: {}", path.display(), e))
     }
 }
 

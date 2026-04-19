@@ -1,5 +1,5 @@
 use crate::env::aliases::AliasStore;
-use crate::error::{ShellErrorKind, ParseErrorKind};
+use crate::error::{ParseErrorKind, ShellErrorKind};
 use crate::parser::Parser;
 use crate::parser::ast::CompleteCommand;
 
@@ -51,8 +51,7 @@ pub fn classify_parse(input: &str, aliases: &AliasStore) -> ParseStatus {
 
     loop {
         // Skip newlines between commands
-        while !parser.is_at_end()
-            && parser.current_token() == &crate::lexer::token::Token::Newline
+        while !parser.is_at_end() && parser.current_token() == &crate::lexer::token::Token::Newline
         {
             if let Err(e) = parser.advance() {
                 if is_incomplete_error(&e.kind) {

@@ -32,22 +32,20 @@ pub fn load_lockfile(path: &Path) -> Result<LockFile, String> {
     if !path.exists() {
         return Ok(LockFile { plugin: Vec::new() });
     }
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("{}: {}", path.display(), e))?;
-    toml::from_str(&content)
-        .map_err(|e| format!("{}: {}", path.display(), e))
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))?;
+    toml::from_str(&content).map_err(|e| format!("{}: {}", path.display(), e))
 }
 
 pub fn save_lockfile(path: &Path, lockfile: &LockFile) -> Result<(), String> {
-    let content = toml::to_string_pretty(lockfile)
-        .map_err(|e| format!("serialize lock file: {}", e))?;
-    let parent = path.parent().ok_or_else(|| {
-        format!("{}: no parent directory", path.display())
-    })?;
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("{}: {}", parent.display(), e))?;
-    let mut tmp = NamedTempFile::new_in(parent)
-        .map_err(|e| format!("{}: {}", path.display(), e))?;
+    let content =
+        toml::to_string_pretty(lockfile).map_err(|e| format!("serialize lock file: {}", e))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{}: no parent directory", path.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {}", parent.display(), e))?;
+    let mut tmp =
+        NamedTempFile::new_in(parent).map_err(|e| format!("{}: {}", path.display(), e))?;
     tmp.write_all(content.as_bytes())
         .map_err(|e| format!("{}: {}", path.display(), e))?;
     tmp.persist(path)
@@ -75,7 +73,9 @@ mod tests {
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let lock_path = dir.path().join("plugins.lock");
-        let original = LockFile { plugin: vec![sample_entry()] };
+        let original = LockFile {
+            plugin: vec![sample_entry()],
+        };
         save_lockfile(&lock_path, &original).unwrap();
         let loaded = load_lockfile(&lock_path).unwrap();
         assert_eq!(original, loaded);
@@ -91,7 +91,9 @@ mod tests {
     fn save_creates_parent_dirs() {
         let dir = tempfile::tempdir().unwrap();
         let lock_path = dir.path().join("sub/dir/plugins.lock");
-        let lf = LockFile { plugin: vec![sample_entry()] };
+        let lf = LockFile {
+            plugin: vec![sample_entry()],
+        };
         save_lockfile(&lock_path, &lf).unwrap();
         assert!(lock_path.exists());
     }
@@ -109,7 +111,9 @@ mod tests {
         };
         let dir = tempfile::tempdir().unwrap();
         let lock_path = dir.path().join("plugins.lock");
-        let original = LockFile { plugin: vec![entry] };
+        let original = LockFile {
+            plugin: vec![entry],
+        };
         save_lockfile(&lock_path, &original).unwrap();
         let loaded = load_lockfile(&lock_path).unwrap();
         assert_eq!(original, loaded);

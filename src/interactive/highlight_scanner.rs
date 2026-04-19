@@ -266,9 +266,7 @@ impl HighlightScanner {
         // Save checkpoints
         self.cache.checkpoints.retain(|(cp, _)| *cp < start_pos);
         if start_pos == 0 {
-            self.cache
-                .checkpoints
-                .push((0, state.clone()));
+            self.cache.checkpoints.push((0, state.clone()));
         }
 
         while pos < chars.len() {
@@ -567,8 +565,7 @@ impl HighlightScanner {
                 // $NAME
                 let var_start = pos;
                 let mut end = pos + 1;
-                while end < chars.len()
-                    && (chars[end].is_ascii_alphanumeric() || chars[end] == '_')
+                while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_')
                 {
                     end += 1;
                 }
@@ -581,7 +578,8 @@ impl HighlightScanner {
                 state.command_position = false;
                 end
             }
-            Some(c) if c.is_ascii_digit() || matches!(c, '@' | '*' | '#' | '?' | '-' | '$' | '!') =>
+            Some(c)
+                if c.is_ascii_digit() || matches!(c, '@' | '*' | '#' | '?' | '-' | '$' | '!') =>
             {
                 // $0 .. $9, $@, $*, $#, $?, $-, $$, $!
                 spans.push(ColorSpan {
@@ -704,11 +702,7 @@ impl HighlightScanner {
                 CommandExistence::Valid => HighlightStyle::CommandValid,
                 CommandExistence::Invalid => HighlightStyle::CommandInvalid,
             };
-            spans.push(ColorSpan {
-                start,
-                end,
-                style,
-            });
+            spans.push(ColorSpan { start, end, style });
             state.command_position = false;
             state.word_start = true;
             return end;
@@ -822,10 +816,7 @@ impl HighlightScanner {
                         }
                         Some(c)
                             if c.is_ascii_digit()
-                                || matches!(
-                                    c,
-                                    '@' | '*' | '#' | '?' | '-' | '$' | '!'
-                                ) =>
+                                || matches!(c, '@' | '*' | '#' | '?' | '-' | '$' | '!') =>
                         {
                             spans.push(ColorSpan {
                                 start: p,
@@ -1191,9 +1182,7 @@ mod tests {
 
         // Write a minimal shell script and make it executable.
         fs::write(&bin_path, "#!/bin/sh\n").expect("write temp executable");
-        let mut perms = fs::metadata(&bin_path)
-            .expect("metadata")
-            .permissions();
+        let mut perms = fs::metadata(&bin_path).expect("metadata").permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&bin_path, perms).expect("set permissions");
 
@@ -1231,7 +1220,13 @@ mod tests {
         scanner.scan("", &chars, &env)
     }
 
-    fn assert_span(spans: &[ColorSpan], idx: usize, start: usize, end: usize, style: HighlightStyle) {
+    fn assert_span(
+        spans: &[ColorSpan],
+        idx: usize,
+        start: usize,
+        end: usize,
+        style: HighlightStyle,
+    ) {
         assert!(
             idx < spans.len(),
             "expected span at index {} but only {} spans exist: {:?}",
@@ -1400,9 +1395,16 @@ mod tests {
 
     // ── Error and PS2 tests ──────────────────────────────────────
 
-    fn scan_ps2(scanner: &mut HighlightScanner, accumulated: &str, current: &str) -> Vec<ColorSpan> {
+    fn scan_ps2(
+        scanner: &mut HighlightScanner,
+        accumulated: &str,
+        current: &str,
+    ) -> Vec<ColorSpan> {
         let (path, aliases) = test_env();
-        let env = CheckerEnv { path: &path, aliases: &aliases };
+        let env = CheckerEnv {
+            path: &path,
+            aliases: &aliases,
+        };
         let chars: Vec<char> = current.chars().collect();
         scanner.scan(accumulated, &chars, &env)
     }
@@ -1412,7 +1414,11 @@ mod tests {
         let mut scanner = test_scanner();
         let spans = scan_input(&mut scanner, "echo 'hello");
         let error_span = spans.iter().find(|s| s.style == HighlightStyle::Error);
-        assert!(error_span.is_some(), "expected Error span for unclosed quote. Spans: {:?}", spans);
+        assert!(
+            error_span.is_some(),
+            "expected Error span for unclosed quote. Spans: {:?}",
+            spans
+        );
         let es = error_span.unwrap();
         assert_eq!(es.start, 5);
         assert_eq!(es.end, 11);
@@ -1423,7 +1429,11 @@ mod tests {
         let mut scanner = test_scanner();
         let spans = scan_input(&mut scanner, "echo \"hello");
         let error_span = spans.iter().find(|s| s.style == HighlightStyle::Error);
-        assert!(error_span.is_some(), "expected Error span for unclosed double quote. Spans: {:?}", spans);
+        assert!(
+            error_span.is_some(),
+            "expected Error span for unclosed double quote. Spans: {:?}",
+            spans
+        );
     }
 
     #[test]
@@ -1431,9 +1441,17 @@ mod tests {
         let mut scanner = test_scanner();
         let spans = scan_ps2(&mut scanner, "echo 'hello\n", "world'");
         let error_span = spans.iter().find(|s| s.style == HighlightStyle::Error);
-        assert!(error_span.is_none(), "PS2 continuation should not show Error. Spans: {:?}", spans);
+        assert!(
+            error_span.is_none(),
+            "PS2 continuation should not show Error. Spans: {:?}",
+            spans
+        );
         let string_span = spans.iter().find(|s| s.style == HighlightStyle::String);
-        assert!(string_span.is_some(), "expected String span in PS2. Spans: {:?}", spans);
+        assert!(
+            string_span.is_some(),
+            "expected String span in PS2. Spans: {:?}",
+            spans
+        );
     }
 
     #[test]
@@ -1457,7 +1475,11 @@ mod tests {
         let mut scanner = test_scanner();
         let spans = scan_input(&mut scanner, "echo \"hi $USER\"");
         let var_span = spans.iter().find(|s| s.style == HighlightStyle::Variable);
-        assert!(var_span.is_some(), "expected Variable span. Spans: {:?}", spans);
+        assert!(
+            var_span.is_some(),
+            "expected Variable span. Spans: {:?}",
+            spans
+        );
     }
 
     #[test]
@@ -1480,16 +1502,30 @@ mod tests {
     fn test_scan_command_substitution() {
         let mut scanner = test_scanner();
         let spans = scan_input(&mut scanner, "echo $(ls)");
-        let cs_spans: Vec<_> = spans.iter().filter(|s| s.style == HighlightStyle::CommandSub).collect();
-        assert!(!cs_spans.is_empty(), "expected CommandSub spans. Spans: {:?}", spans);
+        let cs_spans: Vec<_> = spans
+            .iter()
+            .filter(|s| s.style == HighlightStyle::CommandSub)
+            .collect();
+        assert!(
+            !cs_spans.is_empty(),
+            "expected CommandSub spans. Spans: {:?}",
+            spans
+        );
     }
 
     #[test]
     fn test_scan_arith_sub() {
         let mut scanner = test_scanner();
         let spans = scan_input(&mut scanner, "echo $((1+2))");
-        let arith_spans: Vec<_> = spans.iter().filter(|s| s.style == HighlightStyle::ArithSub).collect();
-        assert!(!arith_spans.is_empty(), "expected ArithSub spans. Spans: {:?}", spans);
+        let arith_spans: Vec<_> = spans
+            .iter()
+            .filter(|s| s.style == HighlightStyle::ArithSub)
+            .collect();
+        assert!(
+            !arith_spans.is_empty(),
+            "expected ArithSub spans. Spans: {:?}",
+            spans
+        );
     }
 
     #[test]

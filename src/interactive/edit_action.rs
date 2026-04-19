@@ -58,6 +58,9 @@ pub enum EditAction {
 impl EditAction {
     /// Returns true if this action is a kill operation (text goes to kill ring).
     pub fn is_kill(&self) -> bool {
-        matches!(self, Self::KillToEnd | Self::KillToStart | Self::KillBackwardWord | Self::KillForwardWord)
+        matches!(
+            self,
+            Self::KillToEnd | Self::KillToStart | Self::KillBackwardWord | Self::KillForwardWord
+        )
     }
 }

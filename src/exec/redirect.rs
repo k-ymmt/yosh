@@ -1,6 +1,6 @@
 use std::os::fd::RawFd;
 
-use nix::fcntl::{open, OFlag};
+use nix::fcntl::{OFlag, open};
 use nix::sys::stat::Mode;
 
 use crate::env::ShellEnv;
@@ -16,7 +16,6 @@ fn raw_dup2(oldfd: RawFd, newfd: RawFd) -> nix::Result<()> {
         Ok(())
     }
 }
-
 
 /// Tracks saved file descriptors so they can be restored after a builtin runs.
 #[derive(Default)]
@@ -44,12 +43,16 @@ impl RedirectState {
         Ok(())
     }
 
-    fn apply_one(&mut self, redirect: &Redirect, env: &mut ShellEnv, save: bool) -> Result<(), String> {
+    fn apply_one(
+        &mut self,
+        redirect: &Redirect,
+        env: &mut ShellEnv,
+        save: bool,
+    ) -> Result<(), String> {
         match &redirect.kind {
             RedirectKind::Input(word) => {
                 let target_fd = redirect.fd.unwrap_or(0);
-                let path = expand_word_to_string(env, word)
-                    .map_err(|e| e.to_string())?;
+                let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
                 let fd = open(path.as_str(), OFlag::O_RDONLY, Mode::empty())
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
@@ -63,8 +66,7 @@ impl RedirectState {
             }
             RedirectKind::Output(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
-                let path = expand_word_to_string(env, word)
-                    .map_err(|e| e.to_string())?;
+                let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
                 if env.mode.options.noclobber && std::path::Path::new(&path).exists() {
                     return Err(format!("{}: cannot overwrite existing file", path));
                 }
@@ -72,7 +74,9 @@ impl RedirectState {
                 let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
-                if save { self.save_fd(target_fd)?; }
+                if save {
+                    self.save_fd(target_fd)?;
+                }
                 if fd != target_fd {
                     raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
                     unsafe { libc::close(fd) };
@@ -80,13 +84,14 @@ impl RedirectState {
             }
             RedirectKind::OutputClobber(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
-                let path = expand_word_to_string(env, word)
-                    .map_err(|e| e.to_string())?;
+                let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
                 let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
                 let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
-                if save { self.save_fd(target_fd)?; }
+                if save {
+                    self.save_fd(target_fd)?;
+                }
                 if fd != target_fd {
                     raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
                     unsafe { libc::close(fd) };
@@ -94,8 +99,7 @@ impl RedirectState {
             }
             RedirectKind::Append(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
-                let path = expand_word_to_string(env, word)
-                    .map_err(|e| e.to_string())?;
+                let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
                 let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_APPEND;
                 let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?
@@ -110,8 +114,7 @@ impl RedirectState {
             }
             RedirectKind::DupOutput(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
-                let src = expand_word_to_string(env, word)
-                    .map_err(|e| e.to_string())?;
+                let src = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
                 if src == "-" {
                     if save {
                         self.save_fd(target_fd)?;
@@ -131,8 +134,7 @@ impl RedirectState {
             }
             RedirectKind::DupInput(word) => {
                 let target_fd = redirect.fd.unwrap_or(0);
-                let src = expand_word_to_string(env, word)
-                    .map_err(|e| e.to_string())?;
+                let src = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
                 if src == "-" {
                     if save {
                         self.save_fd(target_fd)?;
@@ -152,8 +154,7 @@ impl RedirectState {
             }
             RedirectKind::ReadWrite(word) => {
                 let target_fd = redirect.fd.unwrap_or(0);
-                let path = expand_word_to_string(env, word)
-                    .map_err(|e| e.to_string())?;
+                let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
                 let flags = OFlag::O_RDWR | OFlag::O_CREAT;
                 let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?
@@ -170,11 +171,7 @@ impl RedirectState {
                 let target_fd = redirect.fd.unwrap_or(0);
 
                 // Expand the body
-                let body = crate::expand::expand_heredoc_body(
-                    env,
-                    &heredoc.body,
-                    heredoc.quoted,
-                );
+                let body = crate::expand::expand_heredoc_body(env, &heredoc.body, heredoc.quoted);
 
                 // Create a pipe
                 let mut fds: [RawFd; 2] = [0; 2];
@@ -259,7 +256,9 @@ mod tests {
         }];
 
         let mut state = RedirectState::new();
-        state.apply(&redirects, &mut env, true).expect("apply should succeed");
+        state
+            .apply(&redirects, &mut env, true)
+            .expect("apply should succeed");
 
         // Write to stdout (fd 1), which is now the file
         use std::io::Write;
@@ -272,7 +271,10 @@ mod tests {
         state.restore();
 
         let contents = std::fs::read_to_string(&tmp).unwrap_or_default();
-        assert!(contents.contains("hello redirect"), "file should contain written text");
+        assert!(
+            contents.contains("hello redirect"),
+            "file should contain written text"
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -292,7 +294,9 @@ mod tests {
         }];
 
         let mut state = RedirectState::new();
-        state.apply(&redirects, &mut env, true).expect("apply should succeed");
+        state
+            .apply(&redirects, &mut env, true)
+            .expect("apply should succeed");
 
         let mut buf = String::new();
         let mut stdin = unsafe { std::fs::File::from_raw_fd(0) };

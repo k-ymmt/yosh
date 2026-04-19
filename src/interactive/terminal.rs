@@ -1,11 +1,10 @@
-use std::io::{self, Stdout, Write, stdout};
 use crossterm::{
-    cursor,
+    ExecutableCommand, cursor,
     event::{self, Event},
     style::{Attribute, Color, SetAttribute, SetForegroundColor},
     terminal::{self, ClearType},
-    ExecutableCommand,
 };
+use std::io::{self, Stdout, Write, stdout};
 
 /// Abstraction over terminal I/O for testability.
 pub trait Terminal {
@@ -102,10 +101,7 @@ impl Terminal for CrosstermTerminal {
             }
             // Check whether a pending signal should abort the read.
             if crate::signal::has_pending_exit_signal() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "signal pending",
-                ));
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "signal pending"));
             }
         }
     }
@@ -140,12 +136,14 @@ impl Terminal for CrosstermTerminal {
     }
 
     fn clear_current_line(&mut self) -> io::Result<()> {
-        self.stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+        self.stdout
+            .execute(terminal::Clear(ClearType::CurrentLine))?;
         Ok(())
     }
 
     fn clear_until_newline(&mut self) -> io::Result<()> {
-        self.stdout.execute(terminal::Clear(ClearType::UntilNewLine))?;
+        self.stdout
+            .execute(terminal::Clear(ClearType::UntilNewLine))?;
         Ok(())
     }
 
@@ -173,7 +171,8 @@ impl Terminal for CrosstermTerminal {
         if on {
             self.stdout.execute(SetAttribute(Attribute::Dim))?;
         } else {
-            self.stdout.execute(SetAttribute(Attribute::NormalIntensity))?;
+            self.stdout
+                .execute(SetAttribute(Attribute::NormalIntensity))?;
         }
         Ok(())
     }
@@ -192,7 +191,8 @@ impl Terminal for CrosstermTerminal {
         if on {
             self.stdout.execute(SetAttribute(Attribute::Bold))?;
         } else {
-            self.stdout.execute(SetAttribute(Attribute::NormalIntensity))?;
+            self.stdout
+                .execute(SetAttribute(Attribute::NormalIntensity))?;
         }
         Ok(())
     }

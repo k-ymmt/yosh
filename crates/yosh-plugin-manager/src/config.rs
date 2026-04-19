@@ -43,7 +43,10 @@ pub fn parse_source(s: &str) -> Result<PluginSource, String> {
     if let Some(rest) = s.strip_prefix("github:") {
         let parts: Vec<&str> = rest.splitn(2, '/').collect();
         if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-            return Err(format!("invalid github source '{}': expected 'github:owner/repo'", s));
+            return Err(format!(
+                "invalid github source '{}': expected 'github:owner/repo'",
+                s
+            ));
         }
         Ok(PluginSource::GitHub {
             owner: parts[0].to_string(),
@@ -53,9 +56,14 @@ pub fn parse_source(s: &str) -> Result<PluginSource, String> {
         if rest.is_empty() {
             return Err(format!("invalid local source '{}': path is empty", s));
         }
-        Ok(PluginSource::Local { path: rest.to_string() })
+        Ok(PluginSource::Local {
+            path: rest.to_string(),
+        })
     } else {
-        Err(format!("unknown source type '{}': expected 'github:' or 'local:' prefix", s))
+        Err(format!(
+            "unknown source type '{}': expected 'github:' or 'local:' prefix",
+            s
+        ))
     }
 }
 
@@ -69,7 +77,10 @@ fn validate_plugin_name(name: &str) -> Result<(), String> {
             name
         ));
     }
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         return Err(format!(
             "plugin '{}': name must contain only alphanumeric characters, hyphens, or underscores",
             name
@@ -79,10 +90,10 @@ fn validate_plugin_name(name: &str) -> Result<(), String> {
 }
 
 pub fn load_config(path: &Path) -> Result<Vec<PluginDecl>, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("{}: {}", path.display(), e))?;
-    let raw: RawConfig = toml::from_str(&content)
-        .map_err(|e| format!("{}: {}", path.display(), e))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))?;
+    let raw: RawConfig =
+        toml::from_str(&content).map_err(|e| format!("{}: {}", path.display(), e))?;
     raw.plugin
         .into_iter()
         .map(|entry| {
@@ -125,7 +136,10 @@ mod tests {
         let src = parse_source("github:user/repo").unwrap();
         assert_eq!(
             src,
-            PluginSource::GitHub { owner: "user".into(), repo: "repo".into() }
+            PluginSource::GitHub {
+                owner: "user".into(),
+                repo: "repo".into()
+            }
         );
     }
 
@@ -134,7 +148,9 @@ mod tests {
         let src = parse_source("local:~/.yosh/plugins/lib.dylib").unwrap();
         assert_eq!(
             src,
-            PluginSource::Local { path: "~/.yosh/plugins/lib.dylib".into() }
+            PluginSource::Local {
+                path: "~/.yosh/plugins/lib.dylib".into()
+            }
         );
     }
 
@@ -156,7 +172,9 @@ mod tests {
     #[test]
     fn load_full_config() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        write!(f, r#"
+        write!(
+            f,
+            r#"
 [[plugin]]
 name = "git-status"
 source = "github:user/kish-plugin-git-status"
@@ -167,11 +185,15 @@ capabilities = ["variables:read", "io"]
 name = "local-tool"
 source = "local:~/.yosh/plugins/liblocal.dylib"
 capabilities = ["io"]
-"#).unwrap();
+"#
+        )
+        .unwrap();
         let decls = load_config(f.path()).unwrap();
         assert_eq!(decls.len(), 2);
         assert_eq!(decls[0].name, "git-status");
-        assert!(matches!(&decls[0].source, PluginSource::GitHub { owner, repo } if owner == "user" && repo == "kish-plugin-git-status"));
+        assert!(
+            matches!(&decls[0].source, PluginSource::GitHub { owner, repo } if owner == "user" && repo == "kish-plugin-git-status")
+        );
         assert_eq!(decls[0].version.as_deref(), Some("1.2.3"));
         assert_eq!(decls[1].name, "local-tool");
         assert!(matches!(&decls[1].source, PluginSource::Local { .. }));
@@ -181,11 +203,15 @@ capabilities = ["io"]
     #[test]
     fn load_config_enabled_defaults_true() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        write!(f, r#"
+        write!(
+            f,
+            r#"
 [[plugin]]
 name = "p"
 source = "local:/tmp/lib.dylib"
-"#).unwrap();
+"#
+        )
+        .unwrap();
         let decls = load_config(f.path()).unwrap();
         assert!(decls[0].enabled);
     }
@@ -193,12 +219,16 @@ source = "local:/tmp/lib.dylib"
     #[test]
     fn load_config_disabled_plugin() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        write!(f, r#"
+        write!(
+            f,
+            r#"
 [[plugin]]
 name = "p"
 source = "local:/tmp/lib.dylib"
 enabled = false
-"#).unwrap();
+"#
+        )
+        .unwrap();
         let decls = load_config(f.path()).unwrap();
         assert!(!decls[0].enabled);
     }
@@ -206,58 +236,81 @@ enabled = false
     #[test]
     fn load_config_with_asset_template() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        write!(f, r#"
+        write!(
+            f,
+            r#"
 [[plugin]]
 name = "custom"
 source = "github:user/repo"
 version = "1.0.0"
 asset = "myplugin-{{os}}-{{arch}}.{{ext}}"
-"#).unwrap();
+"#
+        )
+        .unwrap();
         let decls = load_config(f.path()).unwrap();
-        assert_eq!(decls[0].asset.as_deref(), Some("myplugin-{os}-{arch}.{ext}"));
+        assert_eq!(
+            decls[0].asset.as_deref(),
+            Some("myplugin-{os}-{arch}.{ext}")
+        );
     }
 
     #[test]
     fn github_source_without_version_is_error() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        write!(f, r#"
+        write!(
+            f,
+            r#"
 [[plugin]]
 name = "bad"
 source = "github:user/repo"
-"#).unwrap();
+"#
+        )
+        .unwrap();
         assert!(load_config(f.path()).is_err());
     }
 
     #[test]
     fn reject_path_traversal_in_name() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        write!(f, r#"
+        write!(
+            f,
+            r#"
 [[plugin]]
 name = "../../../etc"
 source = "local:/tmp/lib.dylib"
-"#).unwrap();
+"#
+        )
+        .unwrap();
         assert!(load_config(f.path()).is_err());
     }
 
     #[test]
     fn reject_slash_in_name() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        write!(f, r#"
+        write!(
+            f,
+            r#"
 [[plugin]]
 name = "foo/bar"
 source = "local:/tmp/lib.dylib"
-"#).unwrap();
+"#
+        )
+        .unwrap();
         assert!(load_config(f.path()).is_err());
     }
 
     #[test]
     fn reject_empty_name() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        write!(f, r#"
+        write!(
+            f,
+            r#"
 [[plugin]]
 name = ""
 source = "local:/tmp/lib.dylib"
-"#).unwrap();
+"#
+        )
+        .unwrap();
         assert!(load_config(f.path()).is_err());
     }
 

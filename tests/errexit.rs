@@ -25,7 +25,8 @@ fn test_errexit_if_condition_suppressed() {
 
 #[test]
 fn test_errexit_elif_condition_suppressed() {
-    let out = yosh_exec("set -e; if false; then echo no; elif false; then echo no2; fi; echo reached");
+    let out =
+        yosh_exec("set -e; if false; then echo no; elif false; then echo no2; fi; echo reached");
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout), "reached\n");
 }

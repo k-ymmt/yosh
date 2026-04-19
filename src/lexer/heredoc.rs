@@ -1,10 +1,14 @@
-use crate::error::{self, ShellError, ParseErrorKind};
-use crate::parser::ast::WordPart;
 use super::{Lexer, PendingHereDoc};
+use crate::error::{self, ParseErrorKind, ShellError};
+use crate::parser::ast::WordPart;
 
 impl Lexer {
     pub fn register_heredoc(&mut self, delimiter: String, quoted: bool, strip_tabs: bool) {
-        self.pending_heredocs.push(PendingHereDoc { delimiter, quoted, strip_tabs });
+        self.pending_heredocs.push(PendingHereDoc {
+            delimiter,
+            quoted,
+            strip_tabs,
+        });
     }
 
     pub fn take_heredoc_body(&mut self) -> Option<Vec<WordPart>> {
@@ -28,7 +32,10 @@ impl Lexer {
         !self.pending_heredocs.is_empty()
     }
 
-    pub(crate) fn read_heredoc_body(&mut self, hd: &PendingHereDoc) -> error::Result<Vec<WordPart>> {
+    pub(crate) fn read_heredoc_body(
+        &mut self,
+        hd: &PendingHereDoc,
+    ) -> error::Result<Vec<WordPart>> {
         let mut body = String::new();
         loop {
             if self.at_end() {
@@ -36,7 +43,10 @@ impl Lexer {
                     ParseErrorKind::InvalidHereDoc,
                     self.line,
                     self.column,
-                    format!("here-document delimited by '{}' was not closed", hd.delimiter),
+                    format!(
+                        "here-document delimited by '{}' was not closed",
+                        hd.delimiter
+                    ),
                 ));
             }
             // Read a line

@@ -9,13 +9,13 @@ pub mod vars;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use nix::unistd::{Pid, getpid};
-use jobs::JobTable;
 use aliases::AliasStore;
-use vars::VarStore;
 pub use exec_state::{ExecState, FlowControl};
+use jobs::JobTable;
+use nix::unistd::{Pid, getpid};
 pub use shell_mode::{ShellMode, ShellOptions};
 pub use traps::{TrapAction, TrapStore};
+use vars::VarStore;
 
 use crate::interactive::history::History;
 use crate::parser::ast::FunctionDef;

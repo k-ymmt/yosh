@@ -3,11 +3,11 @@ mod env;
 mod error;
 mod exec;
 mod expand;
+mod interactive;
 mod lexer;
 mod parser;
-mod signal;
-mod interactive;
 mod plugin;
+mod signal;
 
 use std::env as std_env;
 use std::fs;
@@ -41,7 +41,10 @@ fn print_help() {
     println!();
 
     if color {
-        println!("{}  yosh [options] [file [argument...]]", "Usage:".yellow().bold());
+        println!(
+            "{}  yosh [options] [file [argument...]]",
+            "Usage:".yellow().bold()
+        );
     } else {
         println!("Usage:  yosh [options] [file [argument...]]");
     }
@@ -53,15 +56,19 @@ fn print_help() {
     }
 
     const SECTIONS: &[HelpSection] = &[
-        HelpSection { heading: "Options", items: &[
-            ("-c <command>",    "Read commands from command_string"),
-            ("--parse <code>",  "Parse and dump AST (debug)"),
-            ("-h, --help",      "Show this help message"),
-            ("--version",       "Show version information"),
-        ]},
-        HelpSection { heading: "Subcommands", items: &[
-            ("plugin",          "Manage shell plugins (see 'yosh plugin --help')"),
-        ]},
+        HelpSection {
+            heading: "Options",
+            items: &[
+                ("-c <command>", "Read commands from command_string"),
+                ("--parse <code>", "Parse and dump AST (debug)"),
+                ("-h, --help", "Show this help message"),
+                ("--version", "Show version information"),
+            ],
+        },
+        HelpSection {
+            heading: "Subcommands",
+            items: &[("plugin", "Manage shell plugins (see 'yosh plugin --help')")],
+        },
     ];
 
     for section in SECTIONS {
@@ -82,10 +89,12 @@ fn print_help() {
 }
 
 fn print_version() {
-    println!("yosh {} ({} {})",
+    println!(
+        "yosh {} ({} {})",
         env!("CARGO_PKG_VERSION"),
         env!("YOSH_GIT_HASH"),
-        env!("YOSH_BUILD_DATE"));
+        env!("YOSH_BUILD_DATE")
+    );
 }
 
 fn main() {
@@ -123,9 +132,21 @@ fn main() {
                 // POSIX: sh -c cmd [name [arg...]]
                 // After the script, the next arg is $0 (shell_name), remaining are $1, $2, ...
                 // Support `--` as an optional separator before positional args.
-                let rest_start = if args.len() > 3 && args[3] == "--" { 4 } else { 3 };
-                let sn = if rest_start < args.len() { args[rest_start].clone() } else { shell_name };
-                let positional: Vec<String> = if rest_start + 1 < args.len() { args[rest_start + 1..].to_vec() } else { vec![] };
+                let rest_start = if args.len() > 3 && args[3] == "--" {
+                    4
+                } else {
+                    3
+                };
+                let sn = if rest_start < args.len() {
+                    args[rest_start].clone()
+                } else {
+                    shell_name
+                };
+                let positional: Vec<String> = if rest_start + 1 < args.len() {
+                    args[rest_start + 1..].to_vec()
+                } else {
+                    vec![]
+                };
                 let status = run_string(&args[2], sn, positional, true);
                 process::exit(status);
             } else if args[1] == "--parse" {
@@ -142,7 +163,10 @@ fn main() {
                 };
                 match parser::Parser::new(&input).parse_program() {
                     Ok(ast) => println!("{:#?}", ast),
-                    Err(e) => { eprintln!("{}", e); process::exit(2); }
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        process::exit(2);
+                    }
                 }
             } else if let Some(status) = try_subcommand(&args[1..]) {
                 process::exit(status);
@@ -164,9 +188,8 @@ fn try_subcommand(args: &[String]) -> Option<i32> {
         return None;
     }
     let bin_name = format!("yosh-{}", sub);
-    let found = std_env::var_os("PATH").and_then(|paths| {
-        std_env::split_paths(&paths).find(|dir| dir.join(&bin_name).is_file())
-    });
+    let found = std_env::var_os("PATH")
+        .and_then(|paths| std_env::split_paths(&paths).find(|dir| dir.join(&bin_name).is_file()));
     let bin_path = found?.join(&bin_name);
     let status = process::Command::new(bin_path)
         .args(&args[1..])
@@ -239,7 +262,10 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_stri
 fn run_file(path: &str, shell_name: String, positional: Vec<String>) -> i32 {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
-        Err(e) => { eprintln!("yosh: {}: {}", path, e); return 127; }
+        Err(e) => {
+            eprintln!("yosh: {}: {}", path, e);
+            return 127;
+        }
     };
     run_string(&content, shell_name, positional, false)
 }

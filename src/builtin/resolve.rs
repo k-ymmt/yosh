@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use crate::builtin::{classify_builtin, BuiltinKind};
+use crate::builtin::{BuiltinKind, classify_builtin};
 use crate::env::ShellEnv;
 use crate::exec::command::find_in_path;
 use crate::lexer::reserved::is_posix_reserved_word;
@@ -90,8 +90,8 @@ mod tests {
         // FunctionDef fields: { name: String, body: Rc<CompoundCommand>, redirects: Vec<Redirect> }
         // CompoundCommand is a struct wrapping CompoundCommandKind.
         // BraceGroup with an empty body is the minimal valid construction.
+        use crate::parser::ast::{CompoundCommand, CompoundCommandKind, FunctionDef};
         use std::rc::Rc;
-        use crate::parser::ast::{FunctionDef, CompoundCommand, CompoundCommandKind};
         let mut env = env_with_path("/bin:/usr/bin");
         env.functions.insert(
             "echo".to_string(),

@@ -133,7 +133,10 @@ mod tests {
         use crate::exec::command::find_in_path;
         let env = ShellEnv::new("yosh", vec![]);
         let dp = default_path(&env);
-        assert!(find_in_path("sh", dp).is_some(), "expected to find sh in: {dp}");
+        assert!(
+            find_in_path("sh", dp).is_some(),
+            "expected to find sh in: {dp}"
+        );
     }
 
     #[test]

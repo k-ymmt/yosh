@@ -209,7 +209,10 @@ fn test_pipeline_pipefail() {
 fn test_cmdsub_variable_isolation() {
     let out = yosh_exec("X=original; Y=$(X=changed; echo $X); echo $X $Y");
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "original changed");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "original changed"
+    );
 }
 
 #[test]
@@ -223,7 +226,10 @@ fn test_cmdsub_exit_status() {
 fn test_cmdsub_nested_isolation() {
     let out = yosh_exec("X=outer; Y=$(X=mid; Z=$(X=inner; echo $X); echo $X $Z); echo $X $Y");
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "outer mid inner");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "outer mid inner"
+    );
 }
 
 #[test]
@@ -320,7 +326,9 @@ fn test_fd_inheritance() {
     // exec 3>file should open fd 3 persistently so subshells can write to it.
     // yosh currently restores redirects applied to builtins, so exec 3>file
     // does not persist the fd.
-    let out = yosh_exec("exec 3>/tmp/yosh-fd-test-$$; (echo hello >&3); cat /tmp/yosh-fd-test-$$; rm -f /tmp/yosh-fd-test-$$");
+    let out = yosh_exec(
+        "exec 3>/tmp/yosh-fd-test-$$; (echo hello >&3); cat /tmp/yosh-fd-test-$$; rm -f /tmp/yosh-fd-test-$$",
+    );
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
 }
@@ -329,7 +337,10 @@ fn test_fd_inheritance() {
 fn test_export_and_non_export_in_subshell() {
     let out = yosh_exec("A=exported; export A; B=local; (echo $A $B)");
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "exported local");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "exported local"
+    );
 }
 
 #[test]
@@ -409,7 +420,9 @@ fn test_umask_symbolic_minus() {
 #[test]
 fn test_exec_redirect_persistence() {
     // exec 3>file should persist fd 3 for subsequent commands
-    let out = yosh_exec("exec 3>/tmp/yosh-exec-persist-$$; echo hello >&3; exec 3>&-; cat /tmp/yosh-exec-persist-$$; rm -f /tmp/yosh-exec-persist-$$");
+    let out = yosh_exec(
+        "exec 3>/tmp/yosh-exec-persist-$$; echo hello >&3; exec 3>&-; cat /tmp/yosh-exec-persist-$$; rm -f /tmp/yosh-exec-persist-$$",
+    );
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
 }
@@ -451,7 +464,9 @@ fn test_return_in_function_still_works() {
 
 #[test]
 fn test_return_in_dot_script() {
-    let out = yosh_exec("echo 'return 0; echo unreachable' > /tmp/yosh-return-test-$$.sh; . /tmp/yosh-return-test-$$.sh; echo $?; rm -f /tmp/yosh-return-test-$$.sh");
+    let out = yosh_exec(
+        "echo 'return 0; echo unreachable' > /tmp/yosh-return-test-$$.sh; . /tmp/yosh-return-test-$$.sh; echo $?; rm -f /tmp/yosh-return-test-$$.sh",
+    );
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(stdout.trim(), "0");

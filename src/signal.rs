@@ -179,13 +179,7 @@ pub fn drain_pending_signals() -> Vec<i32> {
     let mut buf = [0u8; 128];
 
     loop {
-        let n = unsafe {
-            libc::read(
-                read_fd,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-            )
-        };
+        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if n <= 0 {
             break;
         }
@@ -280,9 +274,15 @@ pub fn reset_job_control_signals() {
 /// Restores SIGTSTP, SIGTTIN, SIGTTOU to SIG_DFL so the child can be stopped.
 pub fn setup_foreground_child_signals(ignored: &[i32]) {
     reset_child_signals(ignored);
-    if !ignored.contains(&libc::SIGTSTP) { default_signal(libc::SIGTSTP); }
-    if !ignored.contains(&libc::SIGTTIN) { default_signal(libc::SIGTTIN); }
-    if !ignored.contains(&libc::SIGTTOU) { default_signal(libc::SIGTTOU); }
+    if !ignored.contains(&libc::SIGTSTP) {
+        default_signal(libc::SIGTSTP);
+    }
+    if !ignored.contains(&libc::SIGTTIN) {
+        default_signal(libc::SIGTTIN);
+    }
+    if !ignored.contains(&libc::SIGTTOU) {
+        default_signal(libc::SIGTTOU);
+    }
 }
 
 /// Set up signals for a background child process.
@@ -290,8 +290,12 @@ pub fn setup_foreground_child_signals(ignored: &[i32]) {
 pub fn setup_background_child_signals(ignored: &[i32]) {
     reset_child_signals(ignored);
     ignore_signal(libc::SIGTTIN);
-    if !ignored.contains(&libc::SIGTSTP) { default_signal(libc::SIGTSTP); }
-    if !ignored.contains(&libc::SIGTTOU) { default_signal(libc::SIGTTOU); }
+    if !ignored.contains(&libc::SIGTSTP) {
+        default_signal(libc::SIGTSTP);
+    }
+    if !ignored.contains(&libc::SIGTTOU) {
+        default_signal(libc::SIGTTOU);
+    }
 }
 
 #[cfg(test)]

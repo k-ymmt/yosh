@@ -4,7 +4,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use expectrl::{session::OsSession, Eof, Expect, Regex, Session};
+use expectrl::{Eof, Expect, Regex, Session, session::OsSession};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 const RAW_MODE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -244,7 +244,8 @@ fn test_pty_ctrl_r_history_search() {
     // Type "echo alpha" to uniquely select it
     s.send("echo alpha").unwrap();
     // Wait for filter to narrow down to unique match
-    s.expect("1/1 > ").expect("search query did not filter to unique match");
+    s.expect("1/1 > ")
+        .expect("search query did not filter to unique match");
 
     s.send("\r").unwrap(); // Select from search
     // After selection, FuzzySearchUI exits and LineEditor re-enables raw mode
@@ -278,7 +279,11 @@ fn test_pty_autosuggest_accept_with_right_arrow() {
 
     // Press Enter to execute
     s.send("\r").unwrap();
-    expect_output(&mut s, "autosuggest_test_value", "autosuggest acceptance failed");
+    expect_output(
+        &mut s,
+        "autosuggest_test_value",
+        "autosuggest acceptance failed",
+    );
     wait_for_prompt(&mut s);
 
     exit_shell(&mut s);
@@ -347,11 +352,7 @@ fn test_pty_command_completion_after_pipe() {
     std::thread::sleep(Duration::from_millis(100));
     // Send "t\r" in case Tab only completed up to the common prefix "ca"
     s.send("t\r").unwrap();
-    expect_output(
-        &mut s,
-        "hello",
-        "Command completion after pipe failed",
-    );
+    expect_output(&mut s, "hello", "Command completion after pipe failed");
     wait_for_prompt(&mut s);
 
     exit_shell(&mut s);
@@ -436,7 +437,9 @@ fn ansi_colored_prompt() {
     wait_for_prompt(&mut session);
 
     // Set PS1 to an ANSI-colored prompt using command substitution with printf
-    session.send("PS1=$(printf '\\033[32m$ \\033[0m')\r").unwrap();
+    session
+        .send("PS1=$(printf '\\033[32m$ \\033[0m')\r")
+        .unwrap();
     wait_for_raw_mode(&session);
 
     // The prompt should render and accept input
@@ -459,7 +462,9 @@ fn multi_line_prompt() {
     session.send("PS1=$(printf 'info line\\n> ')\r").unwrap();
     wait_for_raw_mode(&session);
 
-    session.expect(">").expect("multi-line prompt char not found");
+    session
+        .expect(">")
+        .expect("multi-line prompt char not found");
     wait_for_raw_mode(&session);
 
     session.send("echo works\r").unwrap();
@@ -490,8 +495,8 @@ fn test_pty_sighup_saves_history() {
 
     // Verify history file was written
     let histfile = tmpdir.path().join(".yosh_history");
-    let contents = std::fs::read_to_string(&histfile)
-        .expect("history file should exist after SIGHUP");
+    let contents =
+        std::fs::read_to_string(&histfile).expect("history file should exist after SIGHUP");
     assert!(
         contents.contains("echo sighup_test_marker"),
         "history file should contain the command, got: {:?}",

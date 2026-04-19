@@ -12,8 +12,8 @@
 //! `exec/simple.rs` so the `command` invocation has access to the
 //! `Executor` for redirects/assignments.
 
-use crate::builtin::resolve::{resolve_command_kind, CommandKind};
 use crate::builtin::BuiltinKind;
+use crate::builtin::resolve::{CommandKind, resolve_command_kind};
 use crate::env::ShellEnv;
 
 /// Parsed form of a `command [...]` invocation.
@@ -70,7 +70,12 @@ pub fn parse_flags(args: &[String]) -> Result<CommandFlags, String> {
 
     let name = args[idx].clone();
     let rest = args[idx + 1..].to_vec();
-    Ok(CommandFlags { use_default_path, verbose, name, rest })
+    Ok(CommandFlags {
+        use_default_path,
+        verbose,
+        name,
+        rest,
+    })
 }
 
 /// Render `-v` concise output. Returns `(stdout, exit_status)`.
@@ -93,7 +98,11 @@ pub fn render_brief(env: &ShellEnv, name: &str) -> (String, i32) {
 /// For NotFound, stdout is empty and stderr holds the "not found" message.
 pub fn render_verbose(env: &ShellEnv, name: &str) -> (String, String, i32) {
     match resolve_command_kind(env, name) {
-        CommandKind::Alias(val) => (format!("{} is aliased to '{}'", name, val), String::new(), 0),
+        CommandKind::Alias(val) => (
+            format!("{} is aliased to '{}'", name, val),
+            String::new(),
+            0,
+        ),
         CommandKind::Keyword => (format!("{} is a shell keyword", name), String::new(), 0),
         CommandKind::Function => (format!("{} is a function", name), String::new(), 0),
         CommandKind::Builtin(BuiltinKind::Special) => (
@@ -101,14 +110,16 @@ pub fn render_verbose(env: &ShellEnv, name: &str) -> (String, String, i32) {
             String::new(),
             0,
         ),
-        CommandKind::Builtin(BuiltinKind::Regular) => (
-            format!("{} is a shell builtin", name),
-            String::new(),
-            0,
-        ),
+        CommandKind::Builtin(BuiltinKind::Regular) => {
+            (format!("{} is a shell builtin", name), String::new(), 0)
+        }
         CommandKind::Builtin(BuiltinKind::NotBuiltin) => {
             // Cannot happen — resolve_command_kind never returns this.
-            (String::new(), format!("yosh: command: {}: not found", name), 1)
+            (
+                String::new(),
+                format!("yosh: command: {}: not found", name),
+                1,
+            )
         }
         CommandKind::External(p) => (
             format!("{} is {}", name, p.to_string_lossy()),
@@ -249,7 +260,10 @@ mod tests {
     fn brief_external() {
         let env = env_with_path("/bin:/usr/bin");
         let (out, code) = render_brief(&env, "sh");
-        assert!(out.ends_with("/sh"), "expected path ending in /sh, got: {out}");
+        assert!(
+            out.ends_with("/sh"),
+            "expected path ending in /sh, got: {out}"
+        );
         assert_eq!(code, 0);
     }
 

@@ -7,5 +7,5 @@ pub mod expand;
 pub mod interactive;
 pub mod lexer;
 pub mod parser;
-pub mod signal;
 pub mod plugin;
+pub mod signal;

@@ -175,7 +175,7 @@ fn builtin_return(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::InvalidArgument,
                     format!("return: {}: numeric argument required", args[0]),
-                ))
+                ));
             }
         }
     };
@@ -597,13 +597,7 @@ fn fc_resolve_range(
     }
 }
 
-fn fc_list(
-    entries: &[String],
-    start: usize,
-    end: usize,
-    suppress_numbers: bool,
-    reverse: bool,
-) {
+fn fc_list(entries: &[String], start: usize, end: usize, suppress_numbers: bool, reverse: bool) {
     let (lo, hi) = if start <= end {
         (start, end)
     } else {
@@ -632,20 +626,8 @@ fn fc_edit(
     executor: &mut Executor,
 ) -> Result<i32, ShellError> {
     let editor_cmd = editor
-        .or_else(|| {
-            executor
-                .env
-                .vars
-                .get("FCEDIT")
-                .map(|s| s.to_string())
-        })
-        .or_else(|| {
-            executor
-                .env
-                .vars
-                .get("EDITOR")
-                .map(|s| s.to_string())
-        })
+        .or_else(|| executor.env.vars.get("FCEDIT").map(|s| s.to_string()))
+        .or_else(|| executor.env.vars.get("EDITOR").map(|s| s.to_string()))
         .unwrap_or_else(|| "/bin/ed".to_string());
 
     let (lo, hi) = if start <= end {

@@ -34,7 +34,11 @@ fn arith_var_lookup(env: &ShellEnv, name: &str) -> String {
         let val = if n == 0 {
             env.shell_name.clone()
         } else {
-            env.vars.positional_params().get(n - 1).cloned().unwrap_or_default()
+            env.vars
+                .positional_params()
+                .get(n - 1)
+                .cloned()
+                .unwrap_or_default()
         };
         return if val.is_empty() || val.parse::<i64>().is_err() {
             "0".to_string()
@@ -52,7 +56,14 @@ fn arith_var_lookup(env: &ShellEnv, name: &str) -> String {
                 let s = env.mode.options.to_flag_string();
                 return if s.is_empty() { "0".to_string() } else { s };
             }
-            b'!' => return env.process.jobs.last_bg_pid().map(|p| p.as_raw().to_string()).unwrap_or_else(|| "0".to_string()),
+            b'!' => {
+                return env
+                    .process
+                    .jobs
+                    .last_bg_pid()
+                    .map(|p| p.as_raw().to_string())
+                    .unwrap_or_else(|| "0".to_string());
+            }
             b'$' => return env.process.shell_pid.as_raw().to_string(),
             _ => {}
         }
@@ -105,9 +116,7 @@ fn expand_vars(env: &mut ShellEnv, expr: &str) -> String {
                 // $VAR
                 i += 1;
                 let start = i;
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-                {
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1;
                 }
                 let name = &expr[start..i];
@@ -163,10 +172,7 @@ impl<'a> ArithParser<'a> {
             Ok(())
         } else {
             let got = self.input.get(self.pos).copied().unwrap_or(b'?');
-            Err(format!(
-                "expected '{}', got '{}'",
-                ch as char, got as char
-            ))
+            Err(format!("expected '{}', got '{}'", ch as char, got as char))
         }
     }
 
@@ -520,13 +526,10 @@ impl<'a> ArithParser<'a> {
     fn parse_number(&mut self) -> Result<i64, String> {
         let start = self.pos;
         // Collect all digit/letter chars for the number
-        while self.pos < self.input.len()
-            && (self.input[self.pos].is_ascii_alphanumeric())
-        {
+        while self.pos < self.input.len() && (self.input[self.pos].is_ascii_alphanumeric()) {
             self.pos += 1;
         }
-        let s = std::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|e| e.to_string())?;
+        let s = std::str::from_utf8(&self.input[start..self.pos]).map_err(|e| e.to_string())?;
 
         // Hex
         if s.starts_with("0x") || s.starts_with("0X") {
@@ -568,18 +571,22 @@ impl<'a> ArithParser<'a> {
                 CompoundOp::Sub => cur_val.wrapping_sub(rhs),
                 CompoundOp::Mul => cur_val.wrapping_mul(rhs),
                 CompoundOp::Div => {
-                    if rhs == 0 { return Err("division by zero".to_string()); }
+                    if rhs == 0 {
+                        return Err("division by zero".to_string());
+                    }
                     cur_val / rhs
                 }
                 CompoundOp::Mod => {
-                    if rhs == 0 { return Err("division by zero".to_string()); }
+                    if rhs == 0 {
+                        return Err("division by zero".to_string());
+                    }
                     cur_val % rhs
                 }
                 CompoundOp::Shl => cur_val.wrapping_shl(rhs as u32),
                 CompoundOp::Shr => cur_val.wrapping_shr(rhs as u32),
                 CompoundOp::And => cur_val & rhs,
                 CompoundOp::Xor => cur_val ^ rhs,
-                CompoundOp::Or  => cur_val | rhs,
+                CompoundOp::Or => cur_val | rhs,
             };
             let _ = self.env.vars.set(&name, val.to_string());
             return Ok(val);
@@ -598,12 +605,7 @@ impl<'a> ArithParser<'a> {
         }
 
         // Variable lookup
-        let raw = self
-            .env
-            .vars
-            .get(&name)
-            .unwrap_or("0")
-            .to_string();
+        let raw = self.env.vars.get(&name).unwrap_or("0").to_string();
         let val = raw.trim().parse::<i64>().unwrap_or(0);
         Ok(val)
     }
@@ -649,7 +651,16 @@ impl<'a> ArithParser<'a> {
 }
 
 enum CompoundOp {
-    Add, Sub, Mul, Div, Mod, Shl, Shr, And, Xor, Or,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Shl,
+    Shr,
+    And,
+    Xor,
+    Or,
 }
 
 // ─── Unit tests ──────────────────────────────────────────────────────────────
@@ -741,19 +752,13 @@ mod tests {
 
     #[test]
     fn test_positional_param_in_arith() {
-        let mut e = ShellEnv::new(
-            "yosh",
-            vec!["10".to_string(), "20".to_string()],
-        );
+        let mut e = ShellEnv::new("yosh", vec!["10".to_string(), "20".to_string()]);
         assert_eq!(evaluate(&mut e, "$1 + $2"), Ok("30".to_string()));
     }
 
     #[test]
     fn test_positional_param_zero() {
-        let mut e = ShellEnv::new(
-            "yosh",
-            vec!["5".to_string()],
-        );
+        let mut e = ShellEnv::new("yosh", vec!["5".to_string()]);
         // $0 is the shell name "yosh", non-numeric → defaults to 0
         assert_eq!(evaluate(&mut e, "$0"), Ok("0".to_string()));
     }
@@ -776,10 +781,7 @@ mod tests {
 
     #[test]
     fn test_braced_positional_param_in_arith() {
-        let mut e = ShellEnv::new(
-            "yosh",
-            vec!["100".to_string()],
-        );
+        let mut e = ShellEnv::new("yosh", vec!["100".to_string()]);
         assert_eq!(evaluate(&mut e, "${1} + 1"), Ok("101".to_string()));
     }
 
@@ -789,5 +791,4 @@ mod tests {
         // No positional params set; $1 should default to 0
         assert_eq!(evaluate(&mut e, "$1 + 5"), Ok("5".to_string()));
     }
-
 }

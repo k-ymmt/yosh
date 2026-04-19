@@ -15,12 +15,17 @@ fn sync_local_plugin_creates_lockfile() {
     // Create plugins.toml
     let toml_path = config_dir.join("plugins.toml");
     let mut f = std::fs::File::create(&toml_path).unwrap();
-    write!(f, r#"
+    write!(
+        f,
+        r#"
 [[plugin]]
 name = "local-test"
 source = "local:{}"
 capabilities = ["io"]
-"#, fake_binary.display()).unwrap();
+"#,
+        fake_binary.display()
+    )
+    .unwrap();
 
     // Parse config
     let decls = yosh_plugin_manager::config::load_config(&toml_path).unwrap();

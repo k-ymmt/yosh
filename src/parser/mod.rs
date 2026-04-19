@@ -1,7 +1,6 @@
 pub mod ast;
 
-use std::rc::Rc;
-use crate::error::{self, ShellError, ParseErrorKind};
+use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::Lexer;
 use crate::lexer::token::{Span, SpannedToken, Token};
 use ast::{
@@ -9,6 +8,7 @@ use ast::{
     CompoundCommand, CompoundCommandKind, FunctionDef, HereDoc, Pipeline, Program, Redirect,
     RedirectKind, SeparatorOp, SimpleCommand, Word, WordPart,
 };
+use std::rc::Rc;
 
 pub struct Parser {
     lexer: Lexer,
@@ -25,7 +25,11 @@ impl Parser {
             token: Token::Eof,
             span: Span::default(),
         });
-        Self { lexer, current, pre_current_pos: 0 }
+        Self {
+            lexer,
+            current,
+            pre_current_pos: 0,
+        }
     }
 
     pub fn new_with_aliases(input: &str, aliases: &crate::env::aliases::AliasStore) -> Self {
@@ -34,7 +38,11 @@ impl Parser {
             token: Token::Eof,
             span: Span::default(),
         });
-        Self { lexer, current, pre_current_pos: 0 }
+        Self {
+            lexer,
+            current,
+            pre_current_pos: 0,
+        }
     }
 
     /// Returns the byte position in the input up to (but not including) the current
@@ -258,7 +266,9 @@ impl Parser {
                 let word = word.clone();
 
                 // Only try assignments before any command words have been seen
-                if words.is_empty() && let Some(assignment) = self.try_parse_assignment(&word) {
+                if words.is_empty()
+                    && let Some(assignment) = self.try_parse_assignment(&word)
+                {
                     self.advance()?;
                     assignments.push(assignment);
                     continue;
@@ -1244,7 +1254,10 @@ mod tests {
         assert_eq!(sc.redirects.len(), 1);
         match &sc.redirects[0].kind {
             RedirectKind::HereDoc(hd) => {
-                assert_eq!(hd.body, vec![WordPart::Literal("hello world\n".to_string())]);
+                assert_eq!(
+                    hd.body,
+                    vec![WordPart::Literal("hello world\n".to_string())]
+                );
                 assert!(!hd.strip_tabs);
             }
             _ => panic!("expected heredoc"),
@@ -1257,7 +1270,10 @@ mod tests {
         match &sc.redirects[0].kind {
             RedirectKind::HereDoc(hd) => {
                 assert!(hd.strip_tabs);
-                assert_eq!(hd.body, vec![WordPart::Literal("hello\nworld\n".to_string())]);
+                assert_eq!(
+                    hd.body,
+                    vec![WordPart::Literal("hello\nworld\n".to_string())]
+                );
             }
             _ => panic!("expected heredoc"),
         }
@@ -1268,7 +1284,10 @@ mod tests {
         let sc = parse_first_simple("cat <<'EOF'\nhello $name\nEOF");
         match &sc.redirects[0].kind {
             RedirectKind::HereDoc(hd) => {
-                assert_eq!(hd.body, vec![WordPart::Literal("hello $name\n".to_string())]);
+                assert_eq!(
+                    hd.body,
+                    vec![WordPart::Literal("hello $name\n".to_string())]
+                );
             }
             _ => panic!("expected heredoc"),
         }

@@ -110,7 +110,11 @@ impl PluginApi {
         unsafe {
             let api = &*self.api;
             let rc = (api.set_var)(api.ctx, c_name.as_ptr(), c_value.as_ptr());
-            if rc == 0 { Ok(()) } else { Err("set_var failed".into()) }
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err("set_var failed".into())
+            }
         }
     }
 
@@ -120,7 +124,11 @@ impl PluginApi {
         unsafe {
             let api = &*self.api;
             let rc = (api.export_var)(api.ctx, c_name.as_ptr(), c_value.as_ptr());
-            if rc == 0 { Ok(()) } else { Err("export_var failed".into()) }
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err("export_var failed".into())
+            }
         }
     }
 
@@ -141,7 +149,11 @@ impl PluginApi {
         unsafe {
             let api = &*self.api;
             let rc = (api.set_cwd)(api.ctx, c_path.as_ptr());
-            if rc == 0 { Ok(()) } else { Err("set_cwd failed".into()) }
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err("set_cwd failed".into())
+            }
         }
     }
 
@@ -186,21 +198,19 @@ macro_rules! export {
         #[unsafe(no_mangle)]
         pub extern "C" fn yosh_plugin_decl() -> *const $crate::ffi::PluginDecl {
             PLUGIN_DECL_STATIC.get_or_init(|| {
-                let name = PLUGIN_NAME_CSTR.get_or_init(|| {
-                    CString::new(env!("CARGO_PKG_NAME")).unwrap()
-                });
-                let version = PLUGIN_VERSION_CSTR.get_or_init(|| {
-                    CString::new(env!("CARGO_PKG_VERSION")).unwrap()
-                });
+                let name =
+                    PLUGIN_NAME_CSTR.get_or_init(|| CString::new(env!("CARGO_PKG_NAME")).unwrap());
+                let version = PLUGIN_VERSION_CSTR
+                    .get_or_init(|| CString::new(env!("CARGO_PKG_VERSION")).unwrap());
                 $crate::ffi::PluginDecl {
                     api_version: $crate::ffi::YOSH_PLUGIN_API_VERSION,
                     name: name.as_ptr(),
                     version: version.as_ptr(),
                     required_capabilities: {
                         let plugin = <$plugin_type as Default>::default();
-                        $crate::capabilities_to_bitflags(
-                            $crate::Plugin::required_capabilities(&plugin),
-                        )
+                        $crate::capabilities_to_bitflags($crate::Plugin::required_capabilities(
+                            &plugin,
+                        ))
                     },
                 }
             })
@@ -230,16 +240,19 @@ macro_rules! export {
         pub extern "C" fn yosh_plugin_commands(count: *mut u32) -> *const *const c_char {
             let cstrs = COMMAND_CSTRS.get_or_init(|| {
                 let plugin = PLUGIN_INSTANCE.lock().unwrap();
-                let p = plugin.as_ref().expect("yosh_plugin_commands called before init");
+                let p = plugin
+                    .as_ref()
+                    .expect("yosh_plugin_commands called before init");
                 $crate::Plugin::commands(p)
                     .iter()
                     .map(|s| CString::new(*s).unwrap())
                     .collect()
             });
-            let ptrs = COMMAND_PTRS.get_or_init(|| {
-                cstrs.iter().map(|s| CCharPtr(s.as_ptr())).collect()
-            });
-            unsafe { *count = ptrs.len() as u32; }
+            let ptrs =
+                COMMAND_PTRS.get_or_init(|| cstrs.iter().map(|s| CCharPtr(s.as_ptr())).collect());
+            unsafe {
+                *count = ptrs.len() as u32;
+            }
             // Cast the Vec of CCharPtr to Vec of raw pointers
             ptrs.as_ptr() as *const *const c_char
         }
@@ -322,9 +335,7 @@ macro_rules! export {
 
         #[allow(unsafe_attr_outside_unsafe)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn yosh_plugin_hook_pre_prompt(
-            api: *const $crate::ffi::HostApi,
-        ) {
+        pub extern "C" fn yosh_plugin_hook_pre_prompt(api: *const $crate::ffi::HostApi) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let plugin_api = unsafe { $crate::PluginApi::from_raw(api) };
                 let mut plugin = PLUGIN_INSTANCE.lock().unwrap();

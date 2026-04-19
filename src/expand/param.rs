@@ -1,29 +1,32 @@
+use super::{expand_word_to_string, pattern};
 use crate::env::ShellEnv;
 use crate::parser::ast::{ParamExpr, SpecialParam};
-use super::{expand_word_to_string, pattern};
 
 /// Expand a `ParamExpr` to a String.
 pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<String> {
     match param {
         // ── Simple variable ──────────────────────────────────────────────
-        ParamExpr::Simple(name) => {
-            match env.vars.get(name) {
-                Some(val) => Ok(val.to_string()),
-                None => {
-                    if env.mode.options.nounset {
-                        eprintln!("yosh: {}: parameter not set", name);
-                        env.exec.last_exit_status = 1;
-                        env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
-                    }
-                    Ok(String::new())
+        ParamExpr::Simple(name) => match env.vars.get(name) {
+            Some(val) => Ok(val.to_string()),
+            None => {
+                if env.mode.options.nounset {
+                    eprintln!("yosh: {}: parameter not set", name);
+                    env.exec.last_exit_status = 1;
+                    env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
                 }
+                Ok(String::new())
             }
-        }
+        },
 
         // ── Positional parameters ────────────────────────────────────────
         ParamExpr::Positional(n) => {
             if *n > 0 {
-                Ok(env.vars.positional_params().get(n - 1).cloned().unwrap_or_default())
+                Ok(env
+                    .vars
+                    .positional_params()
+                    .get(n - 1)
+                    .cloned()
+                    .unwrap_or_default())
             } else {
                 Ok(String::new())
             }
@@ -39,7 +42,11 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
         }
 
         // ── ${name:-word} / ${name-word} ─────────────────────────────────
-        ParamExpr::Default { name, word, null_check } => {
+        ParamExpr::Default {
+            name,
+            word,
+            null_check,
+        } => {
             let val = env.vars.get(name).map(|s| s.to_string());
             let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
             if is_unset_or_null {
@@ -53,7 +60,11 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
         }
 
         // ── ${name:=word} / ${name=word} ─────────────────────────────────
-        ParamExpr::Assign { name, word, null_check } => {
+        ParamExpr::Assign {
+            name,
+            word,
+            null_check,
+        } => {
             let val = env.vars.get(name).map(|s| s.to_string());
             let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
             if is_unset_or_null {
@@ -69,7 +80,11 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
         }
 
         // ── ${name:?word} / ${name?word} ─────────────────────────────────
-        ParamExpr::Error { name, word, null_check } => {
+        ParamExpr::Error {
+            name,
+            word,
+            null_check,
+        } => {
             let val = env.vars.get(name).map(|s| s.to_string());
             let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
             if is_unset_or_null {
@@ -88,7 +103,11 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
         }
 
         // ── ${name:+word} / ${name+word} ─────────────────────────────────
-        ParamExpr::Alt { name, word, null_check } => {
+        ParamExpr::Alt {
+            name,
+            word,
+            null_check,
+        } => {
             let val = env.vars.get(name).map(|s| s.to_string());
             let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
             if is_unset_or_null {
@@ -150,7 +169,12 @@ fn expand_special(env: &ShellEnv, sp: &SpecialParam) -> String {
         SpecialParam::Zero => env.shell_name.clone(),
         SpecialParam::Hash => env.vars.positional_params().len().to_string(),
         SpecialParam::At | SpecialParam::Star => env.vars.positional_params().join(" "),
-        SpecialParam::Bang => env.process.jobs.last_bg_pid().map(|p| p.as_raw().to_string()).unwrap_or_default(),
+        SpecialParam::Bang => env
+            .process
+            .jobs
+            .last_bg_pid()
+            .map(|p| p.as_raw().to_string())
+            .unwrap_or_default(),
         SpecialParam::Dash => env.mode.options.to_flag_string(),
     }
 }
@@ -228,13 +252,19 @@ mod tests {
     fn test_simple_set() {
         let mut env = make_env();
         env.vars.set("FOO", "bar").unwrap();
-        assert_eq!(expand(&mut env, &ParamExpr::Simple("FOO".to_string())).unwrap(), "bar");
+        assert_eq!(
+            expand(&mut env, &ParamExpr::Simple("FOO".to_string())).unwrap(),
+            "bar"
+        );
     }
 
     #[test]
     fn test_simple_unset() {
         let mut env = make_env();
-        assert_eq!(expand(&mut env, &ParamExpr::Simple("UNSET_XYZ".to_string())).unwrap(), "");
+        assert_eq!(
+            expand(&mut env, &ParamExpr::Simple("UNSET_XYZ".to_string())).unwrap(),
+            ""
+        );
     }
 
     // ── Assign (${name:=word}) ──
@@ -248,7 +278,8 @@ mod tests {
                 word: Some(Word::literal("default_val")),
                 null_check: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result, "default_val");
         assert_eq!(env.vars.get("MYVAR"), Some("default_val"));
     }
@@ -264,7 +295,8 @@ mod tests {
                 word: Some(Word::literal("new_val")),
                 null_check: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result, "existing");
         assert_eq!(env.vars.get("MYVAR"), Some("existing"));
     }
@@ -280,7 +312,8 @@ mod tests {
                 word: Some(Word::literal("filled")),
                 null_check: true,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result, "filled");
         assert_eq!(env.vars.get("MYVAR"), Some("filled"));
     }
@@ -297,7 +330,8 @@ mod tests {
                 word: Some(Word::literal("alt_val")),
                 null_check: true,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result, "alt_val");
     }
 
@@ -311,7 +345,8 @@ mod tests {
                 word: Some(Word::literal("alt_val")),
                 null_check: true,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result, "");
     }
 
@@ -327,7 +362,8 @@ mod tests {
                 word: Some(Word::literal("err msg")),
                 null_check: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result, "val");
     }
 
@@ -341,7 +377,8 @@ mod tests {
                 word: Some(Word::literal("err msg")),
                 null_check: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result, "");
     }
 
@@ -352,11 +389,9 @@ mod tests {
         env.vars.set("FILE", "file.txt").unwrap();
         let result = expand(
             &mut env,
-            &ParamExpr::StripShortSuffix(
-                "FILE".to_string(),
-                Word::literal(".*"),
-            ),
-        ).unwrap();
+            &ParamExpr::StripShortSuffix("FILE".to_string(), Word::literal(".*")),
+        )
+        .unwrap();
         assert_eq!(result, "file");
     }
 
@@ -366,11 +401,9 @@ mod tests {
         env.vars.set("FILE", "file").unwrap();
         let result = expand(
             &mut env,
-            &ParamExpr::StripShortSuffix(
-                "FILE".to_string(),
-                Word::literal(".*"),
-            ),
-        ).unwrap();
+            &ParamExpr::StripShortSuffix("FILE".to_string(), Word::literal(".*")),
+        )
+        .unwrap();
         assert_eq!(result, "file");
     }
 
@@ -381,11 +414,9 @@ mod tests {
         env.vars.set("PATH_VAR", "/a/b/c").unwrap();
         let result = expand(
             &mut env,
-            &ParamExpr::StripLongPrefix(
-                "PATH_VAR".to_string(),
-                Word::literal("*/"),
-            ),
-        ).unwrap();
+            &ParamExpr::StripLongPrefix("PATH_VAR".to_string(), Word::literal("*/")),
+        )
+        .unwrap();
         assert_eq!(result, "c");
     }
 
@@ -395,11 +426,9 @@ mod tests {
         env.vars.set("PATH_VAR", "/a/b/c").unwrap();
         let result = expand(
             &mut env,
-            &ParamExpr::StripShortPrefix(
-                "PATH_VAR".to_string(),
-                Word::literal("*/"),
-            ),
-        ).unwrap();
+            &ParamExpr::StripShortPrefix("PATH_VAR".to_string(), Word::literal("*/")),
+        )
+        .unwrap();
         // Shortest prefix matching "*/" — stops at the first "/"
         assert_eq!(result, "a/b/c");
     }
@@ -409,20 +438,14 @@ mod tests {
     fn test_length() {
         let mut env = make_env();
         env.vars.set("STR", "hello").unwrap();
-        let result = expand(
-            &mut env,
-            &ParamExpr::Length("STR".to_string()),
-        ).unwrap();
+        let result = expand(&mut env, &ParamExpr::Length("STR".to_string())).unwrap();
         assert_eq!(result, "5");
     }
 
     #[test]
     fn test_length_unset() {
         let mut env = make_env();
-        let result = expand(
-            &mut env,
-            &ParamExpr::Length("UNSET_XYZ".to_string()),
-        ).unwrap();
+        let result = expand(&mut env, &ParamExpr::Length("UNSET_XYZ".to_string())).unwrap();
         assert_eq!(result, "0");
     }
 

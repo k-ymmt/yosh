@@ -1,14 +1,16 @@
-use nix::unistd::{fork, ForkResult};
+use nix::unistd::{ForkResult, fork};
 
 use crate::env::FlowControl;
-use crate::error::{ShellError, RuntimeErrorKind};
+use crate::error::{RuntimeErrorKind, ShellError};
 use crate::expand::expand_words;
-use crate::parser::ast::{CaseItem, CaseTerminator, CompoundCommand, CompleteCommand, Redirect, Word};
+use crate::parser::ast::{
+    CaseItem, CaseTerminator, CompleteCommand, CompoundCommand, Redirect, Word,
+};
 use crate::signal;
 
+use super::Executor;
 use super::command;
 use super::redirect::RedirectState;
-use super::Executor;
 
 impl Executor {
     /// Execute a compound command, applying any redirects around it.
@@ -83,7 +85,10 @@ impl Executor {
     fn exec_subshell(&mut self, body: &[CompleteCommand]) -> Result<i32, ShellError> {
         match unsafe { fork() } {
             Err(e) => {
-                return Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("fork: {}", e)));
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::IoError,
+                    format!("fork: {}", e),
+                ));
             }
             Ok(ForkResult::Child) => {
                 let ignored = self.env.traps.ignored_signals();
@@ -199,7 +204,10 @@ impl Executor {
         let mut status = 0;
         for item in &items {
             if let Err(e) = self.env.vars.set(var, item.as_str()) {
-                return Err(ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, format!("{}", e)));
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::ReadonlyVariable,
+                    format!("{}", e),
+                ));
             }
 
             status = self.exec_body(body);

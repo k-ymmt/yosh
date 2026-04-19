@@ -73,7 +73,12 @@ impl fmt::Display for ShellError {
 impl std::error::Error for ShellError {}
 
 impl ShellError {
-    pub fn parse(kind: ParseErrorKind, line: usize, column: usize, message: impl Into<String>) -> Self {
+    pub fn parse(
+        kind: ParseErrorKind,
+        line: usize,
+        column: usize,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             kind: ShellErrorKind::Parse(kind),
             message: message.into(),
@@ -120,21 +125,13 @@ mod tests {
 
     #[test]
     fn test_error_display_with_location() {
-        let err = ShellError::parse(
-            ParseErrorKind::UnexpectedToken,
-            5,
-            10,
-            "unexpected ')'",
-        );
+        let err = ShellError::parse(ParseErrorKind::UnexpectedToken, 5, 10, "unexpected ')'");
         assert_eq!(err.to_string(), "yosh: line 5: unexpected ')'");
     }
 
     #[test]
     fn test_error_display_without_location() {
-        let err = ShellError::runtime(
-            RuntimeErrorKind::CommandNotFound,
-            "foo: not found",
-        );
+        let err = ShellError::runtime(RuntimeErrorKind::CommandNotFound, "foo: not found");
         assert_eq!(err.to_string(), "yosh: foo: not found");
     }
 
@@ -149,10 +146,25 @@ mod tests {
 
     #[test]
     fn test_exit_code_mapping() {
-        assert_eq!(ShellError::runtime(RuntimeErrorKind::CommandNotFound, "x").exit_code(), 127);
-        assert_eq!(ShellError::runtime(RuntimeErrorKind::PermissionDenied, "x").exit_code(), 126);
-        assert_eq!(ShellError::runtime(RuntimeErrorKind::InvalidArgument, "x").exit_code(), 2);
-        assert_eq!(ShellError::runtime(RuntimeErrorKind::IoError, "x").exit_code(), 1);
-        assert_eq!(ShellError::runtime(RuntimeErrorKind::RedirectFailed, "x").exit_code(), 1);
+        assert_eq!(
+            ShellError::runtime(RuntimeErrorKind::CommandNotFound, "x").exit_code(),
+            127
+        );
+        assert_eq!(
+            ShellError::runtime(RuntimeErrorKind::PermissionDenied, "x").exit_code(),
+            126
+        );
+        assert_eq!(
+            ShellError::runtime(RuntimeErrorKind::InvalidArgument, "x").exit_code(),
+            2
+        );
+        assert_eq!(
+            ShellError::runtime(RuntimeErrorKind::IoError, "x").exit_code(),
+            1
+        );
+        assert_eq!(
+            ShellError::runtime(RuntimeErrorKind::RedirectFailed, "x").exit_code(),
+            1
+        );
     }
 }

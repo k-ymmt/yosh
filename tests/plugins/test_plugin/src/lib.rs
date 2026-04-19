@@ -1,4 +1,4 @@
-use yosh_plugin_sdk::{Capability, Plugin, PluginApi, export};
+use yosh_plugin_sdk::{export, Capability, Plugin, PluginApi};
 
 #[derive(Default)]
 struct TestPlugin;

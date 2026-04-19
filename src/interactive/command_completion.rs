@@ -8,8 +8,8 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::env::aliases::AliasStore;
 use super::completion::longest_common_prefix;
+use crate::env::aliases::AliasStore;
 
 /// Caches PATH executables and generates command name completion candidates.
 pub struct CommandCompleter {
@@ -133,10 +133,7 @@ impl CommandCompleter {
 
     #[cfg(not(unix))]
     fn is_executable(entry: &fs::DirEntry) -> bool {
-        entry
-            .file_type()
-            .map(|ft| ft.is_file())
-            .unwrap_or(false)
+        entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
     }
 }
 
@@ -305,8 +302,7 @@ mod tests {
         let mut completer = CommandCompleter::new();
         let aliases = AliasStore::default();
         let path = tmp.path().to_str().unwrap();
-        let (candidates, common) =
-            completer.complete_common_prefix("g", path, &[], &aliases);
+        let (candidates, common) = completer.complete_common_prefix("g", path, &[], &aliases);
         assert_eq!(candidates, vec!["git", "grep"]);
         assert_eq!(common, "g");
     }

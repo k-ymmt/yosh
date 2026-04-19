@@ -16,7 +16,10 @@ const LENGTH_PENALTY: i64 = 5;
 /// Returns `None` if query chars don't appear in order in target.
 pub fn fuzzy_match(query: &str, target: &str) -> Option<FuzzyMatch> {
     if query.is_empty() {
-        return Some(FuzzyMatch { score: 0, positions: vec![] });
+        return Some(FuzzyMatch {
+            score: 0,
+            positions: vec![],
+        });
     }
 
     let query_chars: Vec<char> = query.chars().collect();
@@ -25,9 +28,7 @@ pub fn fuzzy_match(query: &str, target: &str) -> Option<FuzzyMatch> {
     // First pass: verify all query chars exist in order (case-insensitive)
     let mut qi = 0;
     for &tc in &target_chars {
-        if qi < query_chars.len()
-            && tc.eq_ignore_ascii_case(&query_chars[qi])
-        {
+        if qi < query_chars.len() && tc.eq_ignore_ascii_case(&query_chars[qi]) {
             qi += 1;
         }
     }
@@ -78,9 +79,7 @@ pub fn fuzzy_match(query: &str, target: &str) -> Option<FuzzyMatch> {
 pub fn filter_and_sort(query: &str, entries: &[String]) -> Vec<(i64, String)> {
     let mut results: Vec<(i64, String)> = entries
         .iter()
-        .filter_map(|entry| {
-            fuzzy_match(query, entry).map(|m| (m.score, entry.clone()))
-        })
+        .filter_map(|entry| fuzzy_match(query, entry).map(|m| (m.score, entry.clone())))
         .collect();
     results.sort_by(|a, b| b.0.cmp(&a.0));
     results
@@ -90,8 +89,8 @@ pub fn filter_and_sort(query: &str, entries: &[String]) -> Vec<(i64, String)> {
 // Fuzzy search UI (Ctrl+R)
 // ---------------------------------------------------------------------------
 
-use std::io;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use std::io;
 
 use super::history::History;
 use super::terminal::Terminal;

@@ -1,8 +1,8 @@
 //! POSIX reserved words per IEEE Std 1003.1-2017 §2.4.
 
 pub const RESERVED_WORDS: &[&str] = &[
-    "!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi",
-    "for", "if", "in", "then", "until", "while",
+    "!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi", "for", "if", "in", "then",
+    "until", "while",
 ];
 
 pub fn is_posix_reserved_word(name: &str) -> bool {
@@ -16,8 +16,8 @@ mod tests {
     #[test]
     fn all_posix_reserved_words_are_recognized() {
         for kw in [
-            "!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi",
-            "for", "if", "in", "then", "until", "while",
+            "!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi", "for", "if", "in",
+            "then", "until", "while",
         ] {
             assert!(is_posix_reserved_word(kw), "{kw} should be reserved");
         }

@@ -187,14 +187,12 @@ fn cmd_list() -> i32 {
 
     for entry in &lockfile.plugin {
         let version = entry.version.as_deref().unwrap_or("-");
-        let verified = match verify::verify_checksum(
-            &config::expand_tilde_path(&entry.path),
-            &entry.sha256,
-        ) {
-            Ok(true) => "\u{2713} verified",
-            Ok(false) => "\u{2717} checksum mismatch",
-            Err(_) => "\u{2717} file missing",
-        };
+        let verified =
+            match verify::verify_checksum(&config::expand_tilde_path(&entry.path), &entry.sha256) {
+                Ok(true) => "\u{2713} verified",
+                Ok(false) => "\u{2717} checksum mismatch",
+                Err(_) => "\u{2717} file missing",
+            };
         println!(
             "{:<16} {:<8} {:<48} {}",
             entry.name, version, entry.source, verified

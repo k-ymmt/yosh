@@ -61,8 +61,16 @@ impl GitHubClient {
             .map_err(|e| GitHubApiError::Parse(format!("failed to parse JSON: {}", e)))
     }
 
-    fn release_json(&self, owner: &str, repo: &str, tag: &str) -> Result<serde_json::Value, GitHubApiError> {
-        let url = format!("{}/repos/{}/{}/releases/tags/{}", self.base_url, owner, repo, tag);
+    fn release_json(
+        &self,
+        owner: &str,
+        repo: &str,
+        tag: &str,
+    ) -> Result<serde_json::Value, GitHubApiError> {
+        let url = format!(
+            "{}/repos/{}/{}/releases/tags/{}",
+            self.base_url, owner, repo, tag
+        );
         self.get_json(&url)
     }
 
@@ -80,16 +88,17 @@ impl GitHubClient {
             Ok(r) => r,
             Err(_) => {
                 // Fallback to bare version tag
-                self.release_json(owner, repo, version).map_err(|e| match e {
-                    GitHubApiError::HttpStatus(404) => format!(
-                        "release not found for {}/{} (tried tags '{}' and '{}')",
-                        owner, repo, v_tag, version
-                    ),
-                    other => format!(
-                        "failed to fetch release for {}/{} (tried tags '{}' and '{}'): {}",
-                        owner, repo, v_tag, version, other
-                    ),
-                })?
+                self.release_json(owner, repo, version)
+                    .map_err(|e| match e {
+                        GitHubApiError::HttpStatus(404) => format!(
+                            "release not found for {}/{} (tried tags '{}' and '{}')",
+                            owner, repo, v_tag, version
+                        ),
+                        other => format!(
+                            "failed to fetch release for {}/{} (tried tags '{}' and '{}'): {}",
+                            owner, repo, v_tag, version, other
+                        ),
+                    })?
             }
         };
 
@@ -222,23 +231,34 @@ mod tests {
                 )
             })
             .collect();
-        format!(r#"{{"tag_name": "v1.2.3", "assets": [{}]}}"#, assets_json.join(", "))
+        format!(
+            r#"{{"tag_name": "v1.2.3", "assets": [{}]}}"#,
+            assets_json.join(", ")
+        )
     }
 
     #[test]
     fn parse_release_json_finds_asset() {
-        let json: serde_json::Value =
-            serde_json::from_str(&make_release_json(&[("libfoo-linux-x86_64.so", "https://example.com/libfoo-linux-x86_64.so")])).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&make_release_json(&[(
+            "libfoo-linux-x86_64.so",
+            "https://example.com/libfoo-linux-x86_64.so",
+        )]))
+        .unwrap();
         let url = json["assets"][0]["browser_download_url"].as_str().unwrap();
         assert_eq!(url, "https://example.com/libfoo-linux-x86_64.so");
     }
 
     #[test]
     fn parse_release_json_asset_not_found() {
-        let json: serde_json::Value =
-            serde_json::from_str(&make_release_json(&[("other-asset.so", "https://example.com/other.so")])).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&make_release_json(&[(
+            "other-asset.so",
+            "https://example.com/other.so",
+        )]))
+        .unwrap();
         let assets = json["assets"].as_array().unwrap();
-        let found = assets.iter().any(|a| a["name"].as_str() == Some("libfoo-linux-x86_64.so"));
+        let found = assets
+            .iter()
+            .any(|a| a["name"].as_str() == Some("libfoo-linux-x86_64.so"));
         assert!(!found);
     }
 
@@ -246,16 +266,28 @@ mod tests {
     fn download_rejects_non_https() {
         let client = GitHubClient::new();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let err = client.download("http://example.com/file", tmp.path()).unwrap_err();
-        assert!(err.contains("non-HTTPS"), "expected non-HTTPS error, got: {}", err);
+        let err = client
+            .download("http://example.com/file", tmp.path())
+            .unwrap_err();
+        assert!(
+            err.contains("non-HTTPS"),
+            "expected non-HTTPS error, got: {}",
+            err
+        );
     }
 
     #[test]
     fn download_rejects_ftp_url() {
         let client = GitHubClient::new();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let err = client.download("ftp://example.com/file", tmp.path()).unwrap_err();
-        assert!(err.contains("non-HTTPS"), "expected non-HTTPS error, got: {}", err);
+        let err = client
+            .download("ftp://example.com/file", tmp.path())
+            .unwrap_err();
+        assert!(
+            err.contains("non-HTTPS"),
+            "expected non-HTTPS error, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -280,7 +312,9 @@ mod tests {
             .create();
 
         let client = GitHubClientWithBase::new(&base);
-        let url = client.find_asset_url("owner", "repo", "1.0.0", "myasset.so").unwrap();
+        let url = client
+            .find_asset_url("owner", "repo", "1.0.0", "myasset.so")
+            .unwrap();
         assert_eq!(url, "https://dl.example.com/myasset.so");
     }
 
@@ -298,7 +332,9 @@ mod tests {
             .create();
 
         let client = GitHubClientWithBase::new(&base);
-        let url = client.find_asset_url("owner", "repo", "2.0.0", "myasset.so").unwrap();
+        let url = client
+            .find_asset_url("owner", "repo", "2.0.0", "myasset.so")
+            .unwrap();
         assert_eq!(url, "https://dl.example.com/myasset.so");
     }
 
@@ -316,8 +352,14 @@ mod tests {
             .create();
 
         let client = GitHubClientWithBase::new(&base);
-        let err = client.find_asset_url("owner", "repo", "3.0.0", "nonexistent.so").unwrap_err();
-        assert!(err.contains("not found"), "expected not found error, got: {}", err);
+        let err = client
+            .find_asset_url("owner", "repo", "3.0.0", "nonexistent.so")
+            .unwrap_err();
+        assert!(
+            err.contains("not found"),
+            "expected not found error, got: {}",
+            err
+        );
     }
 
     #[test]

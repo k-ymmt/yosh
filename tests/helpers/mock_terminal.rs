@@ -58,7 +58,10 @@ impl MockTerminal {
 impl Terminal for MockTerminal {
     fn read_event(&mut self) -> io::Result<Event> {
         self.events.pop_front().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::UnexpectedEof, "no more events in MockTerminal")
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "no more events in MockTerminal",
+            )
         })
     }
 

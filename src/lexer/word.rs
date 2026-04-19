@@ -1,7 +1,7 @@
-use crate::error::{self, ShellError, ParseErrorKind};
-use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 use super::token::{Span, SpannedToken, Token};
-use super::{Lexer, is_name_start, is_name_char};
+use super::{Lexer, is_name_char, is_name_start};
+use crate::error::{self, ParseErrorKind, ShellError};
+use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 
 impl Lexer {
     // ---- Word construction methods ----
@@ -25,7 +25,9 @@ impl Lexer {
             let ch = self.current_byte();
 
             // check end_byte (e.g. '}' for ${...})
-            if let Some(end) = end_byte && ch == end {
+            if let Some(end) = end_byte
+                && ch == end
+            {
                 break;
             }
 
@@ -65,7 +67,9 @@ impl Lexer {
                 // unquoted context
                 // Inside ${...} (end_byte == '}'), spaces are literal, not delimiters
                 if end_byte == Some(b'}') {
-                    if ch == b'}' { break; }
+                    if ch == b'}' {
+                        break;
+                    }
                 } else if Self::is_meta_or_whitespace(ch) {
                     break;
                 }
@@ -308,9 +312,7 @@ impl Lexer {
                 }
                 Ok(digits)
             }
-            c if is_name_start(c) => {
-                Ok(self.read_name())
-            }
+            c if is_name_start(c) => Ok(self.read_name()),
             _ => Err(ShellError::parse(
                 ParseErrorKind::UnterminatedParamExpansion,
                 span.line,
@@ -426,20 +428,26 @@ impl Lexer {
                 self.advance(); // consume ':'
                 self.read_conditional_param(span, name, true)
             }
-            b'-' | b'=' | b'?' | b'+' => {
-                self.read_conditional_param(span, name, false)
-            }
+            b'-' | b'=' | b'?' | b'+' => self.read_conditional_param(span, name, false),
             _ => Err(ShellError::parse(
                 ParseErrorKind::UnterminatedParamExpansion,
                 span.line,
                 span.column,
-                format!("unexpected character in parameter expansion: '{}'", ch as char),
+                format!(
+                    "unexpected character in parameter expansion: '{}'",
+                    ch as char
+                ),
             )),
         }
     }
 
     /// Reads the conditional operator (`-`, `=`, `?`, `+`) and its word argument.
-    fn read_conditional_param(&mut self, span: Span, name: String, null_check: bool) -> error::Result<WordPart> {
+    fn read_conditional_param(
+        &mut self,
+        span: Span,
+        name: String,
+        null_check: bool,
+    ) -> error::Result<WordPart> {
         if self.at_end() {
             return Err(ShellError::parse(
                 ParseErrorKind::UnterminatedParamExpansion,
@@ -454,19 +462,41 @@ impl Lexer {
         // Read optional word (may be empty)
         let parts = self.read_word_parts(false, Some(b'}'))?;
         self.expect_byte(b'}', span)?;
-        let word = if parts.is_empty() { None } else { Some(Word { parts }) };
+        let word = if parts.is_empty() {
+            None
+        } else {
+            Some(Word { parts })
+        };
 
         let expr = match op {
-            b'-' => ParamExpr::Default { name, word, null_check },
-            b'=' => ParamExpr::Assign { name, word, null_check },
-            b'?' => ParamExpr::Error { name, word, null_check },
-            b'+' => ParamExpr::Alt { name, word, null_check },
-            _ => return Err(ShellError::parse(
-                ParseErrorKind::UnterminatedParamExpansion,
-                span.line,
-                span.column,
-                format!("unknown parameter operator: '{}'", op as char),
-            )),
+            b'-' => ParamExpr::Default {
+                name,
+                word,
+                null_check,
+            },
+            b'=' => ParamExpr::Assign {
+                name,
+                word,
+                null_check,
+            },
+            b'?' => ParamExpr::Error {
+                name,
+                word,
+                null_check,
+            },
+            b'+' => ParamExpr::Alt {
+                name,
+                word,
+                null_check,
+            },
+            _ => {
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnterminatedParamExpansion,
+                    span.line,
+                    span.column,
+                    format!("unknown parameter operator: '{}'", op as char),
+                ));
+            }
         };
         Ok(WordPart::Parameter(expr))
     }
@@ -797,7 +827,9 @@ impl Lexer {
             }
             b'?' => {
                 self.advance();
-                Ok(WordPart::Parameter(ParamExpr::Special(SpecialParam::Question)))
+                Ok(WordPart::Parameter(ParamExpr::Special(
+                    SpecialParam::Question,
+                )))
             }
             b'-' => {
                 self.advance();
@@ -805,7 +837,9 @@ impl Lexer {
             }
             b'$' => {
                 self.advance();
-                Ok(WordPart::Parameter(ParamExpr::Special(SpecialParam::Dollar)))
+                Ok(WordPart::Parameter(ParamExpr::Special(
+                    SpecialParam::Dollar,
+                )))
             }
             b'!' => {
                 self.advance();

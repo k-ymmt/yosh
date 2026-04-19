@@ -1,18 +1,18 @@
 use std::ffi::CString;
 
-use nix::unistd::{execvp, fork, ForkResult};
+use nix::unistd::{ForkResult, execvp, fork};
 
-use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
 use crate::builtin::special::exec_special_builtin;
+use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
 use crate::env::jobs;
-use crate::error::{ShellError, RuntimeErrorKind};
+use crate::error::{RuntimeErrorKind, ShellError};
 use crate::expand::expand_words;
 use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
 use crate::signal;
 
+use super::Executor;
 use super::command::wait_child;
 use super::redirect::RedirectState;
-use super::Executor;
 
 impl Executor {
     /// Execute a simple command (assignments, builtins, or external programs).
@@ -41,10 +41,7 @@ impl Executor {
             // command substitution overwrites it, so we do NOT reset it up front.
             let mut last_cmd_sub_status: Option<i32> = None;
             for assignment in &cmd.assignments {
-                let has_cmd_sub = assignment
-                    .value
-                    .as_ref()
-                    .is_some_and(word_has_command_sub);
+                let has_cmd_sub = assignment.value.as_ref().is_some_and(word_has_command_sub);
                 let value = match assignment.value.as_ref() {
                     Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
                         Ok(v) => v,
@@ -63,9 +60,16 @@ impl Executor {
                 if has_cmd_sub {
                     last_cmd_sub_status = Some(self.env.exec.last_exit_status);
                 }
-                if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.mode.options.allexport) {
+                if let Err(e) = self.env.vars.set_with_options(
+                    &assignment.name,
+                    value,
+                    self.env.mode.options.allexport,
+                ) {
                     self.env.exec.last_exit_status = 1;
-                    return Err(ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, format!("{}", e)));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::ReadonlyVariable,
+                        format!("{}", e),
+                    ));
                 }
             }
             let final_status = last_cmd_sub_status.unwrap_or(0);
@@ -86,7 +90,8 @@ impl Executor {
             .chain(args.iter().map(|s| s.as_str()))
             .collect::<Vec<_>>()
             .join(" ");
-        self.plugins.call_pre_exec(&mut self.env, &cmd_str_for_hooks);
+        self.plugins
+            .call_pre_exec(&mut self.env, &cmd_str_for_hooks);
 
         // Check for function call (before builtins, matching POSIX lookup order)
         if let Some(func_def) = self.env.functions.get(&command_name).cloned() {
@@ -103,7 +108,8 @@ impl Executor {
             let status = self.exec_function_call(&func_def, &args);
             redirect_state.restore();
             self.restore_assignments(saved);
-            self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+            self.plugins
+                .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
             return Ok(status);
         }
@@ -120,10 +126,14 @@ impl Executor {
                 self.env.exec.last_exit_status = 1;
                 return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
             }
-            let status = self.builtin_wait(&args).unwrap_or_else(|e| { eprintln!("{}", e); e.exit_code() });
+            let status = self.builtin_wait(&args).unwrap_or_else(|e| {
+                eprintln!("{}", e);
+                e.exit_code()
+            });
             redirect_state.restore();
             self.restore_assignments(saved);
-            self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+            self.plugins
+                .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
             return Ok(status);
         }
@@ -145,19 +155,26 @@ impl Executor {
                 "bg" => self.builtin_bg(&args),
                 "jobs" => self.builtin_jobs(&args),
                 _ => unreachable!(),
-            }.unwrap_or_else(|e| { eprintln!("{}", e); e.exit_code() });
+            }
+            .unwrap_or_else(|e| {
+                eprintln!("{}", e);
+                e.exit_code()
+            });
             redirect_state.restore();
             self.restore_assignments(saved);
-            self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+            self.plugins
+                .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
             return Ok(status);
         }
 
         // `command` needs Executor access for -p / no-flag execution paths.
         if command_name == "command" {
-            let saved = self.apply_temp_assignments(&cmd.assignments).inspect_err(|_| {
-                self.env.exec.last_exit_status = 1;
-            })?;
+            let saved = self
+                .apply_temp_assignments(&cmd.assignments)
+                .inspect_err(|_| {
+                    self.env.exec.last_exit_status = 1;
+                })?;
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 self.restore_assignments(saved);
@@ -167,7 +184,8 @@ impl Executor {
             let status = self.builtin_command(&args);
             redirect_state.restore();
             self.restore_assignments(saved);
-            self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+            self.plugins
+                .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
             return Ok(status);
         }
@@ -186,9 +204,16 @@ impl Executor {
                         },
                         None => String::new(),
                     };
-                    if let Err(e) = self.env.vars.set_with_options(&assignment.name, value, self.env.mode.options.allexport) {
+                    if let Err(e) = self.env.vars.set_with_options(
+                        &assignment.name,
+                        value,
+                        self.env.mode.options.allexport,
+                    ) {
                         self.env.exec.last_exit_status = 1;
-                        return Err(ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, format!("{}", e)));
+                        return Err(ShellError::runtime(
+                            RuntimeErrorKind::ReadonlyVariable,
+                            format!("{}", e),
+                        ));
                     }
                 }
                 // exec with no args: redirects persist (don't save/restore)
@@ -209,7 +234,8 @@ impl Executor {
                 }
                 let status = exec_special_builtin(&command_name, &args, self);
                 redirect_state.restore();
-                self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+                self.plugins
+                    .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
                 self.env.exec.last_exit_status = status;
                 Ok(status)
             }
@@ -233,7 +259,8 @@ impl Executor {
                 let status = exec_regular_builtin(&command_name, &args, &mut self.env);
                 redirect_state.restore();
                 self.restore_assignments(saved);
-                self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+                self.plugins
+                    .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
 
                 // on_cd hook: fire if cd succeeded
                 if command_name == "cd" && status == 0 {
@@ -247,8 +274,12 @@ impl Executor {
             }
             BuiltinKind::NotBuiltin => {
                 // Check plugin commands before external
-                if let Some(status) = self.plugins.exec_command(&mut self.env, &command_name, &args) {
-                    self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+                if let Some(status) = self
+                    .plugins
+                    .exec_command(&mut self.env, &command_name, &args)
+                {
+                    self.plugins
+                        .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
                     self.env.exec.last_exit_status = status;
                     return Ok(status);
                 }
@@ -258,9 +289,13 @@ impl Executor {
                     e
                 })?;
                 let status = self.exec_external_with_redirects(
-                    &command_name, &args, &env_vars, &cmd.redirects,
+                    &command_name,
+                    &args,
+                    &env_vars,
+                    &cmd.redirects,
                 );
-                self.plugins.call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+                self.plugins
+                    .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
                 self.env.exec.last_exit_status = status;
                 Ok(status)
             }
@@ -268,7 +303,10 @@ impl Executor {
     }
 
     /// Merge exported shell variables with command-specific assignments.
-    pub(crate) fn build_env_vars(&mut self, assignments: &[Assignment]) -> crate::error::Result<Vec<(String, String)>> {
+    pub(crate) fn build_env_vars(
+        &mut self,
+        assignments: &[Assignment],
+    ) -> crate::error::Result<Vec<(String, String)>> {
         let mut vars = self.env.vars.environ().to_vec();
         for assign in assignments {
             let value = match assign.value.as_ref() {
@@ -348,10 +386,9 @@ impl Executor {
                 // state and deadlocks — the lock holder thread does not exist
                 // in the child.
                 for (k, v) in env_vars {
-                    if let (Ok(c_key), Ok(c_val)) = (
-                        CString::new(k.as_str()),
-                        CString::new(v.as_str()),
-                    ) {
+                    if let (Ok(c_key), Ok(c_val)) =
+                        (CString::new(k.as_str()), CString::new(v.as_str()))
+                    {
                         unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
                     }
                 }
@@ -384,12 +421,11 @@ impl Executor {
                         .chain(args.iter().map(|s| s.as_str()))
                         .collect::<Vec<_>>()
                         .join(" ");
-                    let job_id = self.env.process.jobs.add_job(
-                        child,
-                        vec![child],
-                        full_cmd,
-                        true,
-                    );
+                    let job_id = self
+                        .env
+                        .process
+                        .jobs
+                        .add_job(child, vec![child], full_cmd, true);
 
                     // Hand terminal to the child's process group.
                     jobs::give_terminal(child).ok();
@@ -445,7 +481,7 @@ impl Executor {
     /// - Brief (`-v`) / Verbose (`-V`) → print and return exit status
     /// - Execute (`-p` or no flag) → handled in later tasks (returns 1 for now)
     pub(crate) fn builtin_command(&mut self, args: &[String]) -> i32 {
-        use crate::builtin::command::{parse_flags, render_brief, render_verbose, Verbosity};
+        use crate::builtin::command::{Verbosity, parse_flags, render_brief, render_verbose};
 
         let parsed = match parse_flags(args) {
             Ok(p) => p,
@@ -488,13 +524,9 @@ impl Executor {
     /// (ignoring $PATH entirely) and exec it. Builtins are still honored
     /// for the name: POSIX says `command -p` runs the named utility in
     /// preference over functions, but builtins are part of the utility set.
-    pub(crate) fn exec_command_with_default_path(
-        &mut self,
-        name: &str,
-        args: &[String],
-    ) -> i32 {
-        use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
+    pub(crate) fn exec_command_with_default_path(&mut self, name: &str, args: &[String]) -> i32 {
         use crate::builtin::special::exec_special_builtin;
+        use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
         use crate::env::default_path::default_path;
 
         // If `name` is a builtin, run the builtin (POSIX: command -p still
@@ -514,7 +546,7 @@ impl Executor {
             BuiltinKind::NotBuiltin => {}
         }
 
-        use crate::exec::command::{lookup_in_path, PathLookup};
+        use crate::exec::command::{PathLookup, lookup_in_path};
 
         let dp = default_path(&self.env).to_string();
         match lookup_in_path(name, &dp) {
@@ -534,13 +566,9 @@ impl Executor {
     /// bypassing shell functions. Aliases are already handled (they're
     /// expanded at parse time, so `command` arrived here only if the
     /// parser saw `command` itself, not the expanded alias).
-    pub(crate) fn exec_command_skip_functions(
-        &mut self,
-        name: &str,
-        args: &[String],
-    ) -> i32 {
-        use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
+    pub(crate) fn exec_command_skip_functions(&mut self, name: &str, args: &[String]) -> i32 {
         use crate::builtin::special::exec_special_builtin;
+        use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
 
         // Builtins take precedence over external; functions are deliberately
         // skipped.
@@ -559,9 +587,14 @@ impl Executor {
         }
 
         // External: resolve via $PATH (not the POSIX default path).
-        use crate::exec::command::{lookup_in_path, PathLookup};
+        use crate::exec::command::{PathLookup, lookup_in_path};
 
-        let path_var = self.env.vars.get("PATH").map(|s| s.to_string()).unwrap_or_default();
+        let path_var = self
+            .env
+            .vars
+            .get("PATH")
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         match lookup_in_path(name, &path_var) {
             PathLookup::Executable(p) => exec_external_absolute(&p, name, args, &mut self.env),
             PathLookup::NotExecutable(p) => {
@@ -658,9 +691,7 @@ fn param_has_command_sub(p: &ParamExpr) -> bool {
         ParamExpr::Default { word, .. }
         | ParamExpr::Assign { word, .. }
         | ParamExpr::Error { word, .. }
-        | ParamExpr::Alt { word, .. } => {
-            word.as_ref().is_some_and(word_has_command_sub)
-        }
+        | ParamExpr::Alt { word, .. } => word.as_ref().is_some_and(word_has_command_sub),
         ParamExpr::StripShortSuffix(_, w)
         | ParamExpr::StripLongSuffix(_, w)
         | ParamExpr::StripShortPrefix(_, w)

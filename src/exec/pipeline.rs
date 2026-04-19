@@ -1,9 +1,9 @@
 use std::os::unix::io::RawFd;
 
-use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::{fork, setpgid, ForkResult, Pid};
+use nix::sys::wait::{WaitStatus, waitpid};
+use nix::unistd::{ForkResult, Pid, fork, setpgid};
 
-use crate::error::{ShellError, RuntimeErrorKind};
+use crate::error::{RuntimeErrorKind, ShellError};
 use crate::parser::ast::Pipeline;
 use crate::signal;
 
@@ -17,7 +17,10 @@ impl Executor {
         } else {
             match self.exec_multi_pipeline(pipeline) {
                 Ok(s) => s,
-                Err(e) => { eprintln!("{}", e); e.exit_code() }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    e.exit_code()
+                }
             }
         };
 
@@ -44,7 +47,10 @@ impl Executor {
                 Ok(fds) => pipes.push(fds),
                 Err(e) => {
                     close_all_pipes(&pipes);
-                    return Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("pipe: {}", e)));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::IoError,
+                        format!("pipe: {}", e),
+                    ));
                 }
             }
         }
@@ -56,7 +62,10 @@ impl Executor {
             match unsafe { fork() } {
                 Err(e) => {
                     close_all_pipes(&pipes);
-                    return Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("fork: {}", e)));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::IoError,
+                        format!("fork: {}", e),
+                    ));
                 }
                 Ok(ForkResult::Child) => {
                     // Set process group
@@ -111,7 +120,11 @@ impl Executor {
 
         if self.env.mode.options.monitor {
             let cmd_str = "(pipeline)".to_string();
-            let job_id = self.env.process.jobs.add_job(pgid, children.clone(), cmd_str, true);
+            let job_id = self
+                .env
+                .process
+                .jobs
+                .add_job(pgid, children.clone(), cmd_str, true);
             crate::env::jobs::give_terminal(pgid).ok();
 
             let result = self.wait_for_foreground_job(job_id);
@@ -127,7 +140,12 @@ impl Executor {
                         ordered[idx] = *code;
                     }
                 }
-                Ok(ordered.iter().rev().find(|&&s| s != 0).copied().unwrap_or(0))
+                Ok(ordered
+                    .iter()
+                    .rev()
+                    .find(|&&s| s != 0)
+                    .copied()
+                    .unwrap_or(0))
             } else {
                 Ok(result.last_status)
             }
@@ -180,6 +198,9 @@ fn wait_for_child(child: Pid) -> Result<i32, ShellError> {
         Ok(WaitStatus::Exited(_, code)) => Ok(code),
         Ok(WaitStatus::Signaled(_, sig, _)) => Ok(128 + sig as i32),
         Ok(_) => Ok(0),
-        Err(e) => Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("waitpid: {}", e))),
+        Err(e) => Err(ShellError::runtime(
+            RuntimeErrorKind::IoError,
+            format!("waitpid: {}", e),
+        )),
     }
 }

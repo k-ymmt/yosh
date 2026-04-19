@@ -83,7 +83,8 @@ impl TrapStore {
         if matches!(self.exit_trap, Some(TrapAction::Command(_))) {
             self.exit_trap = None;
         }
-        self.signal_traps.retain(|_, action| matches!(action, TrapAction::Ignore));
+        self.signal_traps
+            .retain(|_, action| matches!(action, TrapAction::Ignore));
     }
 
     /// Reset traps for command substitution context.
@@ -125,8 +126,8 @@ impl TrapStore {
         if let Some(action) = exit_trap {
             match action {
                 TrapAction::Command(cmd) => println!("trap -- '{}' EXIT", cmd),
-                TrapAction::Ignore       => println!("trap -- '' EXIT"),
-                TrapAction::Default      => {}
+                TrapAction::Ignore => println!("trap -- '' EXIT"),
+                TrapAction::Default => {}
             }
         }
         // Signal traps sorted by number
@@ -137,8 +138,8 @@ impl TrapStore {
                 let name = Self::signal_number_to_name(num);
                 match action {
                     TrapAction::Command(cmd) => println!("trap -- '{}' SIG{}", cmd, name),
-                    TrapAction::Ignore       => println!("trap -- '' SIG{}", name),
-                    TrapAction::Default      => {}
+                    TrapAction::Ignore => println!("trap -- '' SIG{}", name),
+                    TrapAction::Default => {}
                 }
             }
         }
@@ -159,8 +160,13 @@ mod tests {
     #[test]
     fn test_trap_store_set_exit() {
         let mut store = TrapStore::default();
-        store.set_trap("EXIT", TrapAction::Command("echo bye".to_string())).unwrap();
-        assert!(matches!(store.get_trap("EXIT"), Some(TrapAction::Command(_))));
+        store
+            .set_trap("EXIT", TrapAction::Command("echo bye".to_string()))
+            .unwrap();
+        assert!(matches!(
+            store.get_trap("EXIT"),
+            Some(TrapAction::Command(_))
+        ));
     }
 
     #[test]
@@ -187,7 +193,9 @@ mod tests {
     #[test]
     fn test_trap_store_remove() {
         let mut store = TrapStore::default();
-        store.set_trap("EXIT", TrapAction::Command("echo bye".to_string())).unwrap();
+        store
+            .set_trap("EXIT", TrapAction::Command("echo bye".to_string()))
+            .unwrap();
         store.remove_trap("EXIT");
         assert!(store.exit_trap.is_none());
     }
@@ -195,9 +203,13 @@ mod tests {
     #[test]
     fn test_trap_store_reset_non_ignored() {
         let mut store = TrapStore::default();
-        store.set_trap("INT", TrapAction::Command("echo caught".to_string())).unwrap();
+        store
+            .set_trap("INT", TrapAction::Command("echo caught".to_string()))
+            .unwrap();
         store.set_trap("HUP", TrapAction::Ignore).unwrap();
-        store.set_trap("TERM", TrapAction::Command("echo term".to_string())).unwrap();
+        store
+            .set_trap("TERM", TrapAction::Command("echo term".to_string()))
+            .unwrap();
         store.reset_non_ignored();
         assert!(store.signal_traps.get(&2).is_none());
         assert_eq!(store.signal_traps.get(&1), Some(&TrapAction::Ignore));
@@ -207,8 +219,13 @@ mod tests {
     #[test]
     fn test_trap_store_get_signal_trap() {
         let mut store = TrapStore::default();
-        store.set_trap("INT", TrapAction::Command("echo caught".to_string())).unwrap();
-        assert!(matches!(store.get_signal_trap(2), Some(TrapAction::Command(_))));
+        store
+            .set_trap("INT", TrapAction::Command("echo caught".to_string()))
+            .unwrap();
+        assert!(matches!(
+            store.get_signal_trap(2),
+            Some(TrapAction::Command(_))
+        ));
         assert!(store.get_signal_trap(15).is_none());
     }
 }

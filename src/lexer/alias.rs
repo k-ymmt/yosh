@@ -1,6 +1,6 @@
-use crate::error;
-use super::token::{SpannedToken, Token};
 use super::Lexer;
+use super::token::{SpannedToken, Token};
+use crate::error;
 
 impl Lexer {
     pub fn next_token(&mut self) -> error::Result<SpannedToken> {
@@ -27,8 +27,7 @@ impl Lexer {
 
             // Check if alias value ends with whitespace —
             // if so, the next word after the expansion should also be alias-checked
-            let trailing_space = alias_value.ends_with(' ')
-                || alias_value.ends_with('\t');
+            let trailing_space = alias_value.ends_with(' ') || alias_value.ends_with('\t');
 
             // Tokenize the alias value into a separate token stream
             let mut alias_lexer = Lexer::new(&alias_value);
@@ -79,8 +78,14 @@ impl Lexer {
 
     pub(crate) fn update_check_alias_after(&mut self, token: &Token) {
         match token {
-            Token::Semi | Token::Newline | Token::Pipe | Token::AndIf | Token::OrIf
-            | Token::LParen | Token::Amp | Token::DSemi => {
+            Token::Semi
+            | Token::Newline
+            | Token::Pipe
+            | Token::AndIf
+            | Token::OrIf
+            | Token::LParen
+            | Token::Amp
+            | Token::DSemi => {
                 self.check_alias = true;
             }
             Token::Word(_) => {

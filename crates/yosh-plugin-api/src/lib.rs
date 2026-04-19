@@ -48,14 +48,18 @@ pub struct HostApi {
 
     // Variable operations
     pub get_var: unsafe extern "C" fn(ctx: *mut c_void, name: *const c_char) -> *const c_char,
-    pub set_var: unsafe extern "C" fn(ctx: *mut c_void, name: *const c_char, value: *const c_char) -> i32,
-    pub export_var: unsafe extern "C" fn(ctx: *mut c_void, name: *const c_char, value: *const c_char) -> i32,
+    pub set_var:
+        unsafe extern "C" fn(ctx: *mut c_void, name: *const c_char, value: *const c_char) -> i32,
+    pub export_var:
+        unsafe extern "C" fn(ctx: *mut c_void, name: *const c_char, value: *const c_char) -> i32,
 
     // Environment
     pub get_cwd: unsafe extern "C" fn(ctx: *mut c_void) -> *const c_char,
     pub set_cwd: unsafe extern "C" fn(ctx: *mut c_void, path: *const c_char) -> i32,
 
     // Output
-    pub write_stdout: unsafe extern "C" fn(ctx: *mut c_void, data: *const c_char, len: usize) -> i32,
-    pub write_stderr: unsafe extern "C" fn(ctx: *mut c_void, data: *const c_char, len: usize) -> i32,
+    pub write_stdout:
+        unsafe extern "C" fn(ctx: *mut c_void, data: *const c_char, len: usize) -> i32,
+    pub write_stderr:
+        unsafe extern "C" fn(ctx: *mut c_void, data: *const c_char, len: usize) -> i32,
 }

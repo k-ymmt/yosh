@@ -133,7 +133,10 @@ mod tests {
         let prompt = "\x1b[34m~/proj\x1b[0m \x1b[32m main\x1b[0m\n\x1b[1;35m❯\x1b[0m ";
         let info = PromptInfo::from_prompt(prompt);
         assert_eq!(info.upper_lines.len(), 1);
-        assert_eq!(info.upper_lines[0], "\x1b[34m~/proj\x1b[0m \x1b[32m main\x1b[0m");
+        assert_eq!(
+            info.upper_lines[0],
+            "\x1b[34m~/proj\x1b[0m \x1b[32m main\x1b[0m"
+        );
         assert_eq!(info.last_line, "\x1b[1;35m❯\x1b[0m ");
         assert_eq!(info.last_line_width, 2);
     }

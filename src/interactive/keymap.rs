@@ -60,7 +60,11 @@ impl Keymap {
             (KeyCode::Char('b'), true, false) => EditAction::MoveBackward,
             (KeyCode::Char('c'), true, false) => EditAction::Interrupt,
             (KeyCode::Char('d'), true, false) => {
-                if state.is_empty { EditAction::Eof } else { EditAction::DeleteForward }
+                if state.is_empty {
+                    EditAction::Eof
+                } else {
+                    EditAction::DeleteForward
+                }
             }
             (KeyCode::Char('e'), true, false) => EditAction::MoveToEnd,
             (KeyCode::Char('f'), true, false) => {
@@ -99,7 +103,8 @@ impl Keymap {
             (KeyCode::Char('t'), false, true) => EditAction::TransposeWords,
             (KeyCode::Char('u'), false, true) => EditAction::UpcaseWord,
             (KeyCode::Char('y'), false, true) => {
-                if state.last_action == EditAction::Yank || state.last_action == EditAction::YankPop {
+                if state.last_action == EditAction::Yank || state.last_action == EditAction::YankPop
+                {
                     EditAction::YankPop
                 } else {
                     EditAction::Noop

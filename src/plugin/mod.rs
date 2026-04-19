@@ -30,7 +30,9 @@ pub struct PluginManager {
 
 impl PluginManager {
     pub fn new() -> Self {
-        PluginManager { plugins: Vec::new() }
+        PluginManager {
+            plugins: Vec::new(),
+        }
     }
 
     /// Load plugins listed in the config file. Errors are printed to stderr
@@ -77,9 +79,7 @@ impl PluginManager {
         let (name, requested_capabilities) = unsafe {
             let decl_fn: libloading::Symbol<extern "C" fn() -> *const PluginDecl> = library
                 .get(b"yosh_plugin_decl")
-                .map_err(|_| {
-                    format!("{}: not a valid yosh plugin", path.display())
-                })?;
+                .map_err(|_| format!("{}: not a valid yosh plugin", path.display()))?;
             let decl = &*decl_fn();
 
             if decl.api_version != YOSH_PLUGIN_API_VERSION {
@@ -114,12 +114,11 @@ impl PluginManager {
             let mut api = build_host_api(effective_capabilities);
             api.ctx = &mut ctx as *mut HostContext as *mut c_void;
 
-            let init_fn: libloading::Symbol<unsafe extern "C" fn(*const HostApi) -> i32> =
-                unsafe {
-                    library.get(b"yosh_plugin_init").map_err(|_| {
-                        format!("{}: missing yosh_plugin_init", path.display())
-                    })?
-                };
+            let init_fn: libloading::Symbol<unsafe extern "C" fn(*const HostApi) -> i32> = unsafe {
+                library
+                    .get(b"yosh_plugin_init")
+                    .map_err(|_| format!("{}: missing yosh_plugin_init", path.display()))?
+            };
 
             let status = unsafe { init_fn(&api) };
             if status != 0 {
@@ -151,14 +150,22 @@ impl PluginManager {
         };
 
         // 6. Check for optional hook functions
-        let has_pre_exec =
-            unsafe { library.get::<*const ()>(b"yosh_plugin_hook_pre_exec").is_ok() };
-        let has_post_exec =
-            unsafe { library.get::<*const ()>(b"yosh_plugin_hook_post_exec").is_ok() };
-        let has_on_cd =
-            unsafe { library.get::<*const ()>(b"yosh_plugin_hook_on_cd").is_ok() };
-        let has_pre_prompt =
-            unsafe { library.get::<*const ()>(b"yosh_plugin_hook_pre_prompt").is_ok() };
+        let has_pre_exec = unsafe {
+            library
+                .get::<*const ()>(b"yosh_plugin_hook_pre_exec")
+                .is_ok()
+        };
+        let has_post_exec = unsafe {
+            library
+                .get::<*const ()>(b"yosh_plugin_hook_post_exec")
+                .is_ok()
+        };
+        let has_on_cd = unsafe { library.get::<*const ()>(b"yosh_plugin_hook_on_cd").is_ok() };
+        let has_pre_prompt = unsafe {
+            library
+                .get::<*const ()>(b"yosh_plugin_hook_pre_prompt")
+                .is_ok()
+        };
 
         self.plugins.push(LoadedPlugin {
             name,
@@ -199,13 +206,11 @@ impl PluginManager {
 
     /// Execute a plugin command. Returns Some(exit_status) if a plugin handled
     /// the command, or None if no plugin provides this command.
-    pub fn exec_command(
-        &self,
-        env: &mut ShellEnv,
-        name: &str,
-        args: &[String],
-    ) -> Option<i32> {
-        let plugin = self.plugins.iter().find(|p| p.commands.iter().any(|c| c == name))?;
+    pub fn exec_command(&self, env: &mut ShellEnv, name: &str, args: &[String]) -> Option<i32> {
+        let plugin = self
+            .plugins
+            .iter()
+            .find(|p| p.commands.iter().any(|c| c == name))?;
 
         let mut ctx = HostContext::new(env, &plugin.name);
         let mut api = build_host_api(plugin.capabilities);
@@ -216,12 +221,16 @@ impl PluginManager {
             .iter()
             .filter_map(|a| CString::new(a.as_str()).ok())
             .collect();
-        let c_arg_ptrs: Vec<*const c_char> =
-            c_args.iter().map(|s| s.as_ptr()).collect();
+        let c_arg_ptrs: Vec<*const c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
 
         let status = unsafe {
             let exec_fn: libloading::Symbol<
-                unsafe extern "C" fn(*const HostApi, *const c_char, i32, *const *const c_char) -> i32,
+                unsafe extern "C" fn(
+                    *const HostApi,
+                    *const c_char,
+                    i32,
+                    *const *const c_char,
+                ) -> i32,
             > = plugin.library.get(b"yosh_plugin_exec").ok()?;
             exec_fn(
                 &api,
@@ -251,9 +260,11 @@ impl PluginManager {
             let mut api = build_host_api(plugin.capabilities);
             api.ctx = &mut ctx as *mut HostContext as *mut c_void;
             unsafe {
-                if let Ok(hook_fn) = plugin.library.get::<
-                    unsafe extern "C" fn(*const HostApi, *const c_char),
-                >(b"yosh_plugin_hook_pre_exec")
+                if let Ok(hook_fn) = plugin
+                    .library
+                    .get::<unsafe extern "C" fn(*const HostApi, *const c_char)>(
+                        b"yosh_plugin_hook_pre_exec",
+                    )
                 {
                     hook_fn(&api, c_cmd.as_ptr());
                 }
@@ -278,9 +289,12 @@ impl PluginManager {
             let mut api = build_host_api(plugin.capabilities);
             api.ctx = &mut ctx as *mut HostContext as *mut c_void;
             unsafe {
-                if let Ok(hook_fn) = plugin.library.get::<
-                    unsafe extern "C" fn(*const HostApi, *const c_char, i32),
-                >(b"yosh_plugin_hook_post_exec")
+                if let Ok(hook_fn) =
+                    plugin
+                        .library
+                        .get::<unsafe extern "C" fn(*const HostApi, *const c_char, i32)>(
+                            b"yosh_plugin_hook_post_exec",
+                        )
                 {
                     hook_fn(&api, c_cmd.as_ptr(), exit_code);
                 }
@@ -309,9 +323,12 @@ impl PluginManager {
             let mut api = build_host_api(plugin.capabilities);
             api.ctx = &mut ctx as *mut HostContext as *mut c_void;
             unsafe {
-                if let Ok(hook_fn) = plugin.library.get::<
-                    unsafe extern "C" fn(*const HostApi, *const c_char, *const c_char),
-                >(b"yosh_plugin_hook_on_cd")
+                if let Ok(hook_fn) =
+                    plugin
+                        .library
+                        .get::<unsafe extern "C" fn(*const HostApi, *const c_char, *const c_char)>(
+                            b"yosh_plugin_hook_on_cd",
+                        )
                 {
                     hook_fn(&api, c_old.as_ptr(), c_new.as_ptr());
                 }
@@ -332,9 +349,9 @@ impl PluginManager {
             let mut api = build_host_api(plugin.capabilities);
             api.ctx = &mut ctx as *mut HostContext as *mut c_void;
             unsafe {
-                if let Ok(hook_fn) = plugin.library.get::<
-                    unsafe extern "C" fn(*const HostApi),
-                >(b"yosh_plugin_hook_pre_prompt")
+                if let Ok(hook_fn) = plugin
+                    .library
+                    .get::<unsafe extern "C" fn(*const HostApi)>(b"yosh_plugin_hook_pre_prompt")
                 {
                     hook_fn(&api);
                 }
@@ -346,8 +363,9 @@ impl PluginManager {
     pub fn unload_all(&mut self) {
         for plugin in &self.plugins {
             unsafe {
-                if let Ok(destroy_fn) =
-                    plugin.library.get::<unsafe extern "C" fn()>(b"yosh_plugin_destroy")
+                if let Ok(destroy_fn) = plugin
+                    .library
+                    .get::<unsafe extern "C" fn()>(b"yosh_plugin_destroy")
                 {
                     destroy_fn();
                 }
@@ -358,7 +376,9 @@ impl PluginManager {
 
     /// Check if any plugin provides the given command.
     pub fn has_command(&self, name: &str) -> bool {
-        self.plugins.iter().any(|p| p.commands.iter().any(|c| c == name))
+        self.plugins
+            .iter()
+            .any(|p| p.commands.iter().any(|c| c == name))
     }
 }
 
@@ -485,11 +505,7 @@ unsafe extern "C" fn host_set_cwd(_ctx: *mut c_void, path: *const c_char) -> i32
     }
 }
 
-unsafe extern "C" fn host_write_stdout(
-    _ctx: *mut c_void,
-    data: *const c_char,
-    len: usize,
-) -> i32 {
+unsafe extern "C" fn host_write_stdout(_ctx: *mut c_void, data: *const c_char, len: usize) -> i32 {
     unsafe {
         let slice = std::slice::from_raw_parts(data as *const u8, len);
         match std::io::stdout().write_all(slice) {
@@ -499,11 +515,7 @@ unsafe extern "C" fn host_write_stdout(
     }
 }
 
-unsafe extern "C" fn host_write_stderr(
-    _ctx: *mut c_void,
-    data: *const c_char,
-    len: usize,
-) -> i32 {
+unsafe extern "C" fn host_write_stderr(_ctx: *mut c_void, data: *const c_char, len: usize) -> i32 {
     unsafe {
         let slice = std::slice::from_raw_parts(data as *const u8, len);
         match std::io::stderr().write_all(slice) {
@@ -578,11 +590,7 @@ unsafe extern "C" fn deny_set_cwd(ctx: *mut c_void, _path: *const c_char) -> i32
     -1
 }
 
-unsafe extern "C" fn deny_write_stdout(
-    ctx: *mut c_void,
-    _data: *const c_char,
-    _len: usize,
-) -> i32 {
+unsafe extern "C" fn deny_write_stdout(ctx: *mut c_void, _data: *const c_char, _len: usize) -> i32 {
     unsafe {
         let host = &*(ctx as *mut HostContext);
         eprintln!(
@@ -593,11 +601,7 @@ unsafe extern "C" fn deny_write_stdout(
     -1
 }
 
-unsafe extern "C" fn deny_write_stderr(
-    ctx: *mut c_void,
-    _data: *const c_char,
-    _len: usize,
-) -> i32 {
+unsafe extern "C" fn deny_write_stderr(ctx: *mut c_void, _data: *const c_char, _len: usize) -> i32 {
     unsafe {
         let host = &*(ctx as *mut HostContext);
         eprintln!(
@@ -617,12 +621,40 @@ fn build_host_api(capabilities: u32) -> HostApi {
 
     HostApi {
         ctx: std::ptr::null_mut(),
-        get_var: if has(CAP_VARIABLES_READ) { host_get_var } else { deny_get_var },
-        set_var: if has(CAP_VARIABLES_WRITE) { host_set_var } else { deny_set_var },
-        export_var: if has(CAP_VARIABLES_WRITE) { host_export_var } else { deny_export_var },
-        get_cwd: if has(CAP_FILESYSTEM) { host_get_cwd } else { deny_get_cwd },
-        set_cwd: if has(CAP_FILESYSTEM) { host_set_cwd } else { deny_set_cwd },
-        write_stdout: if has(CAP_IO) { host_write_stdout } else { deny_write_stdout },
-        write_stderr: if has(CAP_IO) { host_write_stderr } else { deny_write_stderr },
+        get_var: if has(CAP_VARIABLES_READ) {
+            host_get_var
+        } else {
+            deny_get_var
+        },
+        set_var: if has(CAP_VARIABLES_WRITE) {
+            host_set_var
+        } else {
+            deny_set_var
+        },
+        export_var: if has(CAP_VARIABLES_WRITE) {
+            host_export_var
+        } else {
+            deny_export_var
+        },
+        get_cwd: if has(CAP_FILESYSTEM) {
+            host_get_cwd
+        } else {
+            deny_get_cwd
+        },
+        set_cwd: if has(CAP_FILESYSTEM) {
+            host_set_cwd
+        } else {
+            deny_set_cwd
+        },
+        write_stdout: if has(CAP_IO) {
+            host_write_stdout
+        } else {
+            deny_write_stdout
+        },
+        write_stderr: if has(CAP_IO) {
+            host_write_stderr
+        } else {
+            deny_write_stderr
+        },
     }
 }

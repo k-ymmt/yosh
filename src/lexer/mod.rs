@@ -1,8 +1,8 @@
-pub mod token;
-pub mod reserved;
 mod alias;
 mod heredoc;
+pub mod reserved;
 mod scanner;
+pub mod token;
 mod word;
 
 use std::collections::{HashMap, HashSet};
@@ -102,8 +102,8 @@ impl Lexer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::token::Token;
+    use super::*;
     use crate::error::ParseErrorKind;
     use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 
@@ -136,7 +136,13 @@ mod tests {
     fn test_single_char_operators() {
         assert_eq!(
             tokenize("| ; & ( )"),
-            vec![Token::Pipe, Token::Semi, Token::Amp, Token::LParen, Token::RParen]
+            vec![
+                Token::Pipe,
+                Token::Semi,
+                Token::Amp,
+                Token::LParen,
+                Token::RParen
+            ]
         );
     }
 
@@ -298,7 +304,10 @@ mod tests {
         let mut lexer = Lexer::new("echo 'hello");
         let _ = lexer.next_token().unwrap();
         let err = lexer.next_token().unwrap_err();
-        assert_eq!(err.kind, crate::error::ShellErrorKind::Parse(ParseErrorKind::UnterminatedSingleQuote));
+        assert_eq!(
+            err.kind,
+            crate::error::ShellErrorKind::Parse(ParseErrorKind::UnterminatedSingleQuote)
+        );
     }
 
     #[test]
@@ -306,7 +315,10 @@ mod tests {
         let mut lexer = Lexer::new("echo \"hello");
         let _ = lexer.next_token().unwrap();
         let err = lexer.next_token().unwrap_err();
-        assert_eq!(err.kind, crate::error::ShellErrorKind::Parse(ParseErrorKind::UnterminatedDoubleQuote));
+        assert_eq!(
+            err.kind,
+            crate::error::ShellErrorKind::Parse(ParseErrorKind::UnterminatedDoubleQuote)
+        );
     }
 
     // ---- Task 6 tests ----
@@ -477,9 +489,7 @@ mod tests {
         assert_eq!(
             tokens,
             vec![Token::Word(Word {
-                parts: vec![WordPart::ArithSub(
-                    "$(echo \"3)\") + 1".to_string()
-                )]
+                parts: vec![WordPart::ArithSub("$(echo \"3)\") + 1".to_string())]
             })]
         );
     }
@@ -490,9 +500,7 @@ mod tests {
         assert_eq!(
             tokens,
             vec![Token::Word(Word {
-                parts: vec![WordPart::ArithSub(
-                    "$(echo '3)') + 1".to_string()
-                )]
+                parts: vec![WordPart::ArithSub("$(echo '3)') + 1".to_string())]
             })]
         );
     }

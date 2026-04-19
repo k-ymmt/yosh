@@ -166,7 +166,9 @@ impl VarStore {
                     },
                 );
             } else {
-                self.scopes[0].vars.insert(name.to_string(), Variable::new(value));
+                self.scopes[0]
+                    .vars
+                    .insert(name.to_string(), Variable::new(value));
             }
             return Ok(());
         }
@@ -191,7 +193,9 @@ impl VarStore {
         }
 
         // Not found — create in global scope.
-        self.scopes[0].vars.insert(name.to_string(), Variable::new(value));
+        self.scopes[0]
+            .vars
+            .insert(name.to_string(), Variable::new(value));
         Ok(())
     }
 

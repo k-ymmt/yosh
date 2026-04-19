@@ -1,13 +1,15 @@
-use std::io;
 use crossterm::event::{Event, KeyEvent};
+use std::io;
 use unicode_width::UnicodeWidthChar;
 
-use super::completion::{self, CompletionContext, CompletionUI, is_command_position, extract_completion_word};
 use super::command_completion::CommandCompletionContext;
+use super::completion::{
+    self, CompletionContext, CompletionUI, extract_completion_word, is_command_position,
+};
 use super::display_width::display_width;
 use super::edit_action::EditAction;
 use super::fuzzy_search::FuzzySearchUI;
-use super::highlight::{HighlightScanner, HighlightStyle, ColorSpan, CheckerEnv, apply_style};
+use super::highlight::{CheckerEnv, ColorSpan, HighlightScanner, HighlightStyle, apply_style};
 use super::history::History;
 use super::keymap::{BufferState, Keymap};
 use super::kill_ring::KillRing;
@@ -222,7 +224,9 @@ impl LineEditor {
     /// Transpose the two words around the cursor (Alt+T).
     pub fn transpose_words(&mut self) {
         let len = self.buf.len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
 
         let mut p = self.pos;
         if p == len || !Self::is_word_char(self.buf[p]) {
@@ -230,12 +234,16 @@ impl LineEditor {
                 p -= 1;
             }
         }
-        if p == 0 { return; }
+        if p == 0 {
+            return;
+        }
 
         // Find end of word2
         let w2e = if self.pos < len && Self::is_word_char(self.buf[self.pos]) {
             let mut e = self.pos;
-            while e < len && Self::is_word_char(self.buf[e]) { e += 1; }
+            while e < len && Self::is_word_char(self.buf[e]) {
+                e += 1;
+            }
             e
         } else {
             p
@@ -246,14 +254,18 @@ impl LineEditor {
         while w2s > 0 && Self::is_word_char(self.buf[w2s - 1]) {
             w2s -= 1;
         }
-        if w2s == 0 { return; }
+        if w2s == 0 {
+            return;
+        }
 
         // Find end of word1
         let mut w1e = w2s;
         while w1e > 0 && !Self::is_word_char(self.buf[w1e - 1]) {
             w1e -= 1;
         }
-        if w1e == 0 { return; }
+        if w1e == 0 {
+            return;
+        }
 
         // Find start of word1
         let mut w1s = w1e;
@@ -281,7 +293,10 @@ impl LineEditor {
             self.pos += 1;
         }
         while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
-            self.buf[self.pos] = self.buf[self.pos].to_uppercase().next().unwrap_or(self.buf[self.pos]);
+            self.buf[self.pos] = self.buf[self.pos]
+                .to_uppercase()
+                .next()
+                .unwrap_or(self.buf[self.pos]);
             self.pos += 1;
         }
     }
@@ -293,7 +308,10 @@ impl LineEditor {
             self.pos += 1;
         }
         while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
-            self.buf[self.pos] = self.buf[self.pos].to_lowercase().next().unwrap_or(self.buf[self.pos]);
+            self.buf[self.pos] = self.buf[self.pos]
+                .to_lowercase()
+                .next()
+                .unwrap_or(self.buf[self.pos]);
             self.pos += 1;
         }
     }
@@ -307,10 +325,16 @@ impl LineEditor {
         let mut first = true;
         while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
             if first {
-                self.buf[self.pos] = self.buf[self.pos].to_uppercase().next().unwrap_or(self.buf[self.pos]);
+                self.buf[self.pos] = self.buf[self.pos]
+                    .to_uppercase()
+                    .next()
+                    .unwrap_or(self.buf[self.pos]);
                 first = false;
             } else {
-                self.buf[self.pos] = self.buf[self.pos].to_lowercase().next().unwrap_or(self.buf[self.pos]);
+                self.buf[self.pos] = self.buf[self.pos]
+                    .to_lowercase()
+                    .next()
+                    .unwrap_or(self.buf[self.pos]);
             }
             self.pos += 1;
         }
@@ -412,7 +436,13 @@ impl LineEditor {
     /// editing keys.  Returns `Ok(Some(line))` on Enter, `Ok(None)` on
     /// Ctrl-D with an empty buffer (EOF), or `Ok(Some(""))` on Ctrl-C.
     #[allow(dead_code)] // Used by tests; production code uses read_line_with_completion
-    pub fn read_line<T: Terminal>(&mut self, prompt: &str, upper_lines: &[String], history: &mut History, term: &mut T) -> io::Result<Option<String>> {
+    pub fn read_line<T: Terminal>(
+        &mut self,
+        prompt: &str,
+        upper_lines: &[String],
+        history: &mut History,
+        term: &mut T,
+    ) -> io::Result<Option<String>> {
         self.clear();
         term.enable_raw_mode()?;
         let result = self.read_line_loop(prompt, upper_lines, history, term);
@@ -420,7 +450,13 @@ impl LineEditor {
         result
     }
 
-    fn read_line_loop<T: Terminal>(&mut self, prompt: &str, upper_lines: &[String], history: &mut History, term: &mut T) -> io::Result<Option<String>> {
+    fn read_line_loop<T: Terminal>(
+        &mut self,
+        prompt: &str,
+        upper_lines: &[String],
+        history: &mut History,
+        term: &mut T,
+    ) -> io::Result<Option<String>> {
         let prompt_width = display_width(prompt);
         loop {
             term.flush()?;
@@ -430,12 +466,17 @@ impl LineEditor {
                         KeyAction::Submit => {
                             history.reset_cursor();
                             if self.prev_total_rows > 0 {
-                                let buf_pos_width: usize = self.buf[..self.pos].iter()
+                                let buf_pos_width: usize = self.buf[..self.pos]
+                                    .iter()
                                     .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
                                     .sum();
                                 let (tw, _) = term.size().unwrap_or((80, 24));
                                 let tw = tw as usize;
-                                let cursor_row = if tw > 0 { (prompt_width + buf_pos_width) / tw } else { 0 };
+                                let cursor_row = if tw > 0 {
+                                    (prompt_width + buf_pos_width) / tw
+                                } else {
+                                    0
+                                };
                                 if self.prev_total_rows > cursor_row {
                                     term.move_down((self.prev_total_rows - cursor_row) as u16)?;
                                 }
@@ -451,12 +492,17 @@ impl LineEditor {
                         KeyAction::Interrupt => {
                             history.reset_cursor();
                             if self.prev_total_rows > 0 {
-                                let buf_pos_width: usize = self.buf[..self.pos].iter()
+                                let buf_pos_width: usize = self.buf[..self.pos]
+                                    .iter()
                                     .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
                                     .sum();
                                 let (tw, _) = term.size().unwrap_or((80, 24));
                                 let tw = tw as usize;
-                                let cursor_row = if tw > 0 { (prompt_width + buf_pos_width) / tw } else { 0 };
+                                let cursor_row = if tw > 0 {
+                                    (prompt_width + buf_pos_width) / tw
+                                } else {
+                                    0
+                                };
                                 if self.prev_total_rows > cursor_row {
                                     term.move_down((self.prev_total_rows - cursor_row) as u16)?;
                                 }
@@ -509,7 +555,14 @@ impl LineEditor {
 
     /// Redraw the current buffer on screen, positioning the cursor correctly.
     /// Handles input that wraps past the terminal width.
-    fn redraw<T: Terminal>(&mut self, term: &mut T, prompt: &str, prompt_width: usize, spans: &[ColorSpan], term_width: u16) -> io::Result<()> {
+    fn redraw<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        prompt_width: usize,
+        spans: &[ColorSpan],
+        term_width: u16,
+    ) -> io::Result<()> {
         let tw = term_width as usize;
         let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
 
@@ -541,7 +594,8 @@ impl LineEditor {
         } else {
             let mut current_style = HighlightStyle::Default;
             for (i, ch) in self.buf.iter().enumerate() {
-                let new_style = spans.iter()
+                let new_style = spans
+                    .iter()
                     .find(|sp| sp.start <= i && i < sp.end)
                     .map(|sp| sp.style)
                     .unwrap_or(HighlightStyle::Default);
@@ -567,7 +621,8 @@ impl LineEditor {
             term.set_dim(true)?;
             term.write_str(suggestion)?;
             term.set_dim(false)?;
-            suggestion_width = suggestion.chars()
+            suggestion_width = suggestion
+                .chars()
                 .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
                 .sum();
         } else {
@@ -575,7 +630,9 @@ impl LineEditor {
         }
 
         // Calculate total display width and rows
-        let buf_total_width: usize = self.buf.iter()
+        let buf_total_width: usize = self
+            .buf
+            .iter()
             .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
             .sum();
         let content_width = prompt_width + buf_total_width + suggestion_width;
@@ -587,12 +644,17 @@ impl LineEditor {
         self.prev_total_rows = total_rows;
 
         // Position cursor at self.pos
-        let buf_pos_width: usize = self.buf[..self.pos].iter()
+        let buf_pos_width: usize = self.buf[..self.pos]
+            .iter()
             .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
             .sum();
         let cursor_total = prompt_width + buf_pos_width;
         let cursor_row = if tw > 0 { cursor_total / tw } else { 0 };
-        let cursor_col = if tw > 0 { cursor_total % tw } else { cursor_total };
+        let cursor_col = if tw > 0 {
+            cursor_total % tw
+        } else {
+            cursor_total
+        };
 
         // Move from end-of-content row to cursor row
         let end_row = total_rows;
@@ -633,12 +695,19 @@ impl LineEditor {
                     self.undo.save(&self.buf, self.pos);
                 }
             }
-            EditAction::KillToEnd | EditAction::KillToStart
-            | EditAction::KillBackwardWord | EditAction::KillForwardWord
-            | EditAction::DeleteBackward | EditAction::DeleteForward
-            | EditAction::Yank | EditAction::YankPop
-            | EditAction::TransposeChars | EditAction::TransposeWords
-            | EditAction::UpcaseWord | EditAction::DowncaseWord | EditAction::CapitalizeWord => {
+            EditAction::KillToEnd
+            | EditAction::KillToStart
+            | EditAction::KillBackwardWord
+            | EditAction::KillForwardWord
+            | EditAction::DeleteBackward
+            | EditAction::DeleteForward
+            | EditAction::Yank
+            | EditAction::YankPop
+            | EditAction::TransposeChars
+            | EditAction::TransposeWords
+            | EditAction::UpcaseWord
+            | EditAction::DowncaseWord
+            | EditAction::CapitalizeWord => {
                 if !self.last_was_insert {
                     // Not transitioning from insert — save pre-op state directly
                     self.undo.save(&self.buf, self.pos);
@@ -679,11 +748,15 @@ impl LineEditor {
                 KeyAction::Continue
             }
             EditAction::MoveBackward => {
-                for _ in 0..count { self.move_cursor_left(); }
+                for _ in 0..count {
+                    self.move_cursor_left();
+                }
                 KeyAction::Continue
             }
             EditAction::MoveForward => {
-                for _ in 0..count { self.move_cursor_right(); }
+                for _ in 0..count {
+                    self.move_cursor_right();
+                }
                 KeyAction::Continue
             }
             EditAction::MoveToStart => {
@@ -695,19 +768,27 @@ impl LineEditor {
                 KeyAction::Continue
             }
             EditAction::MoveBackwardWord => {
-                for _ in 0..count { self.move_backward_word(); }
+                for _ in 0..count {
+                    self.move_backward_word();
+                }
                 KeyAction::Continue
             }
             EditAction::MoveForwardWord => {
-                for _ in 0..count { self.move_forward_word(); }
+                for _ in 0..count {
+                    self.move_forward_word();
+                }
                 KeyAction::Continue
             }
             EditAction::DeleteBackward => {
-                for _ in 0..count { self.backspace(); }
+                for _ in 0..count {
+                    self.backspace();
+                }
                 KeyAction::Continue
             }
             EditAction::DeleteForward => {
-                for _ in 0..count { self.delete(); }
+                for _ in 0..count {
+                    self.delete();
+                }
                 KeyAction::Continue
             }
             EditAction::KillToEnd => {
@@ -752,23 +833,33 @@ impl LineEditor {
                 KeyAction::Continue
             }
             EditAction::TransposeChars => {
-                for _ in 0..count { self.transpose_chars(); }
+                for _ in 0..count {
+                    self.transpose_chars();
+                }
                 KeyAction::Continue
             }
             EditAction::TransposeWords => {
-                for _ in 0..count { self.transpose_words(); }
+                for _ in 0..count {
+                    self.transpose_words();
+                }
                 KeyAction::Continue
             }
             EditAction::UpcaseWord => {
-                for _ in 0..count { self.upcase_word(); }
+                for _ in 0..count {
+                    self.upcase_word();
+                }
                 KeyAction::Continue
             }
             EditAction::DowncaseWord => {
-                for _ in 0..count { self.downcase_word(); }
+                for _ in 0..count {
+                    self.downcase_word();
+                }
                 KeyAction::Continue
             }
             EditAction::CapitalizeWord => {
-                for _ in 0..count { self.capitalize_word(); }
+                for _ in 0..count {
+                    self.capitalize_word();
+                }
                 KeyAction::Continue
             }
             EditAction::Undo => {
@@ -780,12 +871,8 @@ impl LineEditor {
                 }
                 KeyAction::Continue
             }
-            EditAction::ClearScreen => {
-                KeyAction::ClearScreen
-            }
-            EditAction::Cancel => {
-                KeyAction::Continue
-            }
+            EditAction::ClearScreen => KeyAction::ClearScreen,
+            EditAction::Cancel => KeyAction::Continue,
             EditAction::AcceptSuggestion => {
                 self.accept_full_suggestion();
                 KeyAction::Continue
@@ -794,9 +881,7 @@ impl LineEditor {
                 self.accept_word_suggestion();
                 KeyAction::Continue
             }
-            EditAction::SetNumericArg(_) => {
-                KeyAction::Continue
-            }
+            EditAction::SetNumericArg(_) => KeyAction::Continue,
             EditAction::Submit => KeyAction::Submit,
             EditAction::Eof => KeyAction::Eof,
             EditAction::Interrupt => KeyAction::Interrupt,
@@ -850,7 +935,17 @@ impl LineEditor {
     ) -> io::Result<Option<String>> {
         self.clear();
         term.enable_raw_mode()?;
-        let result = self.read_line_loop_with_completion(prompt, upper_lines, history, term, ctx, cmd_ctx, scanner, checker_env, accumulated);
+        let result = self.read_line_loop_with_completion(
+            prompt,
+            upper_lines,
+            history,
+            term,
+            ctx,
+            cmd_ctx,
+            scanner,
+            checker_env,
+            accumulated,
+        );
         let _ = term.disable_raw_mode();
         result
     }
@@ -878,12 +973,17 @@ impl LineEditor {
                             history.reset_cursor();
                             term.reset_style()?;
                             if self.prev_total_rows > 0 {
-                                let buf_pos_width: usize = self.buf[..self.pos].iter()
+                                let buf_pos_width: usize = self.buf[..self.pos]
+                                    .iter()
                                     .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
                                     .sum();
                                 let (tw, _) = term.size().unwrap_or((80, 24));
                                 let tw = tw as usize;
-                                let cursor_row = if tw > 0 { (prompt_width + buf_pos_width) / tw } else { 0 };
+                                let cursor_row = if tw > 0 {
+                                    (prompt_width + buf_pos_width) / tw
+                                } else {
+                                    0
+                                };
                                 if self.prev_total_rows > cursor_row {
                                     term.move_down((self.prev_total_rows - cursor_row) as u16)?;
                                 }
@@ -900,12 +1000,17 @@ impl LineEditor {
                             history.reset_cursor();
                             term.reset_style()?;
                             if self.prev_total_rows > 0 {
-                                let buf_pos_width: usize = self.buf[..self.pos].iter()
+                                let buf_pos_width: usize = self.buf[..self.pos]
+                                    .iter()
                                     .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
                                     .sum();
                                 let (tw, _) = term.size().unwrap_or((80, 24));
                                 let tw = tw as usize;
-                                let cursor_row = if tw > 0 { (prompt_width + buf_pos_width) / tw } else { 0 };
+                                let cursor_row = if tw > 0 {
+                                    (prompt_width + buf_pos_width) / tw
+                                } else {
+                                    0
+                                };
                                 if self.prev_total_rows > cursor_row {
                                     term.move_down((self.prev_total_rows - cursor_row) as u16)?;
                                 }
@@ -981,21 +1086,20 @@ impl LineEditor {
             is_command_position(&buf, word_start)
         };
 
-        let (candidates, common_prefix, dir_prefix) =
-            if is_cmd_pos && !word.contains('/') {
-                // Command name completion
-                let (cands, common) = cmd_ctx.completer.complete_common_prefix(
-                    &word,
-                    cmd_ctx.path,
-                    cmd_ctx.builtins,
-                    cmd_ctx.aliases,
-                );
-                (cands, common, String::new())
-            } else {
-                // Path completion (existing)
-                let result = completion::complete(&self.buffer(), self.pos, ctx);
-                (result.candidates, result.common_prefix, result.dir_prefix)
-            };
+        let (candidates, common_prefix, dir_prefix) = if is_cmd_pos && !word.contains('/') {
+            // Command name completion
+            let (cands, common) = cmd_ctx.completer.complete_common_prefix(
+                &word,
+                cmd_ctx.path,
+                cmd_ctx.builtins,
+                cmd_ctx.aliases,
+            );
+            (cands, common, String::new())
+        } else {
+            // Path completion (existing)
+            let result = completion::complete(&self.buffer(), self.pos, ctx);
+            (result.candidates, result.common_prefix, result.dir_prefix)
+        };
 
         if candidates.is_empty() {
             return Ok(());

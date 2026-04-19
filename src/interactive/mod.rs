@@ -20,8 +20,8 @@ use std::io::{self, Write};
 use crate::exec::Executor;
 use crate::signal;
 
-use completion::CompletionContext;
 use command_completion::{CommandCompleter, CommandCompletionContext};
+use completion::CompletionContext;
 use highlight::{CheckerEnv, HighlightScanner};
 use line_editor::LineEditor;
 use parse_status::{ParseStatus, classify_parse};
@@ -72,10 +72,7 @@ impl Repl {
             if !env_val.is_empty() {
                 // POSIX 2.6.1: tilde expansion occurs before parameter expansion
                 let home = executor.env.vars.get("HOME").map(|s| s.to_string());
-                let after_tilde = crate::expand::expand_tilde_prefix(
-                    home.as_deref(),
-                    &env_val,
-                );
+                let after_tilde = crate::expand::expand_tilde_prefix(home.as_deref(), &env_val);
 
                 // Parse as double-quoted word for parameter expansion
                 let input = format!("\"{}\"", after_tilde);
@@ -119,11 +116,17 @@ impl Repl {
 
             // Fire pre_prompt hook for PS1 (not PS2 continuation)
             if input_buffer.is_empty() {
-                self.executor.plugins.call_pre_prompt(&mut self.executor.env);
+                self.executor
+                    .plugins
+                    .call_pre_prompt(&mut self.executor.env);
             }
 
             // Choose PS1 or PS2
-            let prompt_var = if input_buffer.is_empty() { "PS1" } else { "PS2" };
+            let prompt_var = if input_buffer.is_empty() {
+                "PS1"
+            } else {
+                "PS2"
+            };
             let prompt = expand_prompt(&mut self.executor.env, prompt_var);
             let prompt_info = PromptInfo::from_prompt(&prompt);
 
@@ -139,10 +142,18 @@ impl Repl {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| self.executor.env.vars.get("PWD").unwrap_or(".").to_string());
             let home = self.executor.env.vars.get("HOME").unwrap_or("").to_string();
-            let show_dotfiles = self.executor.env.vars.get("YOSH_SHOW_DOTFILES")
+            let show_dotfiles = self
+                .executor
+                .env
+                .vars
+                .get("YOSH_SHOW_DOTFILES")
                 .map(|v| v == "1")
                 .unwrap_or(false);
-            let comp_ctx = CompletionContext { cwd, home, show_dotfiles };
+            let comp_ctx = CompletionContext {
+                cwd,
+                home,
+                show_dotfiles,
+            };
 
             // Build checker env for syntax highlighting
             let path_val = self.executor.env.vars.get("PATH").unwrap_or("").to_string();
@@ -209,12 +220,25 @@ impl Repl {
             match classify_parse(&input_buffer, &self.executor.env.aliases) {
                 ParseStatus::Complete(commands) => {
                     // Add to history before executing
-                    let histsize: usize = self.executor.env.vars.get("HISTSIZE")
-                        .and_then(|s| s.parse().ok()).unwrap_or(500);
-                    let histcontrol = self.executor.env.vars.get("HISTCONTROL")
-                        .unwrap_or("ignoreboth").to_string();
+                    let histsize: usize = self
+                        .executor
+                        .env
+                        .vars
+                        .get("HISTSIZE")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(500);
+                    let histcontrol = self
+                        .executor
+                        .env
+                        .vars
+                        .get("HISTCONTROL")
+                        .unwrap_or("ignoreboth")
+                        .to_string();
                     let cmd_text = input_buffer.trim_end().to_string();
-                    self.executor.env.history.add(&cmd_text, histsize, &histcontrol);
+                    self.executor
+                        .env
+                        .history
+                        .add(&cmd_text, histsize, &histcontrol);
 
                     for cmd in &commands {
                         let status = self.executor.exec_complete_command(cmd);
@@ -252,11 +276,25 @@ impl Repl {
         }
 
         // Save history to file
-        let histfile = self.executor.env.vars.get("HISTFILE").unwrap_or("").to_string();
-        let histfilesize: usize = self.executor.env.vars.get("HISTFILESIZE")
-            .and_then(|s| s.parse().ok()).unwrap_or(500);
+        let histfile = self
+            .executor
+            .env
+            .vars
+            .get("HISTFILE")
+            .unwrap_or("")
+            .to_string();
+        let histfilesize: usize = self
+            .executor
+            .env
+            .vars
+            .get("HISTFILESIZE")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(500);
         if !histfile.is_empty() {
-            self.executor.env.history.save(std::path::Path::new(&histfile), histfilesize);
+            self.executor
+                .env
+                .history
+                .save(std::path::Path::new(&histfile), histfilesize);
         }
 
         self.executor.env.exec.last_exit_status

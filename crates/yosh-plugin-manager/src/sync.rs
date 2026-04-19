@@ -84,7 +84,9 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
         }
     }
 
-    let new_lock = LockFile { plugin: new_entries };
+    let new_lock = LockFile {
+        plugin: new_entries,
+    };
     save_lockfile(&lock_path, &new_lock)?;
 
     Ok(SyncResult { succeeded, failed })
@@ -111,10 +113,7 @@ fn sync_one(
                         Ok(true) => {
                             return Ok(LockEntry {
                                 name: decl.name.clone(),
-                                path: format!(
-                                    "~/.yosh/plugins/{}/{}",
-                                    decl.name, asset_name
-                                ),
+                                path: format!("~/.yosh/plugins/{}/{}", decl.name, asset_name),
                                 enabled: decl.enabled,
                                 capabilities: decl.capabilities.clone(),
                                 sha256: existing.sha256.clone(),
@@ -227,7 +226,9 @@ mod tests {
     fn sync_one_local_plugin_missing_file() {
         let decl = PluginDecl {
             name: "missing".into(),
-            source: PluginSource::Local { path: "/nonexistent/lib.dylib".into() },
+            source: PluginSource::Local {
+                path: "/nonexistent/lib.dylib".into(),
+            },
             version: None,
             enabled: true,
             capabilities: None,

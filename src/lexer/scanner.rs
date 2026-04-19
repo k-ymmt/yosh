@@ -1,6 +1,6 @@
-use crate::error;
-use super::token::{Span, SpannedToken, Token};
 use super::Lexer;
+use super::token::{Span, SpannedToken, Token};
+use crate::error;
 
 impl Lexer {
     pub(crate) fn at_end(&self) -> bool {
@@ -103,8 +103,13 @@ impl Lexer {
             b'<' => self.read_less(),
             b'>' => self.read_great(),
             ch => {
-                if ch.is_ascii_digit() && let Some(io_num) = self.try_read_io_number() {
-                    return Ok(SpannedToken { token: io_num, span });
+                if ch.is_ascii_digit()
+                    && let Some(io_num) = self.try_read_io_number()
+                {
+                    return Ok(SpannedToken {
+                        token: io_num,
+                        span,
+                    });
                 }
                 self.read_word()
             }
@@ -261,7 +266,9 @@ impl Lexer {
         }
 
         let next = self.current_byte();
-        if (next == b'<' || next == b'>') && let Ok(n) = digits.parse::<i32>() {
+        if (next == b'<' || next == b'>')
+            && let Ok(n) = digits.parse::<i32>()
+        {
             return Some(Token::IoNumber(n));
         }
 

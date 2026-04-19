@@ -5,15 +5,15 @@ pub mod pipeline;
 pub mod redirect;
 mod simple;
 
-use nix::unistd::{fork, ForkResult};
+use nix::unistd::{ForkResult, fork};
 
 use crate::env::ShellEnv;
-use crate::error::{ShellError, RuntimeErrorKind};
-use crate::plugin::PluginManager;
-use crate::signal;
+use crate::error::{RuntimeErrorKind, ShellError};
 use crate::parser::ast::{
     AndOrList, AndOrOp, Command, CompleteCommand, Program, SeparatorOp, WordPart,
 };
+use crate::plugin::PluginManager;
+use crate::signal;
 
 /// Result of waiting for a foreground job.
 pub(crate) struct ForegroundWaitResult {
@@ -309,13 +309,22 @@ impl Executor {
                 Some(nix::sys::wait::WaitPidFlag::WNOHANG | nix::sys::wait::WaitPidFlag::WUNTRACED),
             ) {
                 Ok(nix::sys::wait::WaitStatus::Exited(pid, code)) => {
-                    self.env.process.jobs.update_status(pid, JobStatus::Done(code));
+                    self.env
+                        .process
+                        .jobs
+                        .update_status(pid, JobStatus::Done(code));
                 }
                 Ok(nix::sys::wait::WaitStatus::Signaled(pid, sig, _)) => {
-                    self.env.process.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
+                    self.env
+                        .process
+                        .jobs
+                        .update_status(pid, JobStatus::Terminated(sig as i32));
                 }
                 Ok(nix::sys::wait::WaitStatus::Stopped(pid, sig)) => {
-                    self.env.process.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
+                    self.env
+                        .process
+                        .jobs
+                        .update_status(pid, JobStatus::Stopped(sig as i32));
                 }
                 Ok(nix::sys::wait::WaitStatus::StillAlive) => break,
                 Ok(_) => continue,
@@ -327,9 +336,10 @@ impl Executor {
     /// Execute a command asynchronously (background with &).
     fn exec_async(&mut self, and_or: &AndOrList) -> Result<i32, ShellError> {
         match unsafe { fork() } {
-            Err(e) => {
-                Err(ShellError::runtime(RuntimeErrorKind::IoError, format!("fork: {}", e)))
-            }
+            Err(e) => Err(ShellError::runtime(
+                RuntimeErrorKind::IoError,
+                format!("fork: {}", e),
+            )),
             Ok(ForkResult::Child) => {
                 // Set process group BEFORE signal setup to ensure proper isolation.
                 let pid = nix::unistd::getpid();
@@ -352,7 +362,11 @@ impl Executor {
             Ok(ForkResult::Parent { child }) => {
                 nix::unistd::setpgid(child, child).ok();
                 let command_name = preview_command(and_or);
-                let job_id = self.env.process.jobs.add_job(child, vec![child], command_name, false);
+                let job_id = self
+                    .env
+                    .process
+                    .jobs
+                    .add_job(child, vec![child], command_name, false);
                 eprintln!("[{}] {}", job_id, child.as_raw());
                 Ok(0)
             }
@@ -375,7 +389,10 @@ impl Executor {
             if separator == &Some(SeparatorOp::Amp) {
                 status = match self.exec_async(and_or) {
                     Ok(s) => s,
-                    Err(e) => { eprintln!("{}", e); e.exit_code() }
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        e.exit_code()
+                    }
                 };
             } else {
                 // Sequential execution
@@ -409,13 +426,14 @@ impl Executor {
 
     /// POSIX wait builtin: wait for background jobs.
     fn builtin_wait(&mut self, args: &[String]) -> Result<i32, ShellError> {
-        use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-        use nix::unistd::Pid;
         use crate::env::jobs::JobStatus;
+        use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+        use nix::unistd::Pid;
 
         let target_pids: Vec<Pid> = if args.is_empty() {
             self.env
-                .process.jobs
+                .process
+                .jobs
                 .all_jobs()
                 .filter(|j| j.status == JobStatus::Running)
                 .map(|j| j.pgid)
@@ -429,22 +447,34 @@ impl Executor {
                             if let Some(job) = self.env.process.jobs.get(job_id) {
                                 pids.push(job.pgid);
                             } else {
-                                return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: no such job", arg)));
+                                return Err(ShellError::runtime(
+                                    RuntimeErrorKind::CommandNotFound,
+                                    format!("wait: {}: no such job", arg),
+                                ));
                             }
                         }
                         Err(crate::env::jobs::JobSpecError::Ambiguous) => {
                             let display = strip_job_spec_prefix(arg);
-                            return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: ambiguous job spec", display)));
+                            return Err(ShellError::runtime(
+                                RuntimeErrorKind::CommandNotFound,
+                                format!("wait: {}: ambiguous job spec", display),
+                            ));
                         }
                         Err(_) => {
-                            return Err(ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: {}: no such job", arg)));
+                            return Err(ShellError::runtime(
+                                RuntimeErrorKind::CommandNotFound,
+                                format!("wait: {}: no such job", arg),
+                            ));
                         }
                     }
                 } else {
                     match arg.parse::<i32>() {
                         Ok(n) => pids.push(Pid::from_raw(n)),
                         Err(_) => {
-                            return Err(ShellError::runtime(RuntimeErrorKind::InvalidArgument, format!("wait: {}: not a pid or valid job spec", arg)));
+                            return Err(ShellError::runtime(
+                                RuntimeErrorKind::InvalidArgument,
+                                format!("wait: {}: not a pid or valid job spec", arg),
+                            ));
                         }
                     }
                 }
@@ -460,13 +490,17 @@ impl Executor {
 
         for pid in &target_pids {
             // Check if already completed in jobs table
-            let already_done = self.env.process.jobs.all_jobs().find(|j| j.pgid == *pid).and_then(|j| {
-                match j.status {
+            let already_done = self
+                .env
+                .process
+                .jobs
+                .all_jobs()
+                .find(|j| j.pgid == *pid)
+                .and_then(|j| match j.status {
                     JobStatus::Done(code) => Some(code),
                     JobStatus::Terminated(sig) => Some(128 + sig),
                     _ => None,
-                }
-            });
+                });
             if let Some(s) = already_done {
                 last_status = s;
                 continue;
@@ -475,13 +509,19 @@ impl Executor {
             loop {
                 match waitpid(*pid, Some(WaitPidFlag::WNOHANG)) {
                     Ok(WaitStatus::Exited(p, code)) => {
-                        self.env.process.jobs.update_status(p, JobStatus::Done(code));
+                        self.env
+                            .process
+                            .jobs
+                            .update_status(p, JobStatus::Done(code));
                         last_status = code;
                         break;
                     }
                     Ok(WaitStatus::Signaled(p, sig, _)) => {
                         let code = 128 + sig as i32;
-                        self.env.process.jobs.update_status(p, JobStatus::Terminated(sig as i32));
+                        self.env
+                            .process
+                            .jobs
+                            .update_status(p, JobStatus::Terminated(sig as i32));
                         last_status = code;
                         break;
                     }
@@ -515,7 +555,10 @@ impl Executor {
                         }
                     }
                     Err(nix::errno::Errno::ECHILD) => {
-                        let err = ShellError::runtime(RuntimeErrorKind::CommandNotFound, format!("wait: pid {} is not a child of this shell", pid));
+                        let err = ShellError::runtime(
+                            RuntimeErrorKind::CommandNotFound,
+                            format!("wait: pid {} is not a child of this shell", pid),
+                        );
                         eprintln!("{}", err);
                         last_status = 127;
                         break;
@@ -533,7 +576,8 @@ impl Executor {
         let pgid_only = args.contains(&"-p".to_string());
 
         // Collect job IDs first to avoid borrow issues
-        let job_ids: Vec<crate::env::jobs::JobId> = self.env.process.jobs.all_jobs().map(|j| j.id).collect();
+        let job_ids: Vec<crate::env::jobs::JobId> =
+            self.env.process.jobs.all_jobs().map(|j| j.id).collect();
 
         for id in &job_ids {
             if pgid_only {
@@ -562,14 +606,20 @@ impl Executor {
         use crate::env::jobs::{self, JobStatus};
 
         if !self.env.mode.options.monitor {
-            return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "fg: no job control".to_string()));
+            return Err(ShellError::runtime(
+                RuntimeErrorKind::JobControlError,
+                "fg: no job control".to_string(),
+            ));
         }
 
         let job_id = if args.is_empty() {
             match self.env.process.jobs.current_id() {
                 Some(id) => id,
                 None => {
-                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "fg: no current job".to_string()));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::JobControlError,
+                        "fg: no current job".to_string(),
+                    ));
                 }
             }
         } else {
@@ -577,10 +627,16 @@ impl Executor {
                 Ok(id) => id,
                 Err(crate::env::jobs::JobSpecError::Ambiguous) => {
                     let display = strip_job_spec_prefix(&args[0]);
-                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("fg: {}: ambiguous job spec", display)));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::JobControlError,
+                        format!("fg: {}: ambiguous job spec", display),
+                    ));
                 }
                 Err(_) => {
-                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("fg: {}: no such job", args[0])));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::JobControlError,
+                        format!("fg: {}: no such job", args[0]),
+                    ));
                 }
             }
         };
@@ -589,7 +645,10 @@ impl Executor {
             let job = match self.env.process.jobs.get(job_id) {
                 Some(j) => j,
                 None => {
-                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "fg: job not found".to_string()));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::JobControlError,
+                        "fg: job not found".to_string(),
+                    ));
                 }
             };
             (job.pgid, job.command.clone())
@@ -626,14 +685,20 @@ impl Executor {
         use crate::env::jobs::JobStatus;
 
         if !self.env.mode.options.monitor {
-            return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "bg: no job control".to_string()));
+            return Err(ShellError::runtime(
+                RuntimeErrorKind::JobControlError,
+                "bg: no job control".to_string(),
+            ));
         }
 
         let job_id = if args.is_empty() {
             match self.env.process.jobs.current_id() {
                 Some(id) => id,
                 None => {
-                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "bg: no current job".to_string()));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::JobControlError,
+                        "bg: no current job".to_string(),
+                    ));
                 }
             }
         } else {
@@ -641,10 +706,16 @@ impl Executor {
                 Ok(id) => id,
                 Err(crate::env::jobs::JobSpecError::Ambiguous) => {
                     let display = strip_job_spec_prefix(&args[0]);
-                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("bg: {}: ambiguous job spec", display)));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::JobControlError,
+                        format!("bg: {}: ambiguous job spec", display),
+                    ));
                 }
                 Err(_) => {
-                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("bg: {}: no such job", args[0])));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::JobControlError,
+                        format!("bg: {}: no such job", args[0]),
+                    ));
                 }
             }
         };
@@ -653,11 +724,17 @@ impl Executor {
             let job = match self.env.process.jobs.get(job_id) {
                 Some(j) => j,
                 None => {
-                    return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, "bg: job not found".to_string()));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::JobControlError,
+                        "bg: job not found".to_string(),
+                    ));
                 }
             };
             if !matches!(job.status, JobStatus::Stopped(_)) {
-                return Err(ShellError::runtime(RuntimeErrorKind::JobControlError, format!("bg: job {} not stopped", job_id)));
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::JobControlError,
+                    format!("bg: job {} not stopped", job_id),
+                ));
             }
             job.pgid
         };
@@ -681,15 +758,17 @@ impl Executor {
     /// per-process statuses (for pipefail), and whether the job was stopped.
     fn wait_for_foreground_job(&mut self, job_id: crate::env::jobs::JobId) -> ForegroundWaitResult {
         use crate::env::jobs::JobStatus;
-        use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+        use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 
         let (pgid, total_processes) = match self.env.process.jobs.get(job_id) {
             Some(j) => (j.pgid, j.pids.len()),
-            None => return ForegroundWaitResult {
-                last_status: 1,
-                process_statuses: Vec::new(),
-                stopped: false,
-            },
+            None => {
+                return ForegroundWaitResult {
+                    last_status: 1,
+                    process_statuses: Vec::new(),
+                    stopped: false,
+                };
+            }
         };
 
         let mut last_status = 0;
@@ -702,20 +781,32 @@ impl Executor {
                 break;
             }
 
-            match waitpid(nix::unistd::Pid::from_raw(-pgid.as_raw()), Some(WaitPidFlag::WUNTRACED)) {
+            match waitpid(
+                nix::unistd::Pid::from_raw(-pgid.as_raw()),
+                Some(WaitPidFlag::WUNTRACED),
+            ) {
                 Ok(WaitStatus::Exited(pid, code)) => {
-                    self.env.process.jobs.update_status(pid, JobStatus::Done(code));
+                    self.env
+                        .process
+                        .jobs
+                        .update_status(pid, JobStatus::Done(code));
                     last_status = code;
                     process_statuses.push((pid, code));
                 }
                 Ok(WaitStatus::Signaled(pid, sig, _)) => {
                     let code = 128 + sig as i32;
-                    self.env.process.jobs.update_status(pid, JobStatus::Terminated(sig as i32));
+                    self.env
+                        .process
+                        .jobs
+                        .update_status(pid, JobStatus::Terminated(sig as i32));
                     last_status = code;
                     process_statuses.push((pid, code));
                 }
                 Ok(WaitStatus::Stopped(pid, sig)) => {
-                    self.env.process.jobs.update_status(pid, JobStatus::Stopped(sig as i32));
+                    self.env
+                        .process
+                        .jobs
+                        .update_status(pid, JobStatus::Stopped(sig as i32));
                     if let Some(job) = self.env.process.jobs.get_mut(job_id) {
                         job.status = JobStatus::Stopped(sig as i32);
                         job.foreground = false;
@@ -724,7 +815,11 @@ impl Executor {
                         eprintln!("{}", line);
                     }
                     last_status = 128 + sig as i32;
-                    return ForegroundWaitResult { last_status, process_statuses, stopped: true };
+                    return ForegroundWaitResult {
+                        last_status,
+                        process_statuses,
+                        stopped: true,
+                    };
                 }
                 Err(nix::errno::Errno::ECHILD) => {
                     self.env.process.jobs.remove_job(job_id);
@@ -738,7 +833,11 @@ impl Executor {
             }
         }
 
-        ForegroundWaitResult { last_status, process_statuses, stopped: false }
+        ForegroundWaitResult {
+            last_status,
+            process_statuses,
+            stopped: false,
+        }
     }
 
     /// Display pending job notifications and clean up completed jobs.

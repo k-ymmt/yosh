@@ -1,5 +1,5 @@
-use crate::env::ShellEnv;
 use super::{ExpandedField, pattern};
+use crate::env::ShellEnv;
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 

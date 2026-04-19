@@ -1,7 +1,7 @@
+use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::os::fd::BorrowedFd;
 use std::os::unix::io::RawFd;
-use nix::unistd::Pid;
 
 pub type JobId = u32;
 
@@ -12,9 +12,9 @@ pub type JobId = u32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobStatus {
     Running,
-    Stopped(i32),      // signal number (e.g. SIGTSTP=20)
-    Done(i32),         // exit code
-    Terminated(i32),   // killed by signal number
+    Stopped(i32),    // signal number (e.g. SIGTSTP=20)
+    Done(i32),       // exit code
+    Terminated(i32), // killed by signal number
 }
 
 // ---------------------------------------------------------------------------
@@ -173,12 +173,7 @@ impl JobTable {
             // Previous was removed — find the next most-recent job that is
             // not the current one.
             let cur = self.current;
-            self.previous = self
-                .jobs
-                .keys()
-                .copied()
-                .filter(|&k| Some(k) != cur)
-                .max();
+            self.previous = self.jobs.keys().copied().filter(|&k| Some(k) != cur).max();
         }
     }
 
@@ -336,8 +331,7 @@ impl JobTable {
             .jobs
             .values()
             .filter(|j| {
-                !j.notified
-                    && matches!(j.status, JobStatus::Done(_) | JobStatus::Terminated(_))
+                !j.notified && matches!(j.status, JobStatus::Done(_) | JobStatus::Terminated(_))
             })
             .map(|j| j.id)
             .collect();
@@ -374,7 +368,11 @@ impl JobTable {
         let status_str = self.format_status(job.status);
         Some(format!(
             "[{}]{} {}  {}  {}",
-            job.id, indicator, job.pgid.as_raw(), status_str, job.command
+            job.id,
+            indicator,
+            job.pgid.as_raw(),
+            status_str,
+            job.command
         ))
     }
 
@@ -385,8 +383,7 @@ impl JobTable {
             .jobs
             .values()
             .filter(|j| {
-                j.notified
-                    && matches!(j.status, JobStatus::Done(_) | JobStatus::Terminated(_))
+                j.notified && matches!(j.status, JobStatus::Done(_) | JobStatus::Terminated(_))
             })
             .map(|j| j.id)
             .collect();
@@ -413,15 +410,13 @@ impl JobTable {
         match status {
             JobStatus::Running => "Running".to_string(),
             JobStatus::Stopped(sig) => {
-                let name = crate::signal::signal_number_to_name(sig)
-                    .unwrap_or("UNKNOWN");
+                let name = crate::signal::signal_number_to_name(sig).unwrap_or("UNKNOWN");
                 format!("Stopped(SIG{})", name)
             }
             JobStatus::Done(0) => "Done".to_string(),
             JobStatus::Done(code) => format!("Done({})", code),
             JobStatus::Terminated(sig) => {
-                let name = crate::signal::signal_number_to_name(sig)
-                    .unwrap_or("UNKNOWN");
+                let name = crate::signal::signal_number_to_name(sig).unwrap_or("UNKNOWN");
                 format!("Terminated(SIG{})", name)
             }
         }
@@ -646,7 +641,7 @@ mod tests {
     fn test_last_bg_pid_returns_most_recent_bg_job() {
         let mut table = JobTable::default();
         table.add_job(pid(10), vec![pid(10)], "bg1", false); // background
-        table.add_job(pid(20), vec![pid(20)], "fg",  true);  // foreground — should be excluded
+        table.add_job(pid(20), vec![pid(20)], "fg", true); // foreground — should be excluded
         table.add_job(pid(30), vec![pid(30)], "bg2", false); // background (most recent)
 
         assert_eq!(table.last_bg_pid(), Some(pid(30)));
@@ -756,7 +751,10 @@ mod tests {
 
     #[test]
     fn test_parse_numeric_overflow() {
-        assert_eq!(parse_job_spec("%99999999999999999999"), Err(JobSpecError::Malformed));
+        assert_eq!(
+            parse_job_spec("%99999999999999999999"),
+            Err(JobSpecError::Malformed)
+        );
     }
 
     #[test]
@@ -896,7 +894,10 @@ mod tests {
     #[test]
     fn test_resolve_current_unset() {
         let table = JobTable::default();
-        assert_eq!(table.resolve(JobSpec::Current), Err(JobSpecError::NoSuchJob));
+        assert_eq!(
+            table.resolve(JobSpec::Current),
+            Err(JobSpecError::NoSuchJob)
+        );
     }
 
     #[test]
@@ -912,7 +913,10 @@ mod tests {
         let mut table = JobTable::default();
         let _id = table.add_job(pid(1), vec![pid(1)], "a", false);
         // Only one job added — previous is unset
-        assert_eq!(table.resolve(JobSpec::Previous), Err(JobSpecError::NoSuchJob));
+        assert_eq!(
+            table.resolve(JobSpec::Previous),
+            Err(JobSpecError::NoSuchJob)
+        );
     }
 
     #[test]
@@ -925,7 +929,10 @@ mod tests {
     #[test]
     fn test_resolve_numeric_miss() {
         let table = JobTable::default();
-        assert_eq!(table.resolve(JobSpec::Numeric(99)), Err(JobSpecError::NoSuchJob));
+        assert_eq!(
+            table.resolve(JobSpec::Numeric(99)),
+            Err(JobSpecError::NoSuchJob)
+        );
     }
 
     #[test]

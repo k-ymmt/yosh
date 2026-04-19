@@ -8,11 +8,10 @@ use crate::env::ShellEnv;
 /// All builtin command names (special + regular) for tab-completion.
 pub const BUILTIN_NAMES: &[&str] = &[
     // Special builtins
-    "break", ":", "continue", ".", "eval", "exec", "exit", "export",
-    "readonly", "return", "set", "shift", "times", "trap", "unset", "fc",
-    // Regular builtins
-    "cd", "command", "echo", "true", "false", "alias", "unalias", "kill",
-    "wait", "fg", "bg", "jobs", "umask",
+    "break", ":", "continue", ".", "eval", "exec", "exit", "export", "readonly", "return", "set",
+    "shift", "times", "trap", "unset", "fc", // Regular builtins
+    "cd", "command", "echo", "true", "false", "alias", "unalias", "kill", "wait", "fg", "bg",
+    "jobs", "umask",
 ];
 
 /// Classification of a command name as a POSIX builtin kind.
@@ -30,13 +29,10 @@ pub enum BuiltinKind {
 /// Classify a command name into its builtin kind.
 pub fn classify_builtin(name: &str) -> BuiltinKind {
     match name {
-        "break" | ":" | "continue" | "." | "eval" | "exec" | "exit" | "export"
-        | "readonly" | "return" | "set" | "shift" | "times" | "trap" | "unset"
-        | "fc" => {
-            BuiltinKind::Special
-        }
-        "cd" | "command" | "echo" | "true" | "false" | "alias" | "unalias"
-        | "kill" | "wait" | "fg" | "bg" | "jobs" | "umask" => BuiltinKind::Regular,
+        "break" | ":" | "continue" | "." | "eval" | "exec" | "exit" | "export" | "readonly"
+        | "return" | "set" | "shift" | "times" | "trap" | "unset" | "fc" => BuiltinKind::Special,
+        "cd" | "command" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait"
+        | "fg" | "bg" | "jobs" | "umask" => BuiltinKind::Regular,
         _ => BuiltinKind::NotBuiltin,
     }
 }

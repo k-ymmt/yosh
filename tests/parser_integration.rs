@@ -61,14 +61,26 @@ fn test_exec_pipeline_exit_status() {
 
 #[test]
 fn test_exec_and_list() {
-    assert_eq!(String::from_utf8_lossy(&yosh_exec("true && echo yes").stdout), "yes\n");
-    assert_eq!(String::from_utf8_lossy(&yosh_exec("false && echo yes").stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&yosh_exec("true && echo yes").stdout),
+        "yes\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&yosh_exec("false && echo yes").stdout),
+        ""
+    );
 }
 
 #[test]
 fn test_exec_or_list() {
-    assert_eq!(String::from_utf8_lossy(&yosh_exec("false || echo fallback").stdout), "fallback\n");
-    assert_eq!(String::from_utf8_lossy(&yosh_exec("true || echo fallback").stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&yosh_exec("false || echo fallback").stdout),
+        "fallback\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&yosh_exec("true || echo fallback").stdout),
+        ""
+    );
 }
 
 #[test]
@@ -113,8 +125,15 @@ fn test_exec_output_redirect() {
 fn test_exec_append_redirect() {
     let tmp = helpers::TempDir::new();
     let outfile = tmp.path().join("out.txt");
-    yosh_exec(&format!("echo first > {}; echo second >> {}", outfile.display(), outfile.display()));
-    assert_eq!(std::fs::read_to_string(&outfile).unwrap(), "first\nsecond\n");
+    yosh_exec(&format!(
+        "echo first > {}; echo second >> {}",
+        outfile.display(),
+        outfile.display()
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&outfile).unwrap(),
+        "first\nsecond\n"
+    );
 }
 
 #[test]
@@ -255,7 +274,11 @@ fn test_quoted_glob_no_expansion_full() {
 fn test_tilde_expansion_full() {
     let out = yosh_exec("echo ~");
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    assert!(stdout.starts_with('/'), "tilde should expand to home dir, got: {}", stdout);
+    assert!(
+        stdout.starts_with('/'),
+        "tilde should expand to home dir, got: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -264,7 +287,8 @@ fn test_dollar_at_in_script_full() {
     let script = tmp.write_file("args.sh", "echo \"$@\"\n");
     let output = Command::new(env!("CARGO_BIN_EXE_yosh"))
         .args([script.to_str().unwrap(), "a", "b", "c"])
-        .output().expect("failed");
+        .output()
+        .expect("failed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.trim() == "a b c", "got: {}", stdout);
 }
@@ -309,11 +333,14 @@ fn test_complex_expansion_pipeline() {
 #[test]
 fn test_script_with_expansions() {
     let tmp = helpers::TempDir::new();
-    let script = tmp.write_file("test.sh",
-        "x=hello\ny=$(echo world)\necho \"$x $y $((2+2))\"\n");
+    let script = tmp.write_file(
+        "test.sh",
+        "x=hello\ny=$(echo world)\necho \"$x $y $((2+2))\"\n",
+    );
     let output = Command::new(env!("CARGO_BIN_EXE_yosh"))
         .arg(script.to_str().unwrap())
-        .output().expect("failed");
+        .output()
+        .expect("failed");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "hello world 4\n");
 }
 
@@ -322,7 +349,11 @@ fn test_script_with_expansions() {
 #[test]
 fn test_parse_simple_pipeline() {
     let out = yosh_parse("echo hello | grep h");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -432,7 +463,10 @@ fn test_heredoc_basic() {
 #[test]
 fn test_heredoc_multiline() {
     let out = yosh_exec("cat <<EOF\nline1\nline2\nline3\nEOF");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "line1\nline2\nline3\n");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "line1\nline2\nline3\n"
+    );
 }
 
 #[test]
@@ -558,7 +592,8 @@ fn test_exec_if_else() {
 
 #[test]
 fn test_exec_if_elif() {
-    let out = yosh_exec("if false; then echo 1; elif true; then echo 2; elif true; then echo 3; fi");
+    let out =
+        yosh_exec("if false; then echo 1; elif true; then echo 2; elif true; then echo 3; fi");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n");
 }
 
@@ -639,10 +674,7 @@ fn test_exec_for_default_positional_params() {
 #[test]
 fn test_exec_nested_for() {
     let out = yosh_exec("for i in 1 2; do for j in a b; do echo $i$j; done; done");
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "1a\n1b\n2a\n2b\n"
-    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1a\n1b\n2a\n2b\n");
 }
 
 // ── break/continue ──
@@ -677,7 +709,8 @@ fn test_exec_continue_nested() {
 
 #[test]
 fn test_exec_break_while() {
-    let out = yosh_exec("x=0; while true; do x=$((x+1)); if test $x = 3; then break; fi; echo $x; done");
+    let out =
+        yosh_exec("x=0; while true; do x=$((x+1)); if test $x = 3; then break; fi; echo $x; done");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n2\n");
 }
 
@@ -800,10 +833,7 @@ fn test_exec_subshell_basic() {
 #[test]
 fn test_exec_subshell_isolation() {
     let out = yosh_exec("x=before; (x=after; echo $x); echo $x");
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "after\nbefore\n"
-    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "after\nbefore\n");
 }
 
 #[test]
@@ -818,11 +848,11 @@ fn test_exec_subshell_exit_status() {
 fn test_exec_brace_group_redirect() {
     let tmp = helpers::TempDir::new();
     let outfile = tmp.path().join("out.txt");
-    yosh_exec(&format!("{{ echo hello; echo world; }} > {}", outfile.display()));
-    assert_eq!(
-        std::fs::read_to_string(&outfile).unwrap(),
-        "hello\nworld\n"
-    );
+    yosh_exec(&format!(
+        "{{ echo hello; echo world; }} > {}",
+        outfile.display()
+    ));
+    assert_eq!(std::fs::read_to_string(&outfile).unwrap(), "hello\nworld\n");
 }
 
 #[test]
@@ -863,9 +893,7 @@ fn test_exec_for_in_function() {
 
 #[test]
 fn test_exec_case_in_loop() {
-    let out = yosh_exec(
-        "for f in a.txt b.rs c.txt; do case $f in *.txt) echo $f;; esac; done",
-    );
+    let out = yosh_exec("for f in a.txt b.rs c.txt; do case $f in *.txt) echo $f;; esac; done");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "a.txt\nc.txt\n");
 }
 
@@ -874,10 +902,7 @@ fn test_exec_nested_control_structures() {
     let out = yosh_exec(
         "if true; then for i in 1 2 3; do case $i in 2) echo two;; *) echo other;; esac; done; fi",
     );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "other\ntwo\nother\n"
-    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "other\ntwo\nother\n");
 }
 
 #[test]
@@ -890,9 +915,7 @@ fn test_exec_function_with_control() {
 
 #[test]
 fn test_exec_sum_with_for() {
-    let out = yosh_exec(
-        "sum=0; for i in 1 2 3 4 5; do sum=$((sum + i)); done; echo $sum",
-    );
+    let out = yosh_exec("sum=0; for i in 1 2 3 4 5; do sum=$((sum + i)); done; echo $sum");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "15\n");
 }
 
@@ -954,12 +977,8 @@ case "$-" in *m*) echo "m=on";; *) echo "m=off";; esac
 set +m
 case "$-" in *m*) echo "m=on";; *) echo "m=off";; esac"#,
     );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "m=off\nm=on\nm=off\n"
-    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "m=off\nm=on\nm=off\n");
 }
-
 
 #[test]
 fn test_set_plus_m_disables_job_control() {

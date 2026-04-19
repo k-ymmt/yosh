@@ -27,9 +27,7 @@ fn match_pat(pat: &[char], s: &[char]) -> bool {
             false
         }
 
-        Some('?') => {
-            !s.is_empty() && match_pat(&pat[1..], &s[1..])
-        }
+        Some('?') => !s.is_empty() && match_pat(&pat[1..], &s[1..]),
 
         Some('[') => {
             // Find the closing ']'
@@ -52,9 +50,7 @@ fn match_pat(pat: &[char], s: &[char]) -> bool {
             }
         }
 
-        Some(&c) => {
-            !s.is_empty() && s[0] == c && match_pat(&pat[1..], &s[1..])
-        }
+        Some(&c) => !s.is_empty() && s[0] == c && match_pat(&pat[1..], &s[1..]),
     }
 }
 
@@ -99,7 +95,9 @@ fn parse_bracket(pat: &[char], ch: Option<char>) -> Option<(usize, bool)> {
         return None;
     }
 
-    let inner_match = ch.map(|c| members.iter().any(|m| m.matches(c))).unwrap_or(false);
+    let inner_match = ch
+        .map(|c| members.iter().any(|m| m.matches(c)))
+        .unwrap_or(false);
     let result = if negate { !inner_match } else { inner_match };
 
     // Consume includes negate flag + all member chars + closing ']' = i
