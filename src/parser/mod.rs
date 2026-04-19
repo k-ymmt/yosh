@@ -357,40 +357,20 @@ impl Parser {
 
         // Build value word with boundary-aware tilde splitting across all parts.
         //
-        // The segment boundary starts true immediately after `=` (we just consumed
-        // it). Whenever a Literal part is scanned, split_tildes_in_literal returns
-        // whether the last character was an unquoted `:`, which we propagate as
-        // the incoming boundary for the next part.
+        // The segment boundary starts true immediately after `=` (we just
+        // consumed it). Whenever a Literal part is scanned,
+        // split_tildes_in_literal returns whether the last character was an
+        // unquoted `:`, which we propagate as the incoming boundary for the
+        // next part.
         //
-        // A non-Literal part (Parameter, CommandSub, quoted content, Tilde) resets
-        // the boundary to false: such parts cannot expose an unquoted trailing `:`
-        // to the next segment in the AST (quoted `:` lives inside SingleQuoted /
-        // DoubleQuoted variants and does not count as a tilde-prefix boundary).
-        //
-        // Adjacent Literal parts (with no intervening non-Literal) arise from any
-        // lexer split that flushes a partial Literal — chiefly backslash escapes
-        // like `\~` and line continuations like `\<newline>`. Both cases cause the
-        // second Literal NOT to begin at a fresh tilde-prefix boundary from the
-        // lexer's point of view, so we conservatively suppress leading-character
-        // tilde expansion via `prev_was_literal`. Internal `:` inside the second
-        // Literal still creates its own boundaries, so this only affects the very
-        // first character of each adjacent Literal.
-        //
-        // This conservatively favors `x=\~/bin` (tilde stays literal — correct
-        // per POSIX) over `x=foo:\<newline>~/bin` (tilde stays literal — incorrect
-        // per POSIX §2.2.1 line-continuation removal). Both cases are pinned by
-        // unit tests below. Sub-project 4 will introduce explicit escape metadata
-        // on `WordPart` so this heuristic can be replaced with a precise check
-        // that distinguishes the two cases.
+        // A non-Literal part (Parameter, CommandSub, quoted content, Tilde,
+        // EscapedLiteral) resets the boundary to false: such parts cannot
+        // expose an unquoted trailing `:` to the next segment, and
+        // EscapedLiteral specifically carries an explicit "this character
+        // was escaped" signal from the lexer — tilde-prefix recognition must
+        // not fire immediately after it.
         let mut value_parts = Vec::new();
         let mut at_boundary = true;
-        // word.parts[0] is always a Literal here (we early-returned otherwise),
-        // so the run of Literal parts begins with the first part. Any
-        // remaining_parts[0] that is also a Literal therefore follows another
-        // Literal with nothing between them — which can only happen via a
-        // lexer split (backslash-metachar escape or `\<newline>` line
-        // continuation), per the rationale documented above.
-        let mut prev_was_literal = true;
         if !after_eq.is_empty() {
             let (parts, ends_colon) = split_tildes_in_literal(after_eq, at_boundary);
             value_parts.extend(parts);
@@ -399,16 +379,16 @@ impl Parser {
         for part in remaining_parts {
             match part {
                 WordPart::Literal(s) => {
-                    let effective_boundary = if prev_was_literal { false } else { at_boundary };
-                    let (parts, ends_colon) = split_tildes_in_literal(s, effective_boundary);
+                    let (parts, ends_colon) = split_tildes_in_literal(s, at_boundary);
                     value_parts.extend(parts);
                     at_boundary = ends_colon;
-                    prev_was_literal = true;
                 }
                 other => {
+                    // Parameter, CommandSub, SingleQuoted, DoubleQuoted,
+                    // DollarSingleQuoted, ArithSub, Tilde, and EscapedLiteral
+                    // all hit this arm: emit as-is and close the boundary.
                     value_parts.push(other.clone());
                     at_boundary = false;
-                    prev_was_literal = false;
                 }
             }
         }
@@ -1698,11 +1678,22 @@ mod tests {
     #[test]
     fn assignment_rhs_backslash_tilde_after_colon_stays_literal() {
         // `x=foo:\~/bin` — the `\~` escape prevents tilde expansion. The
-        // prev_was_literal heuristic handles this correctly: the lexer splits
-        // `foo:` from `~/bin` at the escape, making them adjacent Literals with
-        // no Parameter/CmdSub between, so the heuristic suppresses the leading
-        // tilde of the second Literal.
+        // lexer emits EscapedLiteral("~"), which the walker treats as a
+        // non-Literal segment-boundary closer, preventing tilde expansion.
         let (_, parts) = parse_first_assignment("x=foo:\\~/bin\n").unwrap();
+        let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
+        assert!(!has_tilde, "parts = {:?}", parts);
+    }
+
+    #[test]
+    fn assignment_rhs_param_then_escaped_tilde_stays_literal() {
+        // `x=$var:\~/bin` — the `\~` escape after the `:` prevents tilde
+        // expansion at the colon boundary. The lexer emits
+        // [Literal("x="), Parameter(var), Literal(":"), EscapedLiteral("~"), Literal("/bin")]
+        // (or similar). The walker treats EscapedLiteral as a non-Literal
+        // segment-boundary closer, so the following Literal does not re-open
+        // tilde recognition.
+        let (_, parts) = parse_first_assignment("x=$var:\\~/bin\n").unwrap();
         let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
         assert!(!has_tilde, "parts = {:?}", parts);
     }
