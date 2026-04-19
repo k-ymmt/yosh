@@ -64,6 +64,8 @@
 - [ ] `preview_command` has no direct unit tests — only exercised via E2E; add focused tests for compound-command / unexpandable-word fallback and pipeline first-command extraction (`src/exec/mod.rs`)
 - [ ] `JobSpecError::Ambiguous` fully qualified at 3 call sites in `src/exec/mod.rs` (builtin_wait/fg/bg) — add a module-level `use crate::env::jobs::JobSpecError;` for readability
 - [ ] `highlight_scanner.rs` `KEYWORDS` duplicates POSIX §2.4 list — `src/interactive/highlight_scanner.rs:66-69` defines its own copy of the 16 reserved words, separate from the canonical `crate::lexer::reserved::RESERVED_WORDS`. Consolidate once the contextual subsets (`COMMAND_POSITION_KEYWORDS` includes `"time"`, command-position restoration logic) are re-expressed in terms of the canonical list (`src/interactive/highlight_scanner.rs`)
+- [ ] `cargo fmt --check -- <path>` misreads edition — rustfmt 1.8.0 / Rust 1.94.1 fails to parse let-chain syntax as edition 2024 when invoked with explicit file paths despite `Cargo.toml` specifying `edition = "2024"`, producing spurious fmt errors. Workaround: invoke `rustfmt --edition 2024 --check <path>` directly. Revisit when upstream rustfmt catches up.
+- [ ] `expand_tilde_in_assignment_value` has no unit tests — currently exercised only via E2E (`tilde_rhs_export.sh`, `tilde_rhs_readonly.sh`). Add direct `#[test]` cases mirroring the `test_expand_tilde_prefix_*` style in `src/expand/mod.rs` so HOME-unset and `~user` fallback paths are isolated from the builtin flow.
 
 ## Future: E2E Test Expansion
 
@@ -72,6 +74,8 @@
 - [ ] `e2e/command_execution/echo_simple.sh` has `755` permissions — should be `644` to match project convention
 - [ ] Extend chapter-by-chapter POSIX coverage beyond XCU Chapter 2 — once the Chapter 2 coverage matrix stabilizes, add systematic E2E coverage for Chapter 4 Utilities (all shell-relevant builtins: special + regular, with option/edge-case matrices) and Chapter 8 Environment Variables. Reuse the `POSIX_REF`/`XFAIL` harness established for Chapter 2.
 - [ ] Deepen Chapter 2 POSIX coverage to normative-requirement granularity — after the hybrid (representative + thin-section) coverage lands, enumerate every shall/must/should clause in XCU Chapter 2 and add one E2E test per normative requirement (est. +100–200 tests). Use `XFAIL` liberally to register gaps; the goal is to make each normative clause individually traceable to a test ID.
+- [ ] `tilde_rhs_user_form.sh` documents absence of `EXPECT_OUTPUT` — the test omits `EXPECT_OUTPUT` because `~root` resolution is platform-dependent and verifies correctness in-script via `case`. Add a one-line comment explaining this so future contributors do not misread the omission as an oversight (`e2e/posix_spec/2_06_01_tilde_expansion/tilde_rhs_user_form.sh`).
+- [ ] `tilde_rhs_command_prefix.sh` depends on external `sh -c` — the test uses `sh -c 'echo "$PREFIXED"'` to verify command-prefix assignment expansion, which cross-checks the external `sh` rather than yosh alone. If CI flakes arise on minimal Alpine/busybox environments, switch to a yosh-internal verification path (e.g., a builtin that echoes an env var) (`e2e/posix_spec/2_06_01_tilde_expansion/tilde_rhs_command_prefix.sh`).
 
 ## Future: POSIX Conformance Gaps (Chapter 2)
 
