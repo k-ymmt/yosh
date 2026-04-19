@@ -3,5 +3,6 @@
 # DESCRIPTION: A redirection filename may begin with '-' (not treated as an option)
 # EXPECT_OUTPUT: hi
 # EXPECT_EXIT: 0
-echo hi > "$TEST_TMPDIR/-flag"
-cat -- "$TEST_TMPDIR/-flag"
+(
+    cd "$TEST_TMPDIR" && echo hi > -flag && cat -- -flag
+)
