@@ -355,12 +355,55 @@ impl Parser {
             });
         }
 
-        // Build value word
+        // Build value word with boundary-aware tilde splitting across all parts.
+        //
+        // The segment boundary starts true immediately after `=` (we just consumed
+        // it). Whenever a Literal part is scanned, split_tildes_in_literal returns
+        // whether the last character was an unquoted `:`, which we propagate as
+        // the incoming boundary for the next part.
+        //
+        // A non-Literal part (Parameter, CommandSub, quoted content, Tilde) resets
+        // the boundary to false: such parts cannot expose an unquoted trailing `:`
+        // to the next segment in the AST (quoted `:` lives inside SingleQuoted /
+        // DoubleQuoted variants and does not count as a tilde-prefix boundary).
+        //
+        // Adjacent Literal parts (with no intervening non-Literal) arise only from
+        // backslash escapes like `\~` — the lexer would otherwise have merged them
+        // into one Literal. The escape means the second Literal does NOT begin at
+        // a fresh tilde-prefix boundary, even if the first ended with `:`. We track
+        // that by treating the effective boundary as false whenever the previous
+        // part was also a Literal. Internal `:` inside the second Literal still
+        // creates its own boundaries, so escapes suppress only leading-character
+        // tilde expansion.
         let mut value_parts = Vec::new();
+        let mut at_boundary = true;
+        // word.parts[0] is always a Literal here (we early-returned otherwise),
+        // so the run of Literal parts begins with the first part. Any
+        // remaining_parts[0] that is also a Literal therefore follows another
+        // Literal with nothing between them, which can only happen via a
+        // backslash escape.
+        let mut prev_was_literal = true;
         if !after_eq.is_empty() {
-            value_parts.extend(split_tildes_in_literal(after_eq, true).0);
+            let (parts, ends_colon) = split_tildes_in_literal(after_eq, at_boundary);
+            value_parts.extend(parts);
+            at_boundary = ends_colon;
         }
-        value_parts.extend_from_slice(remaining_parts);
+        for part in remaining_parts {
+            match part {
+                WordPart::Literal(s) => {
+                    let effective_boundary = if prev_was_literal { false } else { at_boundary };
+                    let (parts, ends_colon) = split_tildes_in_literal(s, effective_boundary);
+                    value_parts.extend(parts);
+                    at_boundary = ends_colon;
+                    prev_was_literal = true;
+                }
+                other => {
+                    value_parts.push(other.clone());
+                    at_boundary = false;
+                    prev_was_literal = false;
+                }
+            }
+        }
 
         Some(Assignment {
             name: name.to_string(),
@@ -1594,10 +1637,44 @@ mod tests {
     }
 
     #[test]
-    fn assignment_rhs_parameter_then_tilde_not_expanded() {
+    fn assignment_rhs_param_then_tilde_expands_after_colon() {
+        // POSIX §2.6.1: a tilde-prefix is recognized after `=` and after any
+        // unquoted `:` in an assignment value. The colon inside a trailing
+        // Literal that follows a Parameter expansion still counts as a
+        // segment boundary, so the tilde expands.
         let (_, parts) = parse_first_assignment("x=$var:~/bin\n").unwrap();
         let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
-        assert!(!has_tilde, "parts = {:?}", parts);
+        assert!(has_tilde, "parts = {:?}", parts);
+    }
+
+    #[test]
+    fn assignment_rhs_param_then_colon_tilde_expands() {
+        let (name, parts) = parse_first_assignment("x=$var:~/bin\n").unwrap();
+        assert_eq!(name, "x");
+        use ast::ParamExpr;
+        assert_eq!(
+            parts,
+            vec![
+                WordPart::Parameter(ParamExpr::Simple("var".to_string())),
+                lit(":"),
+                WordPart::Tilde(None),
+                lit("/bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn assignment_rhs_param_then_tilde_no_colon_stays_literal() {
+        let (name, parts) = parse_first_assignment("x=$var~/bin\n").unwrap();
+        assert_eq!(name, "x");
+        use ast::ParamExpr;
+        assert_eq!(
+            parts,
+            vec![
+                WordPart::Parameter(ParamExpr::Simple("var".to_string())),
+                lit("~/bin"),
+            ]
+        );
     }
 
     // ── empty compound_list rejection (POSIX §2.10) ─────────────
