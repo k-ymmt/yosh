@@ -58,37 +58,53 @@ Single-file change: `src/parser/mod.rs`. No lexer or expander changes.
 ```
 try_parse_assignment(Word)
   ├─ extract `name` before `=`
-  ├─ build initial value_parts = [Literal(after_eq), ...remaining_parts]
-  └─ value_parts = split_tildes_in_assignment_value(value_parts)
+  ├─ if after_eq is non-empty:
+  │    value_parts.extend(split_tildes_in_literal(after_eq))
+  ├─ else:
+  │    (nothing to push; the `=` was immediately followed by a
+  │     quoted / escaped / substituted part — those never undergo
+  │     unquoted tilde expansion)
+  └─ value_parts.extend_from_slice(remaining_parts)
 ```
 
-`split_tildes_in_assignment_value(parts: Vec<WordPart>) -> Vec<WordPart>`
-— new private pure function. Handles only the first `Literal` part;
-other parts pass through untouched. Unit-testable without any
-filesystem or environment dependencies.
+`split_tildes_in_literal(s: &str) -> Vec<WordPart>` — new private pure
+function. Takes a raw string (the unquoted portion after `=`) and
+returns the parts that represent it with tildes broken out at POSIX
+positions. Unit-testable as a pure `&str -> Vec<WordPart>` function,
+independent of the parser's Word / part machinery.
+
+**Key decomposition insight (escape safety):** the lexer already
+flushes the `literal` buffer at every `\`, `'`, `"`, `$`, and `` ` ``
+boundary. Any tilde that appears *before* such a boundary inside a
+word-level assignment lives in the string that `try_parse_assignment`
+receives as `after_eq`. Any tilde that appears *after* such a boundary
+has been segmented into its own `WordPart` and arrives via
+`remaining_parts`, where it must NOT be treated as a tilde-prefix (it
+was either quoted, escaped, or followed a substitution). Restricting
+processing to `after_eq` automatically handles `\~`, `'~'`, `"~"`, and
+`$var~` correctly without additional logic.
 
 ## Tilde split algorithm
 
-Operates on the first `Literal` of the input parts:
+`split_tildes_in_literal(s: &str) -> Vec<WordPart>` operates on a raw
+string (guaranteed non-empty by the caller — empty `after_eq` skips
+the call entirely):
 
 ```
-1. If parts is empty, or parts[0] is not Literal, return parts unchanged.
-2. Let s = the first Literal's content.
-3. Split s on ':' into segments (preserving empty segments between
+1. Split s on ':' into segments (preserving empty segments between
    consecutive colons and at ends).
-4. For each segment, in order:
+2. For each segment, in order:
      - If this is not the first segment, emit a Literal(":") separator.
      - If segment starts with '~':
          - Let user = chars until first '/' (or end of segment).
-         - If user contains only name-safe chars (letters, digits,
-           '_', '.', '-') or is empty:
+         - If user is empty, or contains only name-safe chars
+           (letters, digits, '_', '.', '-'):
              - Emit Tilde(None) if user empty, else Tilde(Some(user)).
              - Emit Literal(rest) if rest (from '/' onwards) non-empty.
          - Else:
              - Emit Literal(segment) unchanged.
      - Else: emit Literal(segment) unchanged.
-5. Merge adjacent Literal parts.
-6. Append the remaining parts (parts[1..]) unchanged.
+3. Merge adjacent Literal parts and return.
 ```
 
 Validity of the user portion: the algorithm accepts what `getpwnam`
@@ -123,9 +139,9 @@ existing `expand_tilde_prefix` returns the original `~user` string
 | `x=~ foo` | Lexer splits at space; assignment value is `"~"`, `foo` is a separate command word → `[Tilde(None)]` |
 | `x=~/bin$var` | First Literal `"~/bin"` splits to `[Tilde(None), Literal("/bin")]`; remaining `[Parameter(var)]` preserved → final: `[Tilde(None), Literal("/bin"), Parameter(var)]` |
 | `x=$var:~/bin` | First part is Parameter, not Literal → pass through unchanged. Out of scope; tracked as TODO. |
-| `x='~'/bin` | Lexer puts `~` in `SingleQuoted("~")`; first Literal is empty → pass through. Not expanded. |
-| `x="~"/bin` | Lexer puts `~` in `DoubleQuoted`; first Literal is empty → pass through. Not expanded. |
-| `x=\~/bin` | Backslash-escape — lexer behavior to verify at implementation time; expected: escaped `~` stays in a Literal at position 0, but our name-safe check excludes non-`~` first character, so we need to ensure `\~` is represented as `Literal("\\~/bin")` or `Literal("~/bin")` such that the tilde path is intentional. Implementation adds a test covering the lexer's actual output. |
+| `x='~'/bin` | Lexer produces `[Literal("x="), SingleQuoted("~"), Literal("/bin")]`. `after_eq = ""`, split is skipped, tilde stays quoted — not expanded. |
+| `x="~"/bin` | Same pattern with `DoubleQuoted`. Not expanded. |
+| `x=\~/bin` | Lexer flushes at `\`, producing `[Literal("x="), Literal("~"), Literal("/bin")]`. `after_eq = ""`, split is skipped, `Literal("~")` survives into the value as a plain literal — not expanded. |
 
 ## Error handling
 
@@ -137,27 +153,32 @@ text, which is the POSIX-correct behavior.
 
 ### A. Unit tests (in `src/parser/mod.rs` `#[cfg(test)]`)
 
-Table-driven tests for `split_tildes_in_assignment_value`:
+Table-driven tests for `split_tildes_in_literal`:
 
-- `split_empty_returns_empty`
-- `split_no_tilde_returns_unchanged`
-- `split_leading_tilde_only`
-- `split_leading_tilde_slash`
-- `split_leading_tilde_user`
-- `split_colon_separated_tildes`
-- `split_middle_segment_without_tilde`
-- `split_trailing_colon`
-- `split_leading_colon`
-- `split_consecutive_colons`
-- `split_invalid_tilde_position` (e.g. `foo~/bin`)
-- `split_preserves_non_literal_trailing_parts`
-- `split_empty_first_literal_no_op`
-- `split_first_part_is_not_literal_no_op`
+- `split_no_tilde_returns_single_literal`
+- `split_leading_tilde_only` (`~`)
+- `split_leading_tilde_slash` (`~/bin`)
+- `split_leading_tilde_user` (`~user/bin`)
+- `split_colon_separated_tildes` (`~/a:~/b`)
+- `split_middle_segment_with_tilde` (`/usr:~/bin`)
+- `split_trailing_colon` (`~/a:`)
+- `split_leading_colon` (`:~/a`)
+- `split_consecutive_colons` (`::~/a`)
+- `split_mid_word_tilde_stays_literal` (`foo~/bin`)
+- `split_double_tilde_invalid_user` (`~~/bin`)
+- `split_user_name_with_dot_and_dash` (`~a.b-c/bin`)
+- `split_user_name_starting_with_digit_still_accepted` (implementation choice — the pure function passes it; `getpwnam` fails gracefully at expand time)
 
-Integration tests exercising `try_parse_assignment`:
+Integration-level tests (same test module) exercising
+`try_parse_assignment` end-to-end:
 
-- `assignment_tilde_rhs_produces_tilde_part`
-- `assignment_tilde_with_colon_segments`
+- `assignment_rhs_unquoted_tilde_becomes_tilde_part` — `x=~/bin`
+- `assignment_rhs_multi_colon_tildes` — `PATH=~/a:~/b`
+- `assignment_rhs_backslash_tilde_stays_literal` — `x=\~/bin`
+  must NOT produce a `Tilde` part
+- `assignment_rhs_single_quoted_tilde_stays_quoted` — `x='~'/bin`
+- `assignment_rhs_parameter_then_tilde_not_expanded` — `x=$var:~/bin`
+  (documented out-of-scope case; regression guard)
 
 ### B. XFAIL flip
 
