@@ -1232,13 +1232,10 @@ mod tests {
 
     #[test]
     fn exec_compound_subshell_sets_lineno_on_entry() {
-        // Compound entry should set LINENO to the compound's own line
-        // before dispatching into the body. Use a Subshell: whether
-        // yosh runs the subshell body in-process (overwrites LINENO to
-        // the inner line) or forks a child (parent LINENO stays at the
-        // compound's line), the parent's LINENO must be either the
-        // compound's line (7) or the inner simple's line (22) — both
-        // reflect that our update fired at least once.
+        // yosh forks the subshell body into a child process, so the parent's
+        // env.vars is never modified by the child's execution. After the
+        // subshell compound is entered (setting LINENO to 7), the parent waits
+        // for the child and its LINENO remains at the compound's line (7).
         let mut exec = Executor::new("yosh", vec![]);
         let cmd = CompoundCommand {
             kind: CompoundCommandKind::Subshell {
@@ -1263,11 +1260,6 @@ mod tests {
             line: 7,
         };
         let _ = exec.exec_compound_command(&cmd, &[]);
-        let got = exec.env.vars.get("LINENO").map(|s| s.to_string());
-        assert!(
-            got.as_deref() == Some("7") || got.as_deref() == Some("22"),
-            "LINENO expected 7 (parent) or 22 (inner), got {:?}",
-            got
-        );
+        assert_eq!(exec.env.vars.get("LINENO"), Some("7"));
     }
 }
