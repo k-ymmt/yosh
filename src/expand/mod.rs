@@ -632,6 +632,30 @@ pub(crate) fn expand_tilde_prefix(home_dir: Option<&str>, s: &str) -> String {
     }
 }
 
+/// Expand tilde prefixes in an assignment RHS value per POSIX §2.6.1.
+///
+/// Tildes are expanded at the start of the value and after each unquoted `:`
+/// (for colon-separated path-style values like `PATH=~/a:~/b`).
+/// This mirrors `split_tildes_in_literal` but operates on already-expanded
+/// strings rather than AST nodes — used by `export` and `readonly` builtins
+/// which receive their `NAME=value` argument as a plain string after word
+/// expansion.
+pub(crate) fn expand_tilde_in_assignment_value(home_dir: Option<&str>, value: &str) -> String {
+    let segments: Vec<&str> = value.split(':').collect();
+    let mut out = String::with_capacity(value.len());
+    for (i, seg) in segments.iter().enumerate() {
+        if i > 0 {
+            out.push(':');
+        }
+        if seg.starts_with('~') {
+            out.push_str(&expand_tilde_prefix(home_dir, seg));
+        } else {
+            out.push_str(seg);
+        }
+    }
+    out
+}
+
 /// Expand `~username` using `getpwnam`.
 pub(crate) fn expand_tilde_user(user: &str) -> String {
     use std::ffi::CString;
