@@ -19,6 +19,7 @@ impl Executor {
         compound: &CompoundCommand,
         redirects: &[Redirect],
     ) -> Result<i32, ShellError> {
+        let _ = self.env.vars.set("LINENO", compound.line.to_string());
         let mut redirect_state = RedirectState::new();
         if let Err(e) = redirect_state.apply(redirects, &mut self.env, true) {
             self.env.exec.last_exit_status = 1;

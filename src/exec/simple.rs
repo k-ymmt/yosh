@@ -17,6 +17,7 @@ use super::redirect::RedirectState;
 impl Executor {
     /// Execute a simple command (assignments, builtins, or external programs).
     pub(crate) fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> Result<i32, ShellError> {
+        let _ = self.env.vars.set("LINENO", cmd.line.to_string());
         // Expand all words
         let expanded = match expand_words(&mut self.env, &cmd.words) {
             Ok(words) => words,

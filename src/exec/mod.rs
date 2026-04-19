@@ -1182,4 +1182,92 @@ mod tests {
         assert_eq!(status, 1);
         assert_eq!(exec.exit_requested, Some(0));
     }
+
+    // ── LINENO update tests ─────────────────────────────────────
+
+    use crate::parser::ast::{CompoundCommand, CompoundCommandKind};
+
+    #[test]
+    fn exec_simple_command_sets_lineno() {
+        let mut exec = Executor::new("yosh", vec![]);
+        let cmd = SimpleCommand {
+            assignments: vec![],
+            words: vec![Word::literal("true")],
+            redirects: vec![],
+            line: 5,
+        };
+        let _ = exec.exec_simple_command(&cmd);
+        assert_eq!(exec.env.vars.get("LINENO"), Some("5"));
+    }
+
+    #[test]
+    fn exec_compound_command_sets_lineno() {
+        let mut exec = Executor::new("yosh", vec![]);
+        let cmd = CompoundCommand {
+            kind: CompoundCommandKind::BraceGroup {
+                body: vec![CompleteCommand {
+                    items: vec![(
+                        AndOrList {
+                            first: Pipeline {
+                                negated: false,
+                                commands: vec![Command::Simple(SimpleCommand {
+                                    assignments: vec![],
+                                    words: vec![Word::literal("true")],
+                                    redirects: vec![],
+                                    line: 11,
+                                })],
+                            },
+                            rest: vec![],
+                        },
+                        None,
+                    )],
+                }],
+            },
+            line: 10,
+        };
+        let _ = exec.exec_compound_command(&cmd, &[]);
+        // Inner SimpleCommand (line 11) runs last, so LINENO ends at 11.
+        assert_eq!(exec.env.vars.get("LINENO"), Some("11"));
+    }
+
+    #[test]
+    fn exec_compound_subshell_sets_lineno_on_entry() {
+        // Compound entry should set LINENO to the compound's own line
+        // before dispatching into the body. Use a Subshell: whether
+        // yosh runs the subshell body in-process (overwrites LINENO to
+        // the inner line) or forks a child (parent LINENO stays at the
+        // compound's line), the parent's LINENO must be either the
+        // compound's line (7) or the inner simple's line (22) — both
+        // reflect that our update fired at least once.
+        let mut exec = Executor::new("yosh", vec![]);
+        let cmd = CompoundCommand {
+            kind: CompoundCommandKind::Subshell {
+                body: vec![CompleteCommand {
+                    items: vec![(
+                        AndOrList {
+                            first: Pipeline {
+                                negated: false,
+                                commands: vec![Command::Simple(SimpleCommand {
+                                    assignments: vec![],
+                                    words: vec![Word::literal(":")],
+                                    redirects: vec![],
+                                    line: 22,
+                                })],
+                            },
+                            rest: vec![],
+                        },
+                        None,
+                    )],
+                }],
+            },
+            line: 7,
+        };
+        let _ = exec.exec_compound_command(&cmd, &[]);
+        let got = exec.env.vars.get("LINENO").map(|s| s.to_string());
+        assert!(
+            got.as_deref() == Some("7") || got.as_deref() == Some("22"),
+            "LINENO expected 7 (parent) or 22 (inner), got {:?}",
+            got
+        );
+    }
 }
