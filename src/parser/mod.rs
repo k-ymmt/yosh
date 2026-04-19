@@ -907,6 +907,13 @@ impl Parser {
         for part in &word.parts {
             match part {
                 WordPart::Literal(s) => delimiter.push_str(s),
+                WordPart::EscapedLiteral(s) => {
+                    // Per POSIX §2.7.4, any escape in the heredoc delimiter word
+                    // marks the heredoc as quoted (body expansion disabled) and
+                    // the escaped character is part of the delimiter itself.
+                    delimiter.push_str(s);
+                    quoted = true;
+                }
                 WordPart::SingleQuoted(s) => {
                     delimiter.push_str(s);
                     quoted = true;
@@ -914,8 +921,11 @@ impl Parser {
                 WordPart::DoubleQuoted(parts) => {
                     quoted = true;
                     for p in parts {
-                        if let WordPart::Literal(s) = p {
-                            delimiter.push_str(s);
+                        match p {
+                            WordPart::Literal(s) | WordPart::EscapedLiteral(s) => {
+                                delimiter.push_str(s);
+                            }
+                            _ => {}
                         }
                     }
                 }
