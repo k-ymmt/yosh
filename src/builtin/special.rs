@@ -100,7 +100,7 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
             let name = &arg[..pos];
             let raw_value = &arg[pos + 1..];
             // Value already has tilde expansion applied at the executor level
-            // via exec_assignment_builtin_args. No further expansion needed.
+            // via expand_assignment_builtin_args. No further expansion needed.
             if let Err(e) = env.vars.set(name, raw_value) {
                 eprintln!("yosh: export: {}", e);
                 status = 1;
@@ -149,7 +149,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
             let name = &arg[..pos];
             let raw_value = &arg[pos + 1..];
             // Value already has tilde expansion applied at the executor level
-            // via exec_assignment_builtin_args. No further expansion needed.
+            // via expand_assignment_builtin_args. No further expansion needed.
             if let Err(e) = env.vars.set(name, raw_value) {
                 eprintln!("yosh: readonly: {}", e);
                 status = 1;
