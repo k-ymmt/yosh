@@ -336,7 +336,7 @@ impl Parser {
         // Build value word
         let mut value_parts = Vec::new();
         if !after_eq.is_empty() {
-            value_parts.push(WordPart::Literal(after_eq.to_string()));
+            value_parts.extend(split_tildes_in_literal(after_eq));
         }
         value_parts.extend_from_slice(remaining_parts);
 
@@ -1466,5 +1466,71 @@ mod tests {
                 WordPart::Tilde(None),
             ]
         );
+    }
+
+    // ── try_parse_assignment integration ────────────────────────
+
+    // AST shape (verified against src/parser/ast.rs):
+    //   Program { commands: Vec<CompleteCommand> }
+    //   CompleteCommand { items: Vec<(AndOrList, Option<SeparatorOp>)> }
+    //   AndOrList { first: Pipeline, rest: ... }
+    //   Pipeline { commands: Vec<Command>, negated: bool }
+    //   Command::Simple(SimpleCommand)
+    //   SimpleCommand { assignments: Vec<Assignment>, words, redirects }
+    fn parse_first_assignment(source: &str) -> Option<(String, Vec<WordPart>)> {
+        let mut parser = Parser::new(source);
+        let program = parser.parse_program().ok()?;
+        let cc = program.commands.into_iter().next()?;
+        let (aol, _) = cc.items.into_iter().next()?;
+        let cmd = aol.first.commands.into_iter().next()?;
+        let Command::Simple(sc) = cmd else {
+            return None;
+        };
+        let a = sc.assignments.into_iter().next()?;
+        let parts = a.value.map(|w| w.parts).unwrap_or_default();
+        Some((a.name, parts))
+    }
+
+    #[test]
+    fn assignment_rhs_unquoted_tilde_becomes_tilde_part() {
+        let (name, parts) = parse_first_assignment("x=~/bin\n").unwrap();
+        assert_eq!(name, "x");
+        assert_eq!(parts, vec![WordPart::Tilde(None), lit("/bin")]);
+    }
+
+    #[test]
+    fn assignment_rhs_multi_colon_tildes() {
+        let (name, parts) = parse_first_assignment("PATH=~/a:~/b\n").unwrap();
+        assert_eq!(name, "PATH");
+        assert_eq!(
+            parts,
+            vec![
+                WordPart::Tilde(None),
+                lit("/a:"),
+                WordPart::Tilde(None),
+                lit("/b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn assignment_rhs_backslash_tilde_stays_literal() {
+        let (_, parts) = parse_first_assignment("x=\\~/bin\n").unwrap();
+        let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
+        assert!(!has_tilde, "parts = {:?}", parts);
+    }
+
+    #[test]
+    fn assignment_rhs_single_quoted_tilde_stays_quoted() {
+        let (_, parts) = parse_first_assignment("x='~'/bin\n").unwrap();
+        let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
+        assert!(!has_tilde, "parts = {:?}", parts);
+    }
+
+    #[test]
+    fn assignment_rhs_parameter_then_tilde_not_expanded() {
+        let (_, parts) = parse_first_assignment("x=$var:~/bin\n").unwrap();
+        let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
+        assert!(!has_tilde, "parts = {:?}", parts);
     }
 }
