@@ -45,6 +45,26 @@ impl Parser {
         }
     }
 
+    /// Like `new_with_aliases` but the lexer's line counter starts at `start_line`
+    /// instead of 1. Used when a script is split into chunks for incremental parsing
+    /// so that each chunk reports the correct source-file line number.
+    pub fn new_with_aliases_at_line(
+        input: &str,
+        aliases: &crate::env::aliases::AliasStore,
+        start_line: usize,
+    ) -> Self {
+        let mut lexer = Lexer::new_with_aliases_at_line(input, aliases, start_line);
+        let current = lexer.next_token().unwrap_or(SpannedToken {
+            token: Token::Eof,
+            span: Span::default(),
+        });
+        Self {
+            lexer,
+            current,
+            pre_current_pos: 0,
+        }
+    }
+
     /// Returns the byte position in the input up to (but not including) the current
     /// look-ahead token. This is useful for incremental parsing.
     pub fn consumed_bytes(&self) -> usize {

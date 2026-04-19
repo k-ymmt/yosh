@@ -72,6 +72,19 @@ impl Lexer {
         lexer
     }
 
+    /// Create a lexer whose initial line counter starts at `start_line` instead of 1.
+    /// Used when a script is split into chunks and each chunk must track its true
+    /// source-file line number.
+    pub fn new_with_aliases_at_line(
+        input: &str,
+        aliases: &crate::env::aliases::AliasStore,
+        start_line: usize,
+    ) -> Self {
+        let mut lexer = Self::new_with_aliases(input, aliases);
+        lexer.line = start_line;
+        lexer
+    }
+
     /// Returns the current byte position in the input.
     /// Since alias expansion uses a token queue instead of rewriting the buffer,
     /// this position always maps to the original input.

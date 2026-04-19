@@ -211,18 +211,32 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_stri
 
     // Parse and execute one complete command at a time so that aliases
     // defined by earlier commands are available for later ones.
+    //
+    // `current_line` tracks the 1-based line number at the start of `remaining`
+    // so that the parser receives the correct initial line counter even after
+    // leading whitespace/newlines are stripped between commands.
     let mut remaining = input;
+    let mut current_line: usize = 1;
     let mut status = 0;
 
     loop {
-        // Skip leading whitespace and newlines
+        // Skip leading whitespace and newlines, counting the newlines so the
+        // parser can start with the correct source-file line number.
+        let before = remaining;
         let trimmed = remaining.trim_start_matches([' ', '\t', '\n']);
         if trimmed.is_empty() {
             break;
         }
+        // Count newlines in the skipped prefix to advance current_line.
+        let skipped = &before[..before.len() - trimmed.len()];
+        current_line += skipped.chars().filter(|&c| c == '\n').count();
         remaining = trimmed;
 
-        let mut p = parser::Parser::new_with_aliases(remaining, &executor.env.aliases);
+        let mut p = parser::Parser::new_with_aliases_at_line(
+            remaining,
+            &executor.env.aliases,
+            current_line,
+        );
         if p.is_at_end() {
             break;
         }
@@ -236,6 +250,9 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_stri
                     // the look-ahead didn't advance. Break out.
                     break;
                 }
+                // Count newlines in the consumed bytes to keep current_line in sync.
+                let consumed_text = &remaining[..consumed];
+                current_line += consumed_text.chars().filter(|&c| c == '\n').count();
                 drop(p);
                 status = executor.exec_complete_command(&cmd);
                 // Check for flow control (exit handled by std::process::exit in builtin)

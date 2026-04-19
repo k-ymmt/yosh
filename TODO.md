@@ -82,7 +82,6 @@
 
 - [ ] §2.6.1 Tilde expansion across mixed WordPart boundaries — `x=$var:~/bin` or `x=$var~/bin` does not expand `~` because the colon is in a Literal part that sits after a Parameter part; currently only the first Literal derived from `after_eq` is scanned by `split_tildes_in_literal`
 - [ ] §2.6.1 Tilde escape info lost at export/readonly — `export NAME=\~/val` wrongly expands because word expansion drops the backslash before `expand_tilde_in_assignment_value` sees the argument; would require preserving escape metadata through word expansion or routing export/readonly args through the parser's assignment path
-- [ ] §2.5.3 LINENO — `$LINENO` expands to an empty string; POSIX requires it to be set to the current script/function line number before each command (see `e2e/posix_spec/2_05_03_shell_variables/lineno_in_script.sh` XFAIL)
 - [ ] §2.11 ignored-on-entry signal inheritance — no in-harness test yet (nested `sh -c` escapes yosh); revisit after a yosh-aware subshell helper lands
 - [ ] §2.7.5 Duplicating an Input File Descriptor — no dedicated test; add when FD dup tests are expanded
 - [ ] §2.7.7 Open File Descriptors for Reading and Writing — no dedicated '<>' test
