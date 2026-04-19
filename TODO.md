@@ -102,11 +102,8 @@
 
 ## Future: POSIX Conformance Gaps (Chapter 2)
 
-- [ ] §2.6.1 Tilde escape info lost at export/readonly — `export NAME=\~/val` wrongly expands because word expansion drops the backslash before `expand_tilde_in_assignment_value` sees the argument; would require preserving escape metadata through word expansion or routing export/readonly args through the parser's assignment path
-- [ ] §2.6.1 Line-continuation tilde after unquoted `:` — `x=foo:\<newline>~/bin` does not expand the tilde because the `\<newline>` line-continuation causes the lexer to split into adjacent `WordPart::Literal` entries, which the parser's `prev_was_literal` heuristic (introduced in sub-project 3) then suppresses. Pre-existing (pre-sub-project 3 also produced the same wrong output, via a different code path). Pinned by `assignment_rhs_line_continuation_tilde_known_regression` in `src/parser/mod.rs`. Sub-project 4's escape-metadata work should replace `prev_was_literal` with a precise escape check and fix this case.
 - [ ] §2.11 ignored-on-entry signal inheritance — no in-harness test yet (nested `sh -c` escapes yosh); revisit after a yosh-aware subshell helper lands
 - [ ] §2.10.2 Rule 5 — yosh accepts reserved words as `for` NAME (`e2e/posix_spec/2_10_shell_grammar/rule05_for_reserved_word_rejected.sh` XFAIL). POSIX requires NAME to be a valid name, not a reserved word.
-- [ ] Sub-project 4 must REMOVE `prev_was_literal` (not leave as fallback) — when escape metadata lands on `WordPart`, the `prev_was_literal` heuristic in `try_parse_assignment` should be deleted in the same commit, replaced by a precise escape check. Leaving it as a "belt and suspenders" fallback would let a future lexer refactor (stops producing adjacent Literals for escapes) silently turn `x=\~/bin` into an expand case with no test coverage catching it (`src/parser/mod.rs`).
 
 ## Future: Release Skill Enhancements
 

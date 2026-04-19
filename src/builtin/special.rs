@@ -6,7 +6,6 @@ use nix::unistd::execvp;
 use crate::env::{FlowControl, ShellEnv, TrapAction};
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::exec::Executor;
-use crate::expand::expand_tilde_in_assignment_value;
 
 pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor) -> i32 {
     let result = match name {
@@ -95,14 +94,14 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
         return Ok(0);
     }
 
-    let home = env.vars.get("HOME").map(|s| s.to_string());
     let mut status = 0;
     for arg in args {
         if let Some(pos) = arg.find('=') {
             let name = &arg[..pos];
             let raw_value = &arg[pos + 1..];
-            let value = expand_tilde_in_assignment_value(home.as_deref(), raw_value);
-            if let Err(e) = env.vars.set(name, &value) {
+            // Value already has tilde expansion applied at the executor level
+            // via exec_assignment_builtin_args. No further expansion needed.
+            if let Err(e) = env.vars.set(name, raw_value) {
                 eprintln!("yosh: export: {}", e);
                 status = 1;
                 continue;
@@ -144,14 +143,14 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         return Ok(0);
     }
 
-    let home = env.vars.get("HOME").map(|s| s.to_string());
     let mut status = 0;
     for arg in args {
         if let Some(pos) = arg.find('=') {
             let name = &arg[..pos];
             let raw_value = &arg[pos + 1..];
-            let value = expand_tilde_in_assignment_value(home.as_deref(), raw_value);
-            if let Err(e) = env.vars.set(name, &value) {
+            // Value already has tilde expansion applied at the executor level
+            // via exec_assignment_builtin_args. No further expansion needed.
+            if let Err(e) = env.vars.set(name, raw_value) {
                 eprintln!("yosh: readonly: {}", e);
                 status = 1;
                 continue;

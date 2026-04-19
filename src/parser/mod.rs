@@ -288,7 +288,7 @@ impl Parser {
 
                 // Only try assignments before any command words have been seen
                 if words.is_empty()
-                    && let Some(assignment) = self.try_parse_assignment(&word)
+                    && let Some(assignment) = Self::try_parse_assignment(&word)
                 {
                     self.advance()?;
                     assignments.push(assignment);
@@ -320,7 +320,7 @@ impl Parser {
 
     /// Try to parse an assignment from a word.
     /// Returns Some(Assignment) if the word contains an `=` and a valid name prefix.
-    pub fn try_parse_assignment(&self, word: &Word) -> Option<Assignment> {
+    pub fn try_parse_assignment(word: &Word) -> Option<Assignment> {
         use ast::WordPart;
 
         // We need the first part to be a Literal containing '='

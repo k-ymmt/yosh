@@ -14,6 +14,43 @@ use super::Executor;
 use super::command::wait_child;
 use super::redirect::RedirectState;
 
+/// For export/readonly, re-process each Word argument by trying to parse
+/// it as an Assignment first. Words that successfully parse as `NAME=value`
+/// get their value Word expanded in a tilde-aware way (EscapedLiteral
+/// segments bypass tilde recognition in split_tildes_in_literal), avoiding
+/// the lossy string-based tilde expansion the builtin used to perform.
+///
+/// Returns a Vec of `NAME=value` or `NAME` strings suitable for the
+/// existing builtin_export / builtin_readonly signatures.
+fn expand_assignment_builtin_args(
+    env: &mut crate::env::ShellEnv,
+    words: &[crate::parser::ast::Word],
+) -> crate::error::Result<Vec<String>> {
+    use crate::parser::Parser;
+    use crate::parser::ast::Assignment;
+
+    let mut out = Vec::with_capacity(words.len());
+    for word in words {
+        match Parser::try_parse_assignment(word) {
+            Some(Assignment { name, value: Some(value_word) }) => {
+                let value = crate::expand::expand_word_to_string(env, &value_word)?;
+                out.push(format!("{}={}", name, value));
+            }
+            Some(Assignment { name, value: None }) => {
+                out.push(format!("{}=", name));
+            }
+            None => {
+                // Not an assignment (e.g. `export NAME` bare form or `export -p`).
+                // Fall back to normal word expansion (may produce multiple fields
+                // after IFS split; we preserve all of them).
+                let expanded = crate::expand::expand_words(env, std::slice::from_ref(word))?;
+                out.extend(expanded);
+            }
+        }
+    }
+    Ok(out)
+}
+
 impl Executor {
     /// Execute a simple command (assignments, builtins, or external programs).
     pub(crate) fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> Result<i32, ShellError> {
@@ -233,7 +270,24 @@ impl Executor {
                     self.env.exec.last_exit_status = 1;
                     return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
                 }
-                let status = exec_special_builtin(&command_name, &args, self);
+                let status = if command_name == "export" || command_name == "readonly" {
+                    // Re-expand args from the original Words via try_parse_assignment
+                    // so EscapedLiteral / Tilde metadata is respected. cmd.words[0]
+                    // is the command name; args start at [1..].
+                    let original_args = &cmd.words[1..];
+                    match expand_assignment_builtin_args(&mut self.env, original_args) {
+                        Ok(reparsed_args) => {
+                            exec_special_builtin(&command_name, &reparsed_args, self)
+                        }
+                        Err(e) => {
+                            self.env.exec.last_exit_status = 1;
+                            redirect_state.restore();
+                            return Err(e);
+                        }
+                    }
+                } else {
+                    exec_special_builtin(&command_name, &args, self)
+                };
                 redirect_state.restore();
                 self.plugins
                     .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
