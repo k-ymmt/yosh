@@ -387,8 +387,9 @@ impl Parser {
         // word.parts[0] is always a Literal here (we early-returned otherwise),
         // so the run of Literal parts begins with the first part. Any
         // remaining_parts[0] that is also a Literal therefore follows another
-        // Literal with nothing between them, which can only happen via a
-        // backslash escape.
+        // Literal with nothing between them — which can only happen via a
+        // lexer split (backslash-metachar escape or `\<newline>` line
+        // continuation), per the rationale documented above.
         let mut prev_was_literal = true;
         if !after_eq.is_empty() {
             let (parts, ends_colon) = split_tildes_in_literal(after_eq, at_boundary);
