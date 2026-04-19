@@ -786,7 +786,7 @@ EOF
 ```bash
 ./e2e/run_tests.sh --filter=2_10_ 2>&1 | tail -2
 git status
-git log --oneline d4d9902..HEAD
+git log --oneline 87d47c3..HEAD
 ```
 Expected:
 - First: `Failed: 0` with Total = 40 (13 existing + 24 new in `2_10_shell_grammar/` + 3 in `2_10_1_lexical/` = 40).
