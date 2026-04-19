@@ -250,6 +250,7 @@ impl Parser {
     }
 
     pub fn parse_simple_command(&mut self) -> error::Result<SimpleCommand> {
+        let line = self.current.span.line;
         let mut assignments = Vec::new();
         let mut words = Vec::new();
         let mut redirects = Vec::new();
@@ -293,7 +294,7 @@ impl Parser {
             assignments,
             words,
             redirects,
-            line: 0,
+            line,
         })
     }
 
@@ -384,6 +385,7 @@ impl Parser {
     }
 
     pub fn parse_compound_command(&mut self) -> error::Result<CompoundCommand> {
+        let line = self.current.span.line;
         let kind = if self.is_reserved("if") {
             self.parse_if_clause()?
         } else if self.is_reserved("for") {
@@ -407,7 +409,7 @@ impl Parser {
                 "expected compound command",
             ));
         };
-        Ok(CompoundCommand { kind, line: 0 })
+        Ok(CompoundCommand { kind, line })
     }
 
     /// Parse a compound_list: skip newlines, then parse complete_commands until at_end or is_complete_command_end.
@@ -1664,5 +1666,93 @@ mod tests {
         let err = parse_err("if true; then\n#only comment\nfi\n");
         assert_eq!(err.exit_code(), 2);
         assert!(err.to_string().contains("'then' body"));
+    }
+
+    // ── LINENO line-capture tests ───────────────────────────────
+
+    fn first_simple_cmd(source: &str) -> ast::SimpleCommand {
+        let program = Parser::new(source).parse_program().unwrap();
+        let cc = program.commands.into_iter().next().unwrap();
+        let (aol, _) = cc.items.into_iter().next().unwrap();
+        let cmd = aol.first.commands.into_iter().next().unwrap();
+        match cmd {
+            Command::Simple(s) => s,
+            _ => panic!("expected simple command"),
+        }
+    }
+
+    fn first_compound_cmd(source: &str) -> ast::CompoundCommand {
+        let program = Parser::new(source).parse_program().unwrap();
+        let cc = program.commands.into_iter().next().unwrap();
+        let (aol, _) = cc.items.into_iter().next().unwrap();
+        let cmd = aol.first.commands.into_iter().next().unwrap();
+        match cmd {
+            Command::Compound(c, _) => c,
+            _ => panic!("expected compound command"),
+        }
+    }
+
+    #[test]
+    fn parse_simple_command_captures_line() {
+        let cmd = first_simple_cmd("echo hi\n");
+        assert_eq!(cmd.line, 1);
+    }
+
+    #[test]
+    fn parse_simple_command_on_third_line() {
+        let cmd = first_simple_cmd("\n\necho hi\n");
+        assert_eq!(cmd.line, 3);
+    }
+
+    #[test]
+    fn parse_compound_if_captures_line() {
+        let cmd = first_compound_cmd("if true; then :; fi\n");
+        assert_eq!(cmd.line, 1);
+        assert!(matches!(cmd.kind, CompoundCommandKind::If { .. }));
+    }
+
+    #[test]
+    fn parse_compound_if_on_second_line() {
+        let cmd = first_compound_cmd("\nif true; then :; fi\n");
+        assert_eq!(cmd.line, 2);
+    }
+
+    #[test]
+    fn parse_brace_group_captures_line() {
+        let cmd = first_compound_cmd("{ :; }\n");
+        assert_eq!(cmd.line, 1);
+        assert!(matches!(cmd.kind, CompoundCommandKind::BraceGroup { .. }));
+    }
+
+    #[test]
+    fn parse_subshell_captures_line() {
+        let cmd = first_compound_cmd("( :; )\n");
+        assert_eq!(cmd.line, 1);
+        assert!(matches!(cmd.kind, CompoundCommandKind::Subshell { .. }));
+    }
+
+    #[test]
+    fn parse_while_captures_line() {
+        let cmd = first_compound_cmd("while true; do :; done\n");
+        assert_eq!(cmd.line, 1);
+        assert!(matches!(cmd.kind, CompoundCommandKind::While { .. }));
+    }
+
+    #[test]
+    fn parse_nested_if_then_captures_body_line() {
+        let outer = first_compound_cmd("if true; then\necho hi\nfi\n");
+        assert_eq!(outer.line, 1);
+        if let CompoundCommandKind::If { then_part, .. } = &outer.kind {
+            let inner_cc = then_part.first().expect("then body non-empty");
+            let (inner_aol, _) = inner_cc.items.first().expect("inner AOL");
+            let inner_cmd = inner_aol.first.commands.first().expect("inner cmd");
+            if let Command::Simple(inner_simple) = inner_cmd {
+                assert_eq!(inner_simple.line, 2);
+            } else {
+                panic!("expected inner simple command");
+            }
+        } else {
+            panic!("expected If kind");
+        }
     }
 }
