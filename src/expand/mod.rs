@@ -641,9 +641,8 @@ pub(crate) fn expand_tilde_prefix(home_dir: Option<&str>, s: &str) -> String {
 /// which receive their `NAME=value` argument as a plain string after word
 /// expansion.
 pub(crate) fn expand_tilde_in_assignment_value(home_dir: Option<&str>, value: &str) -> String {
-    let segments: Vec<&str> = value.split(':').collect();
     let mut out = String::with_capacity(value.len());
-    for (i, seg) in segments.iter().enumerate() {
+    for (i, seg) in value.split(':').enumerate() {
         if i > 0 {
             out.push(':');
         }
