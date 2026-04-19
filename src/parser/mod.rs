@@ -1708,23 +1708,13 @@ mod tests {
     }
 
     #[test]
-    fn assignment_rhs_line_continuation_tilde_known_regression() {
-        // `x=foo:\<newline>~/bin` — POSIX §2.2.1 removes the backslash+newline
-        // before tokenization, so the RHS is equivalent to `foo:~/bin` with the
-        // tilde expanded. yosh currently produces `[Literal("foo:"), Literal("~/bin")]`
-        // (tilde NOT expanded) because the lexer splits at the continuation,
-        // making the two Literals adjacent and triggering the prev_was_literal
-        // suppression. This is a known pre-existing regression (not caused by
-        // this sub-project); sub-project 4 will fix it via escape metadata.
+    fn assignment_rhs_line_continuation_tilde_expands() {
+        // POSIX §2.2.1: `\<newline>` is removed before tokenization, so
+        // `x=foo:\<newline>~/bin` is semantically identical to `x=foo:~/bin`
+        // and the tilde MUST expand at the ':' boundary.
         let (_, parts) = parse_first_assignment("x=foo:\\\n~/bin\n").unwrap();
         let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
-        assert!(
-            !has_tilde,
-            "If this assertion flips to passing (tilde IS now in parts), the \
-             line-continuation regression has been fixed and this test should \
-             be updated to `assert!(has_tilde, ...)`. parts = {:?}",
-            parts
-        );
+        assert!(has_tilde, "parts = {:?}", parts);
     }
 
     // ── empty compound_list rejection (POSIX §2.10) ─────────────

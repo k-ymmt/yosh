@@ -89,11 +89,20 @@ impl Lexer {
                         parts.push(part);
                     }
                     b'\\' => {
-                        if !literal.is_empty() {
-                            parts.push(WordPart::Literal(std::mem::take(&mut literal)));
+                        // Peek at the next byte to differentiate \<newline> line-
+                        // continuation (transparent — don't flush, don't emit) from
+                        // \<char> escape (flush and emit EscapedLiteral).
+                        if self.peek_byte() == b'\n' {
+                            self.advance(); // consume '\'
+                            self.advance(); // consume '\n'
+                            // loop continues with `literal` still accumulating
+                        } else {
+                            if !literal.is_empty() {
+                                parts.push(WordPart::Literal(std::mem::take(&mut literal)));
+                            }
+                            let part = self.read_escape_unquoted()?;
+                            parts.push(part);
                         }
-                        let part = self.read_backslash()?;
-                        parts.push(part);
                     }
                     b'$' => {
                         if !literal.is_empty() {
@@ -193,26 +202,25 @@ impl Lexer {
         Ok(WordPart::DoubleQuoted(inner))
     }
 
-    /// Handles `\` outside double quotes.
-    /// `\<newline>` is line continuation (returns empty Literal, filtered later).
-    /// Otherwise returns literal of next char.
-    fn read_backslash(&mut self) -> error::Result<WordPart> {
+    /// Handles `\<char>` escape outside double quotes. The caller MUST have
+    /// confirmed the next byte is not `\n` (line-continuation is handled inline
+    /// in `read_word_parts`). Returns `EscapedLiteral` for the escaped character.
+    fn read_escape_unquoted(&mut self) -> error::Result<WordPart> {
         self.advance(); // consume '\'
         if self.at_end() {
+            // Trailing `\` with no following char: per POSIX, preserve as literal
+            // backslash (implementation-defined; yosh keeps it).
             return Ok(WordPart::Literal("\\".to_string()));
         }
         let ch = self.current_byte();
-        if ch == b'\n' {
-            // line continuation: consume newline, return empty literal (filtered later)
-            self.advance();
-            Ok(WordPart::Literal(String::new()))
-        } else {
-            self.advance();
-            Ok(WordPart::Literal((ch as char).to_string()))
-        }
+        self.advance();
+        Ok(WordPart::EscapedLiteral((ch as char).to_string()))
     }
 
-    /// Inside double quotes, `\` only escapes `$ ` " \ newline`.
+    /// Inside double quotes, `\` only escapes `$`, `` ` ``, `"`, `\`, and `<newline>`.
+    /// Special escapes emit `EscapedLiteral`; `\<newline>` still returns an empty
+    /// Literal that the outer filter removes; other `\<ch>` keeps the backslash
+    /// as a literal two-character sequence per POSIX §2.2.3.
     fn read_backslash_in_double_quote(&mut self) -> error::Result<WordPart> {
         self.advance(); // consume '\'
         if self.at_end() {
@@ -222,15 +230,13 @@ impl Lexer {
         match ch {
             b'$' | b'`' | b'"' | b'\\' => {
                 self.advance();
-                Ok(WordPart::Literal((ch as char).to_string()))
+                Ok(WordPart::EscapedLiteral((ch as char).to_string()))
             }
             b'\n' => {
-                // line continuation
                 self.advance();
                 Ok(WordPart::Literal(String::new()))
             }
             _ => {
-                // backslash is kept literally
                 self.advance();
                 Ok(WordPart::Literal(format!("\\{}", ch as char)))
             }

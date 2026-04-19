@@ -241,6 +241,8 @@ mod tests {
 
     #[test]
     fn test_backslash_escape() {
+        // `\<char>` unquoted escape now emits EscapedLiteral to preserve the
+        // escape metadata for downstream tilde-prefix recognition (POSIX §2.6.1).
         let tokens = tokenize("echo hello\\ world");
         assert_eq!(tokens.len(), 2);
         assert_eq!(
@@ -248,7 +250,7 @@ mod tests {
             Token::Word(Word {
                 parts: vec![
                     WordPart::Literal("hello".to_string()),
-                    WordPart::Literal(" ".to_string()),
+                    WordPart::EscapedLiteral(" ".to_string()),
                     WordPart::Literal("world".to_string()),
                 ],
             })
@@ -257,15 +259,15 @@ mod tests {
 
     #[test]
     fn test_line_continuation() {
+        // POSIX §2.2.1: `\<newline>` is removed before tokenization. The lexer
+        // now accumulates the two literal chunks into a SINGLE merged Literal
+        // (no split, no empty entry).
         let tokens = tokenize("echo hel\\\nlo");
         assert_eq!(tokens.len(), 2);
         assert_eq!(
             tokens[1],
             Token::Word(Word {
-                parts: vec![
-                    WordPart::Literal("hel".to_string()),
-                    WordPart::Literal("lo".to_string())
-                ],
+                parts: vec![WordPart::Literal("hello".to_string())],
             })
         );
     }
@@ -594,5 +596,36 @@ mod tests {
                 Token::Word(Word::literal("1"))
             ]
         );
+    }
+
+    #[test]
+    fn lexer_backslash_escape_emits_escaped_literal() {
+        let mut lexer = Lexer::new("x=\\~/bin");
+        let tok = lexer.next_token().expect("token");
+        let parts = match &tok.token {
+            Token::Word(w) => &w.parts,
+            other => panic!("expected Word, got {:?}", other),
+        };
+        let has_escaped = parts.iter().any(|p| matches!(p, WordPart::EscapedLiteral(s) if s == "~"));
+        assert!(
+            has_escaped,
+            "expected EscapedLiteral(~) in parts, got {:?}",
+            parts
+        );
+    }
+
+    #[test]
+    fn lexer_line_continuation_merges_literals() {
+        let mut lexer = Lexer::new("x=foo\\\nbar");
+        let tok = lexer.next_token().expect("token");
+        let parts = match &tok.token {
+            Token::Word(w) => &w.parts,
+            other => panic!("expected Word, got {:?}", other),
+        };
+        assert_eq!(parts.len(), 1, "expected single merged Literal, got {:?}", parts);
+        match &parts[0] {
+            WordPart::Literal(s) => assert_eq!(s, "x=foobar"),
+            other => panic!("expected Literal, got {:?}", other),
+        }
     }
 }
