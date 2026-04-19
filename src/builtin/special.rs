@@ -101,8 +101,7 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
         if let Some(pos) = arg.find('=') {
             let name = &arg[..pos];
             let raw_value = &arg[pos + 1..];
-            let value =
-                expand_tilde_in_assignment_value(home.as_deref(), raw_value);
+            let value = expand_tilde_in_assignment_value(home.as_deref(), raw_value);
             if let Err(e) = env.vars.set(name, &value) {
                 eprintln!("yosh: export: {}", e);
                 status = 1;
@@ -151,8 +150,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         if let Some(pos) = arg.find('=') {
             let name = &arg[..pos];
             let raw_value = &arg[pos + 1..];
-            let value =
-                expand_tilde_in_assignment_value(home.as_deref(), raw_value);
+            let value = expand_tilde_in_assignment_value(home.as_deref(), raw_value);
             if let Err(e) = env.vars.set(name, &value) {
                 eprintln!("yosh: readonly: {}", e);
                 status = 1;

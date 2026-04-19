@@ -1434,18 +1434,12 @@ mod tests {
 
     #[test]
     fn split_mid_word_tilde_stays_literal() {
-        assert_eq!(
-            split_tildes_in_literal("foo~/bin"),
-            vec![lit("foo~/bin")]
-        );
+        assert_eq!(split_tildes_in_literal("foo~/bin"), vec![lit("foo~/bin")]);
     }
 
     #[test]
     fn split_double_tilde_invalid_user() {
-        assert_eq!(
-            split_tildes_in_literal("~~/bin"),
-            vec![lit("~~/bin")]
-        );
+        assert_eq!(split_tildes_in_literal("~~/bin"), vec![lit("~~/bin")]);
     }
 
     #[test]
@@ -1460,11 +1454,7 @@ mod tests {
     fn split_two_tildes_joined_by_colon_no_slash() {
         assert_eq!(
             split_tildes_in_literal("~:~"),
-            vec![
-                WordPart::Tilde(None),
-                lit(":"),
-                WordPart::Tilde(None),
-            ]
+            vec![WordPart::Tilde(None), lit(":"), WordPart::Tilde(None),]
         );
     }
 
