@@ -367,14 +367,21 @@ impl Parser {
         // to the next segment in the AST (quoted `:` lives inside SingleQuoted /
         // DoubleQuoted variants and does not count as a tilde-prefix boundary).
         //
-        // Adjacent Literal parts (with no intervening non-Literal) arise only from
-        // backslash escapes like `\~` — the lexer would otherwise have merged them
-        // into one Literal. The escape means the second Literal does NOT begin at
-        // a fresh tilde-prefix boundary, even if the first ended with `:`. We track
-        // that by treating the effective boundary as false whenever the previous
-        // part was also a Literal. Internal `:` inside the second Literal still
-        // creates its own boundaries, so escapes suppress only leading-character
-        // tilde expansion.
+        // Adjacent Literal parts (with no intervening non-Literal) arise from any
+        // lexer split that flushes a partial Literal — chiefly backslash escapes
+        // like `\~` and line continuations like `\<newline>`. Both cases cause the
+        // second Literal NOT to begin at a fresh tilde-prefix boundary from the
+        // lexer's point of view, so we conservatively suppress leading-character
+        // tilde expansion via `prev_was_literal`. Internal `:` inside the second
+        // Literal still creates its own boundaries, so this only affects the very
+        // first character of each adjacent Literal.
+        //
+        // This conservatively favors `x=\~/bin` (tilde stays literal — correct
+        // per POSIX) over `x=foo:\<newline>~/bin` (tilde stays literal — incorrect
+        // per POSIX §2.2.1 line-continuation removal). Both cases are pinned by
+        // unit tests below. Sub-project 4 will introduce explicit escape metadata
+        // on `WordPart` so this heuristic can be replaced with a precise check
+        // that distinguishes the two cases.
         let mut value_parts = Vec::new();
         let mut at_boundary = true;
         // word.parts[0] is always a Literal here (we early-returned otherwise),
@@ -1674,6 +1681,38 @@ mod tests {
                 WordPart::Parameter(ParamExpr::Simple("var".to_string())),
                 lit("~/bin"),
             ]
+        );
+    }
+
+    #[test]
+    fn assignment_rhs_backslash_tilde_after_colon_stays_literal() {
+        // `x=foo:\~/bin` — the `\~` escape prevents tilde expansion. The
+        // prev_was_literal heuristic handles this correctly: the lexer splits
+        // `foo:` from `~/bin` at the escape, making them adjacent Literals with
+        // no Parameter/CmdSub between, so the heuristic suppresses the leading
+        // tilde of the second Literal.
+        let (_, parts) = parse_first_assignment("x=foo:\\~/bin\n").unwrap();
+        let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
+        assert!(!has_tilde, "parts = {:?}", parts);
+    }
+
+    #[test]
+    fn assignment_rhs_line_continuation_tilde_known_regression() {
+        // `x=foo:\<newline>~/bin` — POSIX §2.2.1 removes the backslash+newline
+        // before tokenization, so the RHS is equivalent to `foo:~/bin` with the
+        // tilde expanded. yosh currently produces `[Literal("foo:"), Literal("~/bin")]`
+        // (tilde NOT expanded) because the lexer splits at the continuation,
+        // making the two Literals adjacent and triggering the prev_was_literal
+        // suppression. This is a known pre-existing regression (not caused by
+        // this sub-project); sub-project 4 will fix it via escape metadata.
+        let (_, parts) = parse_first_assignment("x=foo:\\\n~/bin\n").unwrap();
+        let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
+        assert!(
+            !has_tilde,
+            "If this assertion flips to passing (tilde IS now in parts), the \
+             line-continuation regression has been fixed and this test should \
+             be updated to `assert!(has_tilde, ...)`. parts = {:?}",
+            parts
         );
     }
 
