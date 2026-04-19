@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.10 Shell Grammar
+# POSIX_REF: 2.10 Shell Grammar - List terminators
 # DESCRIPTION: ';' and newline are interchangeable as list terminators
 # EXPECT_OUTPUT<<END
 # one
