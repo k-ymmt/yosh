@@ -66,6 +66,7 @@
 - [ ] `highlight_scanner.rs` `KEYWORDS` duplicates POSIX §2.4 list — `src/interactive/highlight_scanner.rs:66-69` defines its own copy of the 16 reserved words, separate from the canonical `crate::lexer::reserved::RESERVED_WORDS`. Consolidate once the contextual subsets (`COMMAND_POSITION_KEYWORDS` includes `"time"`, command-position restoration logic) are re-expressed in terms of the canonical list (`src/interactive/highlight_scanner.rs`)
 - [ ] `cargo fmt --check -- <path>` misreads edition — rustfmt 1.8.0 / Rust 1.94.1 fails to parse let-chain syntax as edition 2024 when invoked with explicit file paths despite `Cargo.toml` specifying `edition = "2024"`, producing spurious fmt errors. Workaround: invoke `rustfmt --edition 2024 --check <path>` directly. Revisit when upstream rustfmt catches up.
 - [ ] `expand_tilde_in_assignment_value` has no unit tests — currently exercised only via E2E (`tilde_rhs_export.sh`, `tilde_rhs_readonly.sh`). Add direct `#[test]` cases mirroring the `test_expand_tilde_prefix_*` style in `src/expand/mod.rs` so HOME-unset and `~user` fallback paths are isolated from the builtin flow.
+- [ ] `parse_compound_list` non-empty regression tests are incomplete — only `nonempty_if_parses_ok` exists in `src/parser/mod.rs`. Add parallel `nonempty_while_parses_ok` / `nonempty_until_parses_ok` / `nonempty_for_parses_ok` / `nonempty_brace_group_parses_ok` / `nonempty_subshell_parses_ok` so future refactors cannot accidentally over-reject any individual context.
 
 ## Future: E2E Test Expansion
 
