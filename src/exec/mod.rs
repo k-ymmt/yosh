@@ -55,6 +55,7 @@ fn preview_command(and_or: &AndOrList) -> String {
         for part in &w.parts {
             match part {
                 WordPart::Literal(lit) => s.push_str(lit),
+                WordPart::EscapedLiteral(lit) => s.push_str(lit),
                 WordPart::SingleQuoted(lit) => {
                     s.push('\'');
                     s.push_str(lit);

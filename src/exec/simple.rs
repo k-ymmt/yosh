@@ -674,6 +674,7 @@ fn word_has_command_sub(word: &Word) -> bool {
 fn part_has_command_sub(part: &WordPart) -> bool {
     match part {
         WordPart::Literal(_)
+        | WordPart::EscapedLiteral(_)
         | WordPart::SingleQuoted(_)
         | WordPart::DollarSingleQuoted(_)
         | WordPart::Tilde(_) => false,

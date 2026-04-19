@@ -307,6 +307,7 @@ fn expand_heredoc_string(env: &mut ShellEnv, s: &str) -> String {
 fn expand_heredoc_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
     match part {
         WordPart::Literal(s) => out.push_str(s),
+        WordPart::EscapedLiteral(s) => out.push_str(s),
         WordPart::Parameter(p) => {
             let expanded = param::expand(env, p).unwrap_or_default();
             out.push_str(&expanded);
@@ -369,6 +370,13 @@ fn expand_part_to_fields(
             } else {
                 fields.last_mut().unwrap().push_unquoted(s);
             }
+        }
+        WordPart::EscapedLiteral(s) => {
+            // Expand identically to Literal — the escape served its purpose
+            // at parse time by suppressing tilde recognition. The escape also
+            // removes the "subject to field splitting" property, so escaped
+            // text must be treated as quoted content for IFS purposes.
+            fields.last_mut().unwrap().push_quoted(s);
         }
         WordPart::SingleQuoted(s) => {
             // Single quotes protect everything

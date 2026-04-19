@@ -144,6 +144,12 @@ impl Word {
 #[derive(Debug, Clone, PartialEq)]
 pub enum WordPart {
     Literal(String),
+    /// A sequence of characters that came through a `\<char>` unquoted escape
+    /// (or a `\$`/`\\`/`\"`/`` \` `` escape inside double quotes). Expands
+    /// identically to `Literal` in the output but is excluded from tilde-prefix
+    /// recognition in assignment values — the backslash that produced it
+    /// explicitly suppresses tilde expansion per POSIX §2.6.1.
+    EscapedLiteral(String),
     SingleQuoted(String),
     DoubleQuoted(Vec<WordPart>),
     DollarSingleQuoted(String),
