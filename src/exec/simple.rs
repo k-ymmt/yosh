@@ -55,12 +55,23 @@ impl Executor {
     /// Execute a simple command (assignments, builtins, or external programs).
     pub(crate) fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> Result<i32, ShellError> {
         let _ = self.env.vars.set("LINENO", cmd.line.to_string());
-        // Expand all words
-        let expanded = match expand_words(&mut self.env, &cmd.words) {
-            Ok(words) => words,
-            Err(e) => {
-                self.env.exec.last_exit_status = 1;
-                return Err(e);
+
+        // Expand ONLY the command name first, so we can dispatch to an
+        // assignment-aware expansion for export/readonly. A single early
+        // expansion of `cmd.words[..]` would fire side effects (command
+        // substitutions, arithmetic, `${x=...}`) on every argument — the
+        // assignment-aware re-expansion used by export/readonly would then
+        // run them a second time. Gate the full expansion on the detected
+        // command name instead.
+        let name_fields = if cmd.words.is_empty() {
+            Vec::new()
+        } else {
+            match expand_words(&mut self.env, std::slice::from_ref(&cmd.words[0])) {
+                Ok(words) => words,
+                Err(e) => {
+                    self.env.exec.last_exit_status = 1;
+                    return Err(e);
+                }
             }
         };
 
@@ -70,7 +81,50 @@ impl Executor {
             return Ok(1);
         }
 
-        // Assignment-only command (no words)
+        // Determine the effective command name (first field after expansion,
+        // which may be empty when `cmd.words[0]` expanded to nothing e.g. an
+        // unset variable with nullglob-like semantics).
+        let probable_name: Option<&str> = name_fields.first().map(|s| s.as_str());
+        let is_assignment_builtin = matches!(probable_name, Some("export") | Some("readonly"));
+
+        // Expand the remaining words. For export/readonly, route through the
+        // assignment-aware expander so each Word is expanded exactly once
+        // (preserving EscapedLiteral / Tilde metadata for `NAME=\~/path`
+        // style arguments). For all other commands, use the normal
+        // field-splitting expander.
+        let rest_fields: Vec<String> = if cmd.words.len() <= 1 {
+            Vec::new()
+        } else if is_assignment_builtin {
+            match expand_assignment_builtin_args(&mut self.env, &cmd.words[1..]) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.env.exec.last_exit_status = 1;
+                    return Err(e);
+                }
+            }
+        } else {
+            match expand_words(&mut self.env, &cmd.words[1..]) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.env.exec.last_exit_status = 1;
+                    return Err(e);
+                }
+            }
+        };
+
+        if self.env.exec.flow_control.is_some() {
+            self.env.exec.last_exit_status = 1;
+            return Ok(1);
+        }
+
+        // Stitch: fields from the command-name word come first, remaining
+        // words' fields follow. This matches the ordering the original
+        // single `expand_words(&cmd.words)` would have produced.
+        let mut expanded: Vec<String> = Vec::with_capacity(name_fields.len() + rest_fields.len());
+        expanded.extend(name_fields);
+        expanded.extend(rest_fields);
+
+        // Assignment-only command (no words, or all words expanded to empty)
         if expanded.is_empty() {
             // POSIX §2.9.1: exit status of an assignment-only command is the status
             // of the last command substitution performed, or 0 if none.
@@ -270,24 +324,11 @@ impl Executor {
                     self.env.exec.last_exit_status = 1;
                     return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
                 }
-                let status = if command_name == "export" || command_name == "readonly" {
-                    // Re-expand args from the original Words via try_parse_assignment
-                    // so EscapedLiteral / Tilde metadata is respected. cmd.words[0]
-                    // is the command name; args start at [1..].
-                    let original_args = &cmd.words[1..];
-                    match expand_assignment_builtin_args(&mut self.env, original_args) {
-                        Ok(reparsed_args) => {
-                            exec_special_builtin(&command_name, &reparsed_args, self)
-                        }
-                        Err(e) => {
-                            self.env.exec.last_exit_status = 1;
-                            redirect_state.restore();
-                            return Err(e);
-                        }
-                    }
-                } else {
-                    exec_special_builtin(&command_name, &args, self)
-                };
+                // `args` for export/readonly was already produced by
+                // expand_assignment_builtin_args in the early dispatch above
+                // (single-pass expansion avoids double-running command
+                // substitutions in assignment RHS).
+                let status = exec_special_builtin(&command_name, &args, self);
                 redirect_state.restore();
                 self.plugins
                     .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
