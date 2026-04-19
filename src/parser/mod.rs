@@ -410,7 +410,15 @@ impl Parser {
     }
 
     /// Parse a compound_list: skip newlines, then parse complete_commands until at_end or is_complete_command_end.
-    pub fn parse_compound_list(&mut self) -> error::Result<Vec<CompleteCommand>> {
+    ///
+    /// POSIX §2.10 requires at least one `and_or`. If the list would be
+    /// empty, returns a parse error of the form
+    /// `syntax error: empty compound list in {context}` so callers can
+    /// surface context-aware diagnostics.
+    pub fn parse_compound_list(
+        &mut self,
+        context: &str,
+    ) -> error::Result<Vec<CompleteCommand>> {
         self.skip_newlines()?;
         let mut commands = Vec::new();
         while !self.is_at_end() && !self.is_complete_command_end() {
@@ -418,15 +426,24 @@ impl Parser {
             commands.push(cmd);
             self.skip_newlines()?;
         }
+        if commands.is_empty() {
+            let span = self.current_span();
+            return Err(ShellError::parse(
+                ParseErrorKind::UnexpectedToken,
+                span.line,
+                span.column,
+                format!("syntax error: empty compound list in {context}"),
+            ));
+        }
         Ok(commands)
     }
 
     /// Parse: if compound_list then compound_list [elif compound_list then compound_list]... [else compound_list] fi
     pub fn parse_if_clause(&mut self) -> error::Result<CompoundCommandKind> {
         self.expect_reserved("if")?;
-        let condition = self.parse_compound_list()?;
+        let condition = self.parse_compound_list("'if' condition")?;
         self.expect_reserved("then")?;
-        let then_part = self.parse_compound_list()?;
+        let then_part = self.parse_compound_list("'then' body")?;
 
         let mut elif_parts = Vec::new();
         let mut else_part = None;
@@ -434,13 +451,13 @@ impl Parser {
         loop {
             if self.is_reserved("elif") {
                 self.advance()?;
-                let elif_cond = self.parse_compound_list()?;
+                let elif_cond = self.parse_compound_list("'elif' condition")?;
                 self.expect_reserved("then")?;
-                let elif_body = self.parse_compound_list()?;
+                let elif_body = self.parse_compound_list("'elif' body")?;
                 elif_parts.push((elif_cond, elif_body));
             } else if self.is_reserved("else") {
                 self.advance()?;
-                else_part = Some(self.parse_compound_list()?);
+                else_part = Some(self.parse_compound_list("'else' body")?);
                 break;
             } else {
                 break;
@@ -540,7 +557,7 @@ impl Parser {
     /// Parse: do compound_list done
     pub fn parse_do_group(&mut self) -> error::Result<Vec<CompleteCommand>> {
         self.expect_reserved("do")?;
-        let body = self.parse_compound_list()?;
+        let body = self.parse_compound_list("'do' body")?;
         self.expect_reserved("done")?;
         Ok(body)
     }
@@ -548,7 +565,7 @@ impl Parser {
     /// Parse: while compound_list do compound_list done
     pub fn parse_while_clause(&mut self) -> error::Result<CompoundCommandKind> {
         self.expect_reserved("while")?;
-        let condition = self.parse_compound_list()?;
+        let condition = self.parse_compound_list("'while' condition")?;
         let body = self.parse_do_group()?;
         Ok(CompoundCommandKind::While { condition, body })
     }
@@ -556,7 +573,7 @@ impl Parser {
     /// Parse: until compound_list do compound_list done
     pub fn parse_until_clause(&mut self) -> error::Result<CompoundCommandKind> {
         self.expect_reserved("until")?;
-        let condition = self.parse_compound_list()?;
+        let condition = self.parse_compound_list("'until' condition")?;
         let body = self.parse_do_group()?;
         Ok(CompoundCommandKind::Until { condition, body })
     }
@@ -637,7 +654,7 @@ impl Parser {
     /// Parse: { compound_list }
     pub fn parse_brace_group(&mut self) -> error::Result<CompoundCommandKind> {
         self.expect_reserved("{")?;
-        let body = self.parse_compound_list()?;
+        let body = self.parse_compound_list("brace group")?;
         self.expect_reserved("}")?;
         Ok(CompoundCommandKind::BraceGroup { body })
     }
@@ -645,7 +662,7 @@ impl Parser {
     /// Parse: ( compound_list )
     pub fn parse_subshell(&mut self) -> error::Result<CompoundCommandKind> {
         self.eat(&Token::LParen)?;
-        let body = self.parse_compound_list()?;
+        let body = self.parse_compound_list("subshell")?;
         if !self.eat(&Token::RParen)? {
             let span = self.current_span();
             return Err(ShellError::parse(
@@ -1522,5 +1539,132 @@ mod tests {
         let (_, parts) = parse_first_assignment("x=$var:~/bin\n").unwrap();
         let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
         assert!(!has_tilde, "parts = {:?}", parts);
+    }
+
+    // ── empty compound_list rejection (POSIX §2.10) ─────────────
+
+    fn parse_err(source: &str) -> ShellError {
+        Parser::new(source).parse_program().unwrap_err()
+    }
+
+    fn parse_ok(source: &str) {
+        Parser::new(source)
+            .parse_program()
+            .unwrap_or_else(|e| panic!("expected OK, got: {e}"));
+    }
+
+    #[test]
+    fn empty_if_then_errors() {
+        let err = parse_err("if true; then fi\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("syntax"), "message: {s}");
+        assert!(s.contains("'then' body"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_if_condition_errors() {
+        let err = parse_err("if then true; fi\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("syntax"), "message: {s}");
+        assert!(s.contains("'if' condition"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_elif_condition_errors() {
+        let err = parse_err("if true; then :; elif then :; fi\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("'elif' condition"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_elif_body_errors() {
+        let err = parse_err("if true; then :; elif true; then fi\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("'elif' body"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_else_body_errors() {
+        let err = parse_err("if true; then :; else fi\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("'else' body"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_while_condition_errors() {
+        let err = parse_err("while do done\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("'while' condition"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_while_body_errors() {
+        let err = parse_err("while true; do done\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("'do' body"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_until_condition_errors() {
+        let err = parse_err("until do done\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("'until' condition"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_until_body_errors() {
+        let err = parse_err("until false; do done\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("'do' body"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_for_body_errors() {
+        let err = parse_err("for i in a b; do done\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("'do' body"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_brace_group_errors() {
+        let err = parse_err("{ }\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("brace group"), "message: {s}");
+    }
+
+    #[test]
+    fn empty_subshell_errors() {
+        let err = parse_err("( )\n");
+        assert_eq!(err.exit_code(), 2);
+        let s = err.to_string();
+        assert!(s.contains("subshell"), "message: {s}");
+    }
+
+    #[test]
+    fn nonempty_if_parses_ok() {
+        parse_ok("if true; then :; fi\n");
+    }
+
+    #[test]
+    fn case_empty_body_still_parses_ok() {
+        parse_ok("case x in pat) ;; esac\n");
+    }
+
+    #[test]
+    fn comment_only_body_errors_per_posix() {
+        let err = parse_err("if true; then\n#only comment\nfi\n");
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains("'then' body"));
     }
 }
