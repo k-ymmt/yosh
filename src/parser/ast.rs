@@ -50,6 +50,7 @@ pub struct SimpleCommand {
     pub assignments: Vec<Assignment>,
     pub words: Vec<Word>,
     pub redirects: Vec<Redirect>,
+    pub line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +62,7 @@ pub struct Assignment {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompoundCommand {
     pub kind: CompoundCommandKind,
+    pub line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,6 +249,7 @@ mod tests {
             assignments: vec![],
             words: vec![Word::literal("echo"), Word::literal("hello")],
             redirects: vec![],
+            line: 0,
         };
         assert_eq!(cmd.words.len(), 2);
     }

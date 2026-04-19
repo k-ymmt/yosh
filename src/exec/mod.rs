@@ -874,6 +874,7 @@ mod tests {
             assignments: vec![],
             words: words.iter().map(|s| Word::literal(s)).collect(),
             redirects: vec![],
+            line: 0,
         }
     }
 
@@ -911,6 +912,7 @@ mod tests {
             }],
             words: vec![],
             redirects: vec![],
+            line: 0,
         };
         let status = exec.exec_simple_command(&cmd).unwrap();
         assert_eq!(status, 0);
@@ -940,6 +942,7 @@ mod tests {
                 assignments: vec![],
                 words: vec![Word::literal("true")],
                 redirects: vec![],
+                line: 0,
             })],
         };
         assert_eq!(exec.exec_pipeline(&pipeline), 0);
@@ -954,6 +957,7 @@ mod tests {
                 assignments: vec![],
                 words: vec![Word::literal("true")],
                 redirects: vec![],
+                line: 0,
             })],
         };
         assert_eq!(exec.exec_pipeline(&pipeline), 1);
@@ -966,6 +970,7 @@ mod tests {
                 assignments: vec![],
                 words: vec![Word::literal(word)],
                 redirects: vec![],
+                line: 0,
             })],
         }
     }

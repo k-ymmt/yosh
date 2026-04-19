@@ -293,6 +293,7 @@ impl Parser {
             assignments,
             words,
             redirects,
+            line: 0,
         })
     }
 
@@ -406,7 +407,7 @@ impl Parser {
                 "expected compound command",
             ));
         };
-        Ok(CompoundCommand { kind })
+        Ok(CompoundCommand { kind, line: 0 })
     }
 
     /// Parse a compound_list: skip newlines, then parse complete_commands until at_end or is_complete_command_end.
