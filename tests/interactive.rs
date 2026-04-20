@@ -260,6 +260,39 @@ fn test_classify_incomplete_while() {
 }
 
 #[test]
+fn test_classify_incomplete_for() {
+    // Verifies the `\n:\ndone\n` probe path via for-loop header-only input.
+    let aliases = AliasStore::default();
+    match classify_parse("for x in 1\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_incomplete_brace_group() {
+    // Verifies the `\n:\n}\n` probe path via open-brace-only input.
+    let aliases = AliasStore::default();
+    match classify_parse("{ true\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_does_not_hang_on_dsemi_garbage() {
+    // Regression guard: the `\n:\n;;\nesac\n` probe candidate
+    // "if true; then\n\n;;\nesac\n" used to cause parse_compound_list
+    // to loop forever. With the parse_simple_command empty-result
+    // guard, classify_parse must return in finite time.
+    let aliases = AliasStore::default();
+    let _ = classify_parse("if ;;\n", &aliases);
+    // Test passes as long as it returns (no assertion on specific
+    // classification; correctness of the specific variant is covered
+    // by parser-level tests).
+}
+
+#[test]
 fn test_classify_incomplete_single_quote() {
     let aliases = AliasStore::default();
     match classify_parse("echo 'hello\n", &aliases) {

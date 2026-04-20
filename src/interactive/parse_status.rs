@@ -25,6 +25,9 @@ const CLOSING_KEYWORDS: &[&str] = &[
     "\n:\n}\n",
     "\n:\n)\n",
     "\n:\n;;\nesac\n",
+    // `do :\ndone` covers header-only `for x in ...\n` and `while cond\n`
+    // inputs where `do` itself has not been typed yet.
+    "\ndo :\ndone\n",
 ];
 
 pub fn classify_parse(input: &str, aliases: &AliasStore) -> ParseStatus {
