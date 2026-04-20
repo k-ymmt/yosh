@@ -7,10 +7,10 @@ out=$(times)
 line1=$(echo "$out" | sed -n '1p')
 line2=$(echo "$out" | sed -n '2p')
 case "$line1" in
-    *m*s\ *m*s) ;;
+    [0-9]*m[0-9]*.[0-9]*s\ [0-9]*m[0-9]*.[0-9]*s) ;;
     *) echo "bad line1: $line1" >&2; exit 1 ;;
 esac
 case "$line2" in
-    *m*s\ *m*s) ;;
+    [0-9]*m[0-9]*.[0-9]*s\ [0-9]*m[0-9]*.[0-9]*s) ;;
     *) echo "bad line2: $line2" >&2; exit 1 ;;
 esac
