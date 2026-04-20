@@ -156,7 +156,7 @@ pub fn init_signal_handling() {
         // POSIX §2.11: capture the set of signals inherited as SIG_IGN before we
         // install any yosh handler. Skip registration for those signals so they
         // remain ignored for the shell's lifetime.
-        IGNORED_ON_ENTRY.get_or_init(capture_ignored_on_entry);
+        let entry_ignored = IGNORED_ON_ENTRY.get_or_init(capture_ignored_on_entry);
 
         let mut fds: [libc::c_int; 2] = [0; 2];
 
@@ -203,11 +203,7 @@ pub fn init_signal_handling() {
 
         for &(num, _) in HANDLED_SIGNALS {
             // POSIX §2.11: leave inherited SIG_IGN in place.
-            if IGNORED_ON_ENTRY
-                .get()
-                .expect("IGNORED_ON_ENTRY must be initialized above")
-                .contains(&num)
-            {
+            if entry_ignored.contains(&num) {
                 continue;
             }
 
@@ -502,12 +498,13 @@ mod tests {
     fn test_is_ignored_on_entry_false_for_unlikely_signal() {
         // After init (possibly already called by other tests), a benign signal
         // that is extremely unlikely to be inherited as SIG_IGN in a `cargo test`
-        // run should report `false`. SIGUSR2 is a safe choice — no library
-        // installs SIG_IGN for it by default.
+        // run should report `false`. SIGALRM is a safe choice — its number (14)
+        // is identical on Linux and macOS AND is present in SIGNAL_TABLE, so
+        // the assertion actually exercises the capture path on both platforms.
         init_signal_handling();
         assert!(
-            !is_ignored_on_entry(libc::SIGUSR2),
-            "SIGUSR2 should not be ignored-on-entry in a normal test environment"
+            !is_ignored_on_entry(libc::SIGALRM),
+            "SIGALRM should not be ignored-on-entry in a normal test environment"
         );
     }
 
