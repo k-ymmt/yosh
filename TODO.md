@@ -103,11 +103,6 @@
 - [ ] Double-quote escape coverage gap — only `e2e/quoting/backslash_in_double_quotes.sh` (`"\$HOME"` form) exercises the sub-project-4 `EscapedLiteral` switch inside double quotes. Manual checks confirm `"\\\\"`, `"\""`, and `` "\`" `` still round-trip correctly, but no E2E pins them. Add compound `backslash_dq_special_chars.sh` asserting the four POSIX-recognized double-quote escapes (`\$`, `\\`, `\"`, `` \` ``) each render to a single character (`e2e/quoting/` or `e2e/posix_spec/2_02_01_escape_character/`).
 - [ ] `assignment_rhs_param_then_escaped_tilde_stays_literal` assertion is loose — the parser-unit test added in sub-project 4 Task 3 uses `!any(matches!(p, Tilde(_)))`, which catches the user-visible bug but wouldn't detect shape regressions (e.g., `/bin` being dropped from the value). Tighten to `assert_eq!(parts, vec![Parameter(var), lit(":"), EscapedLiteral("~"), lit("/bin")])` mirroring the sibling `assignment_rhs_param_then_tilde_no_colon_stays_literal` test style (`src/parser/mod.rs`).
 
-## Future: POSIX Conformance Gaps (Chapter 2)
-
-- [ ] §2.11 ignored-on-entry signal inheritance — no in-harness test yet (nested `sh -c` escapes yosh); revisit after a yosh-aware subshell helper lands
-- [ ] §2.10.2 Rule 5 — yosh accepts reserved words as `for` NAME (`e2e/posix_spec/2_10_shell_grammar/rule05_for_reserved_word_rejected.sh` XFAIL). POSIX requires NAME to be a valid name, not a reserved word.
-
 ## Future: Release Skill Enhancements
 
 - [ ] `phase_push` remote tag upsert — currently only checks local tag existence; if the same tag already exists on origin, `git push origin <tag>` rejects. Add `git ls-remote --exit-code --tags origin <tag>` check before pushing (`.claude/skills/release/scripts/release.sh`)
