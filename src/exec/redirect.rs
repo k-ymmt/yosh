@@ -31,6 +31,11 @@ impl RedirectState {
 
     /// Apply a list of redirects.
     /// If `save` is true (builtin case), save the original fds so they can be restored.
+    ///
+    /// On failure, any redirects already applied within this call are rolled back
+    /// (via `self.restore()`), so the returned `Err` always reports a state where
+    /// the caller's fd table is unchanged. `save=false` leaves `saved_fds` empty,
+    /// so the rollback is a no-op in that case.
     pub fn apply(
         &mut self,
         redirects: &[Redirect],
@@ -38,7 +43,10 @@ impl RedirectState {
         save: bool,
     ) -> Result<(), String> {
         for redirect in redirects {
-            self.apply_one(redirect, env, save)?;
+            if let Err(e) = self.apply_one(redirect, env, save) {
+                self.restore();
+                return Err(e);
+            }
         }
         Ok(())
     }
@@ -244,8 +252,14 @@ mod tests {
         ShellEnv::new("yosh", vec![])
     }
 
+    /// Tests that manipulate process-wide file descriptors (fd 0, fd 1, fd 2) must
+    /// hold this lock for their entire duration so that cargo test's parallel threads
+    /// do not corrupt each other's fd table.
+    static FD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_redirect_output_and_restore() {
+        let _guard = FD_TEST_LOCK.lock().unwrap();
         let mut env = make_env();
         let tmp = std::env::temp_dir().join("yosh_redirect_test_output.txt");
         let path_str = tmp.to_str().unwrap().to_string();
@@ -280,6 +294,7 @@ mod tests {
 
     #[test]
     fn test_redirect_input() {
+        let _guard = FD_TEST_LOCK.lock().unwrap();
         use std::io::Read;
         use std::os::unix::io::FromRawFd;
 
@@ -307,5 +322,69 @@ mod tests {
 
         assert!(buf.contains("test input"));
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_apply_rolls_back_on_second_redirect_failure() {
+        let _guard = FD_TEST_LOCK.lock().unwrap();
+        // Two redirects: first targets a valid tmp file (fd 1), second targets
+        // a path whose parent directory does not exist (fd 2) so open() fails.
+        // Pre-fix: saved_fds is non-empty after Err and fd 1 remains dup2'd over
+        // the tmp file, so a subsequent libc::write(1, ...) leaks into the tmp file.
+        // Post-fix: apply() calls self.restore() internally, saved_fds is empty,
+        // and fd 1 points back at the pre-apply target.
+
+        let mut env = make_env();
+        let tmp_ok = std::env::temp_dir().join("yosh_apply_rollback_ok.txt");
+        // Remove any stale file from a prior test run.
+        let _ = std::fs::remove_file(&tmp_ok);
+        let bad_path = "/no/such/dir/should-not-exist-yosh-test/file.txt";
+
+        let redirects = vec![
+            Redirect {
+                fd: Some(1),
+                kind: RedirectKind::Output(Word::literal(tmp_ok.to_str().unwrap())),
+            },
+            Redirect {
+                fd: Some(2),
+                kind: RedirectKind::Output(Word::literal(bad_path)),
+            },
+        ];
+
+        // Save original fd 1 outside RedirectState so we can restore it at the end
+        // (cargo test captures stdout; we must not leave fd 1 corrupted for sibling tests).
+        let orig_stdout = unsafe { libc::dup(1) };
+        assert!(orig_stdout >= 0, "dup(1) failed");
+
+        let mut state = RedirectState::new();
+        let result = state.apply(&redirects, &mut env, true);
+        assert!(result.is_err(), "expected apply to fail on the bad path");
+
+        // Post-condition 1: rollback emptied saved_fds.
+        assert!(
+            state.saved_fds.is_empty(),
+            "saved_fds should be empty after rollback, got {} entries",
+            state.saved_fds.len()
+        );
+
+        // Post-condition 2: writes to fd 1 should not land in tmp_ok.
+        let marker = b"post-rollback-marker\n";
+        unsafe {
+            libc::write(1, marker.as_ptr() as *const _, marker.len());
+        }
+
+        let written = std::fs::read_to_string(&tmp_ok).unwrap_or_default();
+
+        // Cleanup BEFORE assertion so a failure still cleans up.
+        unsafe {
+            libc::dup2(orig_stdout, 1);
+            libc::close(orig_stdout);
+        }
+        let _ = std::fs::remove_file(&tmp_ok);
+
+        assert!(
+            !written.contains("post-rollback-marker"),
+            "fd 1 should not still point at tmp_ok after rollback; tmp_ok contained: {written:?}"
+        );
     }
 }
