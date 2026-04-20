@@ -19,33 +19,33 @@ pub fn has_pending_exit_signal() -> bool {
 
 /// Full signal table for name/number conversion.
 pub const SIGNAL_TABLE: &[(i32, &str)] = &[
-    (1, "HUP"),
-    (2, "INT"),
-    (3, "QUIT"),
-    (6, "ABRT"),
-    (9, "KILL"),
-    (10, "USR1"),
-    (12, "USR2"),
-    (13, "PIPE"),
-    (14, "ALRM"),
-    (15, "TERM"),
-    (17, "CHLD"),
-    (18, "CONT"),
-    (19, "STOP"),
-    (20, "TSTP"),
-    (21, "TTIN"),
-    (22, "TTOU"),
+    (libc::SIGHUP, "HUP"),
+    (libc::SIGINT, "INT"),
+    (libc::SIGQUIT, "QUIT"),
+    (libc::SIGABRT, "ABRT"),
+    (libc::SIGKILL, "KILL"),
+    (libc::SIGUSR1, "USR1"),
+    (libc::SIGUSR2, "USR2"),
+    (libc::SIGPIPE, "PIPE"),
+    (libc::SIGALRM, "ALRM"),
+    (libc::SIGTERM, "TERM"),
+    (libc::SIGCHLD, "CHLD"),
+    (libc::SIGCONT, "CONT"),
+    (libc::SIGSTOP, "STOP"),
+    (libc::SIGTSTP, "TSTP"),
+    (libc::SIGTTIN, "TTIN"),
+    (libc::SIGTTOU, "TTOU"),
 ];
 
 /// Signals for which the shell registers handlers.
 pub const HANDLED_SIGNALS: &[(i32, &str)] = &[
-    (1, "HUP"),
-    (2, "INT"),
-    (3, "QUIT"),
-    (14, "ALRM"),
-    (15, "TERM"),
-    (10, "USR1"),
-    (12, "USR2"),
+    (libc::SIGHUP, "HUP"),
+    (libc::SIGINT, "INT"),
+    (libc::SIGQUIT, "QUIT"),
+    (libc::SIGALRM, "ALRM"),
+    (libc::SIGTERM, "TERM"),
+    (libc::SIGUSR1, "USR1"),
+    (libc::SIGUSR2, "USR2"),
 ];
 
 /// Look up a signal number by name (case-insensitive, strips optional "SIG" prefix).
@@ -294,8 +294,7 @@ pub fn default_signal(sig: i32) {
 pub fn reset_child_signals(ignored: &[i32]) {
     let entry_set = IGNORED_ON_ENTRY.get();
     for &(num, _) in HANDLED_SIGNALS {
-        let keep_ignored = ignored.contains(&num)
-            || entry_set.map_or(false, |s| s.contains(&num));
+        let keep_ignored = ignored.contains(&num) || entry_set.map_or(false, |s| s.contains(&num));
         if keep_ignored {
             ignore_signal(num);
         } else {
@@ -467,18 +466,18 @@ mod tests {
 
     #[test]
     fn test_signal_table_has_job_control_signals() {
-        assert_eq!(signal_name_to_number("CHLD").unwrap(), 17);
-        assert_eq!(signal_name_to_number("CONT").unwrap(), 18);
-        assert_eq!(signal_name_to_number("STOP").unwrap(), 19);
-        assert_eq!(signal_name_to_number("TSTP").unwrap(), 20);
-        assert_eq!(signal_name_to_number("TTIN").unwrap(), 21);
-        assert_eq!(signal_name_to_number("TTOU").unwrap(), 22);
+        assert_eq!(signal_name_to_number("CHLD").unwrap(), libc::SIGCHLD);
+        assert_eq!(signal_name_to_number("CONT").unwrap(), libc::SIGCONT);
+        assert_eq!(signal_name_to_number("STOP").unwrap(), libc::SIGSTOP);
+        assert_eq!(signal_name_to_number("TSTP").unwrap(), libc::SIGTSTP);
+        assert_eq!(signal_name_to_number("TTIN").unwrap(), libc::SIGTTIN);
+        assert_eq!(signal_name_to_number("TTOU").unwrap(), libc::SIGTTOU);
     }
 
     #[test]
     fn test_signal_number_to_name_job_control() {
-        assert_eq!(signal_number_to_name(17), Some("CHLD"));
-        assert_eq!(signal_number_to_name(20), Some("TSTP"));
+        assert_eq!(signal_number_to_name(libc::SIGCHLD), Some("CHLD"));
+        assert_eq!(signal_number_to_name(libc::SIGTSTP), Some("TSTP"));
     }
 
     #[test]
@@ -539,7 +538,9 @@ mod tests {
         // Install SIG_IGN.
         let ign_sa = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
         let sig = Signal::try_from(sig_num).unwrap();
-        unsafe { sigaction(sig, &ign_sa).unwrap(); }
+        unsafe {
+            sigaction(sig, &ign_sa).unwrap();
+        }
 
         // Run the capture helper and assert SIGALRM is in the set.
         let captured = capture_ignored_on_entry();
@@ -573,7 +574,9 @@ mod tests {
 
         let dfl_sa = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
         let sig = Signal::try_from(sig_num).unwrap();
-        unsafe { sigaction(sig, &dfl_sa).unwrap(); }
+        unsafe {
+            sigaction(sig, &dfl_sa).unwrap();
+        }
 
         let captured = capture_ignored_on_entry();
         assert!(
@@ -585,5 +588,57 @@ mod tests {
         // Restore.
         let rc = unsafe { libc::sigaction(sig_num, &original, std::ptr::null_mut()) };
         assert_eq!(rc, 0);
+    }
+
+    #[test]
+    fn test_signal_table_matches_libc_constants() {
+        // Portable check: the table must agree with libc on every entry.
+        // Pre-fix this would have failed on macOS for USR1/USR2/CHLD/CONT/STOP/TSTP
+        // because the table hard-coded Linux signal numbers.
+        for &(num, name) in SIGNAL_TABLE {
+            let expected = match name {
+                "HUP" => libc::SIGHUP,
+                "INT" => libc::SIGINT,
+                "QUIT" => libc::SIGQUIT,
+                "ABRT" => libc::SIGABRT,
+                "KILL" => libc::SIGKILL,
+                "USR1" => libc::SIGUSR1,
+                "USR2" => libc::SIGUSR2,
+                "PIPE" => libc::SIGPIPE,
+                "ALRM" => libc::SIGALRM,
+                "TERM" => libc::SIGTERM,
+                "CHLD" => libc::SIGCHLD,
+                "CONT" => libc::SIGCONT,
+                "STOP" => libc::SIGSTOP,
+                "TSTP" => libc::SIGTSTP,
+                "TTIN" => libc::SIGTTIN,
+                "TTOU" => libc::SIGTTOU,
+                other => panic!("unexpected signal name in table: {other}"),
+            };
+            assert_eq!(
+                num, expected,
+                "SIGNAL_TABLE entry for {name} has {num}, libc says {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_handled_signals_match_libc_constants() {
+        for &(num, name) in HANDLED_SIGNALS {
+            let expected = match name {
+                "HUP" => libc::SIGHUP,
+                "INT" => libc::SIGINT,
+                "QUIT" => libc::SIGQUIT,
+                "ALRM" => libc::SIGALRM,
+                "TERM" => libc::SIGTERM,
+                "USR1" => libc::SIGUSR1,
+                "USR2" => libc::SIGUSR2,
+                other => panic!("unexpected signal name in HANDLED_SIGNALS: {other}"),
+            };
+            assert_eq!(
+                num, expected,
+                "HANDLED_SIGNALS entry for {name} has {num}, libc says {expected}"
+            );
+        }
     }
 }
