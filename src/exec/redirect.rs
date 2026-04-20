@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_redirect_output_and_restore() {
-        let _guard = FD_TEST_LOCK.lock().unwrap();
+        let _guard = FD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut env = make_env();
         let tmp = std::env::temp_dir().join("yosh_redirect_test_output.txt");
         let path_str = tmp.to_str().unwrap().to_string();
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_redirect_input() {
-        let _guard = FD_TEST_LOCK.lock().unwrap();
+        let _guard = FD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use std::io::Read;
         use std::os::unix::io::FromRawFd;
 
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_apply_rolls_back_on_second_redirect_failure() {
-        let _guard = FD_TEST_LOCK.lock().unwrap();
+        let _guard = FD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Two redirects: first targets a valid tmp file (fd 1), second targets
         // a path whose parent directory does not exist (fd 2) so open() fails.
         // Pre-fix: saved_fds is non-empty after Err and fd 1 remains dup2'd over
