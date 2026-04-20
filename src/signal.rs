@@ -517,7 +517,13 @@ mod tests {
 
     #[test]
     fn test_capture_ignored_on_entry_detects_sig_ign() {
-        // This test is standalone — it does NOT call init_signal_handling.
+        // IMPORTANT: Initialize IGNORED_ON_ENTRY with a clean signal state
+        // BEFORE we mutate SIGALRM. This ensures that parallel tests running
+        // is_ignored_on_entry(...) or init_signal_handling() do not observe
+        // this test's mid-flight SIG_IGN as part of the "inherited at entry"
+        // set. OnceLock::get_or_init guarantees atomic one-shot init.
+        init_signal_handling();
+
         // It exercises `capture_ignored_on_entry` directly to verify the
         // sigaction query logic. We use SIGALRM (14) which is in SIGNAL_TABLE
         // on both Linux (num 14) and macOS (num 14). On macOS, SIGUSR2=31
@@ -550,6 +556,13 @@ mod tests {
 
     #[test]
     fn test_capture_ignored_on_entry_excludes_default() {
+        // IMPORTANT: Initialize IGNORED_ON_ENTRY with a clean signal state
+        // BEFORE we mutate SIGPIPE. This ensures that parallel tests running
+        // is_ignored_on_entry(...) or init_signal_handling() do not observe
+        // this test's mid-flight SIG_DFL mutation as part of the captured set.
+        // OnceLock::get_or_init guarantees atomic one-shot init.
+        init_signal_handling();
+
         // SIGPIPE (13) at SIG_DFL should NOT appear in the captured set.
         // SIGPIPE is in SIGNAL_TABLE on both Linux and macOS with number 13.
         let sig_num = libc::SIGPIPE;
