@@ -550,6 +550,18 @@ impl Parser {
                         format!("'{}' is not a valid variable name", name),
                     ));
                 }
+                if crate::lexer::reserved::is_posix_reserved_word(name) {
+                    let span = self.current_span();
+                    return Err(ShellError::parse(
+                        ParseErrorKind::UnexpectedToken,
+                        span.line,
+                        span.column,
+                        format!(
+                            "'{}' is a reserved word and cannot be used as a for-loop variable name",
+                            name
+                        ),
+                    ));
+                }
                 let name = name.to_string();
                 self.advance()?;
                 name
@@ -1921,5 +1933,52 @@ mod tests {
         } else {
             panic!("expected If kind");
         }
+    }
+
+    #[test]
+    fn parse_for_reserved_word_if_rejected() {
+        // POSIX §2.10.2 Rule 5: NAME in `for` must not be a reserved word.
+        let src = "for if in a; do :; done\n";
+        let err = Parser::new(src).parse_program().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("reserved word") || msg.contains("not a valid"),
+            "expected reserved-word error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_for_reserved_word_in_rejected() {
+        let src = "for in in a; do :; done\n";
+        let err = Parser::new(src).parse_program().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("reserved word") || msg.contains("not a valid"),
+            "expected reserved-word error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_for_valid_name_ok() {
+        // Regression: a plain identifier NAME continues to parse cleanly.
+        let src = "for i in a b c; do echo $i; done\n";
+        assert!(
+            Parser::new(src).parse_program().is_ok(),
+            "valid for-loop should parse"
+        );
+    }
+
+    #[test]
+    fn parse_for_time_word_ok() {
+        // POSIX §2.4 RESERVED_WORDS does NOT include `time` (that is a bash
+        // extension from pipeline-prefix context). `for time in ...` must
+        // therefore still parse in yosh.
+        let src = "for time in a; do :; done\n";
+        assert!(
+            Parser::new(src).parse_program().is_ok(),
+            "'for time' should parse because `time` is not in RESERVED_WORDS"
+        );
     }
 }
