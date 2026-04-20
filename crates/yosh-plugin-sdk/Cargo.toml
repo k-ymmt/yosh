@@ -1,13 +1,13 @@
 [package]
 name = "yosh-plugin-sdk"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "SDK for building yosh shell plugins"
 license = "MIT"
 repository = "https://github.com/k-ymmt/yosh"
 
 [dependencies]
-yosh-plugin-api = { version = "0.1.1", path = "../yosh-plugin-api" }
+yosh-plugin-api = { version = "0.1.2", path = "../yosh-plugin-api" }
 
 [lib]
 crate-type = ["rlib"]
