@@ -3,6 +3,7 @@ crates/*/target
 tests/**/target
 
 /.claude/settings.local.json
+/.claude/scheduled_tasks.lock
 mise.local.toml
 
 # Git worktrees
