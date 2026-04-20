@@ -310,6 +310,21 @@ impl Parser {
             break;
         }
 
+        // POSIX §2.9.1: a simple_command derives from at least one of
+        // cmd_prefix (assignment/redirect), cmd_name (word), or cmd_word
+        // (word). A zero-progress return would let callers like
+        // parse_compound_list loop forever on unhandled operator tokens
+        // (e.g. DSemi, Pipe in unexpected positions). Reject explicitly.
+        if assignments.is_empty() && words.is_empty() && redirects.is_empty() {
+            let span = self.current_span();
+            return Err(ShellError::parse(
+                ParseErrorKind::UnexpectedToken,
+                span.line,
+                span.column,
+                "syntax error: unexpected token at start of command",
+            ));
+        }
+
         Ok(SimpleCommand {
             assignments,
             words,
@@ -1980,5 +1995,37 @@ mod tests {
             Parser::new(src).parse_program().is_ok(),
             "'for time' should parse because `time` is not in RESERVED_WORDS"
         );
+    }
+
+    #[test]
+    fn parse_program_on_leading_dsemi_errs_not_hangs() {
+        // Regression guard: DSemi at start of a simple command used to cause
+        // parse_simple_command to return Ok with zero progress, which made
+        // parse_compound_list loop forever. See
+        // docs/superpowers/specs/2026-04-20-classify-parse-hang-fix-design.md.
+        let mut p = Parser::new(";;");
+        let err = p
+            .parse_program()
+            .expect_err("';;' must not parse as a program");
+        assert!(
+            err.message.contains("unexpected token")
+                || err.message.contains("syntax error"),
+            "unexpected message: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn parse_program_on_leading_pipe_errs() {
+        let mut p = Parser::new("|");
+        assert!(p.parse_program().is_err());
+    }
+
+    #[test]
+    fn parse_program_on_dsemi_in_then_body_errs_not_hangs() {
+        // The exact input that the original hang reproduced on — the 6th
+        // is_completable probe candidate for "if true; then\n".
+        let mut p = Parser::new("if true; then\n\n;;\nesac\n");
+        assert!(p.parse_program().is_err());
     }
 }
