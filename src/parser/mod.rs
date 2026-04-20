@@ -312,10 +312,20 @@ impl Parser {
 
         // POSIX §2.9.1: a simple_command derives from at least one of
         // cmd_prefix (assignment/redirect), cmd_name (word), or cmd_word
-        // (word). A zero-progress return would let callers like
-        // parse_compound_list loop forever on unhandled operator tokens
-        // (e.g. DSemi, Pipe in unexpected positions). Reject explicitly.
-        if assignments.is_empty() && words.is_empty() && redirects.is_empty() {
+        // (word). A zero-progress empty return on an operator-like token
+        // (DSemi, Pipe in unexpected positions, etc.) lets callers such
+        // as parse_compound_list loop forever.
+        //
+        // Newline and Eof are NOT errors here — they represent lexer
+        // boundaries that callers handle via skip_newlines / is_at_end,
+        // and an empty return at such a boundary (e.g. a source file
+        // line that is only a comment, which the lexer reduces to a
+        // bare Newline token) is a legitimate no-op.
+        if assignments.is_empty()
+            && words.is_empty()
+            && redirects.is_empty()
+            && !matches!(self.current.token, Token::Newline | Token::Eof)
+        {
             let span = self.current_span();
             return Err(ShellError::parse(
                 ParseErrorKind::UnexpectedToken,
