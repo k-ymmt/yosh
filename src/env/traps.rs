@@ -47,9 +47,7 @@ impl TrapStore {
     /// Delegates to [`Self::set_trap_with`] using [`crate::signal::is_ignored_on_entry`]
     /// as the ignored-on-entry predicate.
     pub fn set_trap(&mut self, condition: &str, action: TrapAction) -> Result<(), String> {
-        self.set_trap_with(condition, action, &|sig| {
-            crate::signal::is_ignored_on_entry(sig)
-        })
+        self.set_trap_with(condition, action, &crate::signal::is_ignored_on_entry)
     }
 
     /// Set a trap for the given condition, using `is_ignored` to decide whether
@@ -91,9 +89,7 @@ impl TrapStore {
     /// Remove/reset the trap for the given condition.
     /// Delegates to [`Self::remove_trap_with`].
     pub fn remove_trap(&mut self, condition: &str) {
-        self.remove_trap_with(condition, &|sig| {
-            crate::signal::is_ignored_on_entry(sig)
-        })
+        self.remove_trap_with(condition, &crate::signal::is_ignored_on_entry)
     }
 
     /// Remove/reset a trap with an injected ignored-on-entry predicate.

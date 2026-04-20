@@ -128,6 +128,7 @@ pub fn ignored_on_entry_set_opt() -> Option<&'static HashSet<i32>> {
 /// # Panics
 ///
 /// Panics if [`init_signal_handling`] has not been called.
+#[allow(dead_code)]
 pub fn ignored_on_entry_set() -> &'static HashSet<i32> {
     IGNORED_ON_ENTRY
         .get()
