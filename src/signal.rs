@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::os::unix::io::RawFd;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -78,6 +79,55 @@ pub fn signal_number_to_name(num: i32) -> Option<&'static str> {
 /// Global self-pipe file descriptor pair (read_fd, write_fd).
 static SELF_PIPE: OnceLock<(RawFd, RawFd)> = OnceLock::new();
 
+/// Signals inherited with SIG_IGN disposition at shell entry.
+/// Per POSIX §2.11, these signals cannot be trapped or reset by the shell.
+/// Captured once at startup before any yosh handler is installed; never mutated
+/// afterward, so a stale `get()` from a fork/exec child reflects the correct
+/// entry state (because the global is inherited as a copy of the parent's set).
+static IGNORED_ON_ENTRY: OnceLock<HashSet<i32>> = OnceLock::new();
+
+/// Query each trappable POSIX signal's current disposition via `sigaction(_, NULL, &mut old)`
+/// and return the set of signals currently set to SIG_IGN.
+/// Must be called before any yosh handler is installed to correctly observe
+/// what was inherited from the parent process.
+fn capture_ignored_on_entry() -> HashSet<i32> {
+    let mut set = HashSet::new();
+    for &(num, _) in SIGNAL_TABLE {
+        if num == libc::SIGKILL || num == libc::SIGSTOP {
+            // SIGKILL/SIGSTOP cannot be caught or ignored; skip them.
+            continue;
+        }
+        let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::sigaction(num, std::ptr::null(), &mut old) };
+        if rc != 0 {
+            continue;
+        }
+        if old.sa_sigaction == libc::SIG_IGN {
+            set.insert(num);
+        }
+    }
+    set
+}
+
+/// Returns `true` if `sig` was inherited with SIG_IGN disposition at shell startup.
+/// Returns `false` if [`init_signal_handling`] has not been called yet.
+pub fn is_ignored_on_entry(sig: i32) -> bool {
+    IGNORED_ON_ENTRY
+        .get()
+        .map_or(false, |set| set.contains(&sig))
+}
+
+/// Returns a reference to the set of ignored-on-entry signals.
+///
+/// # Panics
+///
+/// Panics if [`init_signal_handling`] has not been called.
+pub fn ignored_on_entry_set() -> &'static HashSet<i32> {
+    IGNORED_ON_ENTRY
+        .get()
+        .expect("init_signal_handling() must be called first")
+}
+
 /// Async-signal-safe handler: writes the signal number as a single byte to the
 /// write end of the self-pipe, and sets the PENDING_EXIT_SIGNAL flag for
 /// SIGHUP and SIGTERM so that the terminal read loop can notice quickly.
@@ -103,6 +153,11 @@ extern "C" fn signal_handler(sig: libc::c_int) {
 /// This function is idempotent — calling it more than once is a no-op.
 pub fn init_signal_handling() {
     SELF_PIPE.get_or_init(|| {
+        // POSIX §2.11: capture the set of signals inherited as SIG_IGN before we
+        // install any yosh handler. Skip registration for those signals so they
+        // remain ignored for the shell's lifetime.
+        IGNORED_ON_ENTRY.get_or_init(capture_ignored_on_entry);
+
         let mut fds: [libc::c_int; 2] = [0; 2];
 
         // Create the pipe.
@@ -147,6 +202,15 @@ pub fn init_signal_handling() {
         );
 
         for &(num, _) in HANDLED_SIGNALS {
+            // POSIX §2.11: leave inherited SIG_IGN in place.
+            if IGNORED_ON_ENTRY
+                .get()
+                .expect("IGNORED_ON_ENTRY must be initialized above")
+                .contains(&num)
+            {
+                continue;
+            }
+
             let sig = Signal::try_from(num).expect("invalid signal number in HANDLED_SIGNALS");
             let sa = if num == libc::SIGHUP || num == libc::SIGTERM {
                 &sa_no_restart
@@ -223,9 +287,13 @@ pub fn default_signal(sig: i32) {
 
 /// Reset signals after fork for child processes.
 /// `ignored` signals retain SIG_IGN; all others reset to SIG_DFL.
+/// Signals inherited as SIG_IGN at shell entry (§2.11) are also kept ignored.
 pub fn reset_child_signals(ignored: &[i32]) {
+    let entry_set = IGNORED_ON_ENTRY.get();
     for &(num, _) in HANDLED_SIGNALS {
-        if ignored.contains(&num) {
+        let keep_ignored = ignored.contains(&num)
+            || entry_set.map_or(false, |s| s.contains(&num));
+        if keep_ignored {
             ignore_signal(num);
         } else {
             default_signal(num);
@@ -424,5 +492,81 @@ mod tests {
         init_job_control_signals();
         reset_job_control_signals();
         // No panic = success
+    }
+
+    // -----------------------------------------------------------------------
+    // Sub-project 5 — Task 1: Ignored-on-entry capture tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_ignored_on_entry_false_for_unlikely_signal() {
+        // After init (possibly already called by other tests), a benign signal
+        // that is extremely unlikely to be inherited as SIG_IGN in a `cargo test`
+        // run should report `false`. SIGUSR2 is a safe choice — no library
+        // installs SIG_IGN for it by default.
+        init_signal_handling();
+        assert!(
+            !is_ignored_on_entry(libc::SIGUSR2),
+            "SIGUSR2 should not be ignored-on-entry in a normal test environment"
+        );
+    }
+
+    #[test]
+    fn test_capture_ignored_on_entry_detects_sig_ign() {
+        // This test is standalone — it does NOT call init_signal_handling.
+        // It exercises `capture_ignored_on_entry` directly to verify the
+        // sigaction query logic. We use SIGALRM (14) which is in SIGNAL_TABLE
+        // on both Linux (num 14) and macOS (num 14). On macOS, SIGUSR2=31
+        // is not in SIGNAL_TABLE, so SIGALRM is used instead. We restore the
+        // original disposition afterward to avoid polluting sibling tests.
+        let sig_num = libc::SIGALRM;
+
+        // Save the current disposition.
+        let mut original: libc::sigaction = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::sigaction(sig_num, std::ptr::null(), &mut original) };
+        assert_eq!(rc, 0);
+
+        // Install SIG_IGN.
+        let ign_sa = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+        let sig = Signal::try_from(sig_num).unwrap();
+        unsafe { sigaction(sig, &ign_sa).unwrap(); }
+
+        // Run the capture helper and assert SIGALRM is in the set.
+        let captured = capture_ignored_on_entry();
+        assert!(
+            captured.contains(&sig_num),
+            "capture_ignored_on_entry should detect SIGALRM SIG_IGN, got {:?}",
+            captured
+        );
+
+        // Restore original disposition.
+        let rc = unsafe { libc::sigaction(sig_num, &original, std::ptr::null_mut()) };
+        assert_eq!(rc, 0);
+    }
+
+    #[test]
+    fn test_capture_ignored_on_entry_excludes_default() {
+        // SIGPIPE (13) at SIG_DFL should NOT appear in the captured set.
+        // SIGPIPE is in SIGNAL_TABLE on both Linux and macOS with number 13.
+        let sig_num = libc::SIGPIPE;
+
+        let mut original: libc::sigaction = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::sigaction(sig_num, std::ptr::null(), &mut original) };
+        assert_eq!(rc, 0);
+
+        let dfl_sa = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+        let sig = Signal::try_from(sig_num).unwrap();
+        unsafe { sigaction(sig, &dfl_sa).unwrap(); }
+
+        let captured = capture_ignored_on_entry();
+        assert!(
+            !captured.contains(&sig_num),
+            "capture_ignored_on_entry should not include SIG_DFL signals, got {:?}",
+            captured
+        );
+
+        // Restore.
+        let rc = unsafe { libc::sigaction(sig_num, &original, std::ptr::null_mut()) };
+        assert_eq!(rc, 0);
     }
 }
