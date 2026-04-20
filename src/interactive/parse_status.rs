@@ -11,16 +11,20 @@ pub enum ParseStatus {
     Error(String),
 }
 
-/// Closing keywords used to probe whether an `UnexpectedToken`-at-EOF error
-/// represents genuinely incomplete input (e.g. missing `fi`, `done`, `esac`,
-/// `}`, `)`) rather than a real syntax error.
+/// Closing-keyword probes for `is_completable`: each suffix wraps a
+/// single `:` null builtin (POSIX-defined, always valid) before the
+/// closer, so the probe satisfies the non-empty `compound_list` rule
+/// introduced in commit `fe7c31c` (2026-04-19). Without the `:` body,
+/// every probe would produce an empty `then`/`do`/`else` body and fail
+/// with `syntax error: empty compound list in <ctx>`, making genuinely
+/// incomplete input indistinguishable from genuinely invalid input.
 const CLOSING_KEYWORDS: &[&str] = &[
-    "\nfi\n",
-    "\ndone\n",
-    "\nesac\n",
-    "\n}\n",
-    "\n)\n",
-    "\n;;\nesac\n",
+    "\n:\nfi\n",
+    "\n:\ndone\n",
+    "\n:\nesac\n",
+    "\n:\n}\n",
+    "\n:\n)\n",
+    "\n:\n;;\nesac\n",
 ];
 
 pub fn classify_parse(input: &str, aliases: &AliasStore) -> ParseStatus {
