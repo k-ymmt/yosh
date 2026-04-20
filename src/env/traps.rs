@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// Action to take when a trap fires.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,14 +44,36 @@ impl TrapStore {
     }
 
     /// Set a trap for the given condition (signal name or number).
+    /// Delegates to [`Self::set_trap_with`] using [`crate::signal::is_ignored_on_entry`]
+    /// as the ignored-on-entry predicate.
     pub fn set_trap(&mut self, condition: &str, action: TrapAction) -> Result<(), String> {
+        self.set_trap_with(condition, action, &|sig| {
+            crate::signal::is_ignored_on_entry(sig)
+        })
+    }
+
+    /// Set a trap for the given condition, using `is_ignored` to decide whether
+    /// to silently no-op (POSIX §2.11: ignored-on-entry signals cannot be trapped
+    /// or reset). Exposed for unit testing so tests can inject a synthetic
+    /// predicate without mutating process signal state.
+    pub(crate) fn set_trap_with(
+        &mut self,
+        condition: &str,
+        action: TrapAction,
+        is_ignored: &dyn Fn(i32) -> bool,
+    ) -> Result<(), String> {
         let num = Self::signal_name_to_number(condition)
             .ok_or_else(|| format!("invalid signal name: {}", condition))?;
         if num == 0 {
+            // EXIT pseudo-signal is always settable.
             self.exit_trap = Some(action);
-        } else {
-            self.signal_traps.insert(num, action);
+            return Ok(());
         }
+        if is_ignored(num) {
+            // POSIX §2.11: silent no-op.
+            return Ok(());
+        }
+        self.signal_traps.insert(num, action);
         Ok(())
     }
 
@@ -67,14 +89,29 @@ impl TrapStore {
     }
 
     /// Remove/reset the trap for the given condition.
+    /// Delegates to [`Self::remove_trap_with`].
     pub fn remove_trap(&mut self, condition: &str) {
-        if let Some(num) = Self::signal_name_to_number(condition) {
-            if num == 0 {
-                self.exit_trap = None;
-            } else {
-                self.signal_traps.remove(&num);
-            }
+        self.remove_trap_with(condition, &|sig| {
+            crate::signal::is_ignored_on_entry(sig)
+        })
+    }
+
+    /// Remove/reset a trap with an injected ignored-on-entry predicate.
+    /// Silent no-op for ignored-on-entry signals per POSIX §2.11.
+    pub(crate) fn remove_trap_with(
+        &mut self,
+        condition: &str,
+        is_ignored: &dyn Fn(i32) -> bool,
+    ) {
+        let Some(num) = Self::signal_name_to_number(condition) else { return; };
+        if num == 0 {
+            self.exit_trap = None;
+            return;
         }
+        if is_ignored(num) {
+            return;
+        }
+        self.signal_traps.remove(&num);
     }
 
     /// Reset all non-ignored traps to default (POSIX subshell behavior).
@@ -130,16 +167,25 @@ impl TrapStore {
                 TrapAction::Default => {}
             }
         }
-        // Signal traps sorted by number
-        let mut keys: Vec<i32> = signal_traps.keys().copied().collect();
-        keys.sort();
+
+        // Union signal_traps keys with ignored-on-entry signals (POSIX §2.11:
+        // these must appear in `trap` output even though we didn't install a
+        // TrapAction for them). BTreeSet gives deterministic sort-by-number.
+        let mut keys: BTreeSet<i32> = signal_traps.keys().copied().collect();
+        if let Some(entry_set) = crate::signal::ignored_on_entry_set_opt() {
+            for &sig in entry_set {
+                keys.insert(sig);
+            }
+        }
         for num in keys {
-            if let Some(action) = signal_traps.get(&num) {
-                let name = Self::signal_number_to_name(num);
-                match action {
-                    TrapAction::Command(cmd) => println!("trap -- '{}' SIG{}", cmd, name),
-                    TrapAction::Ignore => println!("trap -- '' SIG{}", name),
-                    TrapAction::Default => {}
+            let name = Self::signal_number_to_name(num);
+            match signal_traps.get(&num) {
+                Some(TrapAction::Command(cmd)) => println!("trap -- '{}' SIG{}", cmd, name),
+                Some(TrapAction::Ignore) => println!("trap -- '' SIG{}", name),
+                Some(TrapAction::Default) => {}
+                None => {
+                    // Ignored-on-entry with no explicit trap — display as ''.
+                    println!("trap -- '' SIG{}", name);
                 }
             }
         }
@@ -214,6 +260,75 @@ mod tests {
         assert!(store.signal_traps.get(&2).is_none());
         assert_eq!(store.signal_traps.get(&1), Some(&TrapAction::Ignore));
         assert!(store.signal_traps.get(&15).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Sub-project 5 — Task 2: Silent-ignore via dependency-injected predicate
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_trap_with_ignored_predicate_is_silent() {
+        // Simulate SIGINT (2) as ignored-on-entry via an injected predicate.
+        let mut store = TrapStore::default();
+        let is_ignored = |sig: i32| sig == 2;
+        let result = store.set_trap_with(
+            "INT",
+            TrapAction::Command("echo caught".to_string()),
+            &is_ignored,
+        );
+        assert!(result.is_ok(), "silent-ignore must return Ok(()), got {:?}", result);
+        assert!(
+            store.signal_traps.is_empty(),
+            "signal_traps should remain empty when set on ignored-on-entry; got {:?}",
+            store.signal_traps
+        );
+    }
+
+    #[test]
+    fn test_set_trap_with_non_ignored_predicate_inserts_normally() {
+        // Regression: when predicate returns false, behaviour matches the
+        // original set_trap — insertion into signal_traps.
+        let mut store = TrapStore::default();
+        let never_ignored = |_sig: i32| false;
+        let result = store.set_trap_with(
+            "INT",
+            TrapAction::Command("echo x".to_string()),
+            &never_ignored,
+        );
+        assert!(result.is_ok());
+        assert!(matches!(
+            store.signal_traps.get(&2),
+            Some(TrapAction::Command(_))
+        ));
+    }
+
+    #[test]
+    fn test_set_trap_exit_signal_bypasses_ignored_check() {
+        // EXIT (signal 0) is always settable regardless of the predicate.
+        let mut store = TrapStore::default();
+        let always_ignored = |_sig: i32| true;
+        let result = store.set_trap_with(
+            "EXIT",
+            TrapAction::Command("echo bye".to_string()),
+            &always_ignored,
+        );
+        assert!(result.is_ok());
+        assert!(matches!(store.exit_trap, Some(TrapAction::Command(_))));
+    }
+
+    #[test]
+    fn test_remove_trap_with_ignored_predicate_is_silent() {
+        // Pre-populate signal_traps with SIGINT=Ignore, then attempt to remove
+        // with SIGINT marked ignored-on-entry — the entry must remain.
+        let mut store = TrapStore::default();
+        store.signal_traps.insert(2, TrapAction::Ignore);
+        let is_ignored = |sig: i32| sig == 2;
+        store.remove_trap_with("INT", &is_ignored);
+        assert_eq!(
+            store.signal_traps.get(&2),
+            Some(&TrapAction::Ignore),
+            "remove_trap on ignored-on-entry signal must be silent no-op"
+        );
     }
 
     #[test]

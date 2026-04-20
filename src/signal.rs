@@ -117,6 +117,12 @@ pub fn is_ignored_on_entry(sig: i32) -> bool {
         .map_or(false, |set| set.contains(&sig))
 }
 
+/// Like [`ignored_on_entry_set`] but returns `None` if the capture has not
+/// happened yet (useful for callers that must not panic, e.g. `display_all`).
+pub fn ignored_on_entry_set_opt() -> Option<&'static HashSet<i32>> {
+    IGNORED_ON_ENTRY.get()
+}
+
 /// Returns a reference to the set of ignored-on-entry signals.
 ///
 /// # Panics
