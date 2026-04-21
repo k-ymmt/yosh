@@ -40,6 +40,13 @@ for _ in $(seq 1 200); do
 done
 "#;
 
+const BRACKET_LOOP_SCRIPT: &str = r#"
+i=0
+while [ "$i" -lt 200 ]; do
+    i=$((i + 1))
+done
+"#;
+
 fn bench_exec(c: &mut Criterion) {
     c.bench_function("exec_for_loop_200", |b| {
         b.iter(|| {
@@ -58,6 +65,13 @@ fn bench_exec(c: &mut Criterion) {
     c.bench_function("exec_param_expansion_200", |b| {
         b.iter(|| {
             let status = run_script(black_box(EXPANSION_SCRIPT));
+            assert_eq!(status, 0);
+        });
+    });
+
+    c.bench_function("exec_bracket_loop_200", |b| {
+        b.iter(|| {
+            let status = run_script(black_box(BRACKET_LOOP_SCRIPT));
             assert_eq!(status, 0);
         });
     });
