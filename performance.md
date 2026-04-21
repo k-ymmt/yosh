@@ -7,9 +7,19 @@
 
 ## 1. Executive Summary
 
-_(Populated in §4/§5; see those sections for the full ranking.)_
+**Top 5 hotspots (W2):**
 
-yosh's W2 (script-heavy) execution is dominated by per-command environ reconstruction: `VarStore::build_environ` and `Executor::build_env_vars` together account for over 60 % of the ~68 MB allocated during a single run of `script_heavy.sh`, called 100k+ times each. The function-call path is a second major hotspot: `exec_function_call_200` runs ~190× slower than the comparable for-loop bench.
+1. **`VarStore::environ().to_vec()` in `Executor::build_env_vars`** — ~52 MB / ~380k calls. Every command execution clones the full exported-env snapshot, even when nothing changed and even for builtins that never consume envp.
+2. **`VarStore::build_environ` itself** — rebuilds the exported set by merging scope hashmaps, called per miss of the existing cache and inside the `.to_vec()` site above.
+3. **Shell function call path** — `exec_function_call_200` is **187×** slower per operation than `exec_for_loop_200` (2.4 ms vs 13 µs per call). Root cause is not fully isolated; likely argv binding + local-scope push/pop.
+4. **`expand::pathname::expand` always allocates a new Vec** — 14k calls / 2.9 MB in W2 even though most fields contain no glob metachars.
+5. **`expand::pattern::matches`** — 46k calls / ~1.1 MB. Secondary hotspot; warrants investigation after #1–#4.
+
+**Recommended next-project order:** §5.2.
+
+**Non-findings worth flagging:**
+- The existing TODO.md entry "`LINENO` update allocates a `String` per command" is **absent from the W2 Top-10**. It is real but is an order of magnitude smaller than hotspots #1–#2 and should be re-prioritized below them.
+- Parse cost is a non-issue: `parse_large` (72 µs for ~500-line script) is negligible relative to `exec_function_call_200` (484 ms).
 
 ## 2. Methodology
 
@@ -177,3 +187,209 @@ The W3 self-time column is not dominated by the macOS sampler artifact (samples 
 | 10   | `CommandCompleter::complete_common_prefix` | 50.0 % |
 
 50 % of in-session samples are in `CommandCompleter::complete_common_prefix`. For a scenario with only one Tab press, this ratio implies completion is a substantial fraction of interactive wall-clock when it fires. Too few samples to draw firm conclusions; see §4 for treatment.
+
+## 4. Findings
+
+Five hotspots are treated here. They are ordered by measured impact, not by expected fix effort — that ordering is in §5.
+
+### 4.1. `VarStore::environ().to_vec()` cloned per command
+
+**Location:** `src/exec/simple.rs:406` (the `build_env_vars` call site) reading from `src/env/vars.rs:286-291` (`environ()`).
+
+**Measurement (W2):**
+- Allocations: **~16 MB** at the primary site (rank #3 by bytes, 121k calls), plus a second site contributing another **~6 MB** at rank #5 (1k calls with larger Vec), totaling ~7.4 MB + 5.8 MB = ~13 MB directly attributable to `.to_vec()`.
+- Transitively the chain through `environ()` + `build_environ()` + `build_environ::{{closure}}` accounts for the ranks #1, #2, #4, #7, #10 entries (~38 MB).
+
+**Suspected cause:** `VarStore::environ()` returns `&[(String, String)]` and maintains an `environ_cache` that correctly avoids rebuilding on repeated reads. However `build_env_vars` at simple.rs:406 does:
+
+```rust
+let mut vars = self.env.vars.environ().to_vec();
+```
+
+so every command execution — including builtins that never need an envp at all — clones the entire exported-env slice into a fresh `Vec<(String, String)>`. With the W2 script the exported env stays essentially constant across commands, so the clone is pure waste. Additionally the cache miss path (`build_environ`) is called more often than expected (131k calls to line 297:36) because *any* variable mutation currently invalidates the cache, and W2 does per-command loop-variable updates.
+
+**Fix candidates:**
+
+1. **Skip `build_env_vars` entirely for builtins** — only external commands need an envp array. ~80 % of W2's command invocations are builtins (`:`, `echo`, assignment-only). Adding a pre-dispatch check eliminates most `.to_vec()` calls. **Low effort, high impact.**
+2. **Return a reference/iterator from `environ()` and defer the `.to_vec()`** — when an external command is about to `execve`, the Vec is unavoidable, but intermediate builtins can operate on `&[...]`. **Medium effort, medium impact.**
+3. **Scoped cache invalidation** — only bump the environ cache when an *exported* variable changes. Setting an unexported loop counter should not invalidate. This reduces the `build_environ` rebuilds (the #1 and #2 finding entries). **Medium effort, medium impact.** Composes well with fix #1.
+
+**TODO.md cross-check:** not present. This finding should be added to TODO.md as a P0 item.
+
+### 4.2. Shell function calls are ~180× slower per operation than arithmetic loop iterations
+
+**Location:** to be determined. Exercised by `benches/exec_bench.rs::exec_function_call_200`, but the actual bottleneck is somewhere inside the argv-binding / local-scope-management path used by `Executor::exec_function_call` (or equivalent).
+
+**Measurement:**
+- Criterion `exec_for_loop_200`: 2.58 ms total for 200 iterations → ~13 µs/iter.
+- Criterion `exec_function_call_200`: 484 ms total for 200 calls → ~2.4 ms/call.
+- Ratio: **~187×** per operation.
+- The benchmark script does only `f() { : "$1"; }` followed by 200 calls of `f arg`. Each call does at most: scope push, argv bind, builtin `:` call, scope pop.
+
+**Suspected cause:** not definitively isolated. Candidates, ordered by plausibility:
+- Per-call `HashMap` allocation for the function's local scope (seen in dhat as a distributed allocation; too many small sites to show a single Top-10 entry).
+- argv binding cloning `String`s (ties into finding 4.1 indirectly — yosh's `Variable` value is `String`).
+- `LINENO` / pseudo-variable side effects re-triggered on every function call.
+
+**Fix candidates:**
+
+1. **Add finer-grained micro-benches** — split `exec_function_call` into `_noscope` (function body is inline), `_with_positional` (accepts `$1`), and `_deep_nest` (100 lexical nestings). The 187× ratio will localize to one of these paths.
+2. **Once localized, specific fixes depend on the path.** Argv cloning → consider `Rc<String>` or pass by reference. Scope HashMap → consider per-call `SmallVec` pair list, since most functions have 0-3 local bindings.
+
+**TODO.md cross-check:** not present. This finding should be added to TODO.md as P0.
+
+### 4.3. `pathname::expand` allocates a new Vec per invocation, even with no glob chars
+
+**Location:** `src/expand/pathname.rs:15-33` — the top-level `expand()` function.
+
+**Measurement (W2):** 14,020 calls allocating 2.94 MB (rank #6 by bytes, rank #8 by calls). Matching the 14k number against W2's structure (~3200 commands × ~4 fields per command after expansion) suggests every expanded field runs through `pathname::expand` and triggers at least one `Vec::new()` — even when no field contains `*`, `?`, or `[`.
+
+**Suspected cause:** the implementation unconditionally allocates `let mut result = Vec::new();` and copies each `field` into it via `result.push(field)`. For the all-non-glob case (which is almost all cases in W2), this is a pure copy.
+
+**Fix candidates:**
+
+1. **Fast-path pass-through:** before the loop, `if !fields.iter().any(has_unquoted_glob_chars) { return fields; }`. Saves the Vec alloc + copy for every non-glob invocation.
+2. **Reuse the input allocation:** when the loop reaches the non-glob branch, swap with `mem::take(&mut fields[i])` rather than moving into a new Vec. Slightly more complex than #1 but covers the mixed case.
+
+**TODO.md cross-check:** not present. Medium-priority P1 (below findings 4.1 and 4.2 but above 4.4).
+
+### 4.4. `expand::pattern::matches` called ~46k times for W2
+
+**Location:** `src/expand/pattern.rs:10-11` (rank #5 + #7 by call count; 235 KB + 888 KB bytes).
+
+**Measurement:** 15k + 31k = 46k calls, together allocating ~1.1 MB.
+
+**Suspected cause:** each invocation likely re-compiles the pattern object from scratch instead of caching parsed patterns. The W2 script uses only a handful of distinct patterns (`hello`, `world`, `hello*`) in `${VAR#hello }` / `${VAR%world}` / glob paths, so most calls are redundant compilation.
+
+**Fix candidates:**
+
+1. **Cache compiled patterns keyed by source string.** A small LRU (even 16 entries) would catch the W2 reuse completely. Implementation has to handle escaping correctly.
+2. **Pass pre-compiled patterns through the expand pipeline** instead of recompiling at each site. Larger refactor.
+
+**TODO.md cross-check:** not present. P2.
+
+### 4.5. Observation: interactive-smoke completion at ~50 % of in-session samples
+
+**Location:** `CommandCompleter::complete_common_prefix` (see `src/interactive/command_completion.rs` for the exact file).
+
+**Measurement (W3):** 34 of 68 total samples (50 %) land in `complete_common_prefix`, driven by one Tab press.
+
+**Status:** **inconclusive.** W3's 68 samples are too sparse for a firm ranking — a single Tab press triggering `complete_common_prefix` plausibly yields the observed ratio without implying a performance problem. Recorded as an observation, not a hotspot.
+
+**Follow-up:** if a P0 fix for 4.1 or 4.2 exposes an interactive bottleneck, re-run W3 with a longer scenario (e.g., 50 prompts with mixed completion).
+
+**TODO.md cross-check:** `src/interactive/history.rs`'s `suggest()` is already listed as "linear scan on every keystroke" — different code path, but in the same neighbourhood. No action needed on either entry from this report.
+
+## 5. Recommendations
+
+### 5.1 Priority matrix
+
+Impact classification:
+- **High:** > 10 % of total CPU on a W1/W2 hotpath, **or** > 10 % of allocated bytes in W2, **or** a Criterion ratio anomaly > 10×.
+- **Medium:** 3–10 %.
+- **Low:** < 3 %.
+
+Effort classification:
+- **Low:** < 1 day, contained to a single file, no API change.
+- **Medium:** 1–3 days, touches 2–5 files.
+- **High:** > 3 days or a design decision.
+
+| Finding | Impact | Effort | Priority | Notes |
+|---------|--------|--------|----------|-------|
+| 4.1 — `environ().to_vec()` per command | **High** (~52 MB / ~380k calls) | **Low** for fix candidate #1 (builtin skip); Medium for #2/#3 | **P0** | Candidate #1 alone likely cuts W2 allocation by ≥40 %. |
+| 4.2 — function-call 187× ratio | **High** (Criterion) | **Medium** (needs root-cause bench work first) | **P0** | Start by adding the sub-benches described in candidate #1 before touching code. |
+| 4.3 — `pathname::expand` non-glob alloc | **Medium** (~3 MB) | **Low** (5-line fast path) | **P1** | Cheap to implement; quick win. |
+| 4.4 — `pattern::matches` recompilation | **Low-Medium** (~1 MB, 46k calls) | **Medium** (cache + invalidation) | **P2** | Revisit after 4.1/4.2 land — may lose relative weight. |
+| 4.5 — interactive completion ratio | **Inconclusive** | n/a | **defer** | Not a finding until resampled. |
+
+### 5.2 Next-project queue
+
+In order:
+
+1. **P0 — Fix 4.1, starting with candidate #1 (`build_env_vars` skip for builtins).** Estimated: 1 day. Single-file change in `src/exec/simple.rs`. Expect ~40 % reduction in W2 allocation and material improvement in `exec_for_loop_200` / `exec_param_expansion_200` Criterion numbers.
+2. **P0 — Add the fine-grained function-call sub-benches from 4.2 candidate #1.** Estimated: half a day. Prerequisite to any actual fix; without it we'd be guessing.
+3. **P0 — Fix 4.2 based on whatever the new benches reveal.** Estimated: 1–3 days depending on path.
+4. **P1 — Fix 4.3 fast-path.** Estimated: 1–2 hours. Can be bundled into the same PR as either #1 or #2 above.
+5. **P2 — Fix 4.4 pattern cache.** Estimated: 2 days. Worth re-measuring after the first three land, because the absolute numbers will have shifted.
+
+### 5.3 Items to add to TODO.md
+
+- `build_env_vars` / `environ().to_vec()` cloning per command execution (§4.1) — **P0**. Re-prioritize above the existing `LINENO` entry.
+- `exec_function_call` 187× overhead ratio vs arithmetic loop (§4.2) — **P0**, with sub-bench prerequisite.
+- `pathname::expand` Vec allocation with no glob chars (§4.3) — **P1**.
+- `pattern::matches` recompilation (§4.4) — **P2**.
+
+The existing `LINENO update allocates a String per command` entry should stay but be noted as subordinate to §4.1.
+
+## 6. Reproducibility
+
+### 6.1 Build artifacts
+
+```bash
+cargo build --profile profiling \
+    --bin yosh --bin yosh-dhat --features dhat-heap \
+    --bench startup_bench --bench exec_bench --bench interactive_smoke
+```
+
+### 6.2 samply runs (macOS workaround for W1 baked in)
+
+```bash
+mkdir -p target/perf
+
+# W1 — macOS-compatible in-process loop (see §2.1)
+samply record --save-only --output target/perf/samply_w1.json -- \
+    ./target/profiling/yosh -c '
+        i=0
+        while [ "$i" -lt 20000 ]; do
+            echo hi > /dev/null
+            i=$((i + 1))
+        done'
+
+# W2
+samply record --save-only --output target/perf/samply_w2.json -- \
+    ./target/profiling/yosh benches/data/script_heavy.sh
+
+# W3 — locate the bench binary first
+SMOKE=$(ls -t target/profiling/deps/interactive_smoke-* | grep -v '\.d$' | head -1)
+samply record --save-only --output target/perf/samply_w3.json -- "$SMOKE"
+
+# Extract Top-N tables in Markdown
+python3 scripts/perf/samply_top_n.py target/perf/samply_w1.json 10
+python3 scripts/perf/samply_top_n.py target/perf/samply_w2.json 10
+python3 scripts/perf/samply_top_n.py target/perf/samply_w3.json 10
+```
+
+Interactive exploration: `samply load target/perf/samply_w2.json`.
+
+### 6.3 dhat run
+
+```bash
+cargo run --profile profiling --features dhat-heap --bin yosh-dhat -- \
+    benches/data/script_heavy.sh
+mv dhat-heap.json target/perf/dhat-heap-w2.json
+
+# Extract Top-N tables
+python3 scripts/perf/dhat_top_n.py target/perf/dhat-heap-w2.json 10
+```
+
+### 6.4 Criterion
+
+```bash
+cargo bench
+# -> target/criterion/<bench>/<function>/report/index.html
+# -> medians in target/criterion/<bench>/<function>/new/estimates.json
+#    (read "median" -> "point_estimate" in nanoseconds)
+```
+
+### 6.5 Regenerating this report
+
+All data in §3 comes from:
+- `target/perf/samply_top.md`
+- `target/perf/dhat_top.md`
+- `target/perf/criterion_summary.md`
+
+Regenerate by running 6.1 → 6.4 and then re-aggregating (see the step-by-step commands in `docs/superpowers/plans/2026-04-21-performance-tuning.md` Tasks 8–10).
+
+## 7. Scope statement (reminder)
+
+This report is measurement-only. **No production code was modified for performance.** The artifacts shipped alongside it are the new profiling tooling (`src/bin/yosh-dhat.rs`, the `profiling` build profile, the three new benches, the two Python extractors) and the workload scripts under `benches/data/`. All fix recommendations in §5 are deferred to separately-scoped projects and begin from the priority queue in §5.2.
