@@ -355,7 +355,7 @@ Effort classification:
 | 4.1 — `[` / `test` external dispatch | **High** (~52 MB / ~380k calls) | **Low** for fix candidate #1 (builtin skip); Medium for #2/#3 | **done** | Completed 2026-04-21 via `[`/`test` builtin promotion. Verified at HEAD `2261638`. See `docs/superpowers/specs/2026-04-21-test-bracket-builtin-design.md`. |
 | 4.2 — function-call 2.1× ratio | **Medium** (revised at HEAD from High) | **Medium** (needs root-cause bench work first) | **P1** | Ratio collapsed from 187× to 2.1× after §4.1 fix; still worth sub-bench investigation but no longer urgent. |
 | 4.3 — `pathname::expand` non-glob alloc | **Medium** (~2.94 MB at rank #1 pre-fastpath) | **Low** (5-line fast path) | **done** | Completed 2026-04-21 via non-glob fast-path. W2 total −17.3%, pathname::expand hotspot eliminated from Top-10. See `docs/superpowers/specs/2026-04-21-pathname-expand-fast-path-design.md` and `610043e`. |
-| 4.4 — `pattern::matches` recompilation | **Low-Medium** (~1.25 MB, 50k calls) | **Medium** (cache + invalidation) | **P2** | Revisit after 4.3 lands. |
+| 4.4 — `pattern::matches` recompilation | **Low-Medium** (~1.25 MB, 50k calls) | **Medium** (cache + invalidation) | **P1** | Promoted from P2 after §4.3 landed — now §5.2 item 2. Revisit after `field_split::emit` investigation. |
 | 4.5 — interactive completion ratio | **Inconclusive** | n/a | **defer** | Not a finding; `complete_common_prefix` is no longer in the W3 Top-10 at HEAD. |
 
 ### 5.2 Next-project queue
@@ -376,7 +376,7 @@ In order (revised after §4.3 fast-path landed 2026-04-21 at `610043e`):
 - ~~`pathname::expand` Vec allocation with no glob chars (§4.3)~~ — **Completed 2026-04-21** via non-glob fast-path (`610043e`); dropped from #1 dhat site to rank #4 at 430.1 KB.
 - Investigate `field_split::emit (src/expand/field_split.rs:180:9)` allocation pattern — new #1 dhat site post-fastpath (2.94 MB / 14,020 calls; combined with sibling entries 4.63 MB / 21,051 calls). Next P0 candidate, pending investigation.
 - `exec_function_call` residual 2.1× overhead ratio vs arithmetic loop (§4.2) — **P1**, with sub-bench prerequisite.
-- `pattern::matches` recompilation (§4.4) — **P2**.
+- `pattern::matches` recompilation (§4.4) — **P1** (promoted from P2 post-fastpath; now §5.2 item 2).
 
 The existing `LINENO update allocates a String per command` entry should stay but be noted as subordinate to the remaining expansion-pipeline findings.
 
