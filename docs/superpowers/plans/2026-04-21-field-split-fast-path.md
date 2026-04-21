@@ -684,7 +684,7 @@ Expected: 4 new commits on top of the pre-plan HEAD (spec amendment, tests, impl
 
 All must be green before declaring the plan complete:
 
-1. `cargo test --lib expand::field_split` → 15 passed (Task 3 Step 3).
+1. `cargo test --lib expand::field_split` → 15 passed after Task 3 Step 3; 16 passed after the Task 3 follow-up commit (`e0442b2`, `test_fast_path_empty_unquoted_field_preserved`).
 2. `cargo test` → all passed (Task 3 Step 4).
 3. `./e2e/run_tests.sh` → all passed (Task 3 Step 5).
 4. `diff /tmp/w2_prefix.out /tmp/w2_postfix.out` → empty (Task 3 Step 6).
