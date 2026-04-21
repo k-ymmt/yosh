@@ -13,6 +13,13 @@ use crate::env::ShellEnv;
 /// 4. `*` and `?` do NOT match a leading `.` unless the pattern starts with `.`.
 /// 5. `*` and `?` never match `/`.
 pub fn expand(_env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
+    // Fast path: if no field contains unquoted glob metachars, return input as-is.
+    // Avoids the output-Vec allocation that is the #1 dhat site by bytes in W2
+    // (~2.94 MB / 14k calls). See docs/superpowers/specs/2026-04-21-pathname-expand-fast-path-design.md.
+    if !fields.iter().any(has_unquoted_glob_chars) {
+        return fields;
+    }
+
     let mut result = Vec::new();
     for field in fields {
         if has_unquoted_glob_chars(&field) {
