@@ -286,15 +286,10 @@ fn test_fast_path_mixed_quoted_unquoted_no_ifs() {
     assert_eq!(values(split(&env, vec![f])), vec!["foobar"]);
 }
 
-// DEFERRED during Task 2 (see plan "Note (2026-04-21)"): the originally-planned
-// `test_fast_path_utf8_no_false_positive` uncovered a pre-existing slow-path
-// UTF-8 panic in `append_byte` (TOP PRIORITY entry in TODO.md `## Known Bugs`).
-// The fast-path's UTF-8 safety guarantee from §5.2 still holds — continuation
-// bytes 0x80-0xBF cannot collide with ASCII IFS bytes — and will be re-tested
-// once the slow-path UTF-8 fix lands. For now, the empty-unquoted guard in
-// `test_fast_path_empty_unquoted_field_preserved` (added 2026-04-21) plus the
-// remaining five tests below cover the fast-path invariants we can exercise
-// without tripping the slow-path bug.
+// Re-enabled 2026-04-21 after the slow-path UTF-8 panic fix
+// (docs/superpowers/specs/2026-04-21-field-split-utf8-panic-fix-design.md).
+// UTF-8 continuation bytes cannot collide with ASCII IFS bytes, so the fast
+// path must engage for multi-byte-only input without any unquoted IFS byte.
 
 #[test]
 fn test_slow_path_triggered_by_one_splittable_field() {

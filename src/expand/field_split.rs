@@ -401,6 +401,18 @@ mod tests {
         assert_eq!(result[1].value, "hello");
     }
 
+    #[test]
+    fn test_fast_path_utf8_no_false_positive() {
+        // Deferred from spec 2026-04-21-field-split-fast-path-design §9.1 until
+        // the slow-path UTF-8 panic (2026-04-21-field-split-utf8-panic-fix) was
+        // resolved. UTF-8 continuation bytes (0x80-0xBF) cannot collide with
+        // ASCII IFS bytes, so the fast path must engage for multi-byte-only
+        // input with no unquoted IFS byte.
+        let env = env_with_ifs(" \t\n");
+        let input = vec![unquoted("日本語")];
+        assert_eq!(values(split(&env, input)), vec!["日本語"]);
+    }
+
     // ── UTF-8 multi-byte content (spec 2026-04-21-field-split-utf8-panic-fix §9.1) ──
 
     #[test]
