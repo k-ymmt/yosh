@@ -67,9 +67,34 @@ fn evaluate(args: &[&str]) -> Result<bool, TestError> {
 }
 
 fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
+    use std::os::unix::fs::FileTypeExt;
+
     match op {
         "-n" => Ok(!arg.is_empty()),
         "-z" => Ok(arg.is_empty()),
+
+        // -e follows symlinks (bash/dash semantics): dangling links → false.
+        "-e" => Ok(std::fs::metadata(arg).is_ok()),
+        "-f" => Ok(std::fs::metadata(arg).map(|m| m.is_file()).unwrap_or(false)),
+        "-d" => Ok(std::fs::metadata(arg).map(|m| m.is_dir()).unwrap_or(false)),
+        // -h / -L do NOT follow symlinks.
+        "-h" | "-L" => Ok(std::fs::symlink_metadata(arg)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)),
+        "-s" => Ok(std::fs::metadata(arg).map(|m| m.len() > 0).unwrap_or(false)),
+        "-p" => Ok(std::fs::metadata(arg)
+            .map(|m| m.file_type().is_fifo())
+            .unwrap_or(false)),
+        "-S" => Ok(std::fs::metadata(arg)
+            .map(|m| m.file_type().is_socket())
+            .unwrap_or(false)),
+        "-b" => Ok(std::fs::metadata(arg)
+            .map(|m| m.file_type().is_block_device())
+            .unwrap_or(false)),
+        "-c" => Ok(std::fs::metadata(arg)
+            .map(|m| m.file_type().is_char_device())
+            .unwrap_or(false)),
+
         _ => Err(TestError::syntax(format!("{}: unknown operator", op))),
     }
 }
@@ -150,5 +175,75 @@ mod tests {
     fn unknown_unary_operator_errors() {
         // An unknown unary operator produces exit 2.
         assert_eq!(t(&["-Z", "x"]), 2);
+    }
+
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn dash_e_existing_file_is_true() {
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        assert_eq!(t(&["-e", &path]), 0);
+    }
+
+    #[test]
+    fn dash_e_missing_file_is_false() {
+        assert_eq!(t(&["-e", "/no/such/path/__yosh_test__"]), 1);
+    }
+
+    #[test]
+    fn dash_f_regular_file_is_true() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "data").unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        assert_eq!(t(&["-f", &path]), 0);
+    }
+
+    #[test]
+    fn dash_f_directory_is_false() {
+        assert_eq!(t(&["-f", "/tmp"]), 1);
+    }
+
+    #[test]
+    fn dash_d_directory_is_true() {
+        assert_eq!(t(&["-d", "/tmp"]), 0);
+    }
+
+    #[test]
+    fn dash_d_regular_file_is_false() {
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        assert_eq!(t(&["-d", &path]), 1);
+    }
+
+    #[test]
+    fn dash_h_and_l_detect_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"x").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let link_str = link.to_str().unwrap().to_string();
+        assert_eq!(t(&["-h", &link_str]), 0);
+        assert_eq!(t(&["-L", &link_str]), 0);
+        let target_str = target.to_str().unwrap().to_string();
+        assert_eq!(t(&["-h", &target_str]), 1);
+        assert_eq!(t(&["-L", &target_str]), 1);
+    }
+
+    #[test]
+    fn dash_s_nonempty_file() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "data").unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        assert_eq!(t(&["-s", &path]), 0);
+    }
+
+    #[test]
+    fn dash_s_empty_file_is_false() {
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        assert_eq!(t(&["-s", &path]), 1);
     }
 }
