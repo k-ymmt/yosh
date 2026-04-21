@@ -305,4 +305,45 @@ mod tests {
         let input = vec![unquoted("a::b")];
         assert_eq!(values(split(&env, input)), vec!["a", "", "b"]);
     }
+
+    // ── Fast-path coverage (§9.1 of fast-path spec) ──
+
+    #[test]
+    fn test_fast_path_single_field_no_ifs_chars() {
+        let env = env_with_ifs(" \t\n");
+        let input = vec![unquoted("hello")];
+        assert_eq!(values(split(&env, input)), vec!["hello"]);
+    }
+
+    #[test]
+    fn test_fast_path_multiple_fields_no_ifs_chars() {
+        let env = env_with_ifs(" \t\n");
+        let input = vec![unquoted("hello"), unquoted("world")];
+        assert_eq!(values(split(&env, input)), vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_fast_path_mixed_quoted_unquoted_no_ifs() {
+        let env = env_with_ifs(" ");
+        let mut f = ExpandedField::new();
+        f.push_unquoted("foo");
+        f.push_quoted("bar");
+        assert_eq!(values(split(&env, vec![f])), vec!["foobar"]);
+    }
+
+    #[test]
+    fn test_slow_path_triggered_by_one_splittable_field() {
+        let env = env_with_ifs(" ");
+        let input = vec![unquoted("hello"), unquoted("a b")];
+        assert_eq!(values(split(&env, input)), vec!["hello", "a", "b"]);
+    }
+
+    #[test]
+    fn test_fast_path_quoted_ifs_byte_stays_fast() {
+        // IFS byte inside quoted context does not trigger slow path.
+        let env = env_with_ifs(" ");
+        let mut f = ExpandedField::new();
+        f.push_quoted("a b c");
+        assert_eq!(values(split(&env, vec![f])), vec!["a b c"]);
+    }
 }
