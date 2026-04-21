@@ -218,7 +218,7 @@ so every command execution — including builtins that never need an envp at all
 
 ### 4.2. Shell function calls are ~180× slower per operation than arithmetic loop iterations
 
-**Location:** to be determined. Exercised by `benches/exec_bench.rs::exec_function_call_200`, but the actual bottleneck is somewhere inside the argv-binding / local-scope-management path used by `Executor::exec_function_call` (or equivalent).
+**Location:** `src/exec/function.rs:9-45` — `Executor::exec_function_call`. Exercised by `benches/exec_bench.rs::exec_function_call_200`.
 
 **Measurement:**
 - Criterion `exec_for_loop_200`: 2.58 ms total for 200 iterations → ~13 µs/iter.
@@ -226,15 +226,19 @@ so every command execution — including builtins that never need an envp at all
 - Ratio: **~187×** per operation.
 - The benchmark script does only `f() { : "$1"; }` followed by 200 calls of `f arg`. Each call does at most: scope push, argv bind, builtin `:` call, scope pop.
 
-**Suspected cause:** not definitively isolated. Candidates, ordered by plausibility:
-- Per-call `HashMap` allocation for the function's local scope (seen in dhat as a distributed allocation; too many small sites to show a single Top-10 entry).
-- argv binding cloning `String`s (ties into finding 4.1 indirectly — yosh's `Variable` value is `String`).
-- `LINENO` / pseudo-variable side effects re-triggered on every function call.
+**Suspected cause:** four candidates, ordered by plausibility given confirmed source-code evidence:
 
-**Fix candidates:**
+1. **`catch_unwind` wrapper around the function body** (`src/exec/function.rs:12`). Every call is wrapped in `std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| …))`, which on stable Rust heap-allocates a `Box<dyn Any>` for a potential panic payload and inserts optimization barriers around the closure. For a function body of just `: "$1"` this per-call overhead is likely a significant fraction of the 2.4 ms. Removing the `catch_unwind` (or replacing it with a `Drop`-guard that pops the scope) would be a targeted win.
+2. **`environ_cache` invalidation on every scope push/pop** (`src/env/vars.rs:83` and `:93`). `push_scope` and `pop_scope` both set `self.environ_cache = None`. A single function call therefore invalidates the environ cache *twice*, forcing the next `environ()` read to rebuild. This couples finding 4.2 to finding 4.1: the 131k `build_environ` calls observed in W2 are partly driven by function-call scope churn, not actual env mutation. Scoped-cache invalidation (fix candidate #3 in 4.1) is the right long-term answer.
+3. **HashMap allocation for the per-call local scope** (`src/env/vars.rs:84-87` — `Scope { vars: HashMap::new(), ... }`). Shell functions rarely have more than 0–3 local bindings; a `SmallVec<[(Name, Variable); 4]>` would avoid the heap allocation entirely for the common case.
+4. **Positional-parameter vector cloning** — `push_scope(args.to_vec())` clones the argv. Minor compared to the above, but still adds up over 200 calls.
 
-1. **Add finer-grained micro-benches** — split `exec_function_call` into `_noscope` (function body is inline), `_with_positional` (accepts `$1`), and `_deep_nest` (100 lexical nestings). The 187× ratio will localize to one of these paths.
-2. **Once localized, specific fixes depend on the path.** Argv cloning → consider `Rc<String>` or pass by reference. Scope HashMap → consider per-call `SmallVec` pair list, since most functions have 0-3 local bindings.
+**Fix candidates (to execute in order):**
+
+1. **Add finer-grained micro-benches first** — split into `exec_function_call_nopanic_guard` (replace `catch_unwind` with a Drop-guard scope-popper), `exec_function_call_cached_environ` (cache-invalidation only on exported-var changes), and `exec_function_call_smallvec_scope`. Each bench isolates one candidate so the relative contribution of #1–#3 becomes measurable.
+2. **Drop-guard scope popper** replacing `catch_unwind` — eliminates the heap alloc + barriers while preserving "scope always pops" invariant.
+3. **Scoped cache invalidation** — shared with 4.1 candidate #3.
+4. **SmallVec-backed scope** — only if micro-bench shows HashMap alloc still dominates after #2 and #3.
 
 **TODO.md cross-check:** not present. This finding should be added to TODO.md as P0.
 
@@ -381,14 +385,47 @@ cargo bench
 #    (read "median" -> "point_estimate" in nanoseconds)
 ```
 
-### 6.5 Regenerating this report
+### 6.5 Regenerating the intermediate Markdown files
 
-All data in §3 comes from:
-- `target/perf/samply_top.md`
-- `target/perf/dhat_top.md`
-- `target/perf/criterion_summary.md`
+After running §6.2–§6.4, aggregate the extractor outputs into the three intermediate files consumed by §3:
 
-Regenerate by running 6.1 → 6.4 and then re-aggregating (see the step-by-step commands in `docs/superpowers/plans/2026-04-21-performance-tuning.md` Tasks 8–10).
+```bash
+# target/perf/samply_top.md
+{
+    echo "# samply Top-N summary"
+    echo
+    echo "Measurement date: $(date -u '+%Y-%m-%d')"
+    echo "Commit: $(git rev-parse --short HEAD)"
+    echo "Host: $(uname -srm)"
+    echo
+    echo "## W1 startup_loop"
+    python3 scripts/perf/samply_top_n.py target/perf/samply_w1.json 10 | tail -n +2
+    echo
+    echo "## W2 script_heavy"
+    python3 scripts/perf/samply_top_n.py target/perf/samply_w2.json 10 | tail -n +2
+    if [ -f target/perf/samply_w3.json ]; then
+        echo
+        echo "## W3 interactive_smoke"
+        python3 scripts/perf/samply_top_n.py target/perf/samply_w3.json 10 | tail -n +2
+    fi
+} > target/perf/samply_top.md
+
+# target/perf/dhat_top.md
+{
+    echo "# dhat Top-N allocation sites (W2)"
+    echo
+    echo "Measurement date: $(date -u '+%Y-%m-%d')"
+    echo "Commit: $(git rev-parse --short HEAD)"
+    echo
+    python3 scripts/perf/dhat_top_n.py target/perf/dhat-heap-w2.json 10 | tail -n +2
+} > target/perf/dhat_top.md
+
+# target/perf/criterion_summary.md — extract from target/criterion/**/estimates.json
+#   (median is at ["median"]["point_estimate"] in nanoseconds); a 1-line awk
+#   over `cargo bench 2>&1` output is usually easier.
+```
+
+All three files are gitignored (under `target/`). The definitive copy of the findings lives in this report.
 
 ## 7. Scope statement (reminder)
 
