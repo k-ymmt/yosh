@@ -37,9 +37,14 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
         .bytes()
         .filter(|b| matches!(*b, b' ' | b'\t' | b'\n'))
         .collect();
+    // Restrict IFS non-whitespace delimiters to ASCII (< 0x80). Non-ASCII bytes
+    // in IFS would otherwise match UTF-8 lead or continuation bytes inside
+    // multi-byte content and break split_field's "i is a char boundary"
+    // invariant. See spec 2026-04-21-field-split-utf8-panic-fix §4.1 / §5.2.
     let ifs_nws: Vec<u8> = ifs
         .bytes()
         .filter(|b| !matches!(*b, b' ' | b'\t' | b'\n'))
+        .filter(|b| *b < 0x80)
         .collect();
 
     // Fast path: if no field contains an unquoted IFS byte, the state
@@ -115,10 +120,10 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
                     state = State::AfterNws;
                     i += 1;
                 } else {
-                    // Normal byte: start accumulating.
-                    append_byte(&mut current, field, i);
+                    // Normal byte: start accumulating a full UTF-8 character.
+                    let ch_len = append_char(&mut current, field, i);
                     state = State::InField;
-                    i += 1;
+                    i += ch_len;
                 }
             }
 
@@ -134,8 +139,8 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
                     state = State::AfterNws;
                     i += 1;
                 } else {
-                    append_byte(&mut current, field, i);
-                    i += 1;
+                    let ch_len = append_char(&mut current, field, i);
+                    i += ch_len;
                 }
             }
 
@@ -152,9 +157,9 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
                     i += 1;
                 } else {
                     // Normal byte after whitespace: start a new field.
-                    append_byte(&mut current, field, i);
+                    let ch_len = append_char(&mut current, field, i);
                     state = State::InField;
-                    i += 1;
+                    i += ch_len;
                 }
             }
         }
@@ -181,15 +186,27 @@ fn needs_splitting(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8]) -> bool
     })
 }
 
-/// Append the byte at position `i` in `source` to `dest`, preserving quoting.
+/// Append the UTF-8 character starting at byte position `i` in `source` to
+/// `dest`, preserving quoting. Returns the byte length of the character.
+///
+/// Caller must ensure `i` is on a UTF-8 character boundary. All bytes of a
+/// single character share the same `quoted_mask` bit (push_quoted and
+/// push_unquoted always append a complete `&str`), so testing `is_quoted(i)`
+/// on the lead byte covers the entire character.
 #[inline]
-fn append_byte(dest: &mut ExpandedField, source: &ExpandedField, i: usize) {
-    let ch = &source.value[i..i + 1];
+fn append_char(dest: &mut ExpandedField, source: &ExpandedField, i: usize) -> usize {
+    let ch_len = source.value[i..]
+        .chars()
+        .next()
+        .expect("i on char boundary")
+        .len_utf8();
+    let slice = &source.value[i..i + ch_len];
     if source.is_quoted(i) {
-        dest.push_quoted(ch);
+        dest.push_quoted(slice);
     } else {
-        dest.push_unquoted(ch);
+        dest.push_unquoted(slice);
     }
+    ch_len
 }
 
 /// Push `current` into `out`, replacing `current` with a fresh empty field.
