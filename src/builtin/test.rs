@@ -107,6 +107,19 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
             Ok(nix::unistd::isatty(borrowed_fd).unwrap_or(false))
         }
 
+        "-u" => Ok(std::fs::metadata(arg)
+            .map(|m| {
+                use std::os::unix::fs::PermissionsExt;
+                m.permissions().mode() & 0o4000 != 0
+            })
+            .unwrap_or(false)),
+        "-g" => Ok(std::fs::metadata(arg)
+            .map(|m| {
+                use std::os::unix::fs::PermissionsExt;
+                m.permissions().mode() & 0o2000 != 0
+            })
+            .unwrap_or(false)),
+
         _ => Err(TestError::syntax(format!("{}: unknown operator", op))),
     }
 }
@@ -305,5 +318,27 @@ mod tests {
     #[test]
     fn dash_t_non_integer_errors() {
         assert_eq!(t(&["-t", "abc"]), 2);
+    }
+
+    #[test]
+    fn dash_u_setuid_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o4755)).unwrap();
+        assert_eq!(t(&["-u", &path]), 0);
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o0755)).unwrap();
+        assert_eq!(t(&["-u", &path]), 1);
+    }
+
+    #[test]
+    fn dash_g_setgid_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o2755)).unwrap();
+        assert_eq!(t(&["-g", &path]), 0);
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o0755)).unwrap();
+        assert_eq!(t(&["-g", &path]), 1);
     }
 }
