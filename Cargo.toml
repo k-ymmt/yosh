@@ -25,12 +25,18 @@ serde = { version = "1", features = ["derive"] }
 yosh-plugin-api = { version = "0.1.2", path = "crates/yosh-plugin-api" }
 unicode-width = "0.2"
 owo-colors = "4"
+dhat = { version = "0.3", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
 crossterm = "0.29"
 expectrl = "0.8"
+
+[features]
+# Enables dhat-rs heap profiling in the `yosh-dhat` binary.
+# Build with: cargo build --features dhat-heap --bin yosh-dhat --profile profiling
+dhat-heap = ["dep:dhat"]
 
 [[bench]]
 name = "lexer_bench"
@@ -43,3 +49,20 @@ harness = false
 [[bench]]
 name = "expand_bench"
 harness = false
+
+[[bench]]
+name = "startup_bench"
+harness = false
+
+[[bench]]
+name = "exec_bench"
+harness = false
+
+[[bench]]
+name = "interactive_smoke"
+harness = false
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
