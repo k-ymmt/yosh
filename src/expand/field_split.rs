@@ -411,4 +411,38 @@ mod tests {
         let input = vec![unquoted("日本 語")];
         assert_eq!(values(split(&env, input)), vec!["日本", "語"]);
     }
+
+    #[test]
+    fn test_utf8_content_colon_delimiter() {
+        // Non-whitespace ASCII IFS surrounding multi-byte content.
+        let env = env_with_ifs(":");
+        let input = vec![unquoted("a:日:b")];
+        assert_eq!(values(split(&env, input)), vec!["a", "日", "b"]);
+    }
+
+    #[test]
+    fn test_utf8_quoted_not_split() {
+        // Quoted multi-byte content including an IFS byte must stay intact.
+        let env = env_with_ifs(" ");
+        let input = vec![quoted_field("日 本")];
+        assert_eq!(values(split(&env, input)), vec!["日 本"]);
+    }
+
+    #[test]
+    fn test_utf8_leading_trailing_whitespace_around_multibyte() {
+        // Trailing/leading IFS-whitespace collapse around multi-byte content.
+        let env = env_with_ifs(" \t\n");
+        let input = vec![unquoted("  日本語  ")];
+        assert_eq!(values(split(&env, input)), vec!["日本語"]);
+    }
+
+    #[test]
+    fn test_non_ascii_ifs_byte_ignored() {
+        // Pin the documented behavior change (spec §5.2): non-ASCII IFS bytes
+        // are filtered out of ifs_nws and have no effect on splitting.
+        // 'À' is 0xC3 0x80; both bytes are ≥ 0x80 and therefore ignored.
+        let env = env_with_ifs("\u{00c0}");
+        let input = vec![unquoted("À")];
+        assert_eq!(values(split(&env, input)), vec!["À"]);
+    }
 }
