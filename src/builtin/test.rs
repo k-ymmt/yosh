@@ -59,6 +59,15 @@ fn evaluate(args: &[&str]) -> Result<bool, TestError> {
             }
             eval_unary(args[0], args[1])
         }
+        3 => {
+            if args[0] == "!" {
+                return Ok(!evaluate(&args[1..])?);
+            }
+            if args[0] == "(" && args[2] == ")" {
+                return evaluate(&args[1..2]);
+            }
+            eval_binary(args[0], args[1], args[2])
+        }
         _ => Err(TestError::syntax(format!(
             "unsupported operand count: {}",
             args.len()
@@ -122,6 +131,33 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
 
         _ => Err(TestError::syntax(format!("{}: unknown operator", op))),
     }
+}
+
+fn eval_binary(lhs: &str, op: &str, rhs: &str) -> Result<bool, TestError> {
+    match op {
+        "=" => Ok(lhs == rhs),
+        "!=" => Ok(lhs != rhs),
+        "-eq" | "-ne" | "-lt" | "-gt" | "-le" | "-ge" => {
+            let l = parse_integer(lhs)?;
+            let r = parse_integer(rhs)?;
+            Ok(match op {
+                "-eq" => l == r,
+                "-ne" => l != r,
+                "-lt" => l < r,
+                "-gt" => l > r,
+                "-le" => l <= r,
+                "-ge" => l >= r,
+                _ => unreachable!(),
+            })
+        }
+        _ => Err(TestError::syntax(format!("{}: unknown operator", op))),
+    }
+}
+
+fn parse_integer(s: &str) -> Result<i64, TestError> {
+    s.trim()
+        .parse::<i64>()
+        .map_err(|_| TestError::syntax(format!("{}: integer expression expected", s)))
 }
 
 #[cfg(test)]
@@ -340,5 +376,66 @@ mod tests {
         assert_eq!(t(&["-g", &path]), 0);
         std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o0755)).unwrap();
         assert_eq!(t(&["-g", &path]), 1);
+    }
+
+    #[test]
+    fn binary_string_eq() {
+        assert_eq!(t(&["abc", "=", "abc"]), 0);
+        assert_eq!(t(&["abc", "=", "xyz"]), 1);
+    }
+
+    #[test]
+    fn binary_string_neq() {
+        assert_eq!(t(&["abc", "!=", "xyz"]), 0);
+        assert_eq!(t(&["abc", "!=", "abc"]), 1);
+    }
+
+    #[test]
+    fn binary_integer_eq() {
+        assert_eq!(t(&["3", "-eq", "3"]), 0);
+        assert_eq!(t(&["3", "-eq", "4"]), 1);
+    }
+
+    #[test]
+    fn binary_integer_ne_lt_gt_le_ge() {
+        assert_eq!(t(&["3", "-ne", "4"]), 0);
+        assert_eq!(t(&["3", "-lt", "4"]), 0);
+        assert_eq!(t(&["4", "-gt", "3"]), 0);
+        assert_eq!(t(&["3", "-le", "3"]), 0);
+        assert_eq!(t(&["4", "-ge", "4"]), 0);
+    }
+
+    #[test]
+    fn binary_integer_strips_whitespace() {
+        assert_eq!(t(&[" 42 ", "-eq", "42"]), 0);
+    }
+
+    #[test]
+    fn binary_integer_signed() {
+        assert_eq!(t(&["-3", "-lt", "0"]), 0);
+        assert_eq!(t(&["+3", "-eq", "3"]), 0);
+    }
+
+    #[test]
+    fn binary_integer_parse_error() {
+        assert_eq!(t(&["abc", "-eq", "0"]), 2);
+        assert_eq!(t(&["0", "-eq", "abc"]), 2);
+    }
+
+    #[test]
+    fn negation_of_2op_form() {
+        assert_eq!(t(&["!", "-z", ""]), 1); // -z "" is true, negation is false
+        assert_eq!(t(&["!", "-n", ""]), 0); // -n "" is false, negation is true
+    }
+
+    #[test]
+    fn paren_grouping_1op() {
+        assert_eq!(t(&["(", "x", ")"]), 0);
+        assert_eq!(t(&["(", "", ")"]), 1);
+    }
+
+    #[test]
+    fn unknown_binary_operator_errors() {
+        assert_eq!(t(&["a", "-Z", "b"]), 2);
     }
 }
