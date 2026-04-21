@@ -68,10 +68,19 @@ fn evaluate(args: &[&str]) -> Result<bool, TestError> {
             }
             eval_binary(args[0], args[1], args[2])
         }
-        _ => Err(TestError::syntax(format!(
-            "unsupported operand count: {}",
-            args.len()
-        ))),
+        4 => {
+            if args[0] == "!" {
+                return Ok(!evaluate(&args[1..])?);
+            }
+            if args[0] == "(" && args[3] == ")" {
+                return evaluate(&args[1..3]);
+            }
+            Err(TestError::syntax(format!(
+                "{}: unexpected operator",
+                args[1]
+            )))
+        }
+        _ => Err(TestError::syntax("too many arguments".to_string())),
     }
 }
 
@@ -437,5 +446,28 @@ mod tests {
     #[test]
     fn unknown_binary_operator_errors() {
         assert_eq!(t(&["a", "-Z", "b"]), 2);
+    }
+
+    #[test]
+    fn four_operand_negation_of_binary() {
+        assert_eq!(t(&["!", "a", "=", "b"]), 0); // not (a = b)
+        assert_eq!(t(&["!", "a", "=", "a"]), 1);
+    }
+
+    #[test]
+    fn four_operand_paren_wraps_unary() {
+        assert_eq!(t(&["(", "-n", "x", ")"]), 0);
+        assert_eq!(t(&["(", "-n", "", ")"]), 1);
+    }
+
+    #[test]
+    fn four_operand_invalid_shape() {
+        // Not starting with ! and not wrapped in ( ).
+        assert_eq!(t(&["a", "b", "c", "d"]), 2);
+    }
+
+    #[test]
+    fn five_or_more_operands_is_error() {
+        assert_eq!(t(&["a", "b", "c", "d", "e"]), 2);
     }
 }
