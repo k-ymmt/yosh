@@ -279,6 +279,13 @@ short-lived startup cost."
 //!   ./target/profiling/yosh-dhat benches/data/script_heavy.sh
 //!
 //! Output: `dhat-heap.json` in CWD — open with https://nnethercote.github.io/dh_view/dh_view.html
+//!
+//! Divergence from `src/main.rs::run_string`: this binary uses a single
+//! whole-program `parse_program` + `exec_program` pass instead of the
+//! per-command parse loop in main. Alias expansion (which main wires via
+//! `Parser::new_with_aliases_at_line`) is intentionally omitted — the W2
+//! workload does not use aliases, and keeping the pipeline short keeps
+//! the profile focused on parse/expand/exec cost.
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -319,6 +326,10 @@ fn main() {
     };
 
     let status = executor.exec_program(&program);
+
+    executor.process_pending_signals();
+    executor.execute_exit_trap();
+
     // Drop profiler explicitly before process::exit — std::process::exit
     // bypasses Rust destructors, so without this the Drop impl that writes
     // `dhat-heap.json` would never run.
