@@ -299,4 +299,19 @@ mod tests {
     fn test_has_unquoted_glob_chars_false_no_meta() {
         assert!(!has_unquoted_glob_chars(&unquoted("hello.rs")));
     }
+
+    // ── Fast-path: multi-field non-glob passthrough ──
+
+    #[test]
+    fn test_fast_path_preserves_multiple_non_glob_fields() {
+        let env = make_env();
+        let input = vec![unquoted("hello"), unquoted("world"), quoted_field("*.rs")];
+        let result = expand(&env, input);
+        // All three fields must survive intact — "hello" and "world" have no
+        // glob chars; "*.rs" is fully-quoted so `has_unquoted_glob_chars`
+        // returns false. The multi-field non-glob path is the dominant W2
+        // case and this regression guard protects it across the fast-path
+        // refactor.
+        assert_eq!(values(result), vec!["hello", "world", "*.rs"]);
+    }
 }
