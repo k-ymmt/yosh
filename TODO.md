@@ -2,7 +2,7 @@
 
 ## Known Bugs
 
-- [ ] **[TOP PRIORITY]** `src/expand/field_split.rs::append_byte` panics on multi-byte UTF-8 input — slicing `&source.value[i..i + 1]` at a non-char-boundary byte index panics. Discovered 2026-04-21 while writing regression tests for the `field_split::split` fast path (spec `docs/superpowers/specs/2026-04-21-field-split-fast-path-design.md`). Reproducer: `split(&env_with_ifs(" \t\n"), vec![unquoted("日本語")])` panics at `field_split.rs:168` with `byte index 1 is not a char boundary`. **Masked** by the Task 3 fast path for inputs without unquoted IFS bytes (hits fast path, input Vec returned unchanged), but any multi-byte input mixed with unquoted IFS delimiters (e.g. `"日本 語"`) would still reach the slow path and panic. Fix requires an API change to handle sub-codepoint byte tracking — likely tracking `Vec<u8>` internally in `ExpandedField` while preserving UTF-8 at field boundaries. A dedicated spec is needed before implementing.
+_No known bugs at this time._
 
 ## Job Control: Known Limitations
 
