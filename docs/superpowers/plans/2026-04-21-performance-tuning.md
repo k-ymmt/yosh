@@ -149,8 +149,10 @@ done
 echo "sum=$SUM"
 
 # ── Section B: function defined once, called 1000 times ─────────────────
+# Note: no `local` keyword — yosh is POSIX and `local` is a bash/ksh
+# extension. A plain assignment still exercises the function-call path.
 greet() {
-    local name=$1
+    name=$1
     echo "hello, $name"
 }
 
