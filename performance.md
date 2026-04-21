@@ -13,7 +13,7 @@
 
 1. **Shell function call path** — `exec_function_call_200` (10.15 ms, ~50 µs/call) is now only ~2.1× slower per operation than `exec_for_loop_200` (4.83 ms, ~24 µs/iter). The residual overhead is an order of magnitude smaller than the `[` fix impact, but still worth investigating per §4.2.
 2. ~~**`expand::pathname::expand` always allocates a new Vec**~~ — **Fixed 2026-04-21** via non-glob fast-path (§4.3). Formerly 14k calls / 2.94 MB at rank #1; now 2,002 calls / 430.1 KB at rank #4 (pathname.rs:29 aggregate: 4.41 MB → 430.1 KB, −90.3%).
-3. ~~**`expand::field_split::emit`** — new top bytes-allocator post-fastpath: 4.63 MB / 21,051 calls across three dhat sites (ranks #1, #2, #7)~~ — **Fixed 2026-04-21** via `split()` fast path (§4.7). 4.63 MB → 209.5 KB (−95.6% bytes, −99.9% calls). W2 total: 11.39 MB → 6.47 MB (−40.5%).
+3. ~~**`expand::field_split::emit`** — new top bytes-allocator post-fastpath: 4.63 MB / 21,051 calls across three dhat sites (ranks #1, #2, #7)~~ — **Fixed 2026-04-21** via `split()` fast path (§4.7). 4.63 MB → 209.5 KB (−95.6% bytes, −99.9% calls). W2 total: 11.39 MB → 6.78 MB (−40.5%).
 4. **`expand::pattern::matches`** — now rank #1 remaining site: 1.00 MB / 34,034 calls at `pattern.rs:11:39` plus 250.2 KB / 16,016 calls at `pattern.rs:10:42`. Top by both bytes and call count (§4.4, new P0).
 5. **`VarStore::build_environ`** — no longer a significant cost in W2 now that external-`[` forks are eliminated. Deferred unless a future workload resurfaces it.
 
@@ -103,13 +103,15 @@ All samples go through the command-dispatch pipeline, as expected for a tight `w
 | `parse_small` | 20.71 µs | 10.52 µs | +97 % |
 | `parse_large` | 144.39 µs | 72.72 µs | +99 % |
 | `expand_param_default` | 897.40 µs | 421 µs | +113 % |
-| `expand_field_split` | 2.64 ms | 1.34 ms | +97 % |
+| `expand_field_split` | 1.33 ms † | 1.34 ms | −0.4 % |
 | `expand_literal_words` | 81.75 µs | 45.04 µs | +82 % |
 | `exec_for_loop_200` | **4.83 ms** | 2.58 ms | +87 % |
 | `exec_function_call_200` | **10.15 ms** | 484 ms | **−97.9 %** |
 | `exec_param_expansion_200` | 9.70 ms | 3.93 ms | +147 % |
 | `exec_bracket_loop_200` | 10.47 ms | n/a (bench added 2026-04-21) | — |
 | `startup_echo_hi` | 3.38 ms | 1.74 ms | +94 % |
+
+† `expand_field_split` re-measured post-§4.7 (commit `ff7cd21`): 2.64 ms (pre-§4.7) → **1.33 ms** (post-§4.7, −49.6 %, p < 0.05). Other rows remain at the §4.6 measurement baseline (`2261638`).
 
 `exec_function_call_200` dropped by 97.9 % because its driver loop used `while [ ]`, so the `[`-builtin promotion removed ~1000 fork+execvp per run (§4.1 / §4.6). The remaining ~2× drift on lex/parse/expand/startup is seen across benchmarks that have no `[`/`test`, so it is attributed to measurement-environment change between the two runs — dhat W2 totals are essentially unchanged (§3.2 dhat table), which rules out a code regression of this magnitude.
 
@@ -131,7 +133,7 @@ Same flat structure as W1 — CPU-breakdown via samply is limited on macOS; dhat
 
 #### dhat Top-10 by bytes (W2) — post-field-split-fastpath (post-`ff7cd21`)
 
-Run totals (post-field-split-fastpath): **6.47 MB allocated across 249,093 blocks** (vs post-pathname-fastpath 11.39 MB / 283,350 blocks at `610043e` → −40.5% bytes, −12.1% blocks; vs pre-bracket-fix 68.1 MB / 808,896 blocks at `1e1b738` → −90.5% bytes cumulative).
+Run totals (post-field-split-fastpath): **6.78 MB allocated across 249,093 blocks** (vs post-pathname-fastpath 11.39 MB / 283,350 blocks at `610043e` → −40.5% bytes, −12.1% blocks; vs pre-bracket-fix 68.1 MB / 808,896 blocks at `1e1b738` → −90.5% bytes cumulative).
 
 After the `[` / `test` builtin fix (§4.1), the §4.3 `pathname::expand` fast-path, and the §4.7 `field_split::split` fast-path, the new top allocation hotspot is `pattern::matches` (rank #1 by both bytes and call count). `field_split::emit` has been demoted to a single rank #5 entry at 209.5 KB / 18 calls.
 
@@ -171,7 +173,7 @@ Kept for reference; the top two bytes sites were `field_split::emit` entries now
 
 #### dhat Top-10 by call count (W2) — post-field-split-fastpath (post-`ff7cd21`)
 
-After the §4.7 fast-path, `field_split::emit` entries at ranks #4 and #5 (14,020 + 7,013 = 21,033 calls) have been eliminated. `pattern::matches` now leads by both bytes and call count.
+After the §4.7 fast-path, the `field_split::emit` 3-site aggregate collapsed from 21,051 calls (ranks #4 + #5 + #10: 14,020 + 7,013 + 18) to a single 18-call entry (now post-fix rank #5 at `field_split.rs:199:9`); 21,033 calls eliminated, 18 residual calls covering the genuine splitting cases that cannot take the fast path. `pattern::matches` now leads by both bytes and call count.
 
 | Rank | Site | Calls | Bytes |
 |------|------|-------|-------|
@@ -386,7 +388,7 @@ Added a fast path at the top of `split()`: if `fields.iter().all(|f| !needs_spli
 
 **Measured impact (W2, post-fix vs pre-fix at `610043e`):**
 - `field_split::emit` aggregate: 4.63 MB / 21,051 calls → 209.5 KB / 18 calls (**−95.6% bytes, −99.9% calls**). Rank demoted from #1 / #2 / #7 → single rank #5 at `src/expand/field_split.rs:199:9` (line shifted by the new helper insertion).
-- W2 total allocation: 11.39 MB → 6.47 MB (**−40.5%**); total blocks: 283,350 → 249,093 (**−12.1%**).
+- W2 total allocation: 11.39 MB → 6.78 MB (**−40.5%**); total blocks: 283,350 → 249,093 (**−12.1%**).
 - `expand_field_split` Criterion median: 2.64 ms → 1.33 ms (**−49.6%**, p < 0.05 per Criterion's statistical test).
 - W2 stdout/stderr: bit-identical with pre-fix baseline (verified via `diff`).
 
@@ -547,4 +549,4 @@ The original report (§1–§3, §4.2–§4.5) is measurement-only. **No product
 
 **Amendment 2026-04-21 (§4.3):** The `pathname::expand` non-glob fast-path was implemented at commit `610043e` per `docs/superpowers/specs/2026-04-21-pathname-expand-fast-path-design.md`. W2 total allocation fell from 13.78 MB to 11.39 MB (−17.3%); the `pathname::expand:29:20` hotspot (pre-fastpath rank #1) was eliminated from the Top-10. The new top bytes-allocator is `field_split::emit` (§5.2 P0 queue). See §4.3 "Fix applied" block and updated §5.1 / §5.2 / §5.3.
 
-**Amendment 2026-04-21 (§4.7):** The `field_split::split` fast path was implemented at commit `ff7cd21` per `docs/superpowers/specs/2026-04-21-field-split-fast-path-design.md`. W2 total allocation fell from 11.39 MB to 6.47 MB (−40.5%); the `field_split::emit:180:9` hotspot (pre-fix ranks #1/#2/#7 totaling 4.63 MB) collapsed to a single rank #5 entry at 209.5 KB. `pattern::matches` (§4.4) is promoted to P0 in the §5.2 queue. Regression testing also exposed a pre-existing slow-path UTF-8 slicing bug in `append_byte`, recorded under TODO.md `## Known Bugs`.
+**Amendment 2026-04-21 (§4.7):** The `field_split::split` fast path was implemented at commit `ff7cd21` per `docs/superpowers/specs/2026-04-21-field-split-fast-path-design.md`. W2 total allocation fell from 11.39 MB to 6.78 MB (−40.5%); the `field_split::emit:180:9` hotspot (pre-fix ranks #1/#2/#7 totaling 4.63 MB) collapsed to a single rank #5 entry at 209.5 KB. `pattern::matches` (§4.4) is promoted to P0 in the §5.2 queue. Regression testing also exposed a pre-existing slow-path UTF-8 slicing bug in `append_byte`, recorded under TODO.md `## Known Bugs`.
