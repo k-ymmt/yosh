@@ -319,6 +319,11 @@ fn main() {
     };
 
     let status = executor.exec_program(&program);
+    // Drop profiler explicitly before process::exit — std::process::exit
+    // bypasses Rust destructors, so without this the Drop impl that writes
+    // `dhat-heap.json` would never run.
+    #[cfg(feature = "dhat-heap")]
+    drop(_profiler);
     process::exit(status);
 }
 ```
