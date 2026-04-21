@@ -95,6 +95,18 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
             .map(|m| m.file_type().is_char_device())
             .unwrap_or(false)),
 
+        "-r" => Ok(nix::unistd::access(arg, nix::unistd::AccessFlags::R_OK).is_ok()),
+        "-w" => Ok(nix::unistd::access(arg, nix::unistd::AccessFlags::W_OK).is_ok()),
+        "-x" => Ok(nix::unistd::access(arg, nix::unistd::AccessFlags::X_OK).is_ok()),
+        "-t" => {
+            let fd: i32 = arg
+                .trim()
+                .parse()
+                .map_err(|_| TestError::syntax(format!("{}: integer expression expected", arg)))?;
+            let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) };
+            Ok(nix::unistd::isatty(borrowed_fd).unwrap_or(false))
+        }
+
         _ => Err(TestError::syntax(format!("{}: unknown operator", op))),
     }
 }
@@ -245,5 +257,53 @@ mod tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().to_str().unwrap().to_string();
         assert_eq!(t(&["-s", &path]), 1);
+    }
+
+    #[test]
+    fn dash_r_readable_file_is_true() {
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        assert_eq!(t(&["-r", &path]), 0);
+    }
+
+    #[test]
+    fn dash_r_missing_file_is_false() {
+        assert_eq!(t(&["-r", "/no/such/__yosh_test__"]), 1);
+    }
+
+    #[test]
+    fn dash_w_writable_file_is_true() {
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        assert_eq!(t(&["-w", &path]), 0);
+    }
+
+    #[test]
+    fn dash_x_executable_is_true_for_chmod_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(t(&["-x", &path]), 0);
+    }
+
+    #[test]
+    fn dash_x_nonexecutable_is_false() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(t(&["-x", &path]), 1);
+    }
+
+    #[test]
+    fn dash_t_non_tty_fd_is_false() {
+        // FD 99 is almost certainly not open, so isatty returns false.
+        assert_eq!(t(&["-t", "99"]), 1);
+    }
+
+    #[test]
+    fn dash_t_non_integer_errors() {
+        assert_eq!(t(&["-t", "abc"]), 2);
     }
 }
