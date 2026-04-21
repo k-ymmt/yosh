@@ -16,7 +16,7 @@
 
 | File | Change | Responsibility |
 |---|---|---|
-| `src/expand/field_split.rs` | Modify | Add `needs_splitting` helper + fast-path guard in `split()`; add 6 regression-guard unit tests |
+| `src/expand/field_split.rs` | Modify | Add `needs_splitting` helper + fast-path guard in `split()`; add 5 regression-guard unit tests (UTF-8 test deferred — see Task 2 note) |
 | `docs/superpowers/specs/2026-04-21-field-split-fast-path-design.md` | Modify | Append §10 Investigation Log with dhat frames, hypothesis classification, fast-path hit rate |
 | `performance.md` | Modify | Update §3.2 dhat Top-10 tables, add new §4.N for the fix outcome, update §5.1 / §5.2 / §5.3 |
 | `TODO.md` | Modify | Strike the `field_split::emit` entry added 2026-04-21 |
