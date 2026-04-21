@@ -707,16 +707,31 @@ Expected: prints a version number. If not installed, run `cargo install samply` 
 Run: `cargo build --profile profiling --bin yosh --bench interactive_smoke`
 Expected: compiles; `target/profiling/yosh` exists.
 
-- [ ] **Step 3: Profile W1 (startup loop)**
+- [ ] **Step 3: Profile W1 (startup loop) — macOS-aware workaround**
 
-Run:
+On macOS, samply cannot profile `/bin/sh` (nor spawned yosh children) because system binaries block `DYLD_INSERT_LIBRARIES` (SIP / code signing) and `posix_spawn` children are not re-attached. The originally-planned invocation
 ```bash
-mkdir -p target/perf
 samply record --save-only --output target/perf/samply_w1.json -- \
     ./benches/data/startup_loop.sh ./target/profiling/yosh 1000
 ```
+fails with `"Could not obtain the root task"`, and the child-spawning alternative profiles only the outer yosh.
+
+**macOS workaround** (use this): drive the loop from inside a single yosh process so samply keeps its grip on the profiled task. This measures the yosh-internal loop-and-exec cost rather than 1000 separate startups, but remains a useful CPU-breakdown complement to Criterion's `startup_echo_hi` wall-clock (Task 5).
+
+```bash
+mkdir -p target/perf
+samply record --save-only --output target/perf/samply_w1.json -- \
+    ./target/profiling/yosh -c '
+        i=0
+        while [ "$i" -lt 20000 ]; do
+            echo hi > /dev/null
+            i=$((i + 1))
+        done'
+```
 
 Expected: exits 0; `target/perf/samply_w1.json` exists and is > 10 KB.
+
+Document the deviation in `performance.md` §2.1 and §3.1: "W1 samply profile measures yosh-internal loop execution, not 1000-process startup. Startup wall-clock is Criterion `startup_echo_hi` (Task 5)."
 
 - [ ] **Step 4: Profile W2 (script_heavy)**
 
@@ -748,7 +763,12 @@ Expected: exits 0; `target/perf/samply_w3.json` exists.
 
 - [ ] **Step 6: Create `scripts/perf/samply_top_n.py` for Top-N extraction**
 
-Samply's JSON is in Gecko profile format. Write a Python parser that extracts the Top-N self-time and total-time functions:
+Samply's JSON is in Gecko profile format. Write a Python parser that extracts the Top-N self-time and total-time functions.
+
+**macOS notes applied in the shipped extractor:**
+- samply v0.13.1 uses `stringArray` (not `stringTable`) for per-thread string tables; handle both.
+- On macOS, samply emits `meta.symbolicated = false` and leaves raw hex addresses in the frame table. The extractor batches lookups through `atos` at extraction time to resolve library-qualified symbols for both the yosh binary and system libraries; unresolved frames are kept as hex.
+- Rust symbol hash suffixes (`::h1234abcd01234567`) are stripped to improve readability.
 
 ```python
 #!/usr/bin/env python3
