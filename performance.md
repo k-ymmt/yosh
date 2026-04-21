@@ -213,7 +213,7 @@ The W3 self-time column is not dominated by the macOS sampler artifact (samples 
 
 Five hotspots are treated here. They are ordered by measured impact, not by expected fix effort — that ordering is in §5.
 
-### 4.1. `VarStore::environ().to_vec()` cloned per command
+### 4.1. `[` / `test` dispatched as an external command per while-loop iteration (fixed 2026-04-21)
 
 **Location:** `src/exec/simple.rs:406` (the `build_env_vars` call site) reading from `src/env/vars.rs:286-291` (`environ()`).
 
@@ -233,7 +233,7 @@ Five hotspots are treated here. They are ordered by measured impact, not by expe
 2. **Return a reference/iterator from `environ()` and defer the `.to_vec()`** — still applicable for the few remaining genuine external-command invocations. Deferred to a future P1/P2 if post-fix measurements still show allocation pressure here.
 3. **Scoped cache invalidation** — only bump the environ cache when an *exported* variable changes. Still applicable; see §4.2.
 
-**TODO.md cross-check:** not present. This finding should be added to TODO.md as a P0 item.
+**TODO.md cross-check:** Fixed 2026-04-21 via `[` / `test` builtin promotion; no TODO.md entry needed.
 
 ### 4.2. Shell function calls are ~180× slower per operation than arithmetic loop iterations
 
@@ -350,7 +350,7 @@ In order:
 
 ### 5.3 Items to add to TODO.md
 
-- `build_env_vars` / `environ().to_vec()` cloning per command execution (§4.1) — **P0**. Re-prioritize above the existing `LINENO` entry.
+- ~~`build_env_vars` / `environ().to_vec()` cloning per command execution (§4.1)~~ — **Completed 2026-04-21** via `[` / `test` builtin promotion; no longer requires a TODO entry.
 - `exec_function_call` 187× overhead ratio vs arithmetic loop (§4.2) — **P0**, with sub-bench prerequisite.
 - `pathname::expand` Vec allocation with no glob chars (§4.3) — **P1**.
 - `pattern::matches` recompilation (§4.4) — **P2**.

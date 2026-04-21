@@ -121,6 +121,11 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
                 .trim()
                 .parse()
                 .map_err(|_| TestError::syntax(format!("{}: integer expression expected", arg)))?;
+            // A negative fd can't be open; BorrowedFd::borrow_raw requires a
+            // valid fd, so short-circuit here rather than construct UB.
+            if fd < 0 {
+                return Ok(false);
+            }
             let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) };
             Ok(nix::unistd::isatty(borrowed_fd).unwrap_or(false))
         }
@@ -358,6 +363,12 @@ mod tests {
     fn dash_t_non_tty_fd_is_false() {
         // FD 99 is almost certainly not open, so isatty returns false.
         assert_eq!(t(&["-t", "99"]), 1);
+    }
+
+    #[test]
+    fn dash_t_negative_fd_is_false() {
+        // Negative fd can't be open; result is false (no UB).
+        assert_eq!(t(&["-t", "-1"]), 1);
     }
 
     #[test]
