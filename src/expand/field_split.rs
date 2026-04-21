@@ -365,4 +365,22 @@ mod tests {
         f.push_quoted("a b c");
         assert_eq!(values(split(&env, vec![f])), vec!["a b c"]);
     }
+
+    #[test]
+    fn test_fast_path_empty_unquoted_field_preserved() {
+        // Spec §5.1 documents: slow path drops unquoted empty fields;
+        // fast path preserves them. expand_word's final filter
+        // (!f.is_empty() || f.was_quoted) drops them before callers see them,
+        // so the external contract is identical. This test pins the
+        // fast-path-internal behavior so the spec-documented divergence
+        // cannot silently widen if a future caller bypasses that filter.
+        let env = env_with_ifs(" \t\n");
+        let mut empty = ExpandedField::new();
+        empty.push_unquoted("");
+        let result = split(&env, vec![empty, unquoted("hello")]);
+        assert_eq!(result.len(), 2);
+        assert!(result[0].value.is_empty());
+        assert!(!result[0].was_quoted);
+        assert_eq!(result[1].value, "hello");
+    }
 }
