@@ -376,7 +376,7 @@ This mischaracterization is preserved here (rather than silently rewriting §4.1
 
 **Location:** `src/expand/field_split.rs` — `split()` now guards the per-field loop with `needs_splitting` (added helper).
 
-**Measurement (W2 at pre-fix `610343e`):** 4.63 MB / 21,051 calls across three dhat sites sharing `src/expand/field_split.rs:180:9` — rank #1 (2.94 MB / 14,020), rank #2 (1.48 MB / 7,013), rank #7 (209.5 KB / 18).
+**Measurement (W2 at pre-fix `610043e`):** 4.63 MB / 21,051 calls across three dhat sites sharing `src/expand/field_split.rs:180:9` — rank #1 (2.94 MB / 14,020), rank #2 (1.48 MB / 7,013), rank #7 (209.5 KB / 18).
 
 **Root cause (hypothesis A confirmed):** dhat stack inspection during Task 1 of the implementation plan showed the top non-yosh frame above `field_split::emit (180:9)` is `alloc::raw_vec::RawVecInner::finish_grow`, reached via `grow_amortized` → `grow_one` → `Vec::push_mut` → `Vec::push` → `emit`. Each call to `split()` created a fresh `result = Vec::new()` and the first `emit` triggered a cap-4 allocation (~224 bytes) of the `Vec<ExpandedField>` backing store. See investigation log in `docs/superpowers/specs/2026-04-21-field-split-fast-path-design.md` §10.
 
@@ -384,7 +384,7 @@ This mischaracterization is preserved here (rather than silently rewriting §4.1
 
 Added a fast path at the top of `split()`: if `fields.iter().all(|f| !needs_splitting(f, ...))`, return the input `Vec` unchanged. The state machine in `split_field` and the output-`Vec` allocations via `emit` are all skipped. Semantic equivalence is guaranteed by the fact that the slow path would emit each input field unchanged when none contains unquoted IFS bytes. Fast-path hit rate on W2 is **10,998 / 11,000** (formatted `ratio=1.000` at 3-decimal precision; 2 of 11,000 `split()` calls had at least one field requiring actual splitting). See commit `ff7cd21` and spec `docs/superpowers/specs/2026-04-21-field-split-fast-path-design.md`.
 
-**Measured impact (W2, post-fix vs pre-fix at `610343e`):**
+**Measured impact (W2, post-fix vs pre-fix at `610043e`):**
 - `field_split::emit` aggregate: 4.63 MB / 21,051 calls → 209.5 KB / 18 calls (**−95.6% bytes, −99.9% calls**). Rank demoted from #1 / #2 / #7 → single rank #5 at `src/expand/field_split.rs:199:9` (line shifted by the new helper insertion).
 - W2 total allocation: 11.39 MB → 6.47 MB (**−40.5%**); total blocks: 283,350 → 249,093 (**−12.1%**).
 - `expand_field_split` Criterion median: 2.64 ms → 1.33 ms (**−49.6%**, p < 0.05 per Criterion's statistical test).

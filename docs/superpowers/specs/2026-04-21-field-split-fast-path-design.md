@@ -7,7 +7,7 @@
 
 ## 1. Background
 
-At HEAD (`610343e`, post-`pathname::expand` fast path), `yosh::expand::field_split::emit` is the **#1 dhat site by bytes** in workload W2 (`benches/data/script_heavy.sh`):
+At HEAD (`610043e`, post-`pathname::expand` fast path), `yosh::expand::field_split::emit` is the **#1 dhat site by bytes** in workload W2 (`benches/data/script_heavy.sh`):
 
 | Metric | Value |
 |---|---|

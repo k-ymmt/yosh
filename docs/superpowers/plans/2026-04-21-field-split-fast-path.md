@@ -536,7 +536,7 @@ Task 4 produces measurements only — they feed Task 5. No code or docs changes 
 - Modify: `performance.md` (multiple sections: §1, §3.2 dhat tables, add §4.N, §5.1, §5.2, §5.3, §7 Scope amendment)
 - Modify: `TODO.md` (remove the `field_split::emit` entry added 2026-04-21)
 
-**Goal:** Record the fix outcome in the project's two tracking documents. This mirrors what `610343e` did for §4.3 (`pathname::expand` fast path) at commits `c014eed` and `9e343d0`.
+**Goal:** Record the fix outcome in the project's two tracking documents. This mirrors what `610043e` did for §4.3 (`pathname::expand` fast path) at commits `c014eed` and `9e343d0`.
 
 - [ ] **Step 1: Update performance.md §1 Executive Summary**
 
@@ -625,7 +625,7 @@ Append to §7 at the bottom:
 Open `TODO.md`. Find the entry starting with:
 
 ```markdown
-- [ ] `field_split::emit (src/expand/field_split.rs:180:9)` allocation pressure — new #1 dhat site post-fastpath at `610343e` …
+- [ ] `field_split::emit (src/expand/field_split.rs:180:9)` allocation pressure — new #1 dhat site post-fastpath at `610043e` …
 ```
 
 (currently located under "Future: Code Quality Improvements", near the bottom of that section)
