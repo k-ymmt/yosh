@@ -383,4 +383,15 @@ mod tests {
         assert!(!result[0].was_quoted);
         assert_eq!(result[1].value, "hello");
     }
+
+    // ── UTF-8 multi-byte content (spec 2026-04-21-field-split-utf8-panic-fix §9.1) ──
+
+    #[test]
+    fn test_utf8_content_ascii_ifs_splits() {
+        // Slow path: ASCII IFS byte present, multi-byte content elsewhere.
+        // Pre-fix: panics in append_byte on '日' lead byte.
+        let env = env_with_ifs(" ");
+        let input = vec![unquoted("日本 語")];
+        assert_eq!(values(split(&env, input)), vec!["日本", "語"]);
+    }
 }
