@@ -728,49 +728,134 @@ samply record --save-only --output target/perf/samply_w3.json -- \
 
 Expected: exits 0; `target/perf/samply_w3.json` exists.
 
-- [ ] **Step 6: Extract Top-N hot functions from each profile**
+- [ ] **Step 6: Create `scripts/perf/samply_top_n.py` for Top-N extraction**
 
-Samply's default viewer is the Firefox Profiler (web-based). Its JSON format is not trivially grep-able, so use samply's own CLI. Open each profile in the browser:
+Samply's JSON is in Gecko profile format. Write a Python parser that extracts the Top-N self-time and total-time functions:
+
+```python
+#!/usr/bin/env python3
+"""Extract Top-N functions from a samply Gecko profile JSON.
+
+Usage: samply_top_n.py <profile.json> [N]
+"""
+import json
+import sys
+from collections import Counter
+
+
+def main():
+    path = sys.argv[1]
+    n = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+    data = json.load(open(path))
+
+    self_counter: Counter = Counter()
+    total_counter: Counter = Counter()
+
+    for thread in data["threads"]:
+        samples = thread.get("samples")
+        if not samples or not samples.get("stack"):
+            continue
+        stack_frames = thread["stackTable"]["frame"]
+        stack_prefix = thread["stackTable"]["prefix"]
+        frame_funcs = thread["frameTable"]["func"]
+        func_names = thread["funcTable"]["name"]
+        strings = thread["stringTable"]
+
+        def name_of(stack_idx):
+            if stack_idx is None:
+                return None
+            fn = frame_funcs[stack_frames[stack_idx]]
+            return strings[func_names[fn]]
+
+        for s_idx in samples["stack"]:
+            if s_idx is None:
+                continue
+            top = name_of(s_idx)
+            if top:
+                self_counter[top] += 1
+            seen = set()
+            cur = s_idx
+            while cur is not None:
+                nm = name_of(cur)
+                if nm and nm not in seen:
+                    seen.add(nm)
+                    total_counter[nm] += 1
+                cur = stack_prefix[cur]
+
+    total = sum(self_counter.values())
+    print(f"# samply Top-{n} — `{path}`")
+    print(f"\nTotal samples: {total}\n")
+
+    print(f"## Self time Top-{n}\n")
+    print("| Rank | Function | Self % | Count |")
+    print("|------|----------|--------|-------|")
+    for rank, (nm, cnt) in enumerate(self_counter.most_common(n), 1):
+        pct = 100.0 * cnt / total if total else 0
+        print(f"| {rank} | `{nm}` | {pct:.1f}% | {cnt} |")
+
+    print(f"\n## Total time Top-{n}\n")
+    print("| Rank | Function | Total % | Count |")
+    print("|------|----------|---------|-------|")
+    for rank, (nm, cnt) in enumerate(total_counter.most_common(n), 1):
+        pct = 100.0 * cnt / total if total else 0
+        print(f"| {rank} | `{nm}` | {pct:.1f}% | {cnt} |")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Place the file at `scripts/perf/samply_top_n.py`, then:
 
 ```bash
-samply load target/perf/samply_w1.json &
+mkdir -p scripts/perf
+chmod 755 scripts/perf/samply_top_n.py
 ```
 
-For each workload, manually capture the following from the Firefox Profiler "Call Tree" view:
-- Top 10 functions by self time (CPU %)
-- Top 5 functions by total time (including callees)
+- [ ] **Step 7: Run the extractor against each profile**
 
-Write these into `target/perf/samply_top.md` using this template:
-
-```markdown
-# samply Top-N summary
-
-Measurement date: <YYYY-MM-DD>
-Commit: <git rev-parse HEAD>
-Host: <uname -a output, abbreviated>
-
-## W1 startup_loop (N=1000)
-### Self time Top-10
-| Rank | Function | Self % | File:line |
-|------|----------|--------|-----------|
-| 1    | ...      | ...    | ...       |
-...
-
-### Total time Top-5
-...
-
-## W2 script_heavy
-...
-
-## W3 interactive_smoke
-...
+```bash
+{
+    echo "# samply Top-N summary"
+    echo
+    echo "Measurement date: $(date -u '+%Y-%m-%d')"
+    echo "Commit: $(git rev-parse --short HEAD)"
+    echo "Host: $(uname -srm)"
+    echo
+    echo "## W1 startup_loop (N=1000)"
+    python3 scripts/perf/samply_top_n.py target/perf/samply_w1.json 10 \
+        | tail -n +2
+    echo
+    echo "## W2 script_heavy"
+    python3 scripts/perf/samply_top_n.py target/perf/samply_w2.json 10 \
+        | tail -n +2
+    if [ -f target/perf/samply_w3.json ]; then
+        echo
+        echo "## W3 interactive_smoke"
+        python3 scripts/perf/samply_top_n.py target/perf/samply_w3.json 10 \
+            | tail -n +2
+    else
+        echo
+        echo "## W3 interactive_smoke"
+        echo
+        echo "_Skipped — see \`benches/interactive_smoke_skip.md\`._"
+    fi
+} > target/perf/samply_top.md
 ```
 
-Expected: `target/perf/samply_top.md` exists with all three sections filled in (or W3 marked "skipped").
+Expected: `target/perf/samply_top.md` exists with self-time and total-time tables for W1, W2, and either W3 or a skip marker.
 
-- [ ] **Step 7: No commit**
+- [ ] **Step 8: Commit the extractor script**
 
-Raw `.perf.json` files are environment-specific and gitignored (`target/` already is). The textual Top-N summary is also transient; its contents will be transcribed into `performance.md` in Task 11.
+The JSON profiles themselves are transient, but the extractor is reusable and belongs in the repo.
+
+```bash
+git add scripts/perf/samply_top_n.py
+git commit -m "chore(perf): add samply Top-N extractor script
+
+Parses Gecko profile JSON emitted by 'samply record --save-only'
+and prints self-time / total-time Top-N tables in Markdown."
+```
 
 ---
 
@@ -791,51 +876,108 @@ mv dhat-heap.json target/perf/dhat-heap-w2.json
 
 Expected: stdout contains `sum=500500`; `target/perf/dhat-heap-w2.json` is > 1 KB.
 
-- [ ] **Step 2: View the profile**
+- [ ] **Step 2: Create `scripts/perf/dhat_top_n.py` for Top-N extraction**
 
-Open `target/perf/dhat-heap-w2.json` in the DHAT viewer:
-- Browser URL: `https://nnethercote.github.io/dh_view/dh_view.html`
-- Upload the JSON file locally.
+```python
+#!/usr/bin/env python3
+"""Extract Top-N allocation sites from a dhat-heap.json file.
 
-- [ ] **Step 3: Capture Top-N allocation sites**
+Usage: dhat_top_n.py <path> [N]
+"""
+import json
+import sys
 
-From the DHAT tree view, capture:
-- Top 10 by total bytes allocated
-- Top 10 by allocation count (calls)
 
-Write into `target/perf/dhat_top.md`:
+def main():
+    path = sys.argv[1]
+    n = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+    data = json.load(open(path))
+    pps = data["pps"]
+    ftbl = data["ftbl"]
 
-```markdown
-# dhat Top-N allocation sites (W2)
+    def first_user_frame(fs):
+        for idx in fs:
+            name = ftbl[idx]
+            # Prefer frames from this project; otherwise the leaf frame.
+            if "yosh" in name or "/src/" in name or "benches/" in name:
+                return name
+        return ftbl[fs[0]] if fs else "(unknown)"
 
-Measurement date: <YYYY-MM-DD>
-Commit: <git rev-parse HEAD>
-Total allocations: <from dhat summary>
-Total bytes: <from dhat summary>
+    def fmt_bytes(b):
+        if b >= 1024 * 1024:
+            return f"{b / 1024 / 1024:.2f} MB"
+        if b >= 1024:
+            return f"{b / 1024:.1f} KB"
+        return f"{b} B"
 
-## Top 10 by bytes
-| Rank | Site (file:line) | Bytes | Calls |
-|------|------------------|-------|-------|
-| 1    | ...              | ...   | ...   |
-...
+    total_bytes = sum(p["tb"] for p in pps)
+    total_blocks = sum(p["tbk"] for p in pps)
 
-## Top 10 by call count
-| Rank | Site (file:line) | Calls | Bytes |
-|------|------------------|-------|-------|
-...
+    print(f"# dhat Top-{n} — `{path}`")
+    print(f"\nTotal bytes: {total_bytes:,}")
+    print(f"Total blocks (calls): {total_blocks:,}\n")
 
-## Notes
-- TODO.md already lists: `LINENO update allocates a String per command`
-  (src/exec/simple.rs, src/exec/compound.rs). Cross-check whether this
-  appears in the Top-N; if yes, mark as "confirmed"; if no, note the
-  absence as a surprise.
+    print(f"## Top {n} by bytes\n")
+    print("| Rank | Site | Bytes | Calls |")
+    print("|------|------|-------|-------|")
+    for rank, p in enumerate(sorted(pps, key=lambda x: -x["tb"])[:n], 1):
+        print(
+            f"| {rank} | `{first_user_frame(p['fs'])}` "
+            f"| {fmt_bytes(p['tb'])} | {p['tbk']:,} |"
+        )
+
+    print(f"\n## Top {n} by call count\n")
+    print("| Rank | Site | Calls | Bytes |")
+    print("|------|------|-------|-------|")
+    for rank, p in enumerate(sorted(pps, key=lambda x: -x["tbk"])[:n], 1):
+        print(
+            f"| {rank} | `{first_user_frame(p['fs'])}` "
+            f"| {p['tbk']:,} | {fmt_bytes(p['tb'])} |"
+        )
+
+
+if __name__ == "__main__":
+    main()
 ```
 
-Expected: `target/perf/dhat_top.md` exists with both tables populated.
+Place at `scripts/perf/dhat_top_n.py`, then:
 
-- [ ] **Step 4: No commit**
+```bash
+chmod 755 scripts/perf/dhat_top_n.py
+```
 
-Same rationale as Task 8 Step 7.
+- [ ] **Step 3: Run the extractor and capture Top-N**
+
+```bash
+{
+    echo "# dhat Top-N allocation sites (W2)"
+    echo
+    echo "Measurement date: $(date -u '+%Y-%m-%d')"
+    echo "Commit: $(git rev-parse --short HEAD)"
+    echo
+    python3 scripts/perf/dhat_top_n.py target/perf/dhat-heap-w2.json 10 \
+        | tail -n +2
+    echo
+    echo "## Notes"
+    echo
+    echo "- TODO.md lists 'LINENO update allocates a String per command'"
+    echo "  (src/exec/simple.rs, src/exec/compound.rs). Cross-check whether"
+    echo "  this appears in the Top-N; confirmed or surprising absence is"
+    echo "  recorded in performance.md §4."
+} > target/perf/dhat_top.md
+```
+
+Expected: `target/perf/dhat_top.md` exists with both tables populated from real data.
+
+- [ ] **Step 4: Commit the extractor script**
+
+```bash
+git add scripts/perf/dhat_top_n.py
+git commit -m "chore(perf): add dhat Top-N extractor script
+
+Parses dhat-heap.json (dhat-rs output) and prints Top-N sites by
+total bytes and by call count in Markdown."
+```
 
 ---
 
@@ -1146,17 +1288,24 @@ samply record --save-only --output target/perf/samply_w2.json -- \
 # W3 (if not skipped)
 samply record --save-only --output target/perf/samply_w3.json -- \
     ./target/profiling/deps/interactive_smoke-<hash>
+
+# Extract Top-N tables in Markdown:
+python3 scripts/perf/samply_top_n.py target/perf/samply_w1.json 10
+python3 scripts/perf/samply_top_n.py target/perf/samply_w2.json 10
+python3 scripts/perf/samply_top_n.py target/perf/samply_w3.json 10
 ```
 
-View with: `samply load target/perf/samply_w1.json` (etc.)
+For interactive exploration (optional): `samply load target/perf/samply_w1.json`.
 
 ### 6.3 dhat run
 
 ```bash
 cargo run --profile profiling --features dhat-heap --bin yosh-dhat -- \
     benches/data/script_heavy.sh
-# -> dhat-heap.json in CWD; view at
-#    https://nnethercote.github.io/dh_view/dh_view.html
+mv dhat-heap.json target/perf/dhat-heap-w2.json
+
+# Extract Top-N tables:
+python3 scripts/perf/dhat_top_n.py target/perf/dhat-heap-w2.json 10
 ```
 
 ### 6.4 Criterion runs
