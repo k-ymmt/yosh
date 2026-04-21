@@ -1,7 +1,7 @@
 # yosh Performance Report
 
 **Measurement date:** 2026-04-21 (remeasured at HEAD)
-**Commit:** `2261638` (pre-fix baseline: `cf38a9c`)
+**Commit:** `610043e` (post-pathname-fastpath; bracket-fix baseline: `2261638`; pre-fix baseline: `cf38a9c`)
 **Environment:** macOS 26.3.1 / arm64 / Apple M3 / rustc 1.94.1
 **Build profile:** `profiling` (`release` + `debug = true`, `strip = false`). Criterion runs use the default `bench` profile (which also inherits from `release`).
 
@@ -13,7 +13,7 @@
 
 1. **Shell function call path** — `exec_function_call_200` (10.15 ms, ~50 µs/call) is now only ~2.1× slower per operation than `exec_for_loop_200` (4.83 ms, ~24 µs/iter). The residual overhead is an order of magnitude smaller than the `[` fix impact, but still worth investigating per §4.2.
 2. ~~**`expand::pathname::expand` always allocates a new Vec**~~ — **Fixed 2026-04-21** via non-glob fast-path (§4.3). Formerly 14k calls / 2.94 MB at rank #1; now 2,002 calls / 430.1 KB at rank #4 (pathname.rs:29 aggregate: 4.41 MB → 430.1 KB, −90.3%).
-3. **`expand::field_split::emit`** — new top bytes-allocator post-fastpath: 4.63 MB / 21k calls across three dhat sites (ranks #1, #2, #7). Investigation pending (new §5.2 P0).
+3. **`expand::field_split::emit`** — new top bytes-allocator post-fastpath: 4.63 MB / 21,051 calls across three dhat sites (ranks #1, #2, #7). Investigation pending (new §5.2 P0).
 4. **`expand::pattern::matches`** — 50k calls / ~1.25 MB in W2. Top by call count; secondary by bytes (§4.4).
 5. **`VarStore::build_environ`** — no longer a significant cost in W2 now that external-`[` forks are eliminated. Deferred unless a future workload resurfaces it.
 
@@ -167,6 +167,8 @@ After the §4.3 fast-path fix (`610043e`), the primary remaining allocation sour
 | 9 | `yosh::expand::expand_part_to_fields` |  4,007 | 125.2 KB |
 | 10 | `yosh::expand::ExpandedField::set_range (src/expand/mod.rs:83:26)` |  4,007 | 125.2 KB |
 
+Note: `expand_part_to_fields` appears twice at 4,007 calls with different byte totals. These are two distinct allocation sites within the same function — dhat distinguishes them by internal stack ID even though the source-line resolution shown here collapses to the same function name.
+
 #### Pre-fix W2 dhat Top-10 — historical (`1e1b738`)
 
 Kept for reference; the top five sites were all driven by external-`[` fork overhead that no longer exists.
@@ -287,7 +289,7 @@ Five hotspots are treated here. They are ordered by measured impact, not by expe
 Implemented fix candidate #1 (fast-path pass-through). Added a guard at the top of `pathname::expand`: if `!fields.iter().any(has_unquoted_glob_chars)`, return the input `Vec` unchanged. See commit `610043e` and spec `docs/superpowers/specs/2026-04-21-pathname-expand-fast-path-design.md`.
 
 **Measured impact (W2, post-fix vs pre-fastpath at `2c36c5e`):**
-- `pathname::expand (src/expand/pathname.rs:29:20)` rank #1 at pre-fastpath (2.94 MB / 14,020 calls) **disappeared** from Top-10.
+- `pathname::expand (src/expand/pathname.rs:29:20)` rank #1 at pre-fastpath (2.94 MB / 14,020 calls) **disappeared** from Top-10. (The surviving `pathname.rs:29:24` entry at rank #4 in the post-fastpath table is a different allocation site — the slow-path branch that runs when at least one field contains an unquoted glob metachar; column offset differs from the pre-fastpath site because the fast-path guard shifted the function body.)
 - pathname.rs:29 aggregate entries: 4.41 MB / 20,050 calls → 430.1 KB / 2,002 calls (**−90.3% bytes, −90.0% calls**).
 - W2 total allocation: 13.78 MB → 11.39 MB (**−17.3%**); total blocks: 293,382 → 283,350 (−3.4%).
 - Spec §7 target of ~10.8 MB ± 0.3 MB was modestly overshot (actual 11.39 MB), because some of the eliminated pathname::expand allocations were re-attributed by dhat to `field_split::emit` in the call stack. The net savings are real but smaller than the pre-fix pathname::expand:29:20 entry alone would suggest.
@@ -362,6 +364,8 @@ In order (revised after §4.3 fast-path landed 2026-04-21 at `610043e`):
 
 **Note (2026-04-21):** §4.3 has landed. dhat Top-10 re-ranking shows `field_split::emit` as the new top bytes-allocator (ranks #1, #2, #7 at `src/expand/field_split.rs:180:9`, totaling 4.63 MB / 21,051 calls); `pattern::matches` (§4.4) remains the top by call count at 50k calls / 1.25 MB. The function-call ratio (§4.2) is at ~2.1× — measurable but below these allocation hotspots.
 
+**Deviation from spec:** the spec `docs/superpowers/specs/2026-04-21-pathname-expand-fast-path-design.md` §8 anticipated promoting §4.4 (`pattern::matches`) to P0. Post-measurement, `field_split::emit` emerged as a higher-impact target (ranks #1, #2, #7 by bytes vs `pattern::matches` at rank #3) and was assigned P0 instead; `pattern::matches` was assigned P1. Recorded here for auditability.
+
 1. **P0 — Investigate `field_split::emit` allocation pattern (new).** Estimated: not yet scoped. The 2.94 MB rank #1 entry has the same shape (14,020 calls) as the pre-fastpath `pathname::expand:29:20`, suggesting either genuine Vec growth inside `emit` or dhat re-attribution of callee allocation via the pipeline. Needs a dedicated code-inspection + dhat-stack pass before a fix can be scoped; add a new §4.N section once investigated.
 2. **P1 — Fix 4.4 `pattern::matches` recompilation.** Estimated: 2 days. Top by call count (50k). Worth re-measuring after the §5.2 item 1 lands because attribution may shift again.
 3. **P1 — Add the fine-grained function-call sub-benches from 4.2 candidate #1**, then act on whatever they reveal (likely the `catch_unwind` replacement). Estimated: half a day for sub-benches, 1–3 days for the follow-up fix.
@@ -370,7 +374,7 @@ In order (revised after §4.3 fast-path landed 2026-04-21 at `610043e`):
 
 - ~~`build_env_vars` / `environ().to_vec()` cloning per command execution (§4.1)~~ — **Completed 2026-04-21** via `[` / `test` builtin promotion; verified at HEAD `2261638`.
 - ~~`pathname::expand` Vec allocation with no glob chars (§4.3)~~ — **Completed 2026-04-21** via non-glob fast-path (`610043e`); dropped from #1 dhat site to rank #4 at 430.1 KB.
-- Investigate `field_split::emit (src/expand/field_split.rs:180:9)` allocation pattern — new #1 dhat site post-fastpath (2.94 MB / 14,020 calls; combined with sibling entries 4.63 MB / 21k calls). Next P0 candidate, pending investigation.
+- Investigate `field_split::emit (src/expand/field_split.rs:180:9)` allocation pattern — new #1 dhat site post-fastpath (2.94 MB / 14,020 calls; combined with sibling entries 4.63 MB / 21,051 calls). Next P0 candidate, pending investigation.
 - `exec_function_call` residual 2.1× overhead ratio vs arithmetic loop (§4.2) — **P1**, with sub-bench prerequisite.
 - `pattern::matches` recompilation (§4.4) — **P2**.
 
