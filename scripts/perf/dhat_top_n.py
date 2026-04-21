@@ -15,10 +15,14 @@ def main():
     ftbl = data["ftbl"]
 
     def first_user_frame(fs):
+        # Walk frames from leaf toward root, returning the first one that
+        # looks like yosh project code. Match on the `yosh::` function
+        # qualifier — matching on `/src/` alone would also hit crate-
+        # internal paths like `alloc/src/alloc.rs` or `hashbrown/src/*`
+        # and incorrectly attribute the allocation to the leaf frame.
         for idx in fs:
             name = ftbl[idx]
-            # Prefer frames from this project; otherwise the leaf frame.
-            if "yosh" in name or "/src/" in name or "benches/" in name:
+            if "yosh::" in name or "yosh_plugin_" in name or "benches/" in name:
                 return name
         return ftbl[fs[0]] if fs else "(unknown)"
 
