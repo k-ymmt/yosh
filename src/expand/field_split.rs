@@ -42,6 +42,13 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
         .filter(|b| !matches!(*b, b' ' | b'\t' | b'\n'))
         .collect();
 
+    // Fast path: if no field contains an unquoted IFS byte, the state
+    // machine would emit each input field unchanged. Return without
+    // allocating a new Vec or rebuilding ExpandedFields via `emit`.
+    if fields.iter().all(|f| !needs_splitting(f, &ifs_ws, &ifs_nws)) {
+        return fields;
+    }
+
     let mut result = Vec::new();
     for field in fields {
         split_field(&field, &ifs_ws, &ifs_nws, &mut result);
@@ -160,6 +167,18 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
     if !current.is_empty() {
         emit(&mut current, out);
     }
+}
+
+/// Return true iff `field` contains at least one unquoted byte that is
+/// an IFS delimiter (whitespace or non-whitespace).
+///
+/// Used by `split()` as a pre-check: if every input field returns false,
+/// the slow-path state machine would emit each input field unchanged,
+/// so we can return the input Vec as-is without any allocation.
+fn needs_splitting(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8]) -> bool {
+    field.value.bytes().enumerate().any(|(i, b)| {
+        !field.is_quoted(i) && (ifs_ws.contains(&b) || ifs_nws.contains(&b))
+    })
 }
 
 /// Append the byte at position `i` in `source` to `dest`, preserving quoting.
