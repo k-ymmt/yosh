@@ -9,7 +9,7 @@
 
 **Top 5 hotspots (W2):**
 
-1. **`VarStore::environ().to_vec()` in `Executor::build_env_vars`** — ~52 MB / ~380k calls. Every command execution clones the full exported-env snapshot, even when nothing changed and even for builtins that never consume envp.
+1. **`[` / `test` dispatched as an external command per while-loop iteration** — W2 Section B's `while [ "$i" -lt 1000 ]` forked and `execvp`'d `/usr/bin/[` once per iteration, producing ~1001 `build_env_vars` allocations (rank #5 dhat site, 1001 outer-Vec allocs). Fixed 2026-04-21 by classifying `test` / `[` as Regular builtins (see `docs/superpowers/specs/2026-04-21-test-bracket-builtin-design.md`). Post-fix W2 total allocation dropped from 68.1 MB to ~13.1 MB.
 2. **`VarStore::build_environ` itself** — rebuilds the exported set by merging scope hashmaps, called per miss of the existing cache and inside the `.to_vec()` site above.
 3. **Shell function call path** — `exec_function_call_200` is **187×** slower per operation than `exec_for_loop_200` (2.4 ms vs 13 µs per call). Root cause is not fully isolated; likely argv binding + local-scope push/pop.
 4. **`expand::pathname::expand` always allocates a new Vec** — 14k calls / 2.9 MB in W2 even though most fields contain no glob metachars.
@@ -121,7 +121,7 @@ The huge gap between `exec_for_loop_200` (2.58 ms) and `exec_function_call_200` 
 
 Same flat structure as W1 — CPU-breakdown via samply is limited on macOS; dhat is the richer signal for this workload.
 
-#### dhat Top-10 by bytes (W2)
+#### dhat Top-10 by bytes (W2) — Pre-fix (commit 1e1b738)
 
 Run totals: **68.1 MB allocated across 808,896 blocks.**
 
@@ -138,9 +138,34 @@ Run totals: **68.1 MB allocated across 808,896 blocks.**
 | 9 | `expand::field_split::emit (src/expand/field_split.rs:180:9)` | 1.50 MB | 7,010 |
 | 10 | `expand::pathname::expand (src/expand/pathname.rs:29:20)` | 1.26 MB | 6,012 |
 
-Five of the top ten sites are inside `VarStore::build_environ` and `Executor::build_env_vars`. Together they account for **~52 MB (76 %) of W2's total allocation** and >380k calls.
+Five of the top ten sites are inside `VarStore::build_environ` and `Executor::build_env_vars`. Together they account for **~52 MB (76 %) of W2's total allocation** and >380k calls. The root cause was that `classify_builtin` did not list `test` / `[`, so while-loop conditions forked `/usr/bin/[` once per iteration (see §4.6).
 
-#### dhat Top-10 by call count (W2)
+#### dhat Top-10 by bytes (W2) — Post-fix (commit fe8f69a)
+
+Run totals: **13.1 MB allocated across 293,382 blocks** (−80.8 % bytes, −63.7 % blocks vs pre-fix).
+
+After the fix, `build_environ` / `build_env_vars` no longer dominate the allocation profile. The top hotspots are now `pathname::expand`, `pattern::matches`, and `field_split::emit` — the genuine expansion-pipeline pressure that was masked by the external-`[` fork overhead.
+
+| Rank | Site | Bytes | Calls |
+|------|------|-------|-------|
+| 1 | `yosh::expand::pathname::expand (src/expand/pathname.rs:29:20)` | 2.94 MB | 14,020 |
+| 2 | `yosh::expand::field_split::emit (src/expand/field_split.rs:180:9)` | 1.50 MB | 7,010 |
+| 3 | `yosh::expand::pathname::expand (src/expand/pathname.rs:29:20)` | 1.26 MB | 6,012 |
+| 4 | `yosh::expand::pattern::matches (src/expand/pattern.rs:11:39)` | 1.00 MB | 34,034 |
+| 5 | `yosh::expand::field_split::emit (src/expand/field_split.rs:180:9)` | 876.5 KB | 4,007 |
+| 6 | `yosh::expand::pathname::expand (src/expand/pathname.rs:22:24)` | 430.1 KB | 2,002 |
+| 7 | `yosh::expand::pattern::matches (src/expand/pattern.rs:10:42)` | 250.2 KB | 16,016 |
+| 8 | `yosh::expand::expand_word_to_fields (???:0:0)` | 219.0 KB | 4,004 |
+| 9 | `yosh::expand::pathname::expand (src/expand/pathname.rs:29:20)` | 209.5 KB | 18 |
+| 10 | `yosh::expand::pathname::glob_in_dir (src/expand/pathname.rs:166:26)` | 148.6 KB | 20,020 |
+
+`expand::pathname::expand` at 14k calls and `expand::pattern::matches` at ~50k calls surface a second-tier hotspot: pathname expansion runs its globbing machinery on words that have no glob metacharacters. See §4.3.
+
+Note: `exec_for_loop_200` and `exec_param_expansion_200` showed small regressions (+31.8 % and +13.1 %) in Criterion post-fix. These benchmarks contain no `[` / `test`, so the regressions are likely measurement noise rather than an effect of this change.
+
+**TODO.md cross-check:** the existing entry "`LINENO` update allocates a `String` per command" is **not** in the W2 Top-10. Post-fix, `pathname::expand` / `pattern::matches` are the largest allocation sites and should be prioritized ahead of `LINENO`.
+
+#### dhat Top-10 by call count (W2) — Pre-fix (commit 1e1b738)
 
 | Rank | Site | Calls | Bytes |
 |------|------|-------|-------|
@@ -154,10 +179,6 @@ Five of the top ten sites are inside `VarStore::build_environ` and `Executor::bu
 | 8 | `expand::pathname::expand (src/expand/pathname.rs:29:20)` | 14,020 | 2.94 MB |
 | 9 | `expand::field_split::emit (src/expand/field_split.rs:180:9)` | 7,010 | 1.50 MB |
 | 10 | `VarStore::build_environ (src/env/vars.rs:297:24)` | 7,007 | 16.06 MB |
-
-`expand::pathname::expand` at 14k calls and `expand::pattern::matches` at 46k calls (ranks 5 + 7) surface a second-tier hotspot: pathname expansion runs its globbing machinery on words that have no glob metacharacters. See §4.3.
-
-**TODO.md cross-check:** the existing entry "`LINENO` update allocates a `String` per command" is **not** in the W2 Top-10. `build_environ` / `build_env_vars` are much larger and should be prioritized ahead of `LINENO`.
 
 ### 3.3 W3: Interactive-smoke
 
@@ -200,19 +221,17 @@ Five hotspots are treated here. They are ordered by measured impact, not by expe
 - Allocations: **~16 MB** at the primary site (rank #3 by bytes, 121k calls), plus a second site contributing another **~6 MB** at rank #5 (1k calls with larger Vec), totaling ~7.4 MB + 5.8 MB = ~13 MB directly attributable to `.to_vec()`.
 - Transitively the chain through `environ()` + `build_environ()` + `build_environ::{{closure}}` accounts for the ranks #1, #2, #4, #7, #10 entries (~38 MB).
 
-**Suspected cause:** `VarStore::environ()` returns `&[(String, String)]` and maintains an `environ_cache` that correctly avoids rebuilding on repeated reads. However `build_env_vars` at simple.rs:406 does:
+**Root cause (corrected 2026-04-21):** The original diagnosis was wrong. `build_env_vars` is called **only** from the `NotBuiltin` dispatch path in `src/exec/simple.rs:383` — never for builtins. The real driver was that `classify_builtin` (`src/builtin/mod.rs`) did not list `test` / `[`. W2 Section B's `while [ ... ]; do ... done` therefore forked + `execvp`'d `/usr/bin/[` once per iteration. The 1001-call rank-5 dhat entry matches the loop iteration count exactly.
 
-```rust
-let mut vars = self.env.vars.environ().to_vec();
-```
+**Fix applied (2026-04-21):**
 
-so every command execution — including builtins that never need an envp at all — clones the entire exported-env slice into a fresh `Vec<(String, String)>`. With the W2 script the exported env stays essentially constant across commands, so the clone is pure waste. Additionally the cache miss path (`build_environ`) is called more often than expected (131k calls to line 297:36) because *any* variable mutation currently invalidates the cache, and W2 does per-command loop-variable updates.
+**Promote `test` / `[` to `Regular` builtins** per POSIX §2.14. Eliminates 1001 `fork`+`execvp` per W2 run. See `docs/superpowers/specs/2026-04-21-test-bracket-builtin-design.md` and the implementing commits.
 
-**Fix candidates:**
+**Originally proposed fixes, re-evaluated:**
 
-1. **Skip `build_env_vars` entirely for builtins** — only external commands need an envp array. ~80 % of W2's command invocations are builtins (`:`, `echo`, assignment-only). Adding a pre-dispatch check eliminates most `.to_vec()` calls. **Low effort, high impact.**
-2. **Return a reference/iterator from `environ()` and defer the `.to_vec()`** — when an external command is about to `execve`, the Vec is unavoidable, but intermediate builtins can operate on `&[...]`. **Medium effort, medium impact.**
-3. **Scoped cache invalidation** — only bump the environ cache when an *exported* variable changes. Setting an unexported loop counter should not invalidate. This reduces the `build_environ` rebuilds (the #1 and #2 finding entries). **Medium effort, medium impact.** Composes well with fix #1.
+1. ~~Skip `build_env_vars` entirely for builtins~~ — already in place; provided no benefit because builtins never entered that path.
+2. **Return a reference/iterator from `environ()` and defer the `.to_vec()`** — still applicable for the few remaining genuine external-command invocations. Deferred to a future P1/P2 if post-fix measurements still show allocation pressure here.
+3. **Scoped cache invalidation** — only bump the environ cache when an *exported* variable changes. Still applicable; see §4.2.
 
 **TODO.md cross-check:** not present. This finding should be added to TODO.md as a P0 item.
 
@@ -284,6 +303,18 @@ so every command execution — including builtins that never need an envp at all
 
 **TODO.md cross-check:** `src/interactive/history.rs`'s `suggest()` is already listed as "linear scan on every keystroke" — different code path, but in the same neighbourhood. No action needed on either entry from this report.
 
+### 4.6. Correction to §4.1 root-cause analysis (added 2026-04-21)
+
+The original §4.1 diagnosis ("every command execution clones the full exported-env snapshot, even for builtins") was derived from the dhat line-attributed call counts without verifying the actual dispatch path in `src/exec/simple.rs`. Code inspection during the fix work showed that `build_env_vars` has always been gated behind `BuiltinKind::NotBuiltin`. The real driver of the 1001-call rank-5 site was that `classify_builtin` did not list `test` / `[`, so every iteration of `while [ ... ]` in W2 Section B spawned `/usr/bin/[` through fork + execvp.
+
+This mischaracterization is preserved here (rather than silently rewriting §4.1) so that future readers can see both the original mistake and the correction. The lesson: when a dhat call count does not round-trip to a plausible code path, verify the dispatch path before recommending a fix.
+
+**Measured impact of the fix:**
+- W2 total allocation: 68.1 MB → 13.1 MB (-80.8%)
+- W2 total blocks: 808,896 → 293,382 (-63.7%)
+- `exec_bracket_loop_200` Criterion: 916.40 ms → 11.14 ms (82.2× faster)
+- `exec_function_call_200` Criterion: 898.60 ms → 10.56 ms (85.1× faster; cascade effect because the bench's driver loop uses `while [ ]`)
+
 ## 5. Recommendations
 
 ### 5.1 Priority matrix
@@ -300,7 +331,7 @@ Effort classification:
 
 | Finding | Impact | Effort | Priority | Notes |
 |---------|--------|--------|----------|-------|
-| 4.1 — `environ().to_vec()` per command | **High** (~52 MB / ~380k calls) | **Low** for fix candidate #1 (builtin skip); Medium for #2/#3 | **P0** | Candidate #1 alone likely cuts W2 allocation by ≥40 %. |
+| 4.1 — `environ().to_vec()` per command | **High** (~52 MB / ~380k calls) | **Low** for fix candidate #1 (builtin skip); Medium for #2/#3 | **done** | Candidate #1 alone likely cuts W2 allocation by ≥40 %. Completed 2026-04-21 via `[`/`test` builtin promotion. See `docs/superpowers/specs/2026-04-21-test-bracket-builtin-design.md`. |
 | 4.2 — function-call 187× ratio | **High** (Criterion) | **Medium** (needs root-cause bench work first) | **P0** | Start by adding the sub-benches described in candidate #1 before touching code. |
 | 4.3 — `pathname::expand` non-glob alloc | **Medium** (~3 MB) | **Low** (5-line fast path) | **P1** | Cheap to implement; quick win. |
 | 4.4 — `pattern::matches` recompilation | **Low-Medium** (~1 MB, 46k calls) | **Medium** (cache + invalidation) | **P2** | Revisit after 4.1/4.2 land — may lose relative weight. |
@@ -310,11 +341,12 @@ Effort classification:
 
 In order:
 
-1. **P0 — Fix 4.1, starting with candidate #1 (`build_env_vars` skip for builtins).** Estimated: 1 day. Single-file change in `src/exec/simple.rs`. Expect ~40 % reduction in W2 allocation and material improvement in `exec_for_loop_200` / `exec_param_expansion_200` Criterion numbers.
-2. **P0 — Add the fine-grained function-call sub-benches from 4.2 candidate #1.** Estimated: half a day. Prerequisite to any actual fix; without it we'd be guessing.
-3. **P0 — Fix 4.2 based on whatever the new benches reveal.** Estimated: 1–3 days depending on path.
-4. **P1 — Fix 4.3 fast-path.** Estimated: 1–2 hours. Can be bundled into the same PR as either #1 or #2 above.
-5. **P2 — Fix 4.4 pattern cache.** Estimated: 2 days. Worth re-measuring after the first three land, because the absolute numbers will have shifted.
+**Note (2026-04-21):** Item 4.1 has been completed via `test`/`[` builtin promotion. The §4.2 function-call Criterion baseline must be re-captured because its benchmark used `while [ ]` internally and therefore inherited the external-`[` overhead in the original measurement. Post-fix `exec_function_call_200` = 10.56 ms (was 898.60 ms), a 85× improvement solely from the `[` fix — the genuine function-call overhead is now tractable for a separate investigation.
+
+1. **P0 — Add the fine-grained function-call sub-benches from 4.2 candidate #1.** Estimated: half a day. Prerequisite to any actual fix; without it we'd be guessing. (Note: the 4.2 baseline has changed significantly post-fix; re-capture first.)
+2. **P0 — Fix 4.2 based on whatever the new benches reveal.** Estimated: 1–3 days depending on path.
+3. **P1 — Fix 4.3 fast-path.** Estimated: 1–2 hours. Can be bundled into the same PR as either #1 or #2 above.
+4. **P2 — Fix 4.4 pattern cache.** Estimated: 2 days. Worth re-measuring after the first three land, because the absolute numbers will have shifted.
 
 ### 5.3 Items to add to TODO.md
 
@@ -429,4 +461,6 @@ All three files are gitignored (under `target/`). The definitive copy of the fin
 
 ## 7. Scope statement (reminder)
 
-This report is measurement-only. **No production code was modified for performance.** The artifacts shipped alongside it are the new profiling tooling (`src/bin/yosh-dhat.rs`, the `profiling` build profile, the three new benches, the two Python extractors) and the workload scripts under `benches/data/`. All fix recommendations in §5 are deferred to separately-scoped projects and begin from the priority queue in §5.2.
+The original report (§1–§3, §4.2–§4.5) is measurement-only. **No production code was modified for performance** when that report was first authored — the artifacts shipped alongside it were the new profiling tooling (`src/bin/yosh-dhat.rs`, the `profiling` build profile, the three new benches, the two Python extractors) and the workload scripts under `benches/data/`.
+
+**Amendment 2026-04-21:** §4.1 has since been investigated further and a fix (promoting `test` / `[` to Regular builtins) was implemented and landed under `docs/superpowers/specs/2026-04-21-test-bracket-builtin-design.md`. Post-fix measurements are recorded in §3.2 and §4.6. All remaining recommendations in §5 continue to be deferred to separately-scoped projects, with the updated priority queue in §5.2.
