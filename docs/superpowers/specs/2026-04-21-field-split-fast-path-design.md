@@ -317,7 +317,36 @@ All 12 existing tests in `field_split::tests` remain unchanged. `test_split_quot
 
 ## 10. Investigation Log (populated during execution)
 
-_Placeholder. Filled in after §8.1 completes; contains caller-survey results, dhat top frames, hypothesis classification, and fast-path hit rate._
+_Populated 2026-04-21 during Task 1 of the implementation plan._
+
+### Caller survey (Step 1)
+
+`rg 'field_split::split\b' --type rust` result: exactly one match at `src/expand/mod.rs` (line `let fields = field_split::split(env, fields);` inside `expand_word`). Decision on empty-unquoted-drop replication: not needed — the single call site routes through `expand_word`'s final filter `!f.is_empty() || f.was_quoted` at line 116.
+
+### Pre-fix baseline (Steps 2–3)
+
+- W2 stdout size: 11 bytes; stderr size: 21 bytes (saved to `/tmp/w2_prefix.out`, `/tmp/w2_prefix.err`).
+- `target/perf/dhat-heap-w2-prefix.json`: total allocation 11,390,568 bytes (≈ 11.39 MB) / 283,350 blocks.
+- `field_split::emit (src/expand/field_split.rs:180:9)` entries (rank / bytes / calls):
+  - Rank #1: 2.94 MB / 14,020 calls
+  - Rank #2: 1.48 MB / 7,013 calls
+  - Rank #7: 209.5 KB / 18 calls
+- 3-site sum: ≈ 4.63 MB / 21,051 calls.
+
+### Hypothesis classification (Step 4)
+
+Top non-yosh frames above `field_split::emit (180:9)` for rank #1 entry (frame index 590 in ftbl):
+1. `alloc::raw_vec::RawVecInner<A>::finish_grow (???:0:0)`
+2. `alloc::raw_vec::RawVecInner<A>::grow_amortized (src/raw_vec/mod.rs:512:33)`
+3. `alloc::raw_vec::RawVecInner<A>::grow_one (src/raw_vec/mod.rs:476:41)`
+4. `alloc::raw_vec::RawVec<T,A>::grow_one (src/raw_vec/mod.rs:188:29)`
+5. `alloc::vec::Vec<T,A>::push_mut (src/vec/mod.rs:1034:22)`
+
+Classification: **Hypothesis A**. Rationale: the top non-yosh frames are `alloc::raw_vec::RawVecInner::grow_amortized` / `grow_one` reached via `Vec::push` inside `emit`, confirming that the allocations are growth of the `out: Vec<ExpandedField>` backing store, not `String` internal growth.
+
+### Fast-path hit rate (Step 5)
+
+W2: `total=11000 hits=10998 ratio=1.000`. Decision: **proceed** — ratio ≥ 0.9 threshold met with ratio = 1.000 (effectively all calls are fast-path eligible on W2).
 
 ## 11. Follow-ups
 
