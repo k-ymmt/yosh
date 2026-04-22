@@ -180,27 +180,24 @@ for test_file in $test_files; do
     ) &
     _pid=$!
 
-    # Timeout logic
-    (
-        _elapsed=0
-        while [ "$_elapsed" -lt "$TIMEOUT" ]; do
-            sleep 1
-            _elapsed=$((_elapsed + 1))
-            # Check if process is still running
-            if ! kill -0 "$_pid" 2>/dev/null; then
-                exit 0
-            fi
-        done
-        # Timed out — kill the process
-        kill -9 "$_pid" 2>/dev/null
-        echo "timeout" >"$_exit_file"
-    ) &
-    _timer_pid=$!
+    # Timeout logic: single-shot sleep + kill.
+    # Set YOSH_E2E_NO_TIMEOUT=1 to skip the timer entirely (local fast runs).
+    if [ "${YOSH_E2E_NO_TIMEOUT:-0}" = "1" ]; then
+        _timer_pid=""
+    else
+        (
+            sleep "$TIMEOUT"
+            kill -9 "$_pid" 2>/dev/null && echo "timeout" >"$_exit_file"
+        ) &
+        _timer_pid=$!
+    fi
 
     wait "$_pid" 2>/dev/null
     _wait_status=$?
-    kill "$_timer_pid" 2>/dev/null
-    wait "$_timer_pid" 2>/dev/null
+    if [ -n "$_timer_pid" ]; then
+        kill "$_timer_pid" 2>/dev/null
+        wait "$_timer_pid" 2>/dev/null
+    fi
 
     # Read results — exit code from wait, timeout from marker file
     actual_exit=$_wait_status
