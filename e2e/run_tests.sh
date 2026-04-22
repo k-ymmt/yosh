@@ -31,6 +31,8 @@ usage() {
     printf "  --filter=PATTERN Only run tests whose path contains PATTERN\n"
     printf "  --verbose        Show detailed output for each test\n"
     printf "  --help           Show this help\n"
+    printf "\nEnvironment:\n"
+    printf "  YOSH_E2E_NO_TIMEOUT=1  Skip per-test timeout (local use only)\n"
     exit 0
 }
 
