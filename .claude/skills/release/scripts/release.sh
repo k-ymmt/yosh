@@ -76,10 +76,36 @@ rewrite_dep_version() {
 }
 
 phase_test() {
-  echo "yosh-release: running cargo test..." >&2
-  cargo test || fail "cargo test failed — fix tests and rerun"
-  echo "yosh-release: running e2e tests..." >&2
-  ./e2e/run_tests.sh || fail "e2e tests failed — fix tests and rerun"
+  echo "yosh-release: building debug binary for e2e..." >&2
+  cargo build || fail "cargo build failed — fix and rerun"
+
+  local cargo_log e2e_log
+  cargo_log="$(mktemp -t yosh-cargo-test.XXXXXX)"
+  e2e_log="$(mktemp -t yosh-e2e.XXXXXX)"
+
+  echo "yosh-release: running cargo test and e2e tests in parallel..." >&2
+  cargo test >"$cargo_log" 2>&1 &
+  local cargo_pid=$!
+  ./e2e/run_tests.sh >"$e2e_log" 2>&1 &
+  local e2e_pid=$!
+
+  wait "$cargo_pid"; local cargo_rc=$?
+  wait "$e2e_pid";   local e2e_rc=$?
+
+  if [[ $cargo_rc -ne 0 ]]; then
+    echo "--- cargo test output ---" >&2
+    cat "$cargo_log" >&2
+    rm -f "$cargo_log" "$e2e_log"
+    fail "cargo test failed — fix tests and rerun"
+  fi
+  if [[ $e2e_rc -ne 0 ]]; then
+    echo "--- e2e output ---" >&2
+    cat "$e2e_log" >&2
+    rm -f "$cargo_log" "$e2e_log"
+    fail "e2e tests failed — fix tests and rerun"
+  fi
+
+  rm -f "$cargo_log" "$e2e_log"
   echo "yosh-release: all tests passed" >&2
 }
 
