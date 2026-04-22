@@ -180,41 +180,19 @@ phase_test() {
   echo "yosh-release: building debug binary for e2e..." >&2
   cargo build || fail "cargo build failed — fix and rerun"
 
-  local cargo_log e2e_log
-  cargo_log="$(mktemp -t yosh-cargo-test.XXXXXX)"
-  e2e_log="$(mktemp -t yosh-e2e.XXXXXX)"
+  echo "yosh-release: pre-compiling test binaries..." >&2
+  cargo test --no-run --workspace \
+    || fail "cargo test --no-run failed — fix and rerun"
 
-  echo "yosh-release: running cargo test and e2e tests in parallel..." >&2
-  echo "yosh-release: cargo test output is buffered (shown only on failure); this can take 20-30 min" >&2
-  cargo test >"$cargo_log" 2>&1 &
-  local cargo_pid=$!
-  ./e2e/run_tests.sh >"$e2e_log" 2>&1 &
-  local e2e_pid=$!
+  # Reserve a unique lock path. mktemp -d creates it; rmdir removes it so the
+  # path is absent on entry. Absent = unlocked, present = held.
+  PTY_LOCK_DIR="$(mktemp -d -t yosh-pty-lock.XXXXXX)"
+  rmdir "$PTY_LOCK_DIR"
 
-  local cargo_rc=0 e2e_rc=0
-  wait "$cargo_pid" || cargo_rc=$?
-  wait "$e2e_pid"   || e2e_rc=$?
+  echo "yosh-release: running ${#PHASE_TEST_JOBS[@]} test jobs + e2e in parallel..." >&2
+  echo "yosh-release: output is buffered (shown only on failure); this can take 15-30 min" >&2
+  _run_all_tests_parallel
 
-  if [[ $cargo_rc -ne 0 || $e2e_rc -ne 0 ]]; then
-    if [[ $cargo_rc -ne 0 ]]; then
-      echo "--- cargo test output ---" >&2
-      cat "$cargo_log" >&2
-    fi
-    if [[ $e2e_rc -ne 0 ]]; then
-      echo "--- e2e output ---" >&2
-      cat "$e2e_log" >&2
-    fi
-    rm -f "$cargo_log" "$e2e_log"
-    if [[ $cargo_rc -ne 0 && $e2e_rc -ne 0 ]]; then
-      fail "cargo test AND e2e tests failed — fix both and rerun"
-    elif [[ $cargo_rc -ne 0 ]]; then
-      fail "cargo test failed — fix tests and rerun"
-    else
-      fail "e2e tests failed — fix tests and rerun"
-    fi
-  fi
-
-  rm -f "$cargo_log" "$e2e_log"
   echo "yosh-release: all tests passed" >&2
 }
 
