@@ -161,6 +161,22 @@ _run_all_tests_parallel() {
 }
 
 phase_test() {
+  local dry_run=0
+  if [[ "${1:-}" == "--dry-run" ]]; then
+    dry_run=1
+    shift
+  fi
+
+  if [[ $dry_run -eq 1 ]]; then
+    echo "yosh-release: dry-run — ${#PHASE_TEST_JOBS[@]} jobs + e2e would run:" >&2
+    local job
+    for job in "${PHASE_TEST_JOBS[@]}"; do
+      echo "  $job" >&2
+    done
+    echo "  e2e|-|./e2e/run_tests.sh" >&2
+    return 0
+  fi
+
   echo "yosh-release: building debug binary for e2e..." >&2
   cargo build || fail "cargo build failed — fix and rerun"
 
