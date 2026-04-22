@@ -84,25 +84,33 @@ phase_test() {
   e2e_log="$(mktemp -t yosh-e2e.XXXXXX)"
 
   echo "yosh-release: running cargo test and e2e tests in parallel..." >&2
+  echo "yosh-release: cargo test output is buffered (shown only on failure); this can take 20-30 min" >&2
   cargo test >"$cargo_log" 2>&1 &
   local cargo_pid=$!
   ./e2e/run_tests.sh >"$e2e_log" 2>&1 &
   local e2e_pid=$!
 
-  wait "$cargo_pid"; local cargo_rc=$?
-  wait "$e2e_pid";   local e2e_rc=$?
+  local cargo_rc=0 e2e_rc=0
+  wait "$cargo_pid" || cargo_rc=$?
+  wait "$e2e_pid"   || e2e_rc=$?
 
-  if [[ $cargo_rc -ne 0 ]]; then
-    echo "--- cargo test output ---" >&2
-    cat "$cargo_log" >&2
+  if [[ $cargo_rc -ne 0 || $e2e_rc -ne 0 ]]; then
+    if [[ $cargo_rc -ne 0 ]]; then
+      echo "--- cargo test output ---" >&2
+      cat "$cargo_log" >&2
+    fi
+    if [[ $e2e_rc -ne 0 ]]; then
+      echo "--- e2e output ---" >&2
+      cat "$e2e_log" >&2
+    fi
     rm -f "$cargo_log" "$e2e_log"
-    fail "cargo test failed — fix tests and rerun"
-  fi
-  if [[ $e2e_rc -ne 0 ]]; then
-    echo "--- e2e output ---" >&2
-    cat "$e2e_log" >&2
-    rm -f "$cargo_log" "$e2e_log"
-    fail "e2e tests failed — fix tests and rerun"
+    if [[ $cargo_rc -ne 0 && $e2e_rc -ne 0 ]]; then
+      fail "cargo test AND e2e tests failed — fix both and rerun"
+    elif [[ $cargo_rc -ne 0 ]]; then
+      fail "cargo test failed — fix tests and rerun"
+    else
+      fail "e2e tests failed — fix tests and rerun"
+    fi
   fi
 
   rm -f "$cargo_log" "$e2e_log"
