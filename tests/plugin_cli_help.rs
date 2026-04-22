@@ -60,7 +60,6 @@ fn subcommand_help_works() {
 #[test]
 fn no_args_shows_help_and_exits_error() {
     let output = yosh_plugin_bin().output().unwrap();
-    // clap exits with code 2 when no subcommand given
     assert!(!output.status.success(), "no args should fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

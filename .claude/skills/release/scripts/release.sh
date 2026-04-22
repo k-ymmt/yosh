@@ -115,11 +115,15 @@ phase_bump() {
       || fail "failed to rewrite [package].version in $m — run 'git checkout Cargo.toml crates/*/Cargo.toml' to revert"
   done
 
-  # Rewrite workspace dep pins (yosh-plugin-api is pinned in root and in sdk).
+  # Rewrite workspace dep pins (yosh-plugin-api is pinned in root and in sdk;
+  # yosh-plugin-manager is pinned in root so `cargo install yosh` can bundle
+  # the yosh-plugin bin via a versioned crates.io dependency).
   rewrite_dep_version "Cargo.toml" "yosh-plugin-api" "$old" "$new" \
     || fail "failed to rewrite yosh-plugin-api pin in Cargo.toml"
   rewrite_dep_version "crates/yosh-plugin-sdk/Cargo.toml" "yosh-plugin-api" "$old" "$new" \
     || fail "failed to rewrite yosh-plugin-api pin in yosh-plugin-sdk/Cargo.toml"
+  rewrite_dep_version "Cargo.toml" "yosh-plugin-manager" "$old" "$new" \
+    || fail "failed to rewrite yosh-plugin-manager pin in Cargo.toml"
 
   # Refresh Cargo.lock.
   echo "yosh-release: refreshing Cargo.lock (cargo build)..." >&2

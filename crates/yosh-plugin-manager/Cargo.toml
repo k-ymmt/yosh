@@ -10,10 +10,6 @@ repository = "https://github.com/k-ymmt/yosh"
 name = "yosh_plugin_manager"
 path = "src/lib.rs"
 
-[[bin]]
-name = "yosh-plugin"
-path = "src/main.rs"
-
 [dependencies]
 clap = { version = "4", features = ["derive", "color"] }
 serde = { version = "1", features = ["derive"] }

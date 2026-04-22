@@ -2145,6 +2145,7 @@ dependencies = [
  "toml",
  "unicode-width",
  "yosh-plugin-api",
+ "yosh-plugin-manager",
 ]
 
 [[package]]
