@@ -1,12 +1,13 @@
 mod helpers;
 
+use helpers::reset_trap_signals;
 use std::process::Command;
 
 fn yosh_exec(input: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_yosh"))
-        .args(["-c", input])
-        .output()
-        .expect("failed to execute yosh")
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yosh"));
+    cmd.args(["-c", input]);
+    reset_trap_signals(&mut cmd);
+    cmd.output().expect("failed to execute yosh")
 }
 
 // =============================================================================

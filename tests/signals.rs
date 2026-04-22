@@ -1,5 +1,6 @@
 mod helpers;
 
+use helpers::reset_trap_signals;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -7,39 +8,6 @@ use std::time::Duration;
 
 /// Atomic counter to ensure unique temp file names across parallel tests.
 static TIMEOUT_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Async-signal-safe helper used inside `pre_exec`. Direct `sigaction(2)`
-/// call with no allocation on the success path.
-unsafe fn reset_to_default(sig: libc::c_int) -> std::io::Result<()> {
-    let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
-    sa.sa_sigaction = libc::SIG_DFL;
-    let rc = unsafe { libc::sigaction(sig, &sa, std::ptr::null_mut()) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-/// Reset SIGINT and SIGQUIT to `SIG_DFL` in the child before `exec`.
-///
-/// POSIX §2.11 requires a shell without job control to inherit asynchronous
-/// commands with SIGINT/SIGQUIT set to `SIG_IGN`. When the test binary itself
-/// is launched in that role — e.g. backgrounded by the invoking shell, or by
-/// some `cargo test` jobserver configurations — the child yosh would observe
-/// those signals as SIG_IGN at startup and capture them as "ignored on entry",
-/// silently no-op'ing every `trap` that targets them. Without this reset,
-/// `test_trap_int_execution`, `test_trap_reset`, `test_subshell_trap_reset`,
-/// `test_kill_dash_s`, and `test_kill_dash_signal_name` all flake in that
-/// environment.
-fn reset_trap_signals(cmd: &mut Command) {
-    unsafe {
-        cmd.pre_exec(|| unsafe {
-            reset_to_default(libc::SIGINT)?;
-            reset_to_default(libc::SIGQUIT)?;
-            Ok(())
-        });
-    }
-}
 
 fn yosh_exec(input: &str) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_yosh"));
