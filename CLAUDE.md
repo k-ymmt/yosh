@@ -4,15 +4,24 @@ A POSIX-compliant shell (IEEE Std 1003.1) implemented in Rust.
 
 ## Build & Test
 
+This project uses [cargo-nextest](https://nexte.st/) for unit + integration tests.
+Install via mise (see `mise.local.toml`) by running `mise install`, or manually
+with `curl -LsSf https://get.nexte.st/latest/mac | tar zxf - -C $CARGO_HOME/bin`.
+
 ```bash
-cargo build                          # Debug build
-cargo test                           # Unit + integration tests
-cargo test --test <name>             # Single test file (e.g., interactive, signals, subshell)
-cargo test <test_name>               # Single test by name
-./e2e/run_tests.sh                   # E2E POSIX compliance tests (requires debug build)
-./e2e/run_tests.sh --filter=<pat>    # Filtered E2E tests
-cargo bench                          # Criterion benchmarks
+cargo build                              # Debug build
+cargo nextest run --workspace            # Unit + integration tests
+cargo nextest run --test <name>          # Single test binary (e.g., interactive, signals, subshell)
+cargo nextest run -E 'test(<pat>)'       # Filter by test name using the nextest filterset DSL
+cargo test --doc --workspace             # Doctests (nextest does not support doctests)
+./e2e/run_tests.sh                       # E2E POSIX compliance tests (requires debug build)
+./e2e/run_tests.sh --filter=<pat>        # Filtered E2E tests
+cargo bench                              # Criterion benchmarks
 ```
+
+Test configuration lives in `.config/nextest.toml`. The `pty_interactive`
+binary is serialized via a `max-threads = 1` test group because its expectrl-based
+tests share PTY state.
 
 ## Architecture
 
