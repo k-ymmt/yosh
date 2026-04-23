@@ -64,13 +64,19 @@ preserving (and plausibly improving) wall-time characteristics.
 retries = 0
 
 # pty_interactive uses expectrl against a shared PTY and must not overlap with
-# itself. Other test binaries run with unbounded concurrency.
+# itself. plugin tests share a single dylib build and must not overlap either.
+# Other test binaries run with unbounded concurrency.
 [test-groups]
 pty-serial = { max-threads = 1 }
+plugin-serial = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'binary(pty_interactive)'
 test-group = 'pty-serial'
+
+[[profile.default.overrides]]
+filter = 'binary(plugin)'
+test-group = 'plugin-serial'
 ```
 
 Design notes:
@@ -83,6 +89,14 @@ Design notes:
   is strictly more parallel than the current `mkdir` lock, which serialized
   only PTY jobs against each other but blocked on the whole PTY binary from
   the bash side.
+- `plugin-serial = { max-threads = 1 }` scoped by `filter = 'binary(plugin)'`
+  — added during implementation (not in the original spec). The `plugin` test
+  binary relies on `static TEST_LOCK: Mutex<()>` in `tests/plugin.rs` to
+  serialize against a shared dylib build. That in-process mutex has no effect
+  across nextest's per-test processes, so concurrent plugin tests race on the
+  dylib build. Serializing the binary at the nextest level is the minimal fix
+  and preserves the existing test source. A future cleanup (out of scope) can
+  remove the `TEST_LOCK` after refactoring the tests to not share build state.
 - No `slow-timeout` / `leak-timeout` overrides — rely on nextest defaults
   (60 s slow, 100 ms leak) and expectrl per-operation timeouts. Revisit if
   runs surface warnings.
