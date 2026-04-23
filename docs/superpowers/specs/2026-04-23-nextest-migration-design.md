@@ -1,6 +1,34 @@
 # cargo-nextest migration design
 
 Date: 2026-04-23
+Outcome: **reverted 2026-04-24** — see "Outcome" section immediately below.
+
+## Outcome (2026-04-24)
+
+The migration was implemented, measured, and **reverted**. cargo-nextest was
+~1.5-2× slower than the pre-existing bash-parallel `release.sh phase_test` on
+this workspace.
+
+Root cause: nextest runs each test in its own process. On macOS each process
+spawn pays ~150 ms of OS-level overhead (XProtect / Gatekeeper checks, plus
+nextest's own per-process `leak-timeout` default). yosh has ~1939 tests,
+dominated by microsecond-scale unit tests, so the per-process tail alone is
+~290 s — larger than the entire pre-existing parallel run. The old bash
+orchestration pays that tail once per test binary (16 binaries), not per test,
+which is why it is structurally faster for this suite.
+
+Optimization attempts that did **not** close the gap:
+
+- `leak-timeout = "50ms"` — cut reported nextest test time from 35 s to 5 s
+  but did not reduce wall time meaningfully (415-533 s across back-to-back
+  runs; macOS process-spawn variance dominated).
+- `test-threads = 16` (2× num_cpus) — made wall time *worse* (624 s) due to
+  oversubscription on this 8-core machine.
+
+See the "Measurement results" and "Why nextest lost" sections at the end of
+this document. The design below is preserved as the historical record of
+what was shipped (commits `7ae61af`, `eebd892`, `25dbcee`, `c55f8f6`) and
+then reverted (commits `44d224b`, `2f163d7`, `0861825`, `0449ebe`).
 
 ## Goal
 
@@ -283,12 +311,74 @@ in `TODO.md` about warm-up bias.
 
 ## Measurement results
 
-*To be populated after commits 2 and 6.*
+Captured during implementation (2026-04-23 / 2026-04-24) on aarch64-apple-darwin,
+8-core machine, after warm-up (`cargo build && cargo test --no-run --workspace`
+for baseline, `cargo build && cargo nextest run --no-run --workspace` for
+nextest).
 
-| Run | Baseline (pre) | Post-migration |
+### `release.sh test` wall time
+
+| Run | Baseline (pre) — old bash-parallel | Post-migration (as shipped) |
 |---|---|---|
-| 1 | TBD | TBD |
-| 2 | TBD | TBD |
-| 3 | TBD | TBD |
-| **Fastest** | TBD | TBD |
-| **Speedup** | — | TBD × |
+| 1 | 373.9 s | 726.7 s |
+| 2 | 406.0 s | *not collected — stopped for analysis* |
+| 3 | 366.4 s | *not collected* |
+| **Fastest** | **366.4 s** | (single data point, slower) |
+| **Speedup** | — | **~0.5 × (≈ 2× slower)** |
+
+Only one post-migration end-to-end run was collected before the slowdown was
+clear; the remaining two were dropped in favor of diagnostic `cargo nextest`
+invocations (next section) to isolate the cause.
+
+### Isolated nextest measurements (no release.sh wrapper)
+
+| Configuration | nextest wall (s) | Reported test time (s) | Notes |
+|---|---|---|---|
+| `retries=0` + `test-groups` only (shipped) | 327.7 | 35.3 | 1939 tests |
+| `+ leak-timeout = "50ms"` (run A) | 533.0 | 5.2 | Test time collapses |
+| `+ leak-timeout = "50ms"` (run B, same config) | 415.4 | 5.2 | Back-to-back variance ~100 s |
+| `+ leak-timeout = "50ms" + test-threads = 16` | 623.8 | 5.4 | Oversubscription slowdown |
+| `cargo test --workspace` (single-binary, no bash parallel) | 483.1 | n/a | Control |
+
+CPU time (`user + sys`) was ~37 s in every nextest run. Wall-time swings
+came entirely from OS-level scheduling and macOS security checks.
+
+## Why nextest lost
+
+1. **Per-process overhead is architectural.** nextest's book explicitly
+   acknowledges macOS is slower and cites Anti-malware / Gatekeeper as the
+   reason. There is no configuration option to switch to a process-per-binary
+   model — it is a design invariant.
+2. **yosh's test distribution is a worst case.** 1939 tests, of which
+   >90 % are microsecond-scale unit tests in `yosh` crate's `--lib`. The fixed
+   per-process cost (~150 ms) dwarfs the test work.
+3. **The existing `release.sh` was already well-tuned.** It runs 16 parallel
+   `cargo test --test <name>` invocations, each of which amortizes the
+   per-process macOS tax over hundreds or thousands of intra-binary threaded
+   tests. This is effectively "process-per-binary" with thread-parallel
+   inside — structurally faster than "process-per-test" on macOS.
+4. **Optimizations had secondary effects.** `leak-timeout` shortening cut
+   *reported* test time but did not reduce wall time (dominated by OS noise).
+   `test-threads` oversubscription made things worse on this 8-core box.
+
+## What was kept from this work
+
+- The baseline commit `514c3f3 perf(release): record baseline phase_test wall
+  time pre-nextest` — standalone record of the 366.4 s fastest-of-three baseline.
+  Useful for future performance-tracking commits.
+- This design document and the implementation plan
+  (`docs/superpowers/plans/2026-04-23-nextest-migration.md`), kept as
+  historical record of a considered-and-rejected migration. Future engineers
+  investigating nextest for this workspace can skip the measurement work.
+- The TODO.md `release.sh test` wall-time variance entry (restored by the
+  `chore(todo)` revert), since variance was observed pre-nextest and remains
+  an open observation on the bash-parallel model.
+
+## Follow-ups
+
+- Consider refactoring `tests/plugin.rs` to not invoke `cargo build` inside
+  tests (currently uses a static `TEST_LOCK: Mutex<()>` and shells out per
+  test). Independent of runner choice, this is brittle. Not urgent.
+- If CI is introduced later, re-measure on Linux (GitHub Actions ubuntu
+  runners). The per-process overhead is smaller on Linux and nextest may be
+  competitive there; this analysis is macOS-specific.
