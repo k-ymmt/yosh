@@ -75,91 +75,6 @@ rewrite_dep_version() {
   mv "$file.tmp" "$file"
 }
 
-# Job list for parallel test execution. Format: "name|group|cargo-args..."
-# group: "pty" = serialized via PTY lock, "free" = unbounded parallel.
-# Edit this list when adding/removing test binaries or workspace crates.
-PHASE_TEST_JOBS=(
-  "lib|free|test --lib -p yosh"
-  "doc|free|test --doc -p yosh"
-  "plugin-api|free|test -p yosh-plugin-api"
-  "plugin-sdk|free|test -p yosh-plugin-sdk"
-  "plugin-manager|free|test -p yosh-plugin-manager"
-  "cli_help|free|test --test cli_help"
-  "errexit|free|test --test errexit"
-  "history|free|test --test history"
-  "ignored_on_entry|free|test --test ignored_on_entry"
-  "interactive|free|test --test interactive"
-  "parser_integration|free|test --test parser_integration"
-  "plugin|free|test --test plugin"
-  "plugin_cli_help|free|test --test plugin_cli_help"
-  "signals|free|test --test signals"
-  "subshell|free|test --test subshell"
-  "pty_interactive|pty|test --test pty_interactive"
-)
-
-# Set by phase_test at invocation time. Absent path = unlocked, present = held.
-PTY_LOCK_DIR=""
-
-# Run one test job. Locks the PTY group via mkdir. Writes output to $log.
-# Args: $1=name  $2=group  $3=log  $4..=cargo args
-_run_test_job() {
-  local name="$1" group="$2" log="$3"
-  shift 3
-
-  if [[ "$group" == "pty" ]]; then
-    while ! mkdir "$PTY_LOCK_DIR" 2>/dev/null; do sleep 0.05; done
-    trap 'rmdir "$PTY_LOCK_DIR" 2>/dev/null' EXIT
-  fi
-
-  cargo "$@" >"$log" 2>&1
-}
-
-# Launch all jobs in PHASE_TEST_JOBS plus e2e in parallel, wait, aggregate.
-# Prints only failed jobs' logs; fails the script with a summary on any failure.
-_run_all_tests_parallel() {
-  local log_dir
-  log_dir="$(mktemp -d -t yosh-parallel-tests.XXXXXX)"
-  trap 'rm -rf "$log_dir"; rmdir "$PTY_LOCK_DIR" 2>/dev/null' EXIT INT TERM
-
-  local -a pids names logs
-  local idx=0 job name group cmd log
-
-  for job in "${PHASE_TEST_JOBS[@]}"; do
-    IFS='|' read -r name group cmd <<< "$job"
-    log="$log_dir/$name.log"
-    ( _run_test_job "$name" "$group" "$log" $cmd ) &
-    pids[$idx]=$!
-    names[$idx]="$name"
-    logs[$idx]="$log"
-    idx=$((idx+1))
-  done
-
-  # e2e as an additional parallel job alongside the cargo jobs.
-  local e2e_log="$log_dir/e2e.log"
-  ( ./e2e/run_tests.sh >"$e2e_log" 2>&1 ) &
-  pids[$idx]=$!
-  names[$idx]="e2e"
-  logs[$idx]="$e2e_log"
-
-  local -a failed
-  local i
-  for i in "${!pids[@]}"; do
-    if ! wait "${pids[$i]}"; then
-      failed+=("$i")
-    fi
-  done
-
-  if [[ ${#failed[@]} -gt 0 ]]; then
-    for i in "${failed[@]}"; do
-      echo "--- ${names[$i]} output ---" >&2
-      cat "${logs[$i]}" >&2
-    done
-    local -a failed_names
-    for i in "${failed[@]}"; do failed_names+=("${names[$i]}"); done
-    fail "tests failed: ${failed_names[*]} — fix and rerun"
-  fi
-}
-
 phase_test() {
   local dry_run=0
   if [[ "${1:-}" == "--dry-run" ]]; then
@@ -168,12 +83,10 @@ phase_test() {
   fi
 
   if [[ $dry_run -eq 1 ]]; then
-    echo "yosh-release: dry-run — ${#PHASE_TEST_JOBS[@]} jobs + e2e would run:" >&2
-    local job
-    for job in "${PHASE_TEST_JOBS[@]}"; do
-      echo "  $job" >&2
-    done
-    echo "  e2e|-|./e2e/run_tests.sh" >&2
+    echo "yosh-release: dry-run — would run 3 parallel jobs:" >&2
+    echo "  nextest|cargo nextest run --workspace" >&2
+    echo "  doctest|cargo test --doc --workspace" >&2
+    echo "  e2e|./e2e/run_tests.sh" >&2
     return 0
   fi
 
@@ -181,17 +94,44 @@ phase_test() {
   cargo build || fail "cargo build failed — fix and rerun"
 
   echo "yosh-release: pre-compiling test binaries..." >&2
-  cargo test --no-run --workspace \
-    || fail "cargo test --no-run failed — fix and rerun"
+  cargo nextest run --no-run --workspace \
+    || fail "cargo nextest run --no-run failed — fix and rerun"
 
-  # Reserve a unique lock path. mktemp -d creates it; rmdir removes it so the
-  # path is absent on entry. Absent = unlocked, present = held.
-  PTY_LOCK_DIR="$(mktemp -d -t yosh-pty-lock.XXXXXX)"
-  rmdir "$PTY_LOCK_DIR"
+  local log_dir
+  log_dir="$(mktemp -d -t yosh-parallel-tests.XXXXXX)"
+  trap 'rm -rf "$log_dir"' EXIT INT TERM
 
-  echo "yosh-release: running ${#PHASE_TEST_JOBS[@]} test jobs + e2e in parallel..." >&2
-  echo "yosh-release: output is buffered (shown only on failure); this can take 15-30 min" >&2
-  _run_all_tests_parallel
+  local nextest_log="$log_dir/nextest.log"
+  local doctest_log="$log_dir/doctest.log"
+  local e2e_log="$log_dir/e2e.log"
+
+  echo "yosh-release: running nextest + doctest + e2e in parallel..." >&2
+  echo "yosh-release: output is buffered (shown only on failure)" >&2
+
+  ( cargo nextest run --workspace >"$nextest_log" 2>&1 ) &
+  local pid_nextest=$!
+  ( cargo test --doc --workspace >"$doctest_log" 2>&1 ) &
+  local pid_doctest=$!
+  ( ./e2e/run_tests.sh >"$e2e_log" 2>&1 ) &
+  local pid_e2e=$!
+
+  local -a failed
+  wait "$pid_nextest" || failed+=("nextest:$nextest_log")
+  wait "$pid_doctest" || failed+=("doctest:$doctest_log")
+  wait "$pid_e2e"     || failed+=("e2e:$e2e_log")
+
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    local entry name log
+    local -a names
+    for entry in "${failed[@]}"; do
+      name="${entry%%:*}"
+      log="${entry#*:}"
+      names+=("$name")
+      echo "--- $name output ---" >&2
+      cat "$log" >&2
+    done
+    fail "tests failed: ${names[*]} — fix and rerun"
+  fi
 
   echo "yosh-release: all tests passed" >&2
 }

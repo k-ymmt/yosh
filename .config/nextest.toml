@@ -1,0 +1,20 @@
+# cargo-nextest configuration for yosh.
+# Doctests are not supported by nextest; run them via `cargo test --doc --workspace`.
+
+[profile.default]
+retries = 0
+
+# pty_interactive uses expectrl against a shared PTY and must not overlap with
+# itself. plugin tests share a single dylib build and must not overlap either.
+# Other test binaries run with unbounded concurrency.
+[test-groups]
+pty-serial = { max-threads = 1 }
+plugin-serial = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(pty_interactive)'
+test-group = 'pty-serial'
+
+[[profile.default.overrides]]
+filter = 'binary(plugin)'
+test-group = 'plugin-serial'
