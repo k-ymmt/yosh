@@ -28,8 +28,9 @@ runner that provides:
 - A stable upstream binary distributed via mise, already pinned in
   `mise.local.toml` as `"cargo:cargo-nextest" = "latest"`.
 
-The migration simplifies `release.sh` by ~80 lines while preserving (and
-plausibly improving) wall-time characteristics.
+The migration deletes roughly 108 lines of bash orchestration and adds back
+about 55 lines for the new `phase_test`, a net reduction of ~50 lines while
+preserving (and plausibly improving) wall-time characteristics.
 
 ## Non-goals
 
@@ -90,7 +91,7 @@ Design notes:
 
 ## `release.sh` new `phase_test`
 
-Deleted (~88 lines):
+Deleted (~108 lines; net change after the new `phase_test` below is ~-50):
 
 - `PHASE_TEST_JOBS` array (current L81-98)
 - `PTY_LOCK_DIR` variable (L101)
