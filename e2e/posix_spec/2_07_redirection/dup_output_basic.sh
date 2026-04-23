@@ -7,5 +7,6 @@ f="$TEST_TMPDIR/dup_out"
 exec 3> "$f"
 echo hello >&3
 exec 3>&-
+# 'file:' marker forces fail if >&3 silently became a no-op (see spec)
 printf 'file:'
 cat "$f"

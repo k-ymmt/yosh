@@ -65,6 +65,7 @@ f="$TEST_TMPDIR/dup_out"
 exec 3> "$f"
 echo hello >&3
 exec 3>&-
+# 'file:' marker forces fail if >&3 silently became a no-op (see spec)
 printf 'file:'
 cat "$f"
 ```
@@ -86,6 +87,7 @@ exec 3> "$f"
 fd=3
 echo hi >&"$fd"
 exec 3>&-
+# 'file:' marker forces fail if >&"$fd" silently became a no-op (see spec)
 printf 'file:'
 cat "$f"
 ```
@@ -143,3 +145,13 @@ with `[x]`"), remove the line entirely.
 - Legacy `e2e/redirection/stderr_to_stdout.sh` cleanup: once §2.7.6 suite is canonical,
   the legacy test is redundant. A future TODO entry can track its migration or deletion.
 - `>&` with defaulted fd (no preceding N): out of scope; covered incidentally by `2>&1`.
+
+## Design Notes (do not simplify)
+
+The `file:` marker in `dup_output_basic.sh` and `dup_output_param_expansion.sh` is
+intentional and must not be removed. Without it, a silently-broken `>&N` (e.g., an
+implementation regression where the redirect becomes a no-op) would let the raw `echo`
+output leak to stdout and incidentally satisfy a plain `EXPECT_OUTPUT: hello`, producing
+a false PASS. See the per-file comment and the §1 rationale above. DupInput does not
+need this marker because its primary command (`cat <&3`) produces nothing when the dup
+is a no-op, so a broken implementation is caught naturally.

@@ -8,5 +8,6 @@ exec 3> "$f"
 fd=3
 echo hi >&"$fd"
 exec 3>&-
+# 'file:' marker forces fail if >&"$fd" silently became a no-op (see spec)
 printf 'file:'
 cat "$f"
