@@ -47,35 +47,46 @@ All under `e2e/posix_spec/2_07_redirection/`, with 644 permissions and the stand
 
 Exercises `exec N>FILE; cmd >&N`, the canonical §2.7.6 shape.
 
+A `file:` prefix via `printf` makes the test fail-closed: if `>&3` is ever
+broken to a no-op, `echo hello` leaks to stdout first and the final stdout
+(`hello\nfile:`) no longer matches `EXPECT_OUTPUT: file:hello`. Without
+this marker, a silently-broken DupOutput would pass because the raw `echo`
+output would satisfy `EXPECT_OUTPUT: hello`. DupInput gets this detection
+for free because its primary command (`cat <&3`) produces nothing if the
+dup is no-ops; for DupOutput we need the marker to close the same gap.
+
 ```sh
 #!/bin/sh
 # POSIX_REF: 2.7.6 Duplicating an Output File Descriptor
 # DESCRIPTION: >&N duplicates output fd N to fd 1 for the command
-# EXPECT_OUTPUT: hello
+# EXPECT_OUTPUT: file:hello
 # EXPECT_EXIT: 0
 f="$TEST_TMPDIR/dup_out"
 exec 3> "$f"
 echo hello >&3
 exec 3>&-
+printf 'file:'
 cat "$f"
 ```
 
 #### 2. `dup_output_param_expansion.sh`
 
 Pins parameter expansion inside the `>&` redirect target, matching
-`dup_input_param_expansion.sh`.
+`dup_input_param_expansion.sh`. Uses the same `file:` prefix marker as
+`dup_output_basic.sh` to guard against silently-broken-`>&` regressions.
 
 ```sh
 #!/bin/sh
 # POSIX_REF: 2.7.6 Duplicating an Output File Descriptor
 # DESCRIPTION: >&"$fd" accepts an fd number via parameter expansion
-# EXPECT_OUTPUT: hi
+# EXPECT_OUTPUT: file:hi
 # EXPECT_EXIT: 0
 f="$TEST_TMPDIR/dup_out_pe"
 exec 3> "$f"
 fd=3
 echo hi >&"$fd"
 exec 3>&-
+printf 'file:'
 cat "$f"
 ```
 
