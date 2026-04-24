@@ -47,6 +47,16 @@ impl Repl {
         // Ensure shell has terminal
         crate::env::jobs::take_terminal(executor.env.process.shell_pgid).ok();
 
+        // Snapshot the terminal's termios so we can restore it after every
+        // foreground job completes. Only meaningful in interactive + monitor
+        // mode (both flags were set above). capture_tty_termios returns
+        // Ok(None) silently if stdin is not a TTY.
+        if executor.env.mode.is_interactive && executor.env.mode.options.monitor {
+            if let Ok(Some(t)) = crate::exec::terminal_state::capture_tty_termios() {
+                executor.env.process.jobs.set_shell_tmodes(t);
+            }
+        }
+
         // Set history variable defaults
         let home = executor.env.vars.get("HOME").unwrap_or("").to_string();
         let histfile = format!("{}/.yosh_history", home);
