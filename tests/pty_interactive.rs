@@ -713,3 +713,41 @@ fn test_pty_termios_preserved_across_suspend_fg() {
 
     exit_shell(&mut s);
 }
+
+#[test]
+fn test_pty_bg_then_fg_preserves_shell_termios_restoration() {
+    // Variant of test_pty_termios_preserved_across_suspend_fg that exercises
+    // the Ctrl-Z -> bg -> fg path. The `bg` builtin does not touch termios,
+    // so all termios transitions happen in fg. End-state check: after the
+    // full cycle, echo is restored (shell_tmodes applied by Task 6).
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("stty -echo; cat\r").unwrap();
+
+    // Suspend cat. suspend_fg_job handles drain + Ctrl-Z + "Stopped" sync.
+    suspend_fg_job(&mut s);
+    wait_for_prompt(&mut s);
+
+    s.send("bg\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    s.send("fg\r").unwrap();
+    // On macOS/BSD, cat resumed by fg exits immediately with EINTR (same
+    // mechanism as test_pty_termios_preserved_across_suspend_fg). Sending
+    // \x04 after cat is already dead hits the shell and causes spurious
+    // exit, producing Eof on the later `stty -a` expect. Instead, rely on
+    // cat self-terminating and wait for the next prompt.
+    wait_for_prompt(&mut s);
+    drain_pty_buffer(&mut s);
+
+    s.send("stty -a\r").unwrap();
+    s.expect(Regex(r"[^\-]echo"))
+        .expect("terminal echo should be restored after bg-then-fg cycle");
+
+    wait_for_prompt(&mut s);
+    s.send("stty echo\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
