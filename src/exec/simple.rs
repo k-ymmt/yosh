@@ -471,7 +471,7 @@ impl Executor {
                 let mut redir_state = RedirectState::new();
                 if let Err(e) = redir_state.apply(redirects, &mut self.env, false) {
                     eprintln!("yosh: {}", e);
-                    std::process::exit(1);
+                    super::exit_child(1);
                 }
 
                 // Set environment variables using libc::setenv directly.
@@ -505,7 +505,7 @@ impl Executor {
                         127
                     }
                 };
-                std::process::exit(exit_code);
+                super::exit_child(exit_code);
             }
             Ok(ForkResult::Parent { child }) => {
                 if monitor {

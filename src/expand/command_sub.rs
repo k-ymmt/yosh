@@ -69,7 +69,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
             let mut executor = Executor::from_env(child_env);
 
             let status = executor.exec_program(program);
-            std::process::exit(status);
+            crate::exec::exit_child(status);
         }
         Ok(ForkResult::Parent { child }) => {
             // Close the write end in the parent

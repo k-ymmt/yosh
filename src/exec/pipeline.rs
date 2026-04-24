@@ -88,7 +88,7 @@ impl Executor {
                         let read_fd = pipes[i - 1].0;
                         if unsafe { libc::dup2(read_fd, 0) } == -1 {
                             eprintln!("yosh: dup2: {}", std::io::Error::last_os_error());
-                            unsafe { libc::_exit(1) };
+                            super::exit_child(1);
                         }
                     }
                     // Set up stdout to next pipe's write end (if not last)
@@ -96,14 +96,14 @@ impl Executor {
                         let write_fd = pipes[i].1;
                         if unsafe { libc::dup2(write_fd, 1) } == -1 {
                             eprintln!("yosh: dup2: {}", std::io::Error::last_os_error());
-                            unsafe { libc::_exit(1) };
+                            super::exit_child(1);
                         }
                     }
 
                     close_all_pipes(&pipes);
 
                     let status = self.exec_command(cmd);
-                    std::process::exit(status);
+                    super::exit_child(status);
                 }
                 Ok(ForkResult::Parent { child }) => {
                     if i == 0 {

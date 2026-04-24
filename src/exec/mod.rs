@@ -373,7 +373,7 @@ impl Executor {
                 // setpgid already isolates this process from keyboard signals,
                 // and reset_child_signals would undo the ignore anyway.
                 let status = self.exec_and_or(and_or);
-                std::process::exit(status);
+                exit_child(status);
             }
             Ok(ForkResult::Parent { child }) => {
                 nix::unistd::setpgid(child, child).ok();

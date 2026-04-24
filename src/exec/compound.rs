@@ -96,7 +96,7 @@ impl Executor {
                 self.env.traps.reset_non_ignored();
                 signal::reset_child_signals(&ignored);
                 let status = self.exec_body(body);
-                std::process::exit(status);
+                super::exit_child(status);
             }
             Ok(ForkResult::Parent { child }) => Ok(command::wait_child(child).unwrap_or(1)),
         }
