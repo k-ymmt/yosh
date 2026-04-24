@@ -4,8 +4,8 @@
 
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
 - [ ] `suspend` builtin — not implemented
-- [ ] Terminal state save/restore (tcgetattr/tcsetattr) — jobs that modify terminal settings may leave terminal in bad state
 - [ ] Pipeline command display in `jobs` output uses placeholder format — improve to reconstruct shell syntax
+- [ ] Task 7 (`fg` job-termios replay) has no direct PTY assertion — Task 9/10 verify end-state only (Task 6 shell-restore). On macOS/BSD, `/bin/cat` exits on EINTR after SIGCONT, making "during-fg termios observation" racy. Revisit by either using a sleep/read-loop helper that retries on EINTR, or by reading `tcgetattr` directly via the PTY master between `fg\r` and cat's exit.
 
 ## History: Known Limitations
 
