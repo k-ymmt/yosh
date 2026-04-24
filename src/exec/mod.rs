@@ -4,6 +4,7 @@ mod function;
 pub mod pipeline;
 pub mod redirect;
 mod simple;
+pub(crate) mod terminal_state;
 
 use nix::unistd::{ForkResult, fork};
 
