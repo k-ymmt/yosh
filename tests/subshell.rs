@@ -472,3 +472,19 @@ fn test_return_in_dot_script() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(stdout.trim(), "0");
 }
+
+#[test]
+fn test_subshell_pipeline_preserves_unflushed_output() {
+    // Regression test for the exit_child helper (TODO.md Known Bug fix).
+    //
+    // Naive `libc::_exit(0)` without stdout flush would regress
+    // `( echo -n hi ) | cat` to empty output, because `echo -n` does
+    // not append a newline and stdout's LineWriter would not auto-flush
+    // before _exit. Confirmed empirically 2026-04-24.
+    //
+    // This test exercises BOTH the subshell exit path (compound.rs)
+    // AND the pipeline member exit path (pipeline.rs) via the pipe.
+    let out = yosh_exec("( echo -n hi ) | cat");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hi");
+}
