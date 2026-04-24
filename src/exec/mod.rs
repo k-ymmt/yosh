@@ -682,6 +682,25 @@ impl Executor {
             }
         }
 
+        // Restore the job's saved termios (if any) before handing the
+        // terminal back. Falls back to the shell's snapshot so a job that
+        // reaches fg without a stored termios (e.g. one that was never
+        // stopped) at least lands in the shell's canonical mode.
+        if self.env.mode.is_interactive && self.env.mode.options.monitor {
+            let target = {
+                let job_t = self
+                    .env
+                    .process
+                    .jobs
+                    .get(job_id)
+                    .and_then(|j| j.saved_tmodes.clone());
+                job_t.or_else(|| self.env.process.jobs.shell_tmodes().cloned())
+            };
+            if let Some(t) = target {
+                let _ = crate::exec::terminal_state::apply_tty_termios(&t);
+            }
+        }
+
         // Send SIGCONT to resume if stopped
         nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGCONT).ok();
 
