@@ -30,6 +30,10 @@ pub struct Job {
     pub status: JobStatus,
     pub notified: bool,
     pub foreground: bool,
+    /// Termios snapshot captured when the job last stopped (SIGTSTP/SIGSTOP).
+    /// Used as the restore target on `fg`. `None` for jobs that have never
+    /// been stopped, or on non-interactive / non-monitor shell modes.
+    pub saved_tmodes: Option<nix::sys::termios::Termios>,
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +144,7 @@ impl JobTable {
             status: JobStatus::Running,
             notified: false,
             foreground,
+            saved_tmodes: None,
         };
 
         self.jobs.insert(id, job);
@@ -465,6 +470,15 @@ mod tests {
         assert!(table.is_empty());
         assert!(table.current_job().is_none());
         assert!(table.previous_job().is_none());
+    }
+
+    #[test]
+    fn test_job_saved_tmodes_defaults_none() {
+        let mut table = JobTable::default();
+        let id = table.add_job(pid(42), vec![pid(42)], "cmd", false);
+        let job = table.get(id).expect("job should exist");
+        assert!(job.saved_tmodes.is_none(),
+            "saved_tmodes should default to None on new job");
     }
 
     // -----------------------------------------------------------------------
