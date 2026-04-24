@@ -117,12 +117,22 @@ pub struct JobTable {
     next_id: JobId,
     current: Option<JobId>,
     previous: Option<JobId>,
+    /// Termios snapshot captured once at interactive REPL startup. Used to
+    /// restore the shell's terminal state after every foreground wait
+    /// completion. `None` in non-interactive / non-monitor mode.
+    pub shell_tmodes: Option<nix::sys::termios::Termios>,
 }
 
 impl JobTable {
     // -----------------------------------------------------------------------
     // Task 2: add_job, remove_job, accessors
     // -----------------------------------------------------------------------
+
+    /// Store a termios snapshot for the shell. Intended to be called once
+    /// at interactive REPL startup. Subsequent calls overwrite.
+    pub fn init_shell_tmodes(&mut self, t: nix::sys::termios::Termios) {
+        self.shell_tmodes = Some(t);
+    }
 
     /// Add a new job. Returns the assigned JobId.
     /// The new job becomes current; the old current becomes previous.
@@ -479,6 +489,23 @@ mod tests {
         let job = table.get(id).expect("job should exist");
         assert!(job.saved_tmodes.is_none(),
             "saved_tmodes should default to None on new job");
+    }
+
+    #[test]
+    fn test_job_table_shell_tmodes_defaults_none() {
+        let table = JobTable::default();
+        assert!(table.shell_tmodes.is_none(),
+            "shell_tmodes should default to None on new JobTable");
+    }
+
+    #[test]
+    fn test_init_shell_tmodes_stores_value() {
+        let mut table = JobTable::default();
+        let zeroed: libc::termios = unsafe { std::mem::zeroed() };
+        let t: nix::sys::termios::Termios = zeroed.into();
+        table.init_shell_tmodes(t);
+        assert!(table.shell_tmodes.is_some(),
+            "shell_tmodes should hold the value after init_shell_tmodes");
     }
 
     // -----------------------------------------------------------------------
