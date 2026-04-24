@@ -824,9 +824,23 @@ impl Executor {
                         .process
                         .jobs
                         .update_status(pid, JobStatus::Stopped(sig as i32));
+                    // Snapshot the terminal state the stopped child was
+                    // using, so `fg` can replay it on resume. Must run
+                    // before we print anything, since the print itself
+                    // happens in whatever termios the child left behind.
+                    let captured = if self.env.mode.is_interactive
+                        && self.env.mode.options.monitor
+                    {
+                        crate::exec::terminal_state::capture_tty_termios().ok().flatten()
+                    } else {
+                        None
+                    };
                     if let Some(job) = self.env.process.jobs.get_mut(job_id) {
                         job.status = JobStatus::Stopped(sig as i32);
                         job.foreground = false;
+                        if captured.is_some() {
+                            job.saved_tmodes = captured;
+                        }
                     }
                     if let Some(line) = self.env.process.jobs.format_job(job_id) {
                         eprintln!("{}", line);
