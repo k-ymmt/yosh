@@ -823,6 +823,14 @@ EOF
 **Files:**
 - Modify: `tests/pty_interactive.rs` (append)
 
+### Helpers added
+
+Task 8 also added `drain_pty_buffer`, `suspend_fg_job`, and a `TimeoutGuard`
+RAII helper at the top of `tests/pty_interactive.rs`. Tasks 9 and 10 reuse
+these. See the helper definitions above `// ── Tests ──` for rationale
+comments (notably the `.{0,8192}` lower-bound: load-bearing for empty-buffer
+safety).
+
 ### Step 8.1: Write the failing test
 
 - [ ] **Edit `tests/pty_interactive.rs`** — append at the end of the file:
@@ -836,14 +844,14 @@ fn test_pty_shell_termios_restored_after_stopped_job() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
-    // Run `stty raw` then `sleep` in the same foreground job. stty modifies
-    // the terminal; sleep inherits raw mode. Ctrl-Z stops sleep while the
-    // terminal is still raw.
+    // Run `stty raw` then `sleep` in the same sequential job list. stty
+    // modifies the terminal; sleep inherits raw mode. Sync on the PTY
+    // actually being in raw mode (ICANON cleared) before sending Ctrl-Z
+    // — this is more deterministic than a fixed sleep.
     s.send("stty raw; sleep 30\r").unwrap();
+    wait_for_raw_mode(&s);
 
-    // Give the shell a moment to fork & exec, then send Ctrl-Z (0x1A).
-    std::thread::sleep(Duration::from_millis(200));
-    s.send("\x1a").unwrap();
+    suspend_fg_job(&mut s);
 
     // After the stop notification, yosh should reach the next prompt in
     // cooked mode. We assert by running `stty -a` and looking for "icanon"
@@ -911,9 +919,9 @@ fn test_pty_termios_preserved_across_suspend_fg() {
     // the -echo setting.
     s.send("stty -echo; cat\r").unwrap();
 
-    // Let cat start reading, then suspend.
-    std::thread::sleep(Duration::from_millis(200));
-    s.send("\x1a").unwrap();
+    // Let cat start reading, then suspend. suspend_fg_job drains the line
+    // editor echo, sends Ctrl-Z, and waits for the "Stopped" notification.
+    suspend_fg_job(&mut s);
     wait_for_prompt(&mut s);
 
     // Resume cat in the foreground.
@@ -1000,8 +1008,8 @@ fn test_pty_bg_then_fg_preserves_shell_termios_restoration() {
 
     s.send("stty -echo; cat\r").unwrap();
 
-    std::thread::sleep(Duration::from_millis(200));
-    s.send("\x1a").unwrap(); // Ctrl-Z
+    // Suspend cat. suspend_fg_job handles drain + Ctrl-Z + "Stopped" sync.
+    suspend_fg_job(&mut s);
     wait_for_prompt(&mut s);
 
     s.send("bg\r").unwrap();

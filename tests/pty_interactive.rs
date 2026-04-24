@@ -124,6 +124,71 @@ fn exit_shell(session: &mut OsSession) {
     let _ = session.expect(Eof);
 }
 
+/// RAII guard that restores the expectrl session's timeout on drop.
+///
+/// Use when temporarily shrinking the timeout for fast-failing expects
+/// (e.g. buffer drains). Restores the original timeout even if a panic
+/// aborts the test, preventing a leaked short timeout from cascading
+/// into later assertions.
+struct TimeoutGuard<'a> {
+    session: &'a mut OsSession,
+    saved: Duration,
+}
+
+impl<'a> TimeoutGuard<'a> {
+    fn new(session: &'a mut OsSession, temporary: Duration) -> Self {
+        // expectrl 0.8 doesn't expose a getter for the current timeout, so
+        // we trust that callers use this only after spawn_yosh() set TIMEOUT.
+        let saved = TIMEOUT;
+        session.set_expect_timeout(Some(temporary));
+        Self { session, saved }
+    }
+}
+
+impl<'a> Drop for TimeoutGuard<'a> {
+    fn drop(&mut self) {
+        self.session.set_expect_timeout(Some(self.saved));
+    }
+}
+
+/// Consume whatever is currently in expectrl's internal buffer so the
+/// next `expect` sees only fresh bytes.
+///
+/// The line editor repaints each typed character with syntax-highlight
+/// ANSI escape sequences; by the time a user-visible command has been
+/// echoed, expectrl's buffer holds ~2KB of stale `$ ` + color codes.
+/// Without draining, subsequent `expect` calls can match those stale
+/// prompts and race past the real post-command output.
+///
+/// The regex lower-bound `0,` is intentional: we want "up to 8KB or
+/// whatever is there," not "at least one character." Changing it to
+/// `1,` reintroduces a hang when the buffer is already empty.
+const PTY_DRAIN_MAX_BYTES: usize = 8192;
+fn drain_pty_buffer(session: &mut OsSession) {
+    let guard = TimeoutGuard::new(session, Duration::from_millis(300));
+    // Two back-to-back reads: the first consumes what's currently
+    // buffered; the second catches bytes that arrived during the first
+    // read's brief timeout window.
+    let _ = guard
+        .session
+        .expect(Regex(&format!(r".{{0,{}}}", PTY_DRAIN_MAX_BYTES)));
+    let _ = guard
+        .session
+        .expect(Regex(&format!(r".{{0,{}}}", PTY_DRAIN_MAX_BYTES)));
+}
+
+/// Send Ctrl-Z and wait for the foreground job's "Stopped" notification.
+///
+/// Drains prior line-editor echo before sending so the later `expect`
+/// does not race on stale prompt bytes.
+fn suspend_fg_job(session: &mut OsSession) {
+    drain_pty_buffer(session);
+    session.send("\x1a").unwrap();
+    session
+        .expect("Stopped")
+        .expect("job did not stop after Ctrl-Z");
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[test]
@@ -565,37 +630,21 @@ fn test_pty_shell_termios_restored_after_stopped_job() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
-    // Run `stty raw` then `sleep` in the same foreground job. stty modifies
-    // the terminal; sleep inherits raw mode. Ctrl-Z stops sleep while the
-    // terminal is still raw.
+    // Run `stty raw` then `sleep` in the same sequential job list. stty
+    // modifies the terminal; sleep inherits raw mode. Sync on the PTY
+    // actually being in raw mode (ICANON cleared) before sending Ctrl-Z
+    // — this is more deterministic than a fixed sleep and matches what
+    // the existing wait_for_raw_mode helper does for the line-editor
+    // startup case.
     s.send("stty raw; sleep 30\r").unwrap();
+    wait_for_raw_mode(&s);
 
-    // Wait for stty to run and sleep to start — `stty raw; sleep 30` is
-    // two sequential jobs, so we need a bit more slack than the plan's
-    // single-command 200ms.
-    std::thread::sleep(Duration::from_millis(500));
-
-    // Drain the line editor's syntax-highlighted echo (~2KB of `$ ` +
-    // ANSI codes) from expectrl's internal buffer. Otherwise the later
-    // `expect("Stopped")` and `expect("icanon")` see stale bytes and race
-    // past the real post-Ctrl-Z output.
-    s.set_expect_timeout(Some(Duration::from_millis(300)));
-    let _ = s.expect(Regex(r".{0,8192}"));
-    let _ = s.expect(Regex(r".{0,8192}"));
-
-    // Now send Ctrl-Z (0x1A).
-    s.send("\x1a").unwrap();
-
-    // Sync on the post-stop notification so we don't race ahead on stale
-    // prompt bytes from the line editor.
-    s.set_expect_timeout(Some(TIMEOUT));
-    s.expect("Stopped")
-        .expect("job did not stop after Ctrl-Z");
+    suspend_fg_job(&mut s);
 
     // After the stop notification, yosh should reach the next prompt in
-    // cooked mode. We assert by running `stty -a` and looking for "icanon"
-    // in its output — this only works if the terminal is truly in canonical
-    // mode.
+    // cooked mode. Assert by running `stty -a` and looking for "icanon"
+    // in its output — this only works if the terminal is truly in
+    // canonical mode.
     wait_for_prompt(&mut s);
     s.send("stty -a\r").unwrap();
     // stty -a output includes flag names; "icanon" (without leading "-")
