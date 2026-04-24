@@ -99,17 +99,20 @@ if env.mode.is_interactive && env.mode.options.monitor {
 }
 ```
 
-**3. Restore shell termios after every foreground wait** — immediately after `take_terminal(shell_pgid)` at each caller. Two places:
+**3. Restore shell termios after every foreground wait** — immediately after `take_terminal(shell_pgid)` at each caller. Three places:
 
 - `src/exec/simple.rs:532` (normal foreground exec path) — after `take_terminal`:
   ```rust
-  if env.mode.is_interactive && env.mode.options.monitor {
-      if let Some(shell_t) = env.process.jobs.shell_tmodes.as_ref() {
-          let _ = apply_tty_termios(shell_t);
-      }
-  }
+  self.restore_shell_termios_if_interactive();
   ```
-- `src/exec/mod.rs::builtin_fg` (around line 695) — same block after `take_terminal`.
+- `src/exec/mod.rs::builtin_fg` (around line 715) — after `take_terminal`:
+  ```rust
+  self.restore_shell_termios_if_interactive();
+  ```
+- `src/exec/pipeline.rs` (pipeline foreground wait path) — after `take_terminal`:
+  ```rust
+  self.restore_shell_termios_if_interactive();
+  ```
 
 Restoring on **both** `Stopped` and `Exited/Signaled` paths is intentional: a terminated child may have left the terminal in raw mode (e.g. crashed TUI). This block restores sanity regardless of how the job ended.
 
