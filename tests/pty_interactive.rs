@@ -556,3 +556,53 @@ fn test_pty_set_minus_m_reenables_job_control() {
 
     exit_shell(&mut s);
 }
+
+#[test]
+fn test_pty_shell_termios_restored_after_stopped_job() {
+    // Regression test for: a foreground job that modifies termios (here,
+    // via `stty raw`) must not leave the shell stuck in raw mode after
+    // Ctrl-Z. After suspension, the shell must be back in cooked/icanon.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    // Run `stty raw` then `sleep` in the same foreground job. stty modifies
+    // the terminal; sleep inherits raw mode. Ctrl-Z stops sleep while the
+    // terminal is still raw.
+    s.send("stty raw; sleep 30\r").unwrap();
+
+    // Wait for stty to run and sleep to start — `stty raw; sleep 30` is
+    // two sequential jobs, so we need a bit more slack than the plan's
+    // single-command 200ms.
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Drain the line editor's syntax-highlighted echo (~2KB of `$ ` +
+    // ANSI codes) from expectrl's internal buffer. Otherwise the later
+    // `expect("Stopped")` and `expect("icanon")` see stale bytes and race
+    // past the real post-Ctrl-Z output.
+    s.set_expect_timeout(Some(Duration::from_millis(300)));
+    let _ = s.expect(Regex(r".{0,8192}"));
+    let _ = s.expect(Regex(r".{0,8192}"));
+
+    // Now send Ctrl-Z (0x1A).
+    s.send("\x1a").unwrap();
+
+    // Sync on the post-stop notification so we don't race ahead on stale
+    // prompt bytes from the line editor.
+    s.set_expect_timeout(Some(TIMEOUT));
+    s.expect("Stopped")
+        .expect("job did not stop after Ctrl-Z");
+
+    // After the stop notification, yosh should reach the next prompt in
+    // cooked mode. We assert by running `stty -a` and looking for "icanon"
+    // in its output — this only works if the terminal is truly in canonical
+    // mode.
+    wait_for_prompt(&mut s);
+    s.send("stty -a\r").unwrap();
+    // stty -a output includes flag names; "icanon" (without leading "-")
+    // indicates canonical mode is ON. "-icanon" would indicate raw mode.
+    s.expect(Regex(r"[^\-]icanon"))
+        .expect("terminal was not restored to canonical mode after Ctrl-Z");
+
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
