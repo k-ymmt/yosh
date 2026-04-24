@@ -695,6 +695,14 @@ impl Executor {
         // Take terminal back
         jobs::take_terminal(self.env.process.shell_pgid).ok();
 
+        // Restore shell termios after any foreground completion
+        // (stopped or exited).
+        if self.env.mode.is_interactive && self.env.mode.options.monitor {
+            if let Some(shell_t) = self.env.process.jobs.shell_tmodes() {
+                let _ = crate::exec::terminal_state::apply_tty_termios(shell_t);
+            }
+        }
+
         Ok(status)
     }
 
