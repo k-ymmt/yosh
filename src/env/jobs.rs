@@ -120,7 +120,7 @@ pub struct JobTable {
     /// Termios snapshot captured once at interactive REPL startup. Used to
     /// restore the shell's terminal state after every foreground wait
     /// completion. `None` in non-interactive / non-monitor mode.
-    pub shell_tmodes: Option<nix::sys::termios::Termios>,
+    shell_tmodes: Option<nix::sys::termios::Termios>,
 }
 
 impl JobTable {
@@ -128,10 +128,17 @@ impl JobTable {
     // Task 2: add_job, remove_job, accessors
     // -----------------------------------------------------------------------
 
-    /// Store a termios snapshot for the shell. Intended to be called once
-    /// at interactive REPL startup. Subsequent calls overwrite.
-    pub fn init_shell_tmodes(&mut self, t: nix::sys::termios::Termios) {
+    /// Store the shell's termios snapshot. The interactive REPL calls
+    /// this once at startup after `take_terminal`. Calling again
+    /// overwrites the previous value; callers must not rely on this
+    /// for re-initialization after fork.
+    pub fn set_shell_tmodes(&mut self, t: nix::sys::termios::Termios) {
         self.shell_tmodes = Some(t);
+    }
+
+    /// Return the shell's snapshot of its termios, if one was captured.
+    pub fn shell_tmodes(&self) -> Option<&nix::sys::termios::Termios> {
+        self.shell_tmodes.as_ref()
     }
 
     /// Add a new job. Returns the assigned JobId.
@@ -494,18 +501,18 @@ mod tests {
     #[test]
     fn test_job_table_shell_tmodes_defaults_none() {
         let table = JobTable::default();
-        assert!(table.shell_tmodes.is_none(),
+        assert!(table.shell_tmodes().is_none(),
             "shell_tmodes should default to None on new JobTable");
     }
 
     #[test]
-    fn test_init_shell_tmodes_stores_value() {
+    fn test_set_shell_tmodes_stores_value() {
         let mut table = JobTable::default();
         let zeroed: libc::termios = unsafe { std::mem::zeroed() };
         let t: nix::sys::termios::Termios = zeroed.into();
-        table.init_shell_tmodes(t);
-        assert!(table.shell_tmodes.is_some(),
-            "shell_tmodes should hold the value after init_shell_tmodes");
+        table.set_shell_tmodes(t);
+        assert!(table.shell_tmodes().is_some(),
+            "shell_tmodes should hold the value after set_shell_tmodes");
     }
 
     // -----------------------------------------------------------------------

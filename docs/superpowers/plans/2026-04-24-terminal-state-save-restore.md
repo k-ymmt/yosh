@@ -20,7 +20,7 @@
 **Modified files:**
 - `src/exec/mod.rs` — declare the new `terminal_state` module, integrate save-on-stop inside `wait_for_foreground_job`, integrate shell-restore after wait inside `builtin_fg`, and integrate job-restore before `give_terminal` inside `builtin_fg`.
 - `src/exec/simple.rs` — integrate shell-restore after `take_terminal` in the foreground exec path.
-- `src/env/jobs.rs` — add `saved_tmodes: Option<Termios>` to `Job`, add `shell_tmodes: Option<Termios>` and `init_shell_tmodes` to `JobTable`, derive-compatible.
+- `src/env/jobs.rs` — add `saved_tmodes: Option<Termios>` to `Job`, add `shell_tmodes: Option<Termios>` (private) with `set_shell_tmodes` setter and `shell_tmodes()` getter on `JobTable`, derive-compatible.
 - `src/interactive/mod.rs` — capture shell termios at REPL startup after `take_terminal`.
 - `tests/pty_interactive.rs` — three new PTY tests covering stop→restore, fg preservation, and bg→fg preservation.
 
@@ -345,7 +345,7 @@ EOF
 ## Task 3: Add `shell_tmodes` to `JobTable` (TDD)
 
 **Files:**
-- Modify: `src/env/jobs.rs:110-117` (JobTable struct), new `init_shell_tmodes` method.
+- Modify: `src/env/jobs.rs:110-117` (JobTable struct), new `set_shell_tmodes` method and `shell_tmodes` getter.
 
 ### Step 3.1: Write failing tests
 
@@ -355,26 +355,26 @@ EOF
 #[test]
 fn test_job_table_shell_tmodes_defaults_none() {
     let table = JobTable::default();
-    assert!(table.shell_tmodes.is_none(),
+    assert!(table.shell_tmodes().is_none(),
         "shell_tmodes should default to None on new JobTable");
 }
 
 #[test]
-fn test_init_shell_tmodes_stores_value() {
+fn test_set_shell_tmodes_stores_value() {
     let mut table = JobTable::default();
     let zeroed: libc::termios = unsafe { std::mem::zeroed() };
     let t: nix::sys::termios::Termios = zeroed.into();
-    table.init_shell_tmodes(t);
-    assert!(table.shell_tmodes.is_some(),
-        "shell_tmodes should hold the value after init_shell_tmodes");
+    table.set_shell_tmodes(t);
+    assert!(table.shell_tmodes().is_some(),
+        "shell_tmodes should hold the value after set_shell_tmodes");
 }
 ```
 
 ### Step 3.2: Run tests to verify they fail
 
-- [ ] Run: `cargo test --lib env::jobs::tests::test_job_table_shell_tmodes_defaults_none env::jobs::tests::test_init_shell_tmodes_stores_value 2>&1 | tail -10`
+- [ ] Run: `cargo test --lib env::jobs::tests::test_job_table_shell_tmodes_defaults_none env::jobs::tests::test_set_shell_tmodes_stores_value 2>&1 | tail -10`
 
-Expected: compile errors — `shell_tmodes` field and `init_shell_tmodes` method do not exist.
+Expected: compile errors — `shell_tmodes` field/getter and `set_shell_tmodes` method do not exist.
 
 ### Step 3.3: Add the field
 
@@ -402,25 +402,32 @@ pub struct JobTable {
     /// Termios snapshot captured once at interactive REPL startup. Used to
     /// restore the shell's terminal state after every foreground wait
     /// completion. `None` in non-interactive / non-monitor mode.
-    pub shell_tmodes: Option<nix::sys::termios::Termios>,
+    shell_tmodes: Option<nix::sys::termios::Termios>,
 }
 ```
 
-### Step 3.4: Add the init method
+### Step 3.4: Add the setter and getter methods
 
-- [ ] **Edit `src/env/jobs.rs`** — add this method inside `impl JobTable { ... }`, just before the existing `pub fn add_job` (around line 125):
+- [ ] **Edit `src/env/jobs.rs`** — add these methods inside `impl JobTable { ... }`, just before the existing `pub fn add_job` (around line 125):
 
 ```rust
-    /// Store a termios snapshot for the shell. Intended to be called once
-    /// at interactive REPL startup. Subsequent calls overwrite.
-    pub fn init_shell_tmodes(&mut self, t: nix::sys::termios::Termios) {
+    /// Store the shell's termios snapshot. The interactive REPL calls
+    /// this once at startup after `take_terminal`. Calling again
+    /// overwrites the previous value; callers must not rely on this
+    /// for re-initialization after fork.
+    pub fn set_shell_tmodes(&mut self, t: nix::sys::termios::Termios) {
         self.shell_tmodes = Some(t);
+    }
+
+    /// Return the shell's snapshot of its termios, if one was captured.
+    pub fn shell_tmodes(&self) -> Option<&nix::sys::termios::Termios> {
+        self.shell_tmodes.as_ref()
     }
 ```
 
 ### Step 3.5: Run tests to verify they pass
 
-- [ ] Run: `cargo test --lib env::jobs::tests::test_job_table_shell_tmodes_defaults_none env::jobs::tests::test_init_shell_tmodes_stores_value 2>&1 | tail -10`
+- [ ] Run: `cargo test --lib env::jobs::tests::test_job_table_shell_tmodes_defaults_none env::jobs::tests::test_set_shell_tmodes_stores_value 2>&1 | tail -10`
 
 Expected: `test result: ok. 2 passed;`
 
@@ -436,12 +443,13 @@ Expected: all tests pass.
 ```bash
 git add src/env/jobs.rs
 git commit -m "$(cat <<'EOF'
-feat(jobs): add shell_tmodes to JobTable with init_shell_tmodes setter
+feat(jobs): add shell_tmodes to JobTable with set_shell_tmodes setter
 
 JobTable now holds an Option<Termios> captured once at REPL startup.
-init_shell_tmodes is a simple setter the interactive REPL calls after
-take_terminal. Other callers read shell_tmodes through a direct field
-access since JobTable is fully owned by ShellEnv.
+set_shell_tmodes is a simple setter the interactive REPL calls after
+take_terminal. Other callers read the snapshot through the
+shell_tmodes() getter, keeping the field private and matching the
+accessor-based convention used by the rest of JobTable.
 
 Task 3 of terminal state save/restore for job control.
 
@@ -480,7 +488,7 @@ Replace with:
         // Ok(None) silently if stdin is not a TTY.
         if executor.env.mode.is_interactive && executor.env.mode.options.monitor {
             if let Ok(Some(t)) = crate::exec::terminal_state::capture_tty_termios() {
-                executor.env.process.jobs.init_shell_tmodes(t);
+                executor.env.process.jobs.set_shell_tmodes(t);
             }
         }
 ```
@@ -651,7 +659,7 @@ After:
                     // completion (stopped or exited) — a crashed or
                     // suspended TUI may have left the terminal in raw mode.
                     if self.env.mode.is_interactive && self.env.mode.options.monitor {
-                        if let Some(shell_t) = self.env.process.jobs.shell_tmodes.as_ref() {
+                        if let Some(shell_t) = self.env.process.jobs.shell_tmodes() {
                             let _ = crate::exec::terminal_state::apply_tty_termios(shell_t);
                         }
                     }
@@ -687,7 +695,7 @@ After:
         // Restore shell termios after any foreground completion
         // (stopped or exited).
         if self.env.mode.is_interactive && self.env.mode.options.monitor {
-            if let Some(shell_t) = self.env.process.jobs.shell_tmodes.as_ref() {
+            if let Some(shell_t) = self.env.process.jobs.shell_tmodes() {
                 let _ = crate::exec::terminal_state::apply_tty_termios(shell_t);
             }
         }
@@ -761,7 +769,7 @@ After:
                     .jobs
                     .get(job_id)
                     .and_then(|j| j.saved_tmodes.clone());
-                job_t.or_else(|| self.env.process.jobs.shell_tmodes.clone())
+                job_t.or_else(|| self.env.process.jobs.shell_tmodes().cloned())
             };
             if let Some(t) = target {
                 let _ = crate::exec::terminal_state::apply_tty_termios(&t);
