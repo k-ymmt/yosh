@@ -15,6 +15,21 @@ use crate::parser::ast::{
 use crate::plugin::PluginManager;
 use crate::signal;
 
+/// Exit a post-fork child process safely.
+///
+/// Uses `libc::_exit` to skip Rust runtime cleanup, which can deadlock
+/// on std-internal mutexes inherited locked from a multithreaded parent
+/// (e.g. `std::sys::pal::unix::stack_overflow::thread_info::LOCK`).
+/// Flushes stdout/stderr first so buffered output is not lost.
+///
+/// Use ONLY after `fork()` in the child branch, never in the shell parent.
+pub(crate) fn exit_child(status: i32) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    unsafe { libc::_exit(status) }
+}
+
 /// Result of waiting for a foreground job.
 pub(crate) struct ForegroundWaitResult {
     /// Exit status of the last process to report.
