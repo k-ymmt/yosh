@@ -716,11 +716,7 @@ impl Executor {
 
         // Restore shell termios after any foreground completion
         // (stopped or exited).
-        if self.env.mode.is_interactive && self.env.mode.options.monitor {
-            if let Some(shell_t) = self.env.process.jobs.shell_tmodes() {
-                let _ = crate::exec::terminal_state::apply_tty_termios(shell_t);
-            }
-        }
+        self.restore_shell_termios_if_interactive();
 
         Ok(status)
     }
@@ -794,6 +790,18 @@ impl Executor {
         nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGCONT).ok();
 
         Ok(0)
+    }
+
+    /// Apply the shell's captured termios snapshot when in interactive
+    /// + monitor mode. Best-effort; silent on failure or when the
+    /// snapshot is not set (non-interactive, non-monitor, or capture
+    /// failed at REPL startup).
+    fn restore_shell_termios_if_interactive(&self) {
+        if self.env.mode.is_interactive && self.env.mode.options.monitor {
+            if let Some(shell_t) = self.env.process.jobs.shell_tmodes() {
+                let _ = crate::exec::terminal_state::apply_tty_termios(shell_t);
+            }
+        }
     }
 
     /// Wait for a foreground job to complete or stop.

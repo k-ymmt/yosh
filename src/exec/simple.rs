@@ -534,11 +534,7 @@ impl Executor {
                     // Restore the shell's termios after any foreground
                     // completion (stopped or exited) — a crashed or
                     // suspended TUI may have left the terminal in raw mode.
-                    if self.env.mode.is_interactive && self.env.mode.options.monitor {
-                        if let Some(shell_t) = self.env.process.jobs.shell_tmodes() {
-                            let _ = crate::exec::terminal_state::apply_tty_termios(shell_t);
-                        }
-                    }
+                    self.restore_shell_termios_if_interactive();
 
                     result.last_status
                 } else {

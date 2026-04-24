@@ -130,6 +130,7 @@ impl Executor {
             let result = self.wait_for_foreground_job(job_id);
 
             crate::env::jobs::take_terminal(self.env.process.shell_pgid).ok();
+            self.restore_shell_termios_if_interactive();
 
             if result.stopped {
                 Ok(result.last_status)
