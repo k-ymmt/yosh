@@ -676,14 +676,17 @@ fn test_pty_termios_preserved_across_suspend_fg() {
     // Resume cat in the foreground.
     s.send("fg\r").unwrap();
     // DEVIATION from the task spec: the spec sent `\x04` (Ctrl-D) to EOF
-    // cat, then ran `stty -a`. On this platform, `cat` resumed via `fg`
-    // terminates on its own with "Interrupted system call" — its read()
-    // returns EINTR on SIGCONT and cat does not retry. That is a separate
-    // yosh-level bug (child read not restarted after SIGCONT), but for
-    // this test's purposes the Task 6 shell_tmodes restore path still
-    // runs when cat exits. Sending `\x04` after cat already died caused
-    // the shell itself to receive Ctrl-D and exit, which produced a
-    // spurious EOF on the later `stty -a` expect.
+    // cat, then ran `stty -a`. On macOS/BSD, `cat`'s read() returns EINTR
+    // when SIGCONT is delivered (cat inherits SIG_DFL for SIGCONT, and
+    // BSD does not auto-restart read() without SA_RESTART). /bin/cat does
+    // not retry on EINTR, so it exits with "Interrupted system call"
+    // immediately after fg. On Linux, read() on terminals auto-restarts
+    // for SIG_DFL signals, so cat would keep running there. This is
+    // platform behavior, not a yosh bug — yosh correctly leaves SIGCONT
+    // as the kernel default for children, and SA_RESTART is a child-side
+    // decision. Sending `\x04` after cat already died caused the shell
+    // itself to receive Ctrl-D and exit, which produced a spurious EOF
+    // on the later `stty -a` expect.
     //
     // Fix: wait for the post-cat prompt (cat self-terminates after fg)
     // and then check stty -a, skipping the explicit Ctrl-D.
