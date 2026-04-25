@@ -1377,6 +1377,17 @@ mod tests {
             .jobs
             .add_job(pid, vec![pid], "test-cmd", true);
 
+        assert!(
+            exec.env
+                .process
+                .jobs
+                .get(id)
+                .unwrap()
+                .saved_tmodes()
+                .is_none(),
+            "precondition: saved_tmodes should start as None for a fresh job",
+        );
+
         let zeroed: libc::termios = unsafe { std::mem::zeroed() };
         let t: nix::sys::termios::Termios = zeroed.into();
 
@@ -1388,10 +1399,7 @@ mod tests {
             .jobs
             .get(id)
             .expect("job should still be in table");
-        assert!(
-            job.saved_tmodes().is_some(),
-            "Some capture must be stored",
-        );
+        assert!(job.saved_tmodes().is_some(), "Some capture must be stored");
         assert!(matches!(job.status, JobStatus::Stopped(_)));
         assert!(!job.foreground);
     }
