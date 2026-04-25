@@ -804,6 +804,31 @@ impl Executor {
         }
     }
 
+    /// Apply the per-job state transition for `WaitStatus::Stopped`.
+    ///
+    /// Pure over `(job_id, sig, captured)`: writes the Stopped status,
+    /// clears the foreground flag, and stores the captured termios —
+    /// including `None`, which intentionally clears any previously saved
+    /// snapshot. Preserves glibc-manual semantics across mid-session
+    /// `exec 0</dev/null`: a stale snapshot from a TTY the shell no
+    /// longer drives must not survive into a later `fg`.
+    ///
+    /// Silently no-ops if `job_id` is no longer in the table; the caller
+    /// (`wait_for_foreground_job`) already tolerates that race.
+    fn record_stopped_state(
+        &mut self,
+        job_id: crate::env::jobs::JobId,
+        sig: i32,
+        captured: Option<nix::sys::termios::Termios>,
+    ) {
+        use crate::env::jobs::JobStatus;
+        if let Some(job) = self.env.process.jobs.get_mut(job_id) {
+            job.status = JobStatus::Stopped(sig);
+            job.foreground = false;
+            job.set_saved_tmodes(captured);
+        }
+    }
+
     /// Wait for a foreground job to complete or stop.
     ///
     /// Returns a `ForegroundWaitResult` containing the last exit status,
@@ -870,13 +895,7 @@ impl Executor {
                     } else {
                         None
                     };
-                    if let Some(job) = self.env.process.jobs.get_mut(job_id) {
-                        job.status = JobStatus::Stopped(sig as i32);
-                        job.foreground = false;
-                        if captured.is_some() {
-                            job.set_saved_tmodes(captured);
-                        }
-                    }
+                    self.record_stopped_state(job_id, sig as i32, captured);
                     if let Some(line) = self.env.process.jobs.format_job(job_id) {
                         eprintln!("{}", line);
                     }
@@ -1294,6 +1313,98 @@ mod tests {
         let _ = exec.exec_compound_command(&cmd, &[]);
         // Inner SimpleCommand (line 11) runs last, so LINENO ends at 11.
         assert_eq!(exec.env.vars.get("LINENO"), Some("11"));
+    }
+
+    #[test]
+    fn record_stopped_state_clears_stale_saved_tmodes_on_none_capture() {
+        use crate::env::jobs::JobStatus;
+        use nix::unistd::Pid;
+        let mut exec = Executor::new("yosh", vec![]);
+        let pid = Pid::from_raw(12345);
+        let id = exec
+            .env
+            .process
+            .jobs
+            .add_job(pid, vec![pid], "test-cmd", true);
+
+        // Pre-populate saved_tmodes as if a previous stop captured a TTY snapshot.
+        let zeroed: libc::termios = unsafe { std::mem::zeroed() };
+        let t: nix::sys::termios::Termios = zeroed.into();
+        exec.env
+            .process
+            .jobs
+            .get_mut(id)
+            .unwrap()
+            .set_saved_tmodes(Some(t));
+        assert!(
+            exec.env
+                .process
+                .jobs
+                .get(id)
+                .unwrap()
+                .saved_tmodes()
+                .is_some(),
+            "precondition: saved_tmodes should be populated before the simulated stop",
+        );
+
+        // Simulate the next stop where capture_tty_termios() returned Ok(None)
+        // (e.g., after `exec 0</dev/null` redirected stdin away from the TTY).
+        exec.record_stopped_state(id, libc::SIGTSTP, None);
+
+        let job = exec
+            .env
+            .process
+            .jobs
+            .get(id)
+            .expect("job should still be in table");
+        assert!(
+            job.saved_tmodes().is_none(),
+            "stale termios must be cleared when capture returns None",
+        );
+        assert!(matches!(job.status, JobStatus::Stopped(_)));
+        assert!(!job.foreground);
+    }
+
+    #[test]
+    fn record_stopped_state_stores_some_capture() {
+        use crate::env::jobs::JobStatus;
+        use nix::unistd::Pid;
+        let mut exec = Executor::new("yosh", vec![]);
+        let pid = Pid::from_raw(12346);
+        let id = exec
+            .env
+            .process
+            .jobs
+            .add_job(pid, vec![pid], "test-cmd", true);
+
+        let zeroed: libc::termios = unsafe { std::mem::zeroed() };
+        let t: nix::sys::termios::Termios = zeroed.into();
+
+        exec.record_stopped_state(id, libc::SIGTSTP, Some(t));
+
+        let job = exec
+            .env
+            .process
+            .jobs
+            .get(id)
+            .expect("job should still be in table");
+        assert!(
+            job.saved_tmodes().is_some(),
+            "Some capture must be stored",
+        );
+        assert!(matches!(job.status, JobStatus::Stopped(_)));
+        assert!(!job.foreground);
+    }
+
+    #[test]
+    fn record_stopped_state_no_op_on_unknown_job() {
+        let mut exec = Executor::new("yosh", vec![]);
+        // job_id 9999 was never added; the helper must silently no-op
+        // (the same race-tolerance the caller, `wait_for_foreground_job`,
+        // already exhibits when a job is removed between waitpid and the
+        // state-write).
+        exec.record_stopped_state(9999, libc::SIGTSTP, None);
+        assert!(exec.env.process.jobs.get(9999).is_none());
     }
 
     #[test]
