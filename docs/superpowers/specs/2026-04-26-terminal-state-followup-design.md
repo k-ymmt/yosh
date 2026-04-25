@@ -48,35 +48,84 @@ manual semantics and is parked until a user reports the surface.
 
 ## Design
 
-### 1. Bug Fix: Drop `captured.is_some()` Guard
+### 1. Bug Fix: Drop `captured.is_some()` Guard + Extract Helper
 
 **File:** `src/exec/mod.rs` (Stopped arm of `wait_for_foreground_job`)
 
-Replace
+The bug fix changes the call-site logic, so to make that call-site logic
+unit-testable in isolation (without spawning a real process or driving a
+PTY), we extract the state-transition into a small private helper. The
+extraction is the minimum viable refactor that lets a unit test directly
+prove "captured == None must clear saved_tmodes," which is the exact
+behavior the `captured.is_some()` guard violated.
+
+**Helper (new):**
 
 ```rust
-if captured.is_some() {
-    job.saved_tmodes = captured;
+impl Executor {
+    /// Apply the per-job state transition for `WaitStatus::Stopped`.
+    ///
+    /// Pure over `(job_id, sig, captured)`: writes status, clears the
+    /// foreground flag, and stores the captured termios — including
+    /// `None`, which intentionally clears any previously saved snapshot
+    /// (see follow-up to §1; preserves glibc-manual semantics across
+    /// mid-session `exec 0</dev/null`).
+    ///
+    /// Silently no-ops if `job_id` is no longer in the table; the caller
+    /// (`wait_for_foreground_job`) already tolerates that race.
+    fn record_stopped_state(
+        &mut self,
+        job_id: crate::env::jobs::JobId,
+        sig: i32,
+        captured: Option<nix::sys::termios::Termios>,
+    ) {
+        use crate::env::jobs::JobStatus;
+        if let Some(job) = self.env.process.jobs.get_mut(job_id) {
+            job.status = JobStatus::Stopped(sig);
+            job.foreground = false;
+            job.set_saved_tmodes(captured);
+        }
+    }
 }
 ```
 
-with an unconditional assignment via the new setter (see §2):
+**Call-site (replaces the existing `if let Some(job) = ...` block in the
+Stopped arm of `wait_for_foreground_job`):**
 
 ```rust
-job.set_saved_tmodes(captured);
+let captured = if self.env.mode.is_interactive && self.env.mode.options.monitor {
+    crate::exec::terminal_state::capture_tty_termios().ok().flatten()
+} else {
+    None
+};
+self.record_stopped_state(job_id, sig as i32, captured);
 ```
 
-**Why:** `captured = None` happens when interactive+monitor is on but
-`capture_tty_termios()` returns `Ok(None)` because stdin is no longer a TTY
-(typical mid-session trigger: `exec 0</dev/null`). In that state, retaining a
-prior snapshot tells a future `fg` to apply termios for a TTY that the shell
-no longer drives — the apply will either silently no-op or scribble onto an
-unrelated fd that happens to be at fd 0. Unconditional overwrite matches the
-glibc manual semantics ("save what's there now, or nothing").
+The previous `if captured.is_some() { job.saved_tmodes = captured; }` guard
+is replaced by the unconditional `job.set_saved_tmodes(captured)` inside
+`record_stopped_state`.
+
+**Why drop the guard:** `captured = None` happens when interactive+monitor
+is on but `capture_tty_termios()` returns `Ok(None)` because stdin is no
+longer a TTY (typical mid-session trigger: `exec 0</dev/null`). In that
+state, retaining a prior snapshot tells a future `fg` to apply termios for
+a TTY that the shell no longer drives — the apply will either silently
+no-op or scribble onto an unrelated fd that happens to be at fd 0.
+Unconditional overwrite matches the glibc manual semantics ("save what's
+there now, or nothing").
 
 The current behavior is asymptomatic in the existing test matrix because no
-test transitions through `exec 0</dev/null` between two stops, but the latent
-bug is real and the simpler form is also easier to reason about.
+test transitions through `exec 0</dev/null` between two stops, but the
+latent bug is real, and the helper extraction makes it directly testable
+under §Tests below.
+
+**Why extract the helper:** the bug is at the *call site*, not at the
+setter. A test that only exercises `Job::set_saved_tmodes` cannot prove
+the Stopped arm calls the setter unconditionally — an implementation
+could keep the old guard and still pass a setter-only test. Pulling the
+call-site state transition into `record_stopped_state` lets a unit test
+target the exact decision that was buggy, without needing a PTY harness
+or a process that actually receives `SIGTSTP`.
 
 ### 2. Private `Job.saved_tmodes` + Accessor Pair
 
@@ -112,8 +161,8 @@ literal in the same module — visibility is fine).
 **Call-site updates:**
 - `src/exec/mod.rs:696`: `.and_then(|j| j.saved_tmodes.clone())`
   → `.and_then(|j| j.saved_tmodes().cloned())`
-- `src/exec/mod.rs:877`: `job.saved_tmodes = captured`
-  → `job.set_saved_tmodes(captured)` (combined with §1)
+- `src/exec/mod.rs:877`: the Stopped-arm assignment is removed by the §1
+  helper extraction; the new helper writes `job.set_saved_tmodes(captured)`.
 - `src/env/jobs.rs:497` (existing test): `job.saved_tmodes.is_none()`
   → `job.saved_tmodes().is_none()`
 
@@ -131,10 +180,11 @@ future maintainer running `grep saved_tmodes` lands on it:
 /// per-process statuses (for pipefail), and whether the job was stopped.
 ///
 /// Side effect: on `WaitStatus::Stopped`, captures the current TTY termios
-/// (or `None` when stdin is not a TTY / non-interactive / non-monitor) into
-/// `job.saved_tmodes` so a later `fg` can replay it. The capture is always
-/// written — including `None` overwrites — to avoid keeping a stale snapshot
-/// across `exec 0</dev/null` style redirections.
+/// (or `None` when stdin is not a TTY / non-interactive / non-monitor) and
+/// hands it to `record_stopped_state`, which writes it to `job.saved_tmodes`
+/// so a later `fg` can replay it. The capture is always written — including
+/// `None` overwrites — to avoid keeping a stale snapshot across
+/// `exec 0</dev/null` style redirections.
 fn wait_for_foreground_job(...) { ... }
 ```
 
@@ -163,23 +213,62 @@ if executor.env.mode.is_interactive && executor.env.mode.options.monitor {
 
 ## Tests
 
-- **Existing** `test_job_saved_tmodes_defaults_none` — rewrite the assertion
-  to use the `saved_tmodes()` accessor. Same intent, new shape.
-- **New** `test_job_set_saved_tmodes_overwrites_with_none` —
-  - call `set_saved_tmodes(Some(t))`, assert `saved_tmodes().is_some()`,
-  - call `set_saved_tmodes(None)`, assert `saved_tmodes().is_none()`.
-  This pins the §1 fix at the unit level: it asserts that a `None` write
-  must clear prior state, which is exactly the bug the `captured.is_some()`
-  guard caused.
-- **PTY tests** (`tests/pty_interactive.rs`) — no source changes; they pass
-  by API compatibility. The Ctrl-Z → bg → fg termios cycle and the post-fg
-  `stty` round-trip already cover the unchanged restore paths.
+The bug surface is at the call site (the Stopped arm of
+`wait_for_foreground_job`), not at the setter. A test that only exercises
+`Job::set_saved_tmodes` cannot prove the call site invokes the setter
+unconditionally — an implementation could keep the `captured.is_some()`
+guard and still pass a setter-only test. The test plan therefore targets
+the helper extracted in §1, which carries the call-site state-transition
+logic verbatim.
 
-No new PTY test for the §1 bug surface itself: the trigger requires
-`exec 0</dev/null` mid-session followed by a Ctrl-Z then `fg`, and the
-existing PTY harness has no clean way to redirect the shell's stdin away
-from the master fd without confusing `expectrl`. The unit test in §Tests
-covers the type-level invariant the bug violated.
+**Required tests (call-site behavior):**
+
+- **New** `record_stopped_state_clears_stale_saved_tmodes_on_none_capture`
+  — drives `Executor::record_stopped_state` directly:
+  1. Build an `Executor` (no PTY, no fork — bare `Executor::new(...)` plus
+     a manually-added job to its `JobTable`).
+  2. Pre-populate `job.saved_tmodes` with `Some(t)` (zeroed `libc::termios`
+     converted via `Termios::from`) to simulate a prior stop having captured
+     a TTY snapshot.
+  3. Call `record_stopped_state(job_id, libc::SIGTSTP, None)` to simulate
+     the next stop where `capture_tty_termios()` returned `Ok(None)` (e.g.,
+     after `exec 0</dev/null`).
+  4. Assert `job.saved_tmodes().is_none()`, `matches!(job.status,
+     JobStatus::Stopped(_))`, and `!job.foreground`.
+  This pins the bug fix at the exact call site: if a future refactor
+  reintroduces the `captured.is_some()` guard, this test fails on the
+  `is_none()` assertion.
+
+- **New** `record_stopped_state_stores_some_capture` — symmetric positive
+  case: prepopulate `None`, call with `Some(t)`, assert `saved_tmodes()`
+  returns `Some` and the other state fields update. Keeps the test pair
+  honest (a stub implementation that always writes `None` would pass the
+  first test but fail this one).
+
+- **New** `record_stopped_state_no_op_on_unknown_job` — call with a
+  `JobId` that does not exist; assert no panic. Documents the silent
+  no-op contract that mirrors how `wait_for_foreground_job` already
+  tolerates the lookup race.
+
+**Supporting tests (private accessor migration):**
+
+- **Existing** `test_job_saved_tmodes_defaults_none` — rewrite the
+  assertion to use the `saved_tmodes()` accessor. Same intent, new shape.
+- **New** `test_job_set_saved_tmodes_overwrites_with_none` — setter-level
+  round-trip: `Some → None` then assert `is_none()`. This is *not* the
+  bug-fix test (the call-site test above is); it documents the setter's
+  overwrite contract for any future caller.
+
+**PTY tests** (`tests/pty_interactive.rs`) — no source changes; they pass
+by API compatibility. The Ctrl-Z → bg → fg termios cycle and the post-fg
+`stty` round-trip already cover the unchanged restore paths.
+
+No new PTY test for the user-visible §1 trigger (`exec 0</dev/null` then
+Ctrl-Z then `fg`): redirecting the shell's stdin away from the
+`expectrl`-driven master fd confuses the harness's controlling terminal.
+The `record_stopped_state_clears_stale_saved_tmodes_on_none_capture` unit
+test substitutes for the missing PTY coverage by targeting the same
+decision the bug lives in.
 
 ## TODO.md Updates
 
