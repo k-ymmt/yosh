@@ -835,11 +835,14 @@ impl Executor {
     /// per-process statuses (for pipefail), and whether the job was stopped.
     ///
     /// Side effect: on `WaitStatus::Stopped`, captures the current TTY
-    /// termios (or `None` when stdin is not a TTY / non-interactive /
-    /// non-monitor) and hands it to `record_stopped_state`, which writes
-    /// it to `job.saved_tmodes` so a later `fg` can replay it. The capture
-    /// is always written — including `None` overwrites — to avoid keeping
-    /// a stale snapshot across `exec 0</dev/null` style redirections.
+    /// termios when in interactive + monitor mode and stdin is a TTY
+    /// (otherwise `None`: the call-site guard short-circuits to `None`
+    /// outside that mode, and `capture_tty_termios` itself returns
+    /// `Ok(None)` when stdin is no longer a TTY). The result is handed to
+    /// `record_stopped_state`, which writes it to `job.saved_tmodes` so a
+    /// later `fg` can replay it. The capture is always written — including
+    /// `None` overwrites — to avoid keeping a stale snapshot across
+    /// `exec 0</dev/null` style redirections.
     fn wait_for_foreground_job(&mut self, job_id: crate::env::jobs::JobId) -> ForegroundWaitResult {
         use crate::env::jobs::JobStatus;
         use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};

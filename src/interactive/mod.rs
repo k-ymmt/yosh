@@ -53,8 +53,8 @@ impl Repl {
         // Ok(None) silently if stdin is not a TTY.
         //
         // The `is_interactive && monitor` check is documentation-only at
-        // this site (the flags are unconditionally true two lines above),
-        // but mirrors the symmetric guard inside `wait_for_foreground_job`'s
+        // this site (both flags were set unconditionally above), but
+        // mirrors the symmetric guard inside `wait_for_foreground_job`'s
         // `restore_shell_termios_if_interactive`, where the check IS
         // load-bearing. Keep both in sync so a future "simplification"
         // does not drop one and leave the other dangling.
