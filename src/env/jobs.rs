@@ -33,7 +33,25 @@ pub struct Job {
     /// Termios snapshot captured when the job last stopped (SIGTSTP/SIGSTOP).
     /// Used as the restore target on `fg`. `None` for jobs that have never
     /// been stopped, or on non-interactive / non-monitor shell modes.
-    pub saved_tmodes: Option<nix::sys::termios::Termios>,
+    saved_tmodes: Option<nix::sys::termios::Termios>,
+}
+
+impl Job {
+    /// Termios snapshot captured the last time this job stopped
+    /// (SIGTSTP/SIGSTOP), or `None` if it has never stopped or capture was
+    /// unavailable (non-interactive/non-monitor or stdin not a TTY).
+    pub fn saved_tmodes(&self) -> Option<&nix::sys::termios::Termios> {
+        self.saved_tmodes.as_ref()
+    }
+
+    /// Replace the saved termios snapshot. Intended only for the
+    /// `WaitStatus::Stopped` branch of foreground-wait — passing `None`
+    /// is valid and clears any previously stored value, which is what
+    /// the GNU libc manual job-control pattern requires after a
+    /// mid-session `exec 0</dev/null` redirects stdin away from the TTY.
+    pub fn set_saved_tmodes(&mut self, t: Option<nix::sys::termios::Termios>) {
+        self.saved_tmodes = t;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -494,8 +512,8 @@ mod tests {
         let mut table = JobTable::default();
         let id = table.add_job(pid(42), vec![pid(42)], "cmd", false);
         let job = table.get(id).expect("job should exist");
-        assert!(job.saved_tmodes.is_none(),
-            "saved_tmodes should default to None on new job");
+        assert!(job.saved_tmodes().is_none(),
+            "saved_tmodes() should default to None on new job");
     }
 
     #[test]
@@ -1063,5 +1081,32 @@ mod tests {
         // (no controlling terminal), so we just take function pointers.
         let _: fn(Pid) -> Result<(), nix::Error> = give_terminal;
         let _: fn(Pid) -> Result<(), nix::Error> = take_terminal;
+    }
+
+    #[test]
+    fn test_job_set_saved_tmodes_overwrites_with_none() {
+        let mut table = JobTable::default();
+        let id = table.add_job(pid(42), vec![pid(42)], "cmd", false);
+
+        let zeroed: libc::termios = unsafe { std::mem::zeroed() };
+        let t: nix::sys::termios::Termios = zeroed.into();
+
+        table
+            .get_mut(id)
+            .expect("job should exist")
+            .set_saved_tmodes(Some(t));
+        assert!(
+            table.get(id).unwrap().saved_tmodes().is_some(),
+            "saved_tmodes() should return Some after set_saved_tmodes(Some(_))"
+        );
+
+        table
+            .get_mut(id)
+            .expect("job should exist")
+            .set_saved_tmodes(None);
+        assert!(
+            table.get(id).unwrap().saved_tmodes().is_none(),
+            "saved_tmodes() should return None after set_saved_tmodes(None)"
+        );
     }
 }

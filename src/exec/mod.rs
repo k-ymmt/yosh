@@ -693,7 +693,7 @@ impl Executor {
                     .process
                     .jobs
                     .get(job_id)
-                    .and_then(|j| j.saved_tmodes.clone());
+                    .and_then(|j| j.saved_tmodes().cloned());
                 job_t.or_else(|| self.env.process.jobs.shell_tmodes().cloned())
             };
             if let Some(t) = target {
@@ -874,7 +874,7 @@ impl Executor {
                         job.status = JobStatus::Stopped(sig as i32);
                         job.foreground = false;
                         if captured.is_some() {
-                            job.saved_tmodes = captured;
+                            job.set_saved_tmodes(captured);
                         }
                     }
                     if let Some(line) = self.env.process.jobs.format_job(job_id) {
