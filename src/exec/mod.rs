@@ -806,12 +806,12 @@ impl Executor {
 
     /// Apply the per-job state transition for `WaitStatus::Stopped`.
     ///
-    /// Pure over `(job_id, sig, captured)`: writes the Stopped status,
-    /// clears the foreground flag, and stores the captured termios —
-    /// including `None`, which intentionally clears any previously saved
-    /// snapshot. Preserves glibc-manual semantics across mid-session
-    /// `exec 0</dev/null`: a stale snapshot from a TTY the shell no
-    /// longer drives must not survive into a later `fg`.
+    /// Decides only on `(job_id, sig, captured)`: writes the Stopped
+    /// status, clears the foreground flag, and stores the captured
+    /// termios — including `None`, which intentionally clears any
+    /// previously saved snapshot. Preserves glibc-manual semantics across
+    /// mid-session `exec 0</dev/null`: a stale snapshot from a TTY the
+    /// shell no longer drives must not survive into a later `fg`.
     ///
     /// Silently no-ops if `job_id` is no longer in the table; the caller
     /// (`wait_for_foreground_job`) already tolerates that race.
