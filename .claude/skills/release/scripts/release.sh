@@ -119,6 +119,10 @@ _run_test_job() {
 _run_all_tests_parallel() {
   local log_dir
   log_dir="$(mktemp -d -t yosh-parallel-tests.XXXXXX)"
+  # Trap is a safety net for signals (INT/TERM) and abrupt exits (set -e
+  # mid-run, fail() inside this function). The success path below clears the
+  # trap explicitly: $log_dir is function-local, so a deferred EXIT firing
+  # after we return would expand it as unset under `set -u`.
   trap 'rm -rf "$log_dir"; rmdir "$PTY_LOCK_DIR" 2>/dev/null' EXIT INT TERM
 
   local -a pids names logs
@@ -158,6 +162,10 @@ _run_all_tests_parallel() {
     for i in "${failed[@]}"; do failed_names+=("${names[$i]}"); done
     fail "tests failed: ${failed_names[*]} — fix and rerun"
   fi
+
+  rm -rf "$log_dir"
+  rmdir "$PTY_LOCK_DIR" 2>/dev/null || true
+  trap - EXIT INT TERM
 }
 
 phase_test() {
