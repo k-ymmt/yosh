@@ -18,7 +18,16 @@ pub struct LockEntry {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
+    /// SHA-256 of the file as it currently sits on disk. On macOS this includes
+    /// the locally-applied ad-hoc signature, so the value is machine-specific.
+    /// Used by `verify_checksum` to detect local tampering between syncs.
     pub sha256: String,
+    /// SHA-256 of the asset as served by the upstream source (pre-resign on
+    /// macOS). Stable across machines for the same release artifact, so it
+    /// detects silent upstream replacement at re-download time. `None` for
+    /// local plugins or lock entries written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_sha256: Option<String>,
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -64,6 +73,7 @@ mod tests {
             enabled: true,
             capabilities: Some(vec!["variables:read".into(), "io".into()]),
             sha256: "abc123".into(),
+            upstream_sha256: Some("upstream123".into()),
             source: "github:user/repo".into(),
             version: Some("1.2.3".into()),
         }
@@ -106,6 +116,7 @@ mod tests {
             enabled: true,
             capabilities: Some(vec!["io".into()]),
             sha256: "def456".into(),
+            upstream_sha256: None,
             source: "local:~/.yosh/plugins/liblocal.dylib".into(),
             version: None,
         };
@@ -130,6 +141,28 @@ mod tests {
         save_lockfile(&lock_path, &lf).unwrap();
         let loaded = load_lockfile(&lock_path).unwrap();
         assert_eq!(loaded.plugin.len(), 1);
+    }
+
+    #[test]
+    fn legacy_lockfile_without_upstream_sha256_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("plugins.lock");
+        // Lock file written by an older yosh-plugin-manager that did not know
+        // about upstream_sha256. Loader must accept it and default the field
+        // to None.
+        let legacy = "\
+[[plugin]]
+name = \"old\"
+path = \"~/.yosh/plugins/old/libold.dylib\"
+enabled = true
+sha256 = \"deadbeef\"
+source = \"github:u/r\"
+version = \"0.1.0\"
+";
+        std::fs::write(&lock_path, legacy).unwrap();
+        let loaded = load_lockfile(&lock_path).unwrap();
+        assert_eq!(loaded.plugin.len(), 1);
+        assert!(loaded.plugin[0].upstream_sha256.is_none());
     }
 
     #[test]

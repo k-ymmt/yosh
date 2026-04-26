@@ -1,10 +1,55 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{self, PluginDecl, PluginSource};
 use crate::github::GitHubClient;
 use crate::lockfile::{LockEntry, LockFile, load_lockfile, save_lockfile};
 use crate::resolve::asset_filename;
 use crate::verify::{sha256_file, verify_checksum};
+
+/// Re-apply an ad-hoc code signature to a freshly-downloaded Mach-O so that
+/// its embedded `cs_mtime` matches the file's filesystem mtime.
+///
+/// macOS XNU rejects pages whose `cs_mtime != mtime` for ad-hoc / linker-signed
+/// binaries (`cs_invalid_page`) and SIGKILLs the loading process. The mismatch
+/// is unavoidable for any dylib that is signed in CI, transported through
+/// artifact upload/download/release, and finally fetched over HTTP — every hop
+/// rewrites the file's mtime while the signature's `cs_mtime` is frozen at
+/// build time.
+///
+/// `codesign --force --sign -` replaces the signature with a fresh ad-hoc one
+/// whose `cs_mtime` is aligned with the file's current mtime, mirroring the
+/// approach Homebrew uses when pouring arm64 bottles.
+///
+/// On non-macOS targets this is a no-op (other kernels do not enforce
+/// `cs_mtime`).
+#[cfg(target_os = "macos")]
+fn ad_hoc_resign(path: &Path) -> Result<(), String> {
+    let output = std::process::Command::new("codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(path)
+        .output()
+        .map_err(|e| {
+            format!(
+                "failed to invoke codesign for {}: {} \
+                 (install Xcode Command Line Tools: 'xcode-select --install')",
+                path.display(),
+                e
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "codesign --force --sign - {} failed: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ad_hoc_resign(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
 
 fn plugin_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
@@ -117,6 +162,7 @@ fn sync_one(
                                 enabled: decl.enabled,
                                 capabilities: decl.capabilities.clone(),
                                 sha256: existing.sha256.clone(),
+                                upstream_sha256: existing.upstream_sha256.clone(),
                                 source: format!("github:{}/{}", owner, repo),
                                 version: Some(version.to_string()),
                             });
@@ -139,19 +185,35 @@ fn sync_one(
             std::fs::create_dir_all(&dest_dir)
                 .map_err(|e| format!("create dir {}: {}", dest_dir.display(), e))?;
             client.download(&url, &dest_path)?;
-            let sha256 = sha256_file(&dest_path)?;
+            // Hash the upstream bytes BEFORE re-signing so we can detect silent
+            // upstream replacement across machines (the post-resign sha256 is
+            // machine-specific on macOS).
+            let upstream_sha256 = sha256_file(&dest_path)?;
 
-            // If re-downloading same version and hash changed, that's suspicious
+            // If re-downloading same version and the upstream hash drifted,
+            // that's suspicious. Skip the check when the previous lock entry
+            // predates upstream_sha256 (legacy entry) — we have nothing to
+            // compare against and re-recording the value is the recovery path.
             if let Some(existing) = existing {
-                if existing.version.as_deref() == Some(version) && sha256 != existing.sha256 {
-                    let _ = std::fs::remove_file(&dest_path);
-                    return Err(format!(
-                        "re-downloaded binary has different checksum (expected {}, got {}). \
-                         The upstream release asset may have been replaced.",
-                        existing.sha256, sha256
-                    ));
+                if existing.version.as_deref() == Some(version) {
+                    if let Some(prev_upstream) = existing.upstream_sha256.as_deref() {
+                        if upstream_sha256 != prev_upstream {
+                            let _ = std::fs::remove_file(&dest_path);
+                            return Err(format!(
+                                "re-downloaded binary has different checksum \
+                                 (expected {}, got {}). \
+                                 The upstream release asset may have been replaced.",
+                                prev_upstream, upstream_sha256
+                            ));
+                        }
+                    }
                 }
             }
+
+            // Re-sign on macOS so cs_mtime matches the file's mtime; otherwise
+            // dlopen will be SIGKILLed by XNU's code-signing enforcement.
+            ad_hoc_resign(&dest_path)?;
+            let sha256 = sha256_file(&dest_path)?;
 
             Ok(LockEntry {
                 name: decl.name.clone(),
@@ -159,6 +221,7 @@ fn sync_one(
                 enabled: decl.enabled,
                 capabilities: decl.capabilities.clone(),
                 sha256,
+                upstream_sha256: Some(upstream_sha256),
                 source: format!("github:{}/{}", owner, repo),
                 version: Some(version.to_string()),
             })
@@ -175,6 +238,7 @@ fn sync_one(
                 enabled: decl.enabled,
                 capabilities: decl.capabilities.clone(),
                 sha256,
+                upstream_sha256: None,
                 source: format!("local:{}", path),
                 version: None,
             })
@@ -220,6 +284,43 @@ mod tests {
         assert_eq!(entry.path, path);
         assert!(!entry.sha256.is_empty());
         assert!(entry.version.is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ad_hoc_resign_succeeds_on_macho_and_aligns_mtime() {
+        // Copy the test binary itself (a real Mach-O) and re-sign it. After
+        // re-signing the file's mtime should be very close to the moment of
+        // signing — the same condition the kernel uses to validate
+        // ad-hoc-signed binaries at load time. We can't read cs_mtime from
+        // userspace easily, but `codesign --verify` exercising the full check
+        // is the real assertion.
+        let exe = std::env::current_exe().expect("current_exe");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("resign_target");
+        std::fs::copy(&exe, &dest).expect("copy test binary");
+        ad_hoc_resign(&dest).expect("ad_hoc_resign should succeed on a Mach-O");
+        let verify = std::process::Command::new("codesign")
+            .args(["--verify", "--strict"])
+            .arg(&dest)
+            .output()
+            .expect("invoke codesign --verify");
+        assert!(
+            verify.status.success(),
+            "codesign --verify failed after resign: {}",
+            String::from_utf8_lossy(&verify.stderr)
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ad_hoc_resign_is_noop_off_macos() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        // No content needed — the helper must not touch the file at all.
+        let before = std::fs::metadata(f.path()).unwrap().modified().unwrap();
+        ad_hoc_resign(f.path()).expect("no-op must succeed");
+        let after = std::fs::metadata(f.path()).unwrap().modified().unwrap();
+        assert_eq!(before, after, "no-op must not modify the file");
     }
 
     #[test]
