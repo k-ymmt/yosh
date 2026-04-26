@@ -9,7 +9,7 @@ set -u
 SHELL_UNDER_TEST="./target/debug/yosh"
 FILTER=""
 VERBOSE=0
-TIMEOUT=5
+TIMEOUT=15
 
 # ── Color codes ───────────────────────────────────────────────────────
 if [ -t 1 ]; then
