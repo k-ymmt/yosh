@@ -60,6 +60,7 @@
 - [ ] `verify.rs` reads entire file into memory for SHA-256 — use streaming `Digest::update()` for large binaries (`crates/yosh-plugin-manager/src/verify.rs`)
 - [ ] `GitHubClient` public API error type — `find_asset_url`, `latest_version`, `download` still return `Result<_, String>`; promote internal `GitHubApiError` to a public error type so callers can match on structured variants instead of string messages (`crates/yosh-plugin-manager/src/github.rs`)
 - [ ] Integration tests: add checksum mismatch re-download test and partial failure (404) test per spec (`crates/yosh-plugin-manager/tests/`)
+- [ ] Plugin preload validation in a sandbox process — even after the macOS ad-hoc resign in `sync.rs` (Issue #1), a corrupted/incompatible plugin dylib loaded inside the shell process can still take down the whole shell at `dlopen` time (e.g. kernel SIGKILL, panic in plugin init, ABI mismatch). Consider a fork-and-probe step that validates each plugin in a child process before the main shell loads it, so a bad plugin only fails its own load instead of killing yosh (`src/plugin/mod.rs`, `crates/yosh-plugin-manager/src/sync.rs`)
 
 ## Future: Code Quality Improvements
 
