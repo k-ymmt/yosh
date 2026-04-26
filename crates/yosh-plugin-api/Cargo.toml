@@ -1,6 +1,6 @@
 [package]
 name = "yosh-plugin-api"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "FFI API types for yosh shell plugins"
 license = "MIT"
