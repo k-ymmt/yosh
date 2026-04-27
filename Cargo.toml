@@ -9,7 +9,7 @@ members = [
 
 [package]
 name = "yosh"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 description = "A POSIX-compliant shell implemented in Rust"
 license = "MIT"
@@ -19,14 +19,17 @@ repository = "https://github.com/k-ymmt/yosh"
 nix = { version = "0.31", features = ["signal", "process", "fs", "poll", "term"] }
 libc = "0.2"
 crossterm = "0.29"
-libloading = "0.8"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 yosh-plugin-api = { version = "0.2.0", path = "crates/yosh-plugin-api" }
-yosh-plugin-manager = { version = "0.1.5", path = "crates/yosh-plugin-manager" }
+yosh-plugin-manager = { version = "0.2.0", path = "crates/yosh-plugin-manager" }
 unicode-width = "0.2"
 owo-colors = "4"
 dhat = { version = "0.3", optional = true }
+wasmtime = { version = "27", default-features = false, features = ["component-model", "cranelift", "cache", "runtime"] }
+wasmtime-wasi = { version = "27", default-features = false }
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -38,6 +41,11 @@ expectrl = "0.8"
 # Enables dhat-rs heap profiling in the `yosh-dhat` binary.
 # Build with: cargo build --features dhat-heap --bin yosh-dhat --profile profiling
 dhat-heap = ["dep:dhat"]
+
+# Exposes `crate::plugin::test_helpers` outside of `cfg(test)`. Used by
+# integration tests in `tests/plugin.rs` (Task 6) that need to load
+# plugins with explicit capabilities and inspect store state.
+test-helpers = []
 
 [[bench]]
 name = "lexer_bench"

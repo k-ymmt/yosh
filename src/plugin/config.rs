@@ -21,6 +21,15 @@ pub struct PluginEntry {
     pub source: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
+    /// Path to the precompiled cwasm cache file. `None` for entries that
+    /// have not been through `yosh-plugin sync` yet — the host falls
+    /// back to in-memory precompile in that case.
+    #[serde(default)]
+    pub cwasm_path: Option<std::path::PathBuf>,
+    /// Cache key tuple for the cwasm at `cwasm_path`. `None` if no cwasm.
+    /// See `crate::plugin::cache::CacheKey`.
+    #[serde(default)]
+    pub cache_key: Option<crate::plugin::cache::CacheKey>,
 }
 
 fn default_true() -> bool {

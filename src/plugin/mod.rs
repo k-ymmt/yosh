@@ -1,36 +1,132 @@
-pub mod config;
+//! Plugin runtime: wasmtime Component Model.
+//!
+//! Replaces the dlopen-era `libloading` implementation with a sandboxed
+//! WebAssembly Component Model runtime. See
+//! `docs/superpowers/specs/2026-04-27-wasm-plugin-runtime-design.md` for
+//! the full design.
+//!
+//! Pipeline:
+//!
+//! 1. `PluginManager::new()` builds a shared `wasmtime::Engine`.
+//! 2. For each enabled `plugins.toml` entry, `load_plugin` either uses the
+//!    `.cwasm` cache (if all 5 trust conditions hold) or precompiles in-memory.
+//! 3. Per-plugin `Store<HostContext>` is created once and reused for every
+//!    `exec` / hook dispatch.
+//! 4. `with_env` is the single dispatch wrapper. An `EnvGuard` RAII guard
+//!    binds a raw `*mut ShellEnv` for the duration of the callback and
+//!    resets to null on every exit path (Ok/Err/panic). The pointer is the
+//!    only `unsafe` site in the binding layer.
+//! 5. `exec_command` returns a 3-valued `PluginExec` so callers in
+//!    `src/exec/` cannot accidentally fall through to PATH lookup when a
+//!    plugin handler exists but failed.
 
-use std::ffi::{CStr, CString, c_char, c_void};
-use std::io::Write;
+pub mod cache;
+pub mod config;
+mod host;
+mod linker;
+
 use std::path::Path;
 
-use yosh_plugin_api::{HostApi, PluginDecl, YOSH_PLUGIN_API_VERSION};
+use wasmtime::{Engine, Store};
+use wasmtime::component::Component;
+
+use yosh_plugin_api::{
+    CAP_ALL, CAP_HOOK_ON_CD, CAP_HOOK_POST_EXEC, CAP_HOOK_PRE_EXEC, CAP_HOOK_PRE_PROMPT,
+    Capability, parse_capability,
+};
 
 use crate::env::ShellEnv;
 
 use self::config::{PluginConfig, expand_tilde};
+use self::host::HostContext;
 
-/// A loaded plugin and its metadata.
+// ── wasmtime bindgen for our WIT contract ───────────────────────────────
+//
+// The path is relative to the root yosh crate's `Cargo.toml`. Macros
+// resolve paths from `CARGO_MANIFEST_DIR`, which for this crate is the
+// repo root.
+mod generated {
+    wasmtime::component::bindgen!({
+        path: "crates/yosh-plugin-api/wit",
+        world: "plugin-world",
+    });
+}
+
+use self::generated::{PluginWorld, PluginWorldPre};
+use self::generated::yosh::plugin::types::{HookName, PluginInfo};
+
+// ── Public types ────────────────────────────────────────────────────────
+
+/// Result of attempting to dispatch a command to the plugin layer.
+///
+/// Distinguishes "no plugin claimed the name" (caller should fall through
+/// to PATH lookup) from "a plugin claimed it but failed" (caller must NOT
+/// fall through — the plugin owned the command). See spec §5.
+#[derive(Debug)]
+pub enum PluginExec {
+    /// No plugin provides this command. The caller falls back to PATH.
+    NotHandled,
+    /// A plugin handled the command and returned this exit status.
+    Handled(i32),
+    /// A plugin claimed the command but failed (trap, host error, invalidated).
+    Failed,
+}
+
+/// A loaded plugin: its persistent store, bindings handle, and metadata.
 struct LoadedPlugin {
-    name: String,
-    #[allow(dead_code)]
-    library: libloading::Library,
-    commands: Vec<String>,
+    pub(super) name: String,
+    store: Store<HostContext>,
+    bindings: PluginWorld,
+    plugin_info: PluginInfo,
+    /// Granted capability bitfield (after allowlist intersection with
+    /// `required-capabilities`).
     capabilities: u32,
-    has_pre_exec: bool,
-    has_post_exec: bool,
-    has_on_cd: bool,
-    has_pre_prompt: bool,
+    /// Set by `with_env` on guest trap. All subsequent dispatches for this
+    /// plugin short-circuit with a single skip warning.
+    invalidated: bool,
+}
+
+impl LoadedPlugin {
+    fn provides_command(&self, name: &str) -> bool {
+        self.plugin_info.commands.iter().any(|c| c == name)
+    }
+
+    fn implements_hook(&self, hook: HookName) -> bool {
+        self.plugin_info.implemented_hooks.contains(&hook)
+    }
 }
 
 /// Manages loaded plugins and dispatches commands/hooks.
 pub struct PluginManager {
+    engine: Engine,
+    /// Stable string fingerprint of the engine config; folded into the
+    /// `engine_config_hash` field of the `CacheKey` tuple.
+    engine_fingerprint: String,
     plugins: Vec<LoadedPlugin>,
 }
 
 impl PluginManager {
     pub fn new() -> Self {
+        let mut config = wasmtime::Config::new();
+        config.wasm_component_model(true);
+        config.async_support(false);
+        config.consume_fuel(false);
+        // Best-effort: enable system cache. If unavailable we just proceed
+        // without it. cwasm precompile is the durable cache; this is the
+        // lower-level wasmtime cranelift cache.
+        let _ = config.cache_config_load_default();
+
+        // Stable fingerprint: covers the flags relevant to cwasm
+        // compatibility. Any change to this string invalidates every
+        // cached cwasm via `engine_config_hash`.
+        let engine_fingerprint =
+            "v1;component_model=true;async=false;fuel=false;cranelift".to_string();
+
+        let engine = Engine::new(&config).expect("wasmtime Engine::new");
+
         PluginManager {
+            engine,
+            engine_fingerprint,
             plugins: Vec::new(),
         }
     }
@@ -51,334 +147,239 @@ impl PluginManager {
                 .capabilities
                 .as_ref()
                 .map(|strs| config::capabilities_from_strs(strs));
-            if let Err(e) = self.load_plugin_with_capabilities(&path, env, config_caps) {
+            if let Err(e) = self.load_one(&path, env, config_caps) {
                 eprintln!("yosh: plugin: {}", e);
             }
         }
     }
 
-    /// Load a single plugin from a dynamic library path.
-    /// Grants all requested capabilities.
+    /// Load a single plugin from a wasm component path. Grants every
+    /// capability the plugin's `plugin-info.required-capabilities` lists
+    /// (no further restriction — equivalent to `plugins.toml` without a
+    /// `capabilities = [...]` field).
     pub fn load_plugin(&mut self, path: &Path, env: &mut ShellEnv) -> Result<(), String> {
-        self.load_plugin_with_capabilities(path, env, None)
+        self.load_one(path, env, None)
     }
 
-    /// Load a single plugin with optional capability restrictions.
-    /// `config_capabilities`: None = grant all requested, Some(flags) = intersect with requested.
-    pub fn load_plugin_with_capabilities(
+    /// Load one plugin. `config_capabilities`:
+    ///   * `None` → grant every capability the plugin requested.
+    ///   * `Some(bits)` → intersect requested with `bits`.
+    pub(super) fn load_one(
         &mut self,
         path: &Path,
         env: &mut ShellEnv,
         config_capabilities: Option<u32>,
     ) -> Result<(), String> {
-        // 1. Load library
-        let library = unsafe { libloading::Library::new(path) }
+        // 1. Read & SHA-verify the wasm file. (cwasm cache support is
+        //    deferred to Task 5's manager work; the host falls back to
+        //    in-memory precompile for now.)
+        let wasm_bytes = std::fs::read(path)
             .map_err(|e| format!("{}: {}", path.display(), e))?;
 
-        // 2. Get and validate declaration
-        let (name, requested_capabilities) = unsafe {
-            let decl_fn: libloading::Symbol<extern "C" fn() -> *const PluginDecl> = library
-                .get(b"yosh_plugin_decl")
-                .map_err(|_| format!("{}: not a valid yosh plugin", path.display()))?;
-            let decl = &*decl_fn();
+        // 2. Component construction. Always in-memory precompile from the
+        //    verified wasm bytes for now. Task 5 wires up the cwasm cache
+        //    deserialize path under the 5-condition trust validator.
+        let component = Component::new(&self.engine, &wasm_bytes)
+            .map_err(|e| format!("{}: component compile failed: {}", path.display(), e))?;
 
-            if decl.api_version != YOSH_PLUGIN_API_VERSION {
-                return Err(format!(
-                    "{}: API version mismatch (expected {}, got {})",
-                    path.display(),
-                    YOSH_PLUGIN_API_VERSION,
-                    decl.api_version
-                ));
-            }
+        // 3. Build a permissive linker first so we can call `metadata` to
+        //    learn the plugin's requested capabilities. The metadata
+        //    contract (host imports return `Err(Denied)` on null env) makes
+        //    this safe — even a permissive linker rejects host calls during
+        //    `metadata`.
+        let scratch_linker = linker::build_linker(&self.engine, CAP_ALL)
+            .map_err(|e| format!("{}: linker init failed: {}", path.display(), e))?;
+        let scratch_pre = PluginWorldPre::new(
+            scratch_linker
+                .instantiate_pre(&component)
+                .map_err(|e| format!("{}: instantiate_pre failed: {}", path.display(), e))?,
+        )
+        .map_err(|e| format!("{}: bindings pre-init failed: {}", path.display(), e))?;
 
-            let name = CStr::from_ptr(decl.name).to_string_lossy().into_owned();
-            (name, decl.required_capabilities)
-        };
+        let mut scratch_store = Store::new(
+            &self.engine,
+            HostContext::new_for_plugin("<probing>", CAP_ALL),
+        );
+        let scratch_world = scratch_pre
+            .instantiate(&mut scratch_store)
+            .map_err(|e| format!("{}: instantiate failed: {}", path.display(), e))?;
+        // env pointer is null in scratch_store — the deny short-circuit on
+        // null env is what enforces the metadata contract.
+        let plugin_info = scratch_world
+            .yosh_plugin_plugin()
+            .call_metadata(&mut scratch_store)
+            .map_err(|e| format!("{}: metadata trap: {}", path.display(), e))?;
 
-        // 3. Negotiate capabilities
+        // 4. Negotiate capabilities. Parse the strings from `plugin-info`,
+        //    intersect with the config allowlist, log denied bits.
+        let requested_capabilities = parse_required_capabilities(&plugin_info, &plugin_info.name);
         let effective_capabilities = match config_capabilities {
             None => requested_capabilities,
-            Some(config_caps) => {
-                let effective = requested_capabilities & config_caps;
+            Some(allow) => {
+                let effective = requested_capabilities & allow;
                 let denied = requested_capabilities & !effective;
                 if denied != 0 {
-                    Self::log_denied_capabilities(&name, denied);
+                    log_denied_capabilities(&plugin_info.name, denied);
                 }
                 effective
             }
         };
 
-        // 4. Initialize plugin with sandboxed API
-        {
-            let mut ctx = HostContext::new(env, &name);
-            let mut api = build_host_api(effective_capabilities);
-            api.ctx = &mut ctx as *mut HostContext as *mut c_void;
+        // 5. Build the real linker with the negotiated capability mask,
+        //    create a fresh store, instantiate, and call on_load under
+        //    with_env so the plugin can use its granted host imports.
+        let real_linker = linker::build_linker(&self.engine, effective_capabilities)
+            .map_err(|e| format!("{}: linker build failed: {}", path.display(), e))?;
+        let real_pre = PluginWorldPre::new(
+            real_linker
+                .instantiate_pre(&component)
+                .map_err(|e| format!("{}: real instantiate_pre: {}", path.display(), e))?,
+        )
+        .map_err(|e| format!("{}: real bindings pre-init: {}", path.display(), e))?;
 
-            let init_fn: libloading::Symbol<unsafe extern "C" fn(*const HostApi) -> i32> = unsafe {
-                library
-                    .get(b"yosh_plugin_init")
-                    .map_err(|_| format!("{}: missing yosh_plugin_init", path.display()))?
-            };
+        let mut store = Store::new(
+            &self.engine,
+            HostContext::new_for_plugin(plugin_info.name.clone(), effective_capabilities),
+        );
+        let bindings = real_pre
+            .instantiate(&mut store)
+            .map_err(|e| format!("{}: real instantiate: {}", path.display(), e))?;
 
-            let status = unsafe { init_fn(&api) };
-            if status != 0 {
-                return Err(format!("{}: initialization failed", name));
+        // 6. on_load under with_env (host imports available).
+        let on_load_result = {
+            let mut guard = EnvGuard::bind(&mut store, env);
+            bindings.yosh_plugin_plugin().call_on_load(guard.store())
+        };
+        match on_load_result {
+            Ok(Ok(())) => {}
+            Ok(Err(msg)) => {
+                return Err(format!("{}: on_load returned error: {}", plugin_info.name, msg));
+            }
+            Err(e) => {
+                return Err(format!("{}: on_load trap: {}", plugin_info.name, e));
             }
         }
 
-        // 5. Get commands
-        let commands: Vec<String> = unsafe {
-            let cmd_fn: Result<
-                libloading::Symbol<unsafe extern "C" fn(*mut u32) -> *const *const c_char>,
-                _,
-            > = library.get(b"yosh_plugin_commands");
-
-            match cmd_fn {
-                Ok(cmd_fn) => {
-                    let mut count: u32 = 0;
-                    let ptr = cmd_fn(&mut count);
-                    (0..count)
-                        .map(|i| {
-                            CStr::from_ptr(*ptr.add(i as usize))
-                                .to_string_lossy()
-                                .into_owned()
-                        })
-                        .collect()
-                }
-                Err(_) => Vec::new(),
-            }
-        };
-
-        // 6. Check for optional hook functions
-        let has_pre_exec = unsafe {
-            library
-                .get::<*const ()>(b"yosh_plugin_hook_pre_exec")
-                .is_ok()
-        };
-        let has_post_exec = unsafe {
-            library
-                .get::<*const ()>(b"yosh_plugin_hook_post_exec")
-                .is_ok()
-        };
-        let has_on_cd = unsafe { library.get::<*const ()>(b"yosh_plugin_hook_on_cd").is_ok() };
-        let has_pre_prompt = unsafe {
-            library
-                .get::<*const ()>(b"yosh_plugin_hook_pre_prompt")
-                .is_ok()
-        };
-
+        // 7. Stash.
         self.plugins.push(LoadedPlugin {
-            name,
-            library,
-            commands,
+            name: plugin_info.name.clone(),
+            store,
+            bindings,
+            plugin_info,
             capabilities: effective_capabilities,
-            has_pre_exec,
-            has_post_exec,
-            has_on_cd,
-            has_pre_prompt,
+            invalidated: false,
         });
 
         Ok(())
     }
 
-    /// Log which capabilities were requested but not granted.
-    fn log_denied_capabilities(plugin_name: &str, denied: u32) {
-        use yosh_plugin_api::*;
-        let caps = [
-            (CAP_VARIABLES_READ, "variables:read"),
-            (CAP_VARIABLES_WRITE, "variables:write"),
-            (CAP_FILESYSTEM, "filesystem"),
-            (CAP_IO, "io"),
-            (CAP_HOOK_PRE_EXEC, "hooks:pre_exec"),
-            (CAP_HOOK_POST_EXEC, "hooks:post_exec"),
-            (CAP_HOOK_ON_CD, "hooks:on_cd"),
-            (CAP_HOOK_PRE_PROMPT, "hooks:pre_prompt"),
-        ];
-        for (flag, name) in caps {
-            if denied & flag != 0 {
-                eprintln!(
-                    "yosh: plugin '{}': capability '{}' requested but not granted",
-                    plugin_name, name
-                );
-            }
-        }
-    }
-
-    /// Execute a plugin command. Returns Some(exit_status) if a plugin handled
-    /// the command, or None if no plugin provides this command.
-    pub fn exec_command(&self, env: &mut ShellEnv, name: &str, args: &[String]) -> Option<i32> {
-        let plugin = self
-            .plugins
-            .iter()
-            .find(|p| p.commands.iter().any(|c| c == name))?;
-
-        let mut ctx = HostContext::new(env, &plugin.name);
-        let mut api = build_host_api(plugin.capabilities);
-        api.ctx = &mut ctx as *mut HostContext as *mut c_void;
-
-        let c_name = CString::new(name).ok()?;
-        let c_args: Vec<CString> = args
-            .iter()
-            .filter_map(|a| CString::new(a.as_str()).ok())
-            .collect();
-        let c_arg_ptrs: Vec<*const c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
-
-        let status = unsafe {
-            let exec_fn: libloading::Symbol<
-                unsafe extern "C" fn(
-                    *const HostApi,
-                    *const c_char,
-                    i32,
-                    *const *const c_char,
-                ) -> i32,
-            > = plugin.library.get(b"yosh_plugin_exec").ok()?;
-            exec_fn(
-                &api,
-                c_name.as_ptr(),
-                c_arg_ptrs.len() as i32,
-                c_arg_ptrs.as_ptr(),
-            )
+    /// Dispatch a command name to the plugin layer.
+    ///
+    /// See `PluginExec` for the three-valued return semantics.
+    pub fn exec_command(
+        &mut self,
+        env: &mut ShellEnv,
+        name: &str,
+        args: &[String],
+    ) -> PluginExec {
+        let Some(idx) = self.plugins.iter().position(|p| p.provides_command(name)) else {
+            return PluginExec::NotHandled;
         };
-
-        Some(status)
-    }
-
-    /// Call pre_exec hook on all plugins that have it.
-    pub fn call_pre_exec(&self, env: &mut ShellEnv, cmd: &str) {
-        let c_cmd = match CString::new(cmd) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        for plugin in &self.plugins {
-            if !plugin.has_pre_exec {
-                continue;
-            }
-            if plugin.capabilities & yosh_plugin_api::CAP_HOOK_PRE_EXEC == 0 {
-                continue;
-            }
-            let mut ctx = HostContext::new(env, &plugin.name);
-            let mut api = build_host_api(plugin.capabilities);
-            api.ctx = &mut ctx as *mut HostContext as *mut c_void;
-            unsafe {
-                if let Ok(hook_fn) = plugin
-                    .library
-                    .get::<unsafe extern "C" fn(*const HostApi, *const c_char)>(
-                        b"yosh_plugin_hook_pre_exec",
-                    )
-                {
-                    hook_fn(&api, c_cmd.as_ptr());
-                }
-            }
+        let plugin = &mut self.plugins[idx];
+        match with_env(plugin, env, |bindings, store| {
+            bindings.yosh_plugin_plugin().call_exec(store, name, args)
+        }) {
+            Some(exit) => PluginExec::Handled(exit),
+            None => PluginExec::Failed,
         }
     }
 
-    /// Call post_exec hook on all plugins that have it.
-    pub fn call_post_exec(&self, env: &mut ShellEnv, cmd: &str, exit_code: i32) {
-        let c_cmd = match CString::new(cmd) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        for plugin in &self.plugins {
-            if !plugin.has_post_exec {
+    pub fn call_pre_exec(&mut self, env: &mut ShellEnv, cmd: &str) {
+        for plugin in &mut self.plugins {
+            if plugin.capabilities & CAP_HOOK_PRE_EXEC == 0 {
                 continue;
             }
-            if plugin.capabilities & yosh_plugin_api::CAP_HOOK_POST_EXEC == 0 {
+            if !plugin.implements_hook(HookName::PreExec) {
                 continue;
             }
-            let mut ctx = HostContext::new(env, &plugin.name);
-            let mut api = build_host_api(plugin.capabilities);
-            api.ctx = &mut ctx as *mut HostContext as *mut c_void;
-            unsafe {
-                if let Ok(hook_fn) =
-                    plugin
-                        .library
-                        .get::<unsafe extern "C" fn(*const HostApi, *const c_char, i32)>(
-                            b"yosh_plugin_hook_post_exec",
-                        )
-                {
-                    hook_fn(&api, c_cmd.as_ptr(), exit_code);
-                }
-            }
+            let _ = with_env(plugin, env, |bindings, store| {
+                bindings.yosh_plugin_hooks().call_pre_exec(store, cmd)
+            });
         }
     }
 
-    /// Call on_cd hook on all plugins that have it.
-    pub fn call_on_cd(&self, env: &mut ShellEnv, old_dir: &str, new_dir: &str) {
-        let c_old = match CString::new(old_dir) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let c_new = match CString::new(new_dir) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        for plugin in &self.plugins {
-            if !plugin.has_on_cd {
+    pub fn call_post_exec(&mut self, env: &mut ShellEnv, cmd: &str, exit_code: i32) {
+        for plugin in &mut self.plugins {
+            if plugin.capabilities & CAP_HOOK_POST_EXEC == 0 {
                 continue;
             }
-            if plugin.capabilities & yosh_plugin_api::CAP_HOOK_ON_CD == 0 {
+            if !plugin.implements_hook(HookName::PostExec) {
                 continue;
             }
-            let mut ctx = HostContext::new(env, &plugin.name);
-            let mut api = build_host_api(plugin.capabilities);
-            api.ctx = &mut ctx as *mut HostContext as *mut c_void;
-            unsafe {
-                if let Ok(hook_fn) =
-                    plugin
-                        .library
-                        .get::<unsafe extern "C" fn(*const HostApi, *const c_char, *const c_char)>(
-                            b"yosh_plugin_hook_on_cd",
-                        )
-                {
-                    hook_fn(&api, c_old.as_ptr(), c_new.as_ptr());
-                }
-            }
+            let _ = with_env(plugin, env, |bindings, store| {
+                bindings
+                    .yosh_plugin_hooks()
+                    .call_post_exec(store, cmd, exit_code)
+            });
         }
     }
 
-    /// Call pre_prompt hook on all plugins that have it.
-    pub fn call_pre_prompt(&self, env: &mut ShellEnv) {
-        for plugin in &self.plugins {
-            if !plugin.has_pre_prompt {
+    pub fn call_on_cd(&mut self, env: &mut ShellEnv, old_dir: &str, new_dir: &str) {
+        for plugin in &mut self.plugins {
+            if plugin.capabilities & CAP_HOOK_ON_CD == 0 {
                 continue;
             }
-            if plugin.capabilities & yosh_plugin_api::CAP_HOOK_PRE_PROMPT == 0 {
+            if !plugin.implements_hook(HookName::OnCd) {
                 continue;
             }
-            let mut ctx = HostContext::new(env, &plugin.name);
-            let mut api = build_host_api(plugin.capabilities);
-            api.ctx = &mut ctx as *mut HostContext as *mut c_void;
-            unsafe {
-                if let Ok(hook_fn) = plugin
-                    .library
-                    .get::<unsafe extern "C" fn(*const HostApi)>(b"yosh_plugin_hook_pre_prompt")
-                {
-                    hook_fn(&api);
-                }
-            }
+            let _ = with_env(plugin, env, |bindings, store| {
+                bindings
+                    .yosh_plugin_hooks()
+                    .call_on_cd(store, old_dir, new_dir)
+            });
         }
     }
 
-    /// Call destroy on all plugins and drop them.
-    pub fn unload_all(&mut self) {
-        for plugin in &self.plugins {
-            unsafe {
-                if let Ok(destroy_fn) = plugin
-                    .library
-                    .get::<unsafe extern "C" fn()>(b"yosh_plugin_destroy")
-                {
-                    destroy_fn();
-                }
+    pub fn call_pre_prompt(&mut self, env: &mut ShellEnv) {
+        for plugin in &mut self.plugins {
+            if plugin.capabilities & CAP_HOOK_PRE_PROMPT == 0 {
+                continue;
             }
+            if !plugin.implements_hook(HookName::PrePrompt) {
+                continue;
+            }
+            let _ = with_env(plugin, env, |bindings, store| {
+                bindings.yosh_plugin_hooks().call_pre_prompt(store)
+            });
         }
-        self.plugins.clear();
+    }
+
+    /// Call `on_unload` on every plugin and drop them. Best-effort: a trap
+    /// in `on_unload` is logged and the plugin is dropped anyway.
+    pub fn unload_all(&mut self, env: &mut ShellEnv) {
+        // Drain so the borrow checker lets us call `with_env` on each.
+        let mut plugins = std::mem::take(&mut self.plugins);
+        for plugin in &mut plugins {
+            if plugin.invalidated {
+                continue;
+            }
+            let _ = with_env(plugin, env, |bindings, store| {
+                bindings.yosh_plugin_plugin().call_on_unload(store)
+            });
+        }
+        // plugins drops here, releasing every Store and underlying instance.
+        drop(plugins);
     }
 
     /// Check if any plugin provides the given command.
     pub fn has_command(&self, name: &str) -> bool {
-        self.plugins
-            .iter()
-            .any(|p| p.commands.iter().any(|c| c == name))
+        self.plugins.iter().any(|p| p.provides_command(name))
+    }
+
+    /// Engine fingerprint used in cache key tuples. Exposed for the manager
+    /// in Task 5 so it precompiles into a key matching the host's runtime.
+    pub fn engine_fingerprint(&self) -> &str {
+        &self.engine_fingerprint
     }
 }
 
@@ -388,273 +389,160 @@ impl Default for PluginManager {
     }
 }
 
-impl Drop for PluginManager {
+// Note: no `Drop` impl — `unload_all` requires `&mut ShellEnv`, which we
+// can't synthesize at drop time. The shell's main loop must call
+// `unload_all` explicitly before dropping the manager. The `Store`s drop
+// without calling `on_unload`, which matches a hard process exit.
+
+// ── EnvGuard + with_env ────────────────────────────────────────────────
+
+/// RAII guard that binds a raw `*mut ShellEnv` into the `Store`'s
+/// `HostContext` and resets it to null on drop. Drop runs on every exit
+/// path: normal return, `Err`, host-side panic, trap unwind.
+struct EnvGuard<'a> {
+    store: &'a mut Store<HostContext>,
+}
+
+impl<'a> EnvGuard<'a> {
+    fn bind(store: &'a mut Store<HostContext>, env: &mut ShellEnv) -> Self {
+        store.data_mut().env = env as *mut _;
+        EnvGuard { store }
+    }
+
+    fn store(&mut self) -> &mut Store<HostContext> {
+        self.store
+    }
+}
+
+impl Drop for EnvGuard<'_> {
     fn drop(&mut self) {
-        self.unload_all();
+        // Always restores env to null, even during unwinding. Drop itself
+        // cannot panic because pointer assignment is infallible.
+        self.store.data_mut().env = std::ptr::null_mut();
     }
 }
 
-// ── Host context and callbacks ─────────────────────────────────────────
-
-/// Context passed to plugin callbacks via the opaque `ctx` pointer.
-struct HostContext<'a> {
-    env: &'a mut ShellEnv,
-    plugin_name: String,
-    /// Buffer for returning C strings from get_var/get_cwd.
-    /// Valid until the next callback invocation.
-    return_buf: CString,
-}
-
-impl<'a> HostContext<'a> {
-    fn new(env: &'a mut ShellEnv, plugin_name: &str) -> Self {
-        HostContext {
-            env,
-            plugin_name: plugin_name.to_string(),
-            return_buf: CString::default(),
-        }
+/// Canonical dispatch wrapper for any guest-bound call that needs host
+/// API access. Sets up `EnvGuard`, runs the callback, and converts
+/// `wasmtime::Error` into either a logged-and-invalidated `None` (trap)
+/// or a logged `None` (other error). Direct callers never observe
+/// `wasmtime::Error` themselves.
+///
+/// The callback receives both `&PluginWorld` (the bindings handle, used
+/// for accessor methods like `yosh_plugin_plugin()`) and `&mut Store`
+/// (passed into the typed call functions). We pass them as separate
+/// arguments so the closure does not need to move out of `plugin.bindings`
+/// — `PluginWorld` is not `Clone` in wasmtime 27's bindgen output.
+fn with_env<R>(
+    plugin: &mut LoadedPlugin,
+    env: &mut ShellEnv,
+    f: impl FnOnce(&PluginWorld, &mut Store<HostContext>) -> Result<R, wasmtime::Error>,
+) -> Option<R> {
+    if plugin.invalidated {
+        eprintln!(
+            "yosh: plugin '{}': skipped (instance invalidated by earlier trap)",
+            plugin.name
+        );
+        return None;
     }
-}
 
-unsafe extern "C" fn host_get_var(ctx: *mut c_void, name: *const c_char) -> *const c_char {
-    unsafe {
-        let host = &mut *(ctx as *mut HostContext);
-        let name = match CStr::from_ptr(name).to_str() {
-            Ok(s) => s,
-            Err(_) => return std::ptr::null(),
-        };
-        match host.env.vars.get(name) {
-            Some(val) => {
-                host.return_buf = CString::new(val).unwrap_or_default();
-                host.return_buf.as_ptr()
+    // Split-borrow: `&plugin.bindings` and `&mut plugin.store` are
+    // disjoint fields, so we can hold both simultaneously.
+    let bindings = &plugin.bindings;
+    let result = {
+        let mut guard = EnvGuard::bind(&mut plugin.store, env);
+        f(bindings, guard.store())
+        // guard drops here, restoring env to null whether `f` returned
+        // Ok, Err, or unwound via panic.
+    };
+
+    match result {
+        Ok(r) => Some(r),
+        Err(e) => {
+            if let Some(trap) = e.downcast_ref::<wasmtime::Trap>() {
+                eprintln!(
+                    "yosh: plugin '{}': trapped: {} — disabling for the rest of this session",
+                    plugin.name, trap
+                );
+                plugin.invalidated = true;
+            } else {
+                eprintln!("yosh: plugin '{}': call failed: {}", plugin.name, e);
             }
-            None => std::ptr::null(),
+            None
         }
     }
 }
 
-unsafe extern "C" fn host_set_var(
-    ctx: *mut c_void,
-    name: *const c_char,
-    value: *const c_char,
-) -> i32 {
-    unsafe {
-        let host = &mut *(ctx as *mut HostContext);
-        let name = match CStr::from_ptr(name).to_str() {
-            Ok(s) => s,
-            Err(_) => return 1,
-        };
-        let value = match CStr::from_ptr(value).to_str() {
-            Ok(s) => s,
-            Err(_) => return 1,
-        };
-        match host.env.vars.set(name, value) {
-            Ok(()) => 0,
-            Err(_) => 1,
-        }
-    }
-}
+// ── Helpers ────────────────────────────────────────────────────────────
 
-unsafe extern "C" fn host_export_var(
-    ctx: *mut c_void,
-    name: *const c_char,
-    value: *const c_char,
-) -> i32 {
-    unsafe {
-        let host = &mut *(ctx as *mut HostContext);
-        let name = match CStr::from_ptr(name).to_str() {
-            Ok(s) => s,
-            Err(_) => return 1,
-        };
-        let value = match CStr::from_ptr(value).to_str() {
-            Ok(s) => s,
-            Err(_) => return 1,
-        };
-        match host.env.vars.set(name, value) {
-            Ok(()) => {
-                host.env.vars.export(name);
-                0
+/// Parse `plugin-info.required-capabilities` into a bitfield. Unknown
+/// strings produce a single warning line each but do NOT block the plugin
+/// (matches the §6 "unknown capabilities are warnings, not errors" rule).
+fn parse_required_capabilities(plugin_info: &PluginInfo, plugin_name: &str) -> u32 {
+    let mut bits: u32 = 0;
+    for s in &plugin_info.required_capabilities {
+        match parse_capability(s) {
+            Some(cap) => bits |= cap.to_bitflag(),
+            None => {
+                eprintln!(
+                    "yosh: plugin '{}': unknown capability string '{}' (ignored)",
+                    plugin_name, s
+                );
             }
-            Err(_) => 1,
+        }
+    }
+    bits
+}
+
+/// Log requested-but-not-granted capabilities in the same shape as the
+/// dlopen-era `log_denied_capabilities` — preserves user-visible behaviour.
+fn log_denied_capabilities(plugin_name: &str, denied: u32) {
+    let caps = [
+        Capability::VariablesRead,
+        Capability::VariablesWrite,
+        Capability::Filesystem,
+        Capability::Io,
+        Capability::HookPreExec,
+        Capability::HookPostExec,
+        Capability::HookOnCd,
+        Capability::HookPrePrompt,
+    ];
+    for cap in caps {
+        if denied & cap.to_bitflag() != 0 {
+            eprintln!(
+                "yosh: plugin '{}': capability '{}' requested but not granted",
+                plugin_name,
+                cap.as_str()
+            );
         }
     }
 }
 
-unsafe extern "C" fn host_get_cwd(ctx: *mut c_void) -> *const c_char {
-    unsafe {
-        let host = &mut *(ctx as *mut HostContext);
-        match std::env::current_dir() {
-            Ok(cwd) => {
-                host.return_buf = CString::new(cwd.to_string_lossy().as_ref()).unwrap_or_default();
-                host.return_buf.as_ptr()
-            }
-            Err(_) => std::ptr::null(),
-        }
+// ── test helpers ───────────────────────────────────────────────────────
+//
+// Tests in Task 6 call into the manager from tests/plugin.rs. Expose
+// what they need behind a feature gate so production code never sees the
+// internals.
+#[cfg(any(test, feature = "test-helpers"))]
+pub mod test_helpers {
+    use super::*;
+
+    /// Load a single plugin with an explicit capability allowlist, for
+    /// integration tests. Returns the granted bitfield on success.
+    pub fn load_plugin_with_caps(
+        manager: &mut PluginManager,
+        path: &Path,
+        env: &mut ShellEnv,
+        caps: u32,
+    ) -> Result<(), String> {
+        manager.load_one(path, env, Some(caps))
     }
-}
 
-unsafe extern "C" fn host_set_cwd(_ctx: *mut c_void, path: *const c_char) -> i32 {
-    unsafe {
-        let path = match CStr::from_ptr(path).to_str() {
-            Ok(s) => s,
-            Err(_) => return 1,
-        };
-        match std::env::set_current_dir(path) {
-            Ok(()) => 0,
-            Err(_) => 1,
-        }
-    }
-}
-
-unsafe extern "C" fn host_write_stdout(_ctx: *mut c_void, data: *const c_char, len: usize) -> i32 {
-    unsafe {
-        let slice = std::slice::from_raw_parts(data as *const u8, len);
-        match std::io::stdout().write_all(slice) {
-            Ok(()) => 0,
-            Err(_) => 1,
-        }
-    }
-}
-
-unsafe extern "C" fn host_write_stderr(_ctx: *mut c_void, data: *const c_char, len: usize) -> i32 {
-    unsafe {
-        let slice = std::slice::from_raw_parts(data as *const u8, len);
-        match std::io::stderr().write_all(slice) {
-            Ok(()) => 0,
-            Err(_) => 1,
-        }
-    }
-}
-
-// ── Deny functions for sandboxed capabilities ─────────────────────────
-
-unsafe extern "C" fn deny_get_var(ctx: *mut c_void, _name: *const c_char) -> *const c_char {
-    unsafe {
-        let host = &*(ctx as *mut HostContext);
-        eprintln!(
-            "yosh: plugin '{}': get_var denied (missing 'variables:read' capability)",
-            host.plugin_name
-        );
-    }
-    std::ptr::null()
-}
-
-unsafe extern "C" fn deny_set_var(
-    ctx: *mut c_void,
-    _name: *const c_char,
-    _value: *const c_char,
-) -> i32 {
-    unsafe {
-        let host = &*(ctx as *mut HostContext);
-        eprintln!(
-            "yosh: plugin '{}': set_var denied (missing 'variables:write' capability)",
-            host.plugin_name
-        );
-    }
-    -1
-}
-
-unsafe extern "C" fn deny_export_var(
-    ctx: *mut c_void,
-    _name: *const c_char,
-    _value: *const c_char,
-) -> i32 {
-    unsafe {
-        let host = &*(ctx as *mut HostContext);
-        eprintln!(
-            "yosh: plugin '{}': export_var denied (missing 'variables:write' capability)",
-            host.plugin_name
-        );
-    }
-    -1
-}
-
-unsafe extern "C" fn deny_get_cwd(ctx: *mut c_void) -> *const c_char {
-    unsafe {
-        let host = &*(ctx as *mut HostContext);
-        eprintln!(
-            "yosh: plugin '{}': get_cwd denied (missing 'filesystem' capability)",
-            host.plugin_name
-        );
-    }
-    std::ptr::null()
-}
-
-unsafe extern "C" fn deny_set_cwd(ctx: *mut c_void, _path: *const c_char) -> i32 {
-    unsafe {
-        let host = &*(ctx as *mut HostContext);
-        eprintln!(
-            "yosh: plugin '{}': set_cwd denied (missing 'filesystem' capability)",
-            host.plugin_name
-        );
-    }
-    -1
-}
-
-unsafe extern "C" fn deny_write_stdout(ctx: *mut c_void, _data: *const c_char, _len: usize) -> i32 {
-    unsafe {
-        let host = &*(ctx as *mut HostContext);
-        eprintln!(
-            "yosh: plugin '{}': write_stdout denied (missing 'io' capability)",
-            host.plugin_name
-        );
-    }
-    -1
-}
-
-unsafe extern "C" fn deny_write_stderr(ctx: *mut c_void, _data: *const c_char, _len: usize) -> i32 {
-    unsafe {
-        let host = &*(ctx as *mut HostContext);
-        eprintln!(
-            "yosh: plugin '{}': write_stderr denied (missing 'io' capability)",
-            host.plugin_name
-        );
-    }
-    -1
-}
-
-/// Build a HostApi table for a plugin based on its effective capabilities.
-/// Denied functions are replaced with stubs that log and return errors.
-fn build_host_api(capabilities: u32) -> HostApi {
-    use yosh_plugin_api::*;
-
-    let has = |cap: u32| capabilities & cap != 0;
-
-    HostApi {
-        ctx: std::ptr::null_mut(),
-        get_var: if has(CAP_VARIABLES_READ) {
-            host_get_var
-        } else {
-            deny_get_var
-        },
-        set_var: if has(CAP_VARIABLES_WRITE) {
-            host_set_var
-        } else {
-            deny_set_var
-        },
-        export_var: if has(CAP_VARIABLES_WRITE) {
-            host_export_var
-        } else {
-            deny_export_var
-        },
-        get_cwd: if has(CAP_FILESYSTEM) {
-            host_get_cwd
-        } else {
-            deny_get_cwd
-        },
-        set_cwd: if has(CAP_FILESYSTEM) {
-            host_set_cwd
-        } else {
-            deny_set_cwd
-        },
-        write_stdout: if has(CAP_IO) {
-            host_write_stdout
-        } else {
-            deny_write_stdout
-        },
-        write_stderr: if has(CAP_IO) {
-            host_write_stderr
-        } else {
-            deny_write_stderr
-        },
+    /// Returns true if the most-recently-loaded plugin's `Store` has a
+    /// null env pointer (i.e. no `with_env` is currently active). Used by
+    /// the env-leak regression test.
+    pub fn env_pointer_is_null_in_store(manager: &PluginManager) -> Option<bool> {
+        let plugin = manager.plugins.last()?;
+        Some(plugin.store.data().env.is_null())
     }
 }

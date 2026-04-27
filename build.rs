@@ -24,4 +24,10 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/heads");
     println!("cargo:rerun-if-changed=.git/packed-refs");
+
+    // Pass cargo's TARGET (set by cargo during build) through to the binary
+    // as a compile-time env var, so plugin cache code can reference the
+    // target triple at runtime via env!(...) without needing a runtime probe.
+    let triple = std::env::var("TARGET").unwrap_or_else(|_| "unknown".into());
+    println!("cargo:rustc-env=TARGET_TRIPLE_OR_RUST_BUILT_IN={}", triple);
 }

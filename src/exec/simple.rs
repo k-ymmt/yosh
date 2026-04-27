@@ -369,15 +369,28 @@ impl Executor {
                 Ok(status)
             }
             BuiltinKind::NotBuiltin => {
-                // Check plugin commands before external
-                if let Some(status) = self
+                // Check plugin commands before external. The 3-valued
+                // return distinguishes "no plugin claimed this name"
+                // (fall through to PATH) from "plugin claimed it but
+                // failed" (do NOT fall through — the plugin owned it).
+                use crate::plugin::PluginExec;
+                match self
                     .plugins
                     .exec_command(&mut self.env, &command_name, &args)
                 {
-                    self.plugins
-                        .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
-                    self.env.exec.last_exit_status = status;
-                    return Ok(status);
+                    PluginExec::Handled(status) => {
+                        self.plugins
+                            .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
+                        self.env.exec.last_exit_status = status;
+                        return Ok(status);
+                    }
+                    PluginExec::Failed => {
+                        self.plugins
+                            .call_post_exec(&mut self.env, &cmd_str_for_hooks, 1);
+                        self.env.exec.last_exit_status = 1;
+                        return Ok(1);
+                    }
+                    PluginExec::NotHandled => {}
                 }
 
                 let env_vars = self.build_env_vars(&cmd.assignments).map_err(|e| {
