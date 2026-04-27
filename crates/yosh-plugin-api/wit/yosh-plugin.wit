@@ -9,7 +9,10 @@ interface types {
         other,
     }
 
-    enum stream {
+    /// Identifies a standard I/O stream (stdout or stderr).
+    /// Named `io-stream` rather than `stream` because `stream` is a reserved
+    /// WIT keyword in the component model 0.3 draft.
+    enum io-stream {
         stdout,
         stderr,
     }
@@ -42,9 +45,12 @@ interface variables {
     use types.{error-code};
     /// Outer `result` carries denial; inner `option` distinguishes
     /// "variable not set" from "variable set to empty string".
-    get:    func(name: string) -> result<option<string>, error-code>;
-    set:    func(name: string, value: string) -> result<_, error-code>;
-    export: func(name: string, value: string) -> result<_, error-code>;
+    get:        func(name: string) -> result<option<string>, error-code>;
+    set:        func(name: string, value: string) -> result<_, error-code>;
+    /// Export a variable to the environment (like `export VAR=val` in the shell).
+    /// Named `export-env` rather than `export` because `export` is a reserved
+    /// WIT keyword.
+    export-env: func(name: string, value: string) -> result<_, error-code>;
 }
 
 interface filesystem {
@@ -54,8 +60,8 @@ interface filesystem {
 }
 
 interface io {
-    use types.{stream, error-code};
-    write: func(target: stream, data: list<u8>) -> result<_, error-code>;
+    use types.{io-stream, error-code};
+    write: func(target: io-stream, data: list<u8>) -> result<_, error-code>;
 }
 
 interface plugin {
@@ -77,9 +83,6 @@ world plugin-world {
     import variables;
     import filesystem;
     import io;
-    import wasi:clocks/monotonic-clock@0.2.0;
-    import wasi:clocks/wall-clock@0.2.0;
-    import wasi:random/random@0.2.0;
 
     export plugin;
     export hooks;
