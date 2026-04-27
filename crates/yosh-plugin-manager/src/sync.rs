@@ -109,6 +109,21 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
                     let meta = p.with_extension("cwasm.meta");
                     let _ = std::fs::remove_file(&meta);
                 }
+                // Best-effort: remove the now-empty per-plugin directory.
+                // Manager-managed layout co-locates wasm + cwasm under
+                // `<root>/<name>/`, so once both files are gone the dir
+                // is typically empty. `remove_dir` fails fast if not
+                // empty (e.g. user dropped a stray file there); we
+                // ignore the error in that case.
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::remove_dir(parent);
+                }
+                if let Some(cwasm) = &old.cwasm_path {
+                    let p = config::expand_tilde_path(cwasm);
+                    if let Some(parent) = p.parent() {
+                        let _ = std::fs::remove_dir(parent);
+                    }
+                }
             }
         }
     }
