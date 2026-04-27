@@ -25,8 +25,22 @@ cargo component build -p test_plugin --target wasm32-wasip2 --release
 Run plugin integration tests with the `test-helpers` feature:
 
 ```sh
-cargo test --features test-helpers --workspace
+cargo test --features test-helpers
 ```
+
+The wasm-component test plugins under `tests/plugins/` are workspace
+members but are excluded from `default-members`, so plain `cargo build`
+and `cargo test` skip them. Build the wasm artefacts explicitly when
+the integration tests need them:
+
+```sh
+cargo component build -p test_plugin --target wasm32-wasip2 --release
+cargo component build -p trap_plugin --target wasm32-wasip2 --release
+```
+
+Avoid `cargo build --workspace` and `cargo test --workspace` — both
+attempt to host-build the wasm crates and fail with undefined
+wit-bindgen cabi symbols.
 
 ## Architecture
 

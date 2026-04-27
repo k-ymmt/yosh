@@ -27,7 +27,12 @@
 #       cargo component build -p trap_plugin --target wasm32-wasip2 --release
 #
 #   - name: Run tests
-#     run: cargo test --workspace --features test-helpers
+#     # NOTE: do NOT use `--workspace` here. The wasm-component test plugins
+#     # under tests/plugins/* are excluded from `default-members`; trying to
+#     # build them on the host target fails with undefined wit-bindgen cabi
+#     # symbols. The default-members invocation covers everything that
+#     # actually has host-runnable tests.
+#     run: cargo test --features test-helpers
 #
 # Local tooling: mise.toml pins cargo-component = 0.18.0.
 # ─────────────────────────────────────────────────────────────────────────────

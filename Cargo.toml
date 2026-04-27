@@ -7,6 +7,18 @@ members = [
     "tests/plugins/test_plugin",
     "tests/plugins/trap_plugin",
 ]
+# Exclude wasm-component test plugins from default builds. They are
+# `crate-type = ["cdylib"]` for `wasm32-wasip2` only and fail to link
+# on the host target (undefined `_yosh:plugin/...` cabi symbols, by
+# design — they need cargo-component's wasm pipeline). Build them with:
+#   cargo component build -p test_plugin --target wasm32-wasip2 --release
+#   cargo component build -p trap_plugin --target wasm32-wasip2 --release
+default-members = [
+    ".",
+    "crates/yosh-plugin-api",
+    "crates/yosh-plugin-sdk",
+    "crates/yosh-plugin-manager",
+]
 
 [package]
 name = "yosh"
