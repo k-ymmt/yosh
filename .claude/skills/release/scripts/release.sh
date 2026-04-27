@@ -13,6 +13,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 cd "${REPO_ROOT}"
 
+# Order matters for `cargo publish`: each crate is published before its
+# dependents. With the v0.2.0 wasmtime migration:
+#   yosh-plugin-api  — leaf (the WIT package + Capability enum)
+#   yosh-plugin-sdk  — depends on -api
+#   yosh-plugin-manager — depends on -api (via wasmtime bindgen!)
+#   yosh            — depends on -api and -manager
+# So this is a true dependency-ordered list, not a convention.
 CRATES=(yosh-plugin-api yosh-plugin-sdk yosh-plugin-manager yosh)
 
 fail() {
