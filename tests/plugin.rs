@@ -403,9 +403,84 @@ fn t14_linker_construction_smoke_covered_by_unit_test() {
     assert!(true);
 }
 
-// §8.15 — Boundary-crossing benchmark.
-//
-// Skipped at Task 6 time. A criterion-based benchmark of `variables.get`
-// would require the same wasmtime engine + plugin load setup as the
-// integration tests; the value over the existing exec_bench / interactive
-// benches is incremental. See DONE_WITH_CONCERNS.
+// §8.15 — Boundary-crossing benchmark — see `benches/plugin_bench.rs`
+// (added after Task 6; gated on `--features test-helpers`).
+
+/// §8.6/§8.7/§8.8 — cwasm invalidation fallback (smoke).
+///
+/// Exercises the new `load_plugin_with_cache` host-side path: when the
+/// cwasm at `cwasm_path` does not exist (as if it were just wiped from
+/// the cache directory), `validate_cwasm` returns `CacheRejection::Missing`
+/// and the host falls back to in-memory `Component::new`. The plugin must
+/// still load and execute, with a stderr warning about the stale cache.
+///
+/// Full per-condition coverage (mode mismatch, key mismatch, sidecar
+/// schema) lives in `src/plugin/cache.rs::tests`. This integration smoke
+/// confirms the host's load_one routing through `validate_cwasm` works
+/// end-to-end.
+#[test]
+fn t06_cwasm_missing_falls_back_to_in_memory() {
+    use yosh::plugin::cache::CacheKey;
+
+    let _g = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = ShellEnv::new("yosh", Vec::new());
+    let mut mgr = PluginManager::new();
+
+    // Construct an "expected" cache key that matches the on-disk wasm
+    // (so the unconditional wasm-SHA verify in load_one passes) but a
+    // cwasm path that does NOT exist on disk. The validator will reject
+    // with CacheRejection::Missing and load_one falls back.
+    let wasm_bytes = std::fs::read(&wasm).expect("read wasm");
+    let wasm_sha = yosh::plugin::cache::sha256_hex(&wasm_bytes);
+    let key = CacheKey::for_runtime(wasm_sha, "v1;component_model=true;async=false;fuel=false;cranelift");
+    let nonexistent_cwasm = wasm.with_extension("nonexistent.cwasm");
+
+    test_helpers::load_plugin_with_cache(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        yosh_plugin_api::CAP_ALL,
+        &nonexistent_cwasm,
+        &key,
+    )
+    .expect("load with stale cwasm path must fall back, not fail");
+
+    // Plugin must still work via the in-memory fallback compile.
+    let exec = mgr.exec_command(&mut env, "test_cmd", &["smoke".into()]);
+    assert!(matches!(exec, PluginExec::Handled(0)),
+        "plugin must work after cwasm fallback");
+}
+
+/// §8.9 — wasm SHA-256 mismatch refuses to load.
+///
+/// When the lockfile pins a `wasm_sha256` that doesn't match the on-disk
+/// `.wasm`, `load_one` refuses BEFORE looking at the cwasm cache. This is
+/// the spec §5 unconditional check.
+#[test]
+fn t09_wasm_sha_mismatch_refuses_to_load() {
+    use yosh::plugin::cache::CacheKey;
+
+    let _g = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = ShellEnv::new("yosh", Vec::new());
+    let mut mgr = PluginManager::new();
+
+    // Bogus expected SHA — does NOT match the on-disk wasm.
+    let bogus_sha = "0".repeat(64);
+    let key = CacheKey::for_runtime(bogus_sha, "v1;component_model=true;async=false;fuel=false;cranelift");
+    let nonexistent_cwasm = wasm.with_extension("nonexistent.cwasm");
+
+    let result = test_helpers::load_plugin_with_cache(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        yosh_plugin_api::CAP_ALL,
+        &nonexistent_cwasm,
+        &key,
+    );
+    assert!(result.is_err(), "load with bad expected SHA must fail");
+    let msg = result.unwrap_err();
+    assert!(msg.contains("wasm SHA-256 mismatch"),
+        "error must mention SHA-256 mismatch (was {:?})", msg);
+}

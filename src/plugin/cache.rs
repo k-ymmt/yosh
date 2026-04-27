@@ -54,6 +54,14 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Convention: the sidecar metadata file lives next to the cwasm, with
+/// suffix `.meta`. Used by both the manager (writes) and the host (reads).
+pub fn sidecar_path(cwasm: &Path) -> std::path::PathBuf {
+    let mut s = cwasm.as_os_str().to_owned();
+    s.push(".meta");
+    s.into()
+}
+
 /// The four-tuple cache key. Recorded both in `plugins.lock` (as fields
 /// inside a `[[plugin]]` entry) and in the `<basename>.cwasm.meta`
 /// sidecar next to each cwasm file. The lockfile is the manager's source

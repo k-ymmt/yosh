@@ -37,6 +37,7 @@ use yosh_plugin_api::{
 
 use crate::env::ShellEnv;
 
+use self::cache::{CacheKey, CacheRejection, sha256_hex, sidecar_path, validate_cwasm};
 use self::config::{PluginConfig, expand_tilde};
 use self::host::HostContext;
 
@@ -147,7 +148,13 @@ impl PluginManager {
                 .capabilities
                 .as_ref()
                 .map(|strs| config::capabilities_from_strs(strs));
-            if let Err(e) = self.load_one(&path, env, config_caps) {
+            if let Err(e) = self.load_one(
+                &path,
+                env,
+                config_caps,
+                entry.cwasm_path.as_deref(),
+                entry.cache_key.as_ref(),
+            ) {
                 eprintln!("yosh: plugin: {}", e);
             }
         }
@@ -156,31 +163,93 @@ impl PluginManager {
     /// Load a single plugin from a wasm component path. Grants every
     /// capability the plugin's `plugin-info.required-capabilities` lists
     /// (no further restriction — equivalent to `plugins.toml` without a
-    /// `capabilities = [...]` field).
+    /// `capabilities = [...]` field). Always falls back to in-memory
+    /// compile (no cwasm cache lookup).
     pub fn load_plugin(&mut self, path: &Path, env: &mut ShellEnv) -> Result<(), String> {
-        self.load_one(path, env, None)
+        self.load_one(path, env, None, None, None)
     }
 
-    /// Load one plugin. `config_capabilities`:
-    ///   * `None` → grant every capability the plugin requested.
-    ///   * `Some(bits)` → intersect requested with `bits`.
+    /// Load one plugin.
+    ///   * `config_capabilities`: `None` → grant every requested capability;
+    ///     `Some(bits)` → intersect requested with `bits`.
+    ///   * `cwasm_path` + `expected_key`: when both are present, attempt to
+    ///     `Component::deserialize` from the trusted cache instead of
+    ///     re-compiling the wasm bytes. Any of the 5 trust conditions
+    ///     failing falls back to in-memory compile with a warning.
     pub(super) fn load_one(
         &mut self,
         path: &Path,
         env: &mut ShellEnv,
         config_capabilities: Option<u32>,
+        cwasm_path: Option<&Path>,
+        expected_key: Option<&CacheKey>,
     ) -> Result<(), String> {
-        // 1. Read & SHA-verify the wasm file. (cwasm cache support is
-        //    deferred to Task 5's manager work; the host falls back to
-        //    in-memory precompile for now.)
+        // 1. Read the wasm bytes (needed for SHA verify and/or in-memory compile).
         let wasm_bytes = std::fs::read(path)
             .map_err(|e| format!("{}: {}", path.display(), e))?;
 
-        // 2. Component construction. Always in-memory precompile from the
-        //    verified wasm bytes for now. Task 5 wires up the cwasm cache
-        //    deserialize path under the 5-condition trust validator.
-        let component = Component::new(&self.engine, &wasm_bytes)
-            .map_err(|e| format!("{}: component compile failed: {}", path.display(), e))?;
+        // 2. If the lockfile pinned a SHA, verify the on-disk wasm matches
+        //    BEFORE trusting any cwasm. Per spec §5 step 1: this check is
+        //    unconditional. A mismatch refuses the load (does NOT silently
+        //    fall back to a cached cwasm).
+        if let Some(key) = expected_key {
+            let actual = sha256_hex(&wasm_bytes);
+            if actual != key.wasm_sha256 {
+                return Err(format!(
+                    "{}: wasm SHA-256 mismatch (lockfile {}, actual {}); \
+                     refusing to load. Run 'yosh-plugin sync' to refresh.",
+                    path.display(),
+                    &key.wasm_sha256,
+                    &actual,
+                ));
+            }
+        }
+
+        // 3. Build the component. Try the cwasm cache first when the
+        //    lockfile points at one; fall back to in-memory compile on any
+        //    trust-condition failure.
+        let component = match (cwasm_path, expected_key) {
+            (Some(cwasm), Some(lockfile_key)) => {
+                let sidecar = sidecar_path(cwasm);
+                let runtime_key = CacheKey::for_runtime(
+                    lockfile_key.wasm_sha256.clone(),
+                    &self.engine_fingerprint,
+                );
+                match validate_cwasm(cwasm, &sidecar, path, &runtime_key) {
+                    Ok(()) => {
+                        let cwasm_bytes = std::fs::read(cwasm).map_err(|e| {
+                            format!("{}: cwasm read failed: {}", cwasm.display(), e)
+                        })?;
+                        // SAFETY: validate_cwasm returned Ok, which enforces
+                        // all 5 spec §5 trust conditions: same-uid ownership,
+                        // file mode 0600, parent-dir mode 0700, sidecar key
+                        // tuple match, and source wasm SHA-256 still matches.
+                        // Together these establish that the cwasm bytes were
+                        // produced by THIS user's previous yosh-plugin sync
+                        // for THIS wasm, on this same host with this same
+                        // wasmtime version. That is the trust boundary
+                        // Component::deserialize requires.
+                        unsafe { Component::deserialize(&self.engine, &cwasm_bytes) }
+                            .map_err(|e| {
+                                format!("{}: cwasm deserialize failed: {}", cwasm.display(), e)
+                            })?
+                    }
+                    Err(reason) => {
+                        eprintln!(
+                            "yosh: plugin '{}': cwasm cache stale ({}); \
+                             precompiling in memory (run 'yosh-plugin sync' to refresh)",
+                            path.display(),
+                            reason.as_str(),
+                        );
+                        Component::new(&self.engine, &wasm_bytes).map_err(|e| {
+                            format!("{}: component compile failed: {}", path.display(), e)
+                        })?
+                    }
+                }
+            }
+            _ => Component::new(&self.engine, &wasm_bytes)
+                .map_err(|e| format!("{}: component compile failed: {}", path.display(), e))?,
+        };
 
         // 3. Build a permissive linker first so we can call `metadata` to
         //    learn the plugin's requested capabilities. The metadata
@@ -535,7 +604,21 @@ pub mod test_helpers {
         env: &mut ShellEnv,
         caps: u32,
     ) -> Result<(), String> {
-        manager.load_one(path, env, Some(caps))
+        manager.load_one(path, env, Some(caps), None, None)
+    }
+
+    /// Load a plugin with an explicit cwasm cache + key. The host
+    /// validates the cache key tuple and falls back to in-memory compile
+    /// on mismatch. Used by §8.6–§8.9 cwasm-invalidation tests.
+    pub fn load_plugin_with_cache(
+        manager: &mut PluginManager,
+        path: &Path,
+        env: &mut ShellEnv,
+        caps: u32,
+        cwasm_path: &Path,
+        expected_key: &super::cache::CacheKey,
+    ) -> Result<(), String> {
+        manager.load_one(path, env, Some(caps), Some(cwasm_path), Some(expected_key))
     }
 
     /// Returns true if the most-recently-loaded plugin's `Store` has a
