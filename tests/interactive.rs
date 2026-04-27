@@ -1609,7 +1609,7 @@ fn test_undo_multiple_states() {
     assert_eq!(buf, vec!['a']);
     assert_eq!(pos, 1);
     let (buf, pos) = um.undo().unwrap();
-    assert_eq!(buf, vec![]);
+    assert_eq!(buf, Vec::<char>::new());
     assert_eq!(pos, 0);
     assert!(um.undo().is_none());
 }

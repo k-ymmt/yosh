@@ -13,9 +13,17 @@ use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction
 
 /// Spawn yosh with the given signal numbers pre-ignored (SIG_IGN) in the child,
 /// feeding the `script` to `yosh -c`. Returns (stdout, stderr, exit_code).
+///
+/// Isolates the child from the developer's `~/.config/yosh/plugins.lock`
+/// so a stale plugin entry there can't pollute stderr — these tests assert
+/// on the shell's own diagnostic output and must not see plugin loader
+/// warnings. We point HOME at a freshly-created tempdir for the duration.
 fn spawn_yosh_with_ignored(signals: &[i32], script: &str) -> (String, String, i32) {
+    let isolated_home = tempfile::tempdir().expect("tempdir for isolated HOME");
+
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_yosh"));
     cmd.arg("-c").arg(script);
+    cmd.env("HOME", isolated_home.path());
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let sigs = signals.to_vec();
