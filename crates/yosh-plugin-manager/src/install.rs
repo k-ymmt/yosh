@@ -2,7 +2,7 @@ use std::path::Path;
 
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::config::PluginSource;
+use crate::config::{self, PluginSource};
 use crate::github::GitHubClient;
 
 #[derive(Debug)]
@@ -76,7 +76,11 @@ pub fn write_plugin_entry(
 pub fn parse_install_arg(arg: &str) -> Result<InstallTarget, String> {
     if let Some(rest) = arg.strip_prefix(GITHUB_PREFIX) {
         parse_github(rest)
-    } else if arg.starts_with('/') || arg.starts_with("./") || arg.starts_with("../") {
+    } else if arg.starts_with('/')
+        || arg.starts_with("./")
+        || arg.starts_with("../")
+        || arg.starts_with("~/")
+    {
         parse_local(arg)
     } else {
         Err(format!(
@@ -139,7 +143,11 @@ fn parse_github(rest: &str) -> Result<InstallTarget, String> {
 /// extension at install time so the user sees the migration error
 /// immediately rather than at sync time.
 fn parse_local(arg: &str) -> Result<InstallTarget, String> {
-    let path = Path::new(arg);
+    // `Path::canonicalize` doesn't expand `~`, so `yosh-plugin install
+    // ~/my-plugin.wasm` would otherwise fail with ENOENT. Pre-expand
+    // tildes via the same helper sync/lockfile uses.
+    let expanded = config::expand_tilde_path(arg);
+    let path = expanded.as_path();
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("cannot resolve local path '{}': {}", arg, e))?;
@@ -441,6 +449,35 @@ mod tests {
     fn parse_local_nonexistent_path_error() {
         let result = parse_install_arg("/nonexistent/path/to/lib.dylib");
         assert!(result.is_err());
+    }
+
+    /// `~` in a local install path is expanded via $HOME so users can
+    /// run `yosh-plugin install ~/my-plugin.wasm` without first
+    /// resolving the tilde themselves. Before this fix `canonicalize`
+    /// took the literal `~/...` string and failed with ENOENT.
+    #[test]
+    fn parse_local_path_with_tilde_is_expanded() {
+        let dir = tempfile::tempdir().unwrap();
+        // Stage a .wasm under tmp_dir so canonicalize succeeds after expansion.
+        let plugin = dir.path().join("tilde_test_plugin.wasm");
+        std::fs::write(&plugin, b"\0asm\x01\0\0\0").unwrap();
+        // Build a tilde path by overriding HOME for the duration of this
+        // call. The helper's `~/...` strip-prefix logic + HOME concat then
+        // resolves to `dir.path()/tilde_test_plugin.wasm`.
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: this test holds no other threads' references to HOME.
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+        }
+        let result = parse_install_arg("~/tilde_test_plugin.wasm");
+        if let Some(h) = prev_home {
+            unsafe { std::env::set_var("HOME", h); }
+        } else {
+            unsafe { std::env::remove_var("HOME"); }
+        }
+        let t = result.expect("tilde-prefixed local path should parse");
+        assert_eq!(t.name, "tilde_test_plugin");
+        assert!(matches!(t.source, PluginSource::Local { .. }));
     }
 
     #[test]

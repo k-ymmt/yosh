@@ -52,7 +52,6 @@
 - [ ] Plugin runtime limits (fuel / memory caps / pre-prompt timeout) — out of scope for v0.2.0 per spec §10; add wasmtime fuel metering and per-call memory caps when ready.
 - [ ] Runtime plugin load/unload — builtin commands `plugin load <path>` / `plugin unload <name>` for dynamic management
 - [ ] `yosh-plugin sync`/`install`: suggest `YOSH_GITHUB_TOKEN` when GitHub API rate limit (60 req/hour) is hit without auth (`crates/yosh-plugin-manager/src/github.rs`, `crates/yosh-plugin-manager/src/install.rs`)
-- [ ] `yosh-plugin install`: tilde expansion for local paths — `~/my-plugin.wasm` not supported because `canonicalize()` doesn't expand `~`; consider reusing `config::expand_tilde_path` before canonicalization (`crates/yosh-plugin-manager/src/install.rs`)
 - [ ] Workspace default package: `cargo test` without `-p` or `--workspace` may not find yosh tests — document in CLAUDE.md or set `default-members` in workspace config (`Cargo.toml`)
 - [ ] `yosh-plugin update`: version replacement uses naive `String::replacen` which may target wrong plugin if two share the same version — consider using `toml_edit` for TOML-preserving edits (`crates/yosh-plugin-manager/src/main.rs`)
 - [ ] `yosh-plugin update` help: add `#[arg(value_name = "PLUGIN")]` to show `[PLUGIN]` instead of `[NAME]` in help output (`crates/yosh-plugin-manager/src/main.rs`)
