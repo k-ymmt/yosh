@@ -1,0 +1,86 @@
+package yosh:plugin@0.1.0;
+
+interface types {
+    enum error-code {
+        denied,
+        invalid-argument,
+        io-failed,
+        not-found,
+        other,
+    }
+
+    enum stream {
+        stdout,
+        stderr,
+    }
+
+    enum hook-name {
+        pre-exec,
+        post-exec,
+        on-cd,
+        pre-prompt,
+    }
+
+    /// Static plugin metadata.
+    ///
+    /// IMPORTANT: `metadata` is the only export that the host calls
+    /// without an active `ShellEnv` binding. Implementations MUST NOT
+    /// invoke any `yosh:plugin/*` host import (variables, filesystem,
+    /// io) from inside `metadata`. Doing so will receive
+    /// `error-code::denied` from a synthetic deny-stub regardless of
+    /// the granted capabilities.
+    record plugin-info {
+        name: string,
+        version: string,
+        commands: list<string>,
+        required-capabilities: list<string>,
+        implemented-hooks: list<hook-name>,
+    }
+}
+
+interface variables {
+    use types.{error-code};
+    /// Outer `result` carries denial; inner `option` distinguishes
+    /// "variable not set" from "variable set to empty string".
+    get:    func(name: string) -> result<option<string>, error-code>;
+    set:    func(name: string, value: string) -> result<_, error-code>;
+    export: func(name: string, value: string) -> result<_, error-code>;
+}
+
+interface filesystem {
+    use types.{error-code};
+    cwd:     func() -> result<string, error-code>;
+    set-cwd: func(path: string) -> result<_, error-code>;
+}
+
+interface io {
+    use types.{stream, error-code};
+    write: func(target: stream, data: list<u8>) -> result<_, error-code>;
+}
+
+interface plugin {
+    use types.{plugin-info};
+    metadata:  func() -> plugin-info;
+    on-load:   func() -> result<_, string>;
+    exec:      func(command: string, args: list<string>) -> s32;
+    on-unload: func();
+}
+
+interface hooks {
+    pre-exec:   func(command: string);
+    post-exec:  func(command: string, exit-code: s32);
+    on-cd:      func(old-dir: string, new-dir: string);
+    pre-prompt: func();
+}
+
+world plugin-world {
+    import variables;
+    import filesystem;
+    import io;
+    import wasi:clocks/monotonic-clock@0.2.0;
+    import wasi:clocks/wall-clock@0.2.0;
+    import wasi:random/random@0.2.0;
+
+    export plugin;
+    export hooks;
+}
