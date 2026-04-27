@@ -42,8 +42,11 @@
   `yosh-plugin sync`
     - downloads <name>.wasm
     - SHA-256 verifies
-    - precompiles to ~/.cache/yosh/plugins/<sha>.cwasm (eager)
-    - writes plugins.lock with cwasm_path + wasmtime_version
+    - precompiles to ~/.cache/yosh/plugins/<sha>-<engine_hash>-<triple>.cwasm
+      (mode 0600, dir 0700, owner-checked)
+    - writes plugins.lock with the full cache key tuple:
+      (wasm_sha256, wasmtime_version, target_triple, engine_config_hash)
+      plus cached metadata (required_capabilities, implemented_hooks)
 
 [yosh shell process]
   Single shared wasmtime::Engine
@@ -121,14 +124,19 @@ interface types {
 
 interface variables {
     use types.{error-code};
-    get:    func(name: string) -> option<string>;
+    /// Outer `result` carries denial / future failure modes; inner `option`
+    /// distinguishes "variable not set" from "variable set to empty string".
+    get:    func(name: string) -> result<option<string>, error-code>;
     set:    func(name: string, value: string) -> result<_, error-code>;
     export: func(name: string, value: string) -> result<_, error-code>;
 }
 
 interface filesystem {
     use types.{error-code};
-    cwd:     func() -> string;
+    /// `result` so denied access is distinguishable from "cwd is the empty
+    /// string", and so future failures (e.g. permission errors when the
+    /// host loses access to its own working directory) can be reported.
+    cwd:     func() -> result<string, error-code>;
     set-cwd: func(path: string) -> result<_, error-code>;
 }
 
@@ -170,7 +178,7 @@ world plugin-world {
 - **`io.write` uses `list<u8>`** for byte-transparent output. Variable names/values keep `string` (UTF-8); POSIX shell variable identifiers cannot contain NUL, so this is lossless in practice.
 - **`variables:read` and `variables:write` share a single interface.** Function-level deny-stubs in the host linker discriminate. This keeps the SDK's plugin-side dependency surface minimal (one `Cargo.toml` entry per interface).
 - **Hooks export is mandatory in WIT** — the SDK provides empty default implementations so plugins that do not implement a given hook still link successfully. The host uses `plugin-info.implemented-hooks` (declared by the plugin) to decide whether to dispatch at all, avoiding a per-call boundary crossing for un-overridden hooks.
-- **`plugin-info` carries `required-capabilities` and `implemented-hooks` explicitly.** WIT import presence cannot be used as a capability-request signal because every SDK-built plugin necessarily imports the full `plugin-world` (the world is fixed). The plugin author declares intent via the `Plugin` trait's `required_capabilities()` and overridden hook methods; the SDK's `export!` macro materializes this declaration into `plugin-info`. The dlopen-era `YOSH_PLUGIN_API_VERSION` is still removed in favor of WIT package semver.
+- **`plugin-info` carries `required-capabilities` and `implemented-hooks` explicitly.** WIT import presence cannot be used as a capability-request signal because every SDK-built plugin necessarily imports the full `plugin-world` (the world is fixed). The plugin author declares intent via the `Plugin` trait's `required_capabilities()` and `implemented_hooks()` methods (both returning `&'static [...]`); the SDK's `metadata` glue reads those methods at runtime and serializes the results into `plugin-info`. Rust cannot reflectively detect which default trait methods were overridden, so the `implemented_hooks()` declaration is **explicit**, not autodetected. The dlopen-era `YOSH_PLUGIN_API_VERSION` is still removed in favor of WIT package semver.
 - **All interfaces share `types`** for `error-code`, `stream`, and `hook-name`, providing a single source of truth for cross-cutting types.
 
 ### WIT semver policy
@@ -286,17 +294,28 @@ The alternative of fresh instantiation per call is rejected: it nullifies the va
 
 ### cwasm trust model
 
-`.cwasm` is a wasmtime-precompiled artifact, which is **native code, not validated wasm bytecode**. wasmtime documents `Component::deserialize` as accepting only trusted input. Therefore the design treats `.cwasm` strictly as a **regenerable cache**, not as a load-bearing security artifact:
+`.cwasm` is a wasmtime-precompiled artifact: **native code, not validated wasm bytecode**. wasmtime documents `Component::deserialize` as accepting only trusted input. The threat model below states explicitly which trust boundary `.cwasm` lives behind.
 
-- **The `.wasm` file is the only trusted plugin artifact.** SHA-256 is verified against `plugins.lock` on every shell startup and after every download (via `yosh-plugin sync` and `yosh-plugin verify`).
-- **`.cwasm` is never trusted on its own.** Before each `Component::deserialize`, the host validates the **cache key tuple** (described next) against the lockfile and the live runtime. Any mismatch — including basic file corruption surfaced by deserialize itself — falls back to in-process re-precompile from the SHA-verified `.wasm`.
-- **Cache key tuple** (recorded both in `plugins.lock` and in a sidecar `<sha>.cwasm.meta` next to each cwasm):
-  - `wasm_sha256`: SHA-256 of the source wasm file.
-  - `wasmtime_version`: `wasmtime::VERSION` string.
-  - `target_triple`: e.g. `aarch64-apple-darwin`. Same key tuple seen on a different host (Rosetta transition, NFS-shared `~/.cache`, CI cache restore) thus invalidates the cache.
-  - `engine_config_hash`: stable hash of the `wasmtime::Config` used at precompile time. Any flag change (cache enable, fuel, cranelift options) triggers regeneration.
-- **Filesystem hardening.** Cache files are written with mode `0600` (owner-only read/write) and the cache directory is `0700`. On creation the manager checks that the existing directory's owner matches the current uid; otherwise the cache directory is treated as poisoned and refused.
-- **No HMAC or signing on `.cwasm`.** The threat model is "regenerable from a trusted, SHA-verified `.wasm`", not "trustless cache shared between mutually distrusting parties". Adding HMAC would only make sense if `.cwasm` were transported between hosts, which the design explicitly forbids.
+**Threat model statement.** Persistent `.cwasm` is **trusted as native code IF AND ONLY IF all of the following hold:**
+
+1. The file is owned by the same uid as the running shell process.
+2. The file's mode is `0600`.
+3. The containing cache directory is owned by the same uid and has mode `0700`.
+4. The cache key tuple recorded both in `plugins.lock` and in the sidecar `.cwasm.meta` matches the live runtime's tuple exactly.
+5. The source `.wasm` referenced by `wasm_sha256` exists at `path` and its current SHA-256 matches the lockfile entry.
+
+If **any** condition fails, the cache file is treated as untrusted: it is **not** passed to `Component::deserialize`. The host falls back to in-memory precompile from the SHA-verified `.wasm`.
+
+**Trust boundary.** The trust this places on the `.cwasm` is no greater than the trust placed on any other code in `~/.cache/yosh/` owned by the user — it is a same-uid filesystem trust boundary, not a cryptographic one. A user who can write `0600` files into their own `0700` cache directory has already, by definition, achieved code execution as that user; defending against that scenario is out of scope for any in-process cache.
+
+**Cache key tuple** (recorded in both `plugins.lock` and the sidecar `.cwasm.meta`):
+
+- `wasm_sha256`: SHA-256 of the source wasm file.
+- `wasmtime_version`: `wasmtime::VERSION` string.
+- `target_triple`: e.g. `aarch64-apple-darwin`. Differs across Rosetta transitions, NFS-shared `~/.cache`, and CI cache restores, all of which the host must reject.
+- `engine_config_hash`: stable hash of the `wasmtime::Config` (cache enable, cranelift opt level, fuel/epoch flags). Any flag change triggers regeneration.
+
+**Why no HMAC or signing on `.cwasm`.** The threat model above does not extend `.cwasm` trust beyond the same-uid filesystem boundary. Adding an HMAC keyed by some host secret would only matter if `.cwasm` could be transported between trust domains; this design forbids that (`target_triple` mismatch invalidates cross-host reuse, and same-uid-on-same-host already implies code execution). HMAC adds complexity without a corresponding threat reduction.
 
 ### metadata contract — host APIs are unavailable
 
@@ -349,11 +368,36 @@ The exact trait/view shape (`WasiView` / `WasiImpl<T>` / `IoView`) varies betwee
 2. The dispatch wrapper `with_env` (below) manages this pointer's lifetime, ensuring it is reset to null on every exit path including panic/trap unwinding.
 3. Host import closures dereference the pointer through a single helper that is the only `unsafe` block in the new layer. This is a tighter `unsafe` perimeter than the dlopen version's eight `unsafe extern "C" fn` callbacks.
 
-### `with_env` — the canonical dispatch wrapper
+### `with_env` — the canonical dispatch wrapper (RAII via `EnvGuard`)
 
-All guest-bound calls that require host API access go through this wrapper:
+All guest-bound calls that require host API access go through this wrapper. The env-pointer reset is implemented via a `Drop`-based RAII guard so the pointer is restored on **every** exit path — normal return, `Err`, host-import-side Rust panic, or trap unwinding through wasmtime's catch boundary:
 
 ```rust
+/// RAII guard that ensures `HostContext::env` is null when it is dropped.
+/// The lifetime parameter prevents `&mut Store<HostContext>` from being held
+/// past the guard's drop point.
+struct EnvGuard<'a> {
+    store: &'a mut Store<HostContext>,
+}
+
+impl<'a> EnvGuard<'a> {
+    fn bind(store: &'a mut Store<HostContext>, env: &mut ShellEnv) -> Self {
+        store.data_mut().env = env as *mut _;
+        EnvGuard { store }
+    }
+
+    fn store(&mut self) -> &mut Store<HostContext> { self.store }
+}
+
+impl Drop for EnvGuard<'_> {
+    fn drop(&mut self) {
+        // Always runs — including on panic unwind — because `Drop` is
+        // unwinding-safe and the field types here cannot themselves panic
+        // during drop.
+        self.store.data_mut().env = std::ptr::null_mut();
+    }
+}
+
 fn with_env<R>(
     plugin: &mut LoadedPlugin,
     env: &mut ShellEnv,
@@ -366,16 +410,17 @@ fn with_env<R>(
         );
         return None;
     }
-    plugin.store.data_mut().env = env as *mut _;
-    let result = f(&mut plugin.store);
-    plugin.store.data_mut().env = std::ptr::null_mut();
+
+    let result = {
+        let mut guard = EnvGuard::bind(&mut plugin.store, env);
+        f(guard.store())
+        // guard drops here, restoring env to null whether `f` returned
+        // Ok, Err, or unwound via panic.
+    };
 
     match result {
         Ok(r) => Some(r),
         Err(e) => {
-            // wasmtime errors that originate from a guest trap downcast to
-            // `wasmtime::Trap`. Other errors (host-side serialization etc.)
-            // are surfaced verbatim but do not invalidate the plugin.
             if let Some(trap) = e.downcast_ref::<wasmtime::Trap>() {
                 eprintln!(
                     "yosh: plugin '{}': trapped: {} — disabling for the rest of this session",
@@ -391,20 +436,51 @@ fn with_env<R>(
 }
 ```
 
-This wrapper is used by `exec_command`, all four hook dispatchers, `on_load`, and `on_unload`. The env-pointer reset and invalidation logic lives in exactly one place. The only call site that does **not** use `with_env` is `metadata` (per "metadata contract" above).
+Notes on safety:
 
-### Command dispatch
+- **Panic unwinding through host imports**: a Rust panic raised inside a host import (e.g. invariant violation in `host_get_var`) unwinds through wasmtime's host-call frame back to `f`'s frame. `EnvGuard::drop` runs during that unwind, restoring `env` to null. The panic continues propagating; the shell's outer `catch_unwind` (existing for command execution) catches it and treats it as a host-side bug. The plugin is **not** auto-invalidated for host-side panics — this is a host bug, not a guest bug.
+- **Aborting strategy is rejected**: simply requiring `panic = "abort"` for the host binary would also restore env (because abort skips drops, but the process exits anyway), but it would make the shell unusable for everything else. Drop-based guard is the correct boundary tool.
+- **The only call site that does NOT use `with_env`** is `metadata` (per "metadata contract" above). For `metadata`, the env pointer is already null and the linker's deny-checking host imports short-circuit on null, so no guard is needed.
+
+This wrapper is used by `exec_command`, all four hook dispatchers, `on_load`, and `on_unload`. The env-pointer reset and invalidation logic lives in exactly one place.
+
+### Command dispatch — three-valued result
+
+`exec_command` returns a dedicated enum so the caller in `src/exec/` cannot accidentally fall through to external command lookup when a plugin handler exists but failed:
 
 ```rust
-// PluginManager::exec_command(env, name, args) -> Option<i32>
-let plugin = self.find_plugin_for_command_mut(name)?;
-let bindings = plugin.bindings.clone();   // cheap handle copy
-with_env(plugin, env, |store| {
-    bindings.yosh_plugin_plugin().call_exec(store, name, args)
-})
+pub enum PluginExec {
+    /// No plugin provides this command. The caller falls back to PATH lookup.
+    NotHandled,
+    /// A plugin handled the command and returned this exit status.
+    Handled(i32),
+    /// A plugin claimed the command but failed (trap, host error, invalidated).
+    /// Distinct from `Handled(1)` so callers can adjust diagnostics.
+    Failed,
+}
+
+impl PluginManager {
+    pub fn exec_command(
+        &mut self,
+        env: &mut ShellEnv,
+        name: &str,
+        args: &[String],
+    ) -> PluginExec {
+        let Some(plugin) = self.find_plugin_for_command_mut(name) else {
+            return PluginExec::NotHandled;
+        };
+        let bindings = plugin.bindings.clone();
+        match with_env(plugin, env, |store| {
+            bindings.yosh_plugin_plugin().call_exec(store, name, args)
+        }) {
+            Some(exit) => PluginExec::Handled(exit),
+            None => PluginExec::Failed,
+        }
+    }
+}
 ```
 
-A `None` return from `with_env` (trap or error) is mapped by the caller in `src/exec/` to exit code 1, matching the dlopen-era panic-catch behaviour. The `unwrap_or(1)` shortcut is intentionally not used directly; the wrapper performs invalidation and logging before the caller substitutes the exit code.
+The execution loop in `src/exec/` matches on this enum: `NotHandled` → continue with PATH lookup; `Handled(n)` → use `n`; `Failed` → use exit code 1 and skip PATH lookup (the plugin owned the command, even if it crashed). Mapping `Failed → 1` lives in the caller, not in `with_env`, so future callers (e.g. completion hooks) can surface the failure differently if needed.
 
 ### Hook dispatch
 
@@ -424,7 +500,7 @@ for plugin in &mut self.plugins {
 Two filters apply before dispatch:
 
 1. **Capability allowlist** (`plugin.capabilities` bitfield).
-2. **Plugin's declared `implemented-hooks`** from `plugin-info`. WIT exports for hooks are mandatory and the SDK provides empty defaults so unimplemented hooks compile, but the SDK's `export!` macro populates `implemented-hooks` only with hooks the trait actually overrides. This eliminates the per-call boundary crossing for default no-op hooks — the previous design's "200 ns × N plugins × 4 hooks" cost is removed entirely.
+2. **Plugin's declared `implemented-hooks`** from `plugin-info`. WIT exports for hooks are mandatory and the SDK provides empty defaults so unimplemented hooks compile. The plugin author explicitly declares which hooks are real overrides via `Plugin::implemented_hooks() -> &'static [HookName]`; the SDK glue serializes the result into `plugin-info`. This eliminates the per-call boundary crossing for default no-op hooks — the previous design's "200 ns × N plugins × 4 hooks" cost is removed entirely.
 
 ### Error / trap / panic isolation
 
@@ -606,6 +682,19 @@ implemented_hooks     = ["pre-prompt"]
 
 Per-plugin precompile failures are reported in the existing `failed` list and do not block other plugins. Exit code matches the existing partial-failure semantics (1 if any failed). On precompile failure the lockfile entry omits the cwasm fields so subsequent shell startups will fall back to in-memory precompile (the same path as cache-stale).
 
+### `yosh-plugin sync` — metadata extraction sub-step
+
+To populate the lockfile's cached `required_capabilities` and `implemented_hooks` (used by `yosh-plugin list`), the manager calls `metadata()` on each plugin once per sync. This is guest code execution and needs an explicit threat model:
+
+- **All-deny linker**: the manager constructs a linker where every `yosh:plugin/*` host import is registered as a deny-stub returning `Err(error-code::denied)`. `wasi:clocks` and `wasi:random` are still linked normally (they have no privilege impact). Since `metadata` is contractually forbidden from calling host APIs (§5 "metadata contract"), this is sufficient — a well-behaved plugin sees the same null-env experience as during shell startup, and a misbehaving plugin's host calls are uniformly denied.
+- **Trap during `metadata`**: logged as `yosh-plugin: <name>: metadata trapped: <reason>`, the plugin is marked failed in the sync result, no lockfile entry written for that plugin.
+- **Hang during `metadata`**: bounded by a 5-second wall-clock timeout enforced via `wasmtime::Engine::increment_epoch` from a watchdog thread. Exceeding the timeout triggers a trap (epoch interruption), which is then handled as the trap case above. This is the only place v0.2.0 uses epoch interruption; the runtime path remains uninstrumented.
+- **Forbidden WASI imports in the component**: linker construction fails before `metadata` is called, the plugin is marked failed, no lockfile entry written.
+- **Invalid capability strings in `required-capabilities`**: parsed at sync time. Unknown strings produce a one-line warning per string in the `sync` output but do **not** fail the plugin (matches §6 "unknown capabilities are warnings, not errors"). The strings are stored in the lockfile as-is so `yosh-plugin list` can display them faithfully.
+- **`implemented-hooks` containing duplicates or unknown variants**: deduplicated and filtered with a warning. Stored as the cleaned set.
+
+This subsystem is single-purpose: it produces the cached metadata fields. Shell startup re-reads `metadata` from the live instance regardless of the lockfile cache, so a stale or missing cached value cannot cause a sandbox bypass — it only affects the `list` UI.
+
 ### `yosh-plugin sync --prune`
 
 - Removes orphaned `.wasm` files (existing behaviour).
@@ -760,7 +849,7 @@ The existing `TEST_LOCK: Mutex<()>` is preserved across all 17 call sites; the `
 | # | Sub-project | Primary files | Depends on |
 |---|---|---|---|
 | 1 | WIT definition + `yosh-plugin-api` repurpose | `crates/yosh-plugin-api/wit/yosh-plugin.wit`, `crates/yosh-plugin-api/src/lib.rs` (full replacement: `Capability` enum + `parse_capability` + `CAP_*` consts) | none |
-| 2 | `yosh-plugin-sdk` rewrite as `wit-bindgen` wrapper | `crates/yosh-plugin-sdk/src/{lib,export}.rs`; remove `build.rs`. The `Plugin` trait keeps `required_capabilities() -> &[Capability]`. The `export!` macro inspects the trait at compile time to materialize `plugin-info.required-capabilities` (string-formatted) and `plugin-info.implemented-hooks` (only the hook methods the impl actually overrides — detected via a marker associated const trick or a dedicated `Hooks` sub-trait, decided in implementation). | #1 |
+| 2 | `yosh-plugin-sdk` rewrite as `wit-bindgen` wrapper | `crates/yosh-plugin-sdk/src/{lib,export}.rs`; remove `build.rs`. The `Plugin` trait keeps `required_capabilities() -> &[Capability]` and gains `implemented_hooks() -> &[HookName] { &[] }` as a default-empty method. Plugin authors override `implemented_hooks` to declare which hook methods they actually implement (Rust cannot detect default-method overrides reflectively, so the declaration is explicit). The `export!` macro reads both methods at runtime once during `metadata` dispatch and serializes them into `plugin-info`. | #1 |
 | 3 | Test plugin migration to wasm component | `tests/plugins/test_plugin/Cargo.toml` (add `package.metadata.component`), `src/lib.rs` rewrite | #2 |
 | 4 | Host `PluginManager` rewrite around wasmtime | `src/plugin/{mod,host,linker}.rs`; root `Cargo.toml` removes `libloading`, adds `wasmtime` / `wasmtime-wasi` | #1 |
 | 5 | `yosh-plugin-manager` precompile + asset simplification | `crates/yosh-plugin-manager/src/{precompile,sync,install,lockfile}.rs`; `Cargo.toml` adds `wasmtime`; remove macOS resign code | #1, #4 |
@@ -807,7 +896,7 @@ The existing `TEST_LOCK: Mutex<()>` is preserved across all 17 call sites; the `
 | **WIT semver discipline** | Document explicitly in `docs/kish/plugin.md`: the 0.x window allows breaking changes via minor bump; 1.0 transitions to strict semver and aligns with yosh 1.0. |
 | **Binary size impact of bundling wasmtime** | Validate during implementation that the `cranelift` feature is necessary at runtime; `winch` is out of scope for v0.2.0 but a future investigation candidate. |
 | **`wasi:cli/stderr` import injection from Rust `std`** | The SDK guides plugin authors toward `panic = "abort"` and minimal-`std` builds. If a plugin's component still imports `wasi:cli/stderr`, link fails at load time, producing a clear error rather than silent stdout/stderr leakage. |
-| **`implemented-hooks` declaration accuracy** | The SDK macro must accurately detect which hook methods are overridden vs default. Two implementation strategies (marker associated const vs separate `Hooks` trait) are possible; the implementation plan picks one and adds a unit test that verifies the macro output for known-good and known-bad plugin shapes. If a plugin lies about `implemented-hooks` (says "implemented" but is the default no-op), the only effect is one wasted boundary crossing per dispatch — not a security issue. |
+| **`implemented-hooks` is plugin-author-declared, not auto-detected** | Rust cannot reflectively determine whether a default trait method was overridden. The `Plugin` trait therefore exposes `fn implemented_hooks() -> &'static [HookName] { &[] }` and plugin authors override it to enumerate the hooks they implement. SDK rustdoc explicitly documents this contract. If an author lies (returns `&[HookName::PreExec]` while leaving `hook_pre_exec` as the default no-op), the only effect is one wasted boundary crossing per dispatch — not a security issue. The opposite mistake (omitting an actually-overridden hook) results in the host never calling that hook; an SDK rustdoc warning and a unit-test pattern (assert that overridden methods correspond to declared `implemented_hooks`) help authors catch this. |
 | **No fuel / memory caps in v0.2.0** | Documented as `TODO.md` item ("Plugin runtime limits"). Implementations deferred until concrete user-reported needs surface. |
 | **Cache key schema evolution** | The cache key tuple `(wasm_sha256, wasmtime_version, target_triple, engine_config_hash)` may need additional dimensions (e.g. CPU feature flags) in future. The sidecar `.meta` is versioned (`schema = 1`) so future reads can detect old layouts and trigger regeneration rather than misuse. |
 
