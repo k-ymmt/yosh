@@ -5,6 +5,7 @@ members = [
     "crates/yosh-plugin-sdk",
     "crates/yosh-plugin-manager",
     "tests/plugins/test_plugin",
+    "tests/plugins/trap_plugin",
 ]
 
 [package]
@@ -46,6 +47,11 @@ dhat-heap = ["dep:dhat"]
 # integration tests in `tests/plugin.rs` (Task 6) that need to load
 # plugins with explicit capabilities and inspect store state.
 test-helpers = []
+
+[[test]]
+name = "plugin"
+path = "tests/plugin.rs"
+required-features = ["test-helpers"]
 
 [[bench]]
 name = "lexer_bench"

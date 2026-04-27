@@ -5,11 +5,14 @@
 //!
 //! Two import sources:
 //!
-//! 1. **`wasi:clocks` and `wasi:random`** — registered via the regular
-//!    `wasmtime_wasi` linker functions. These are available to every
-//!    plugin regardless of granted capabilities (no privilege impact).
-//!    `wasi:cli`, `wasi:filesystem`, and `wasi:sockets` are intentionally
-//!    NOT registered: a plugin importing them fails to link.
+//! 1. **WASI Preview 2 (sync)** — registered via
+//!    `wasmtime_wasi::add_to_linker_sync`. Cargo-component-built plugins
+//!    pull in the full WASI surface transitively through the
+//!    Preview 1 adapter, so selectively linking only `clocks` + `random`
+//!    leaves later imports unsatisfied. Privacy/isolation is enforced by
+//!    `HostContext::new_for_plugin` constructing a `WasiCtx` with no
+//!    preopens, no stdio, no environment, no args — the plugin can name
+//!    `wasi:cli/environment` etc. but every probe returns empty.
 //!
 //! 2. **`yosh:plugin/{variables,filesystem,io}`** — registered with either
 //!    the real implementation from `host.rs` or a deny-stub returning
@@ -42,22 +45,24 @@ pub fn build_linker(
 ) -> Result<Linker<HostContext>, wasmtime::Error> {
     let mut linker = Linker::<HostContext>::new(engine);
 
-    // ── Limited WASI: clocks + random only ──────────────────────────────
+    // ── WASI Preview 2 (sync) ──────────────────────────────────────────
     //
-    // wasmtime-wasi 27 exposes per-interface `add_to_linker_get_host`
-    // functions under `bindings::clocks::*` / `bindings::random::*`. The
-    // closure returns a `WasiImpl<&mut T>` adapter built from `&mut T`
-    // implementing `WasiView`.
-    use wasmtime_wasi::WasiImpl;
-    use wasmtime_wasi::bindings::{clocks, random};
-
-    let closure = type_annotate::<HostContext, _>(|t| WasiImpl(t));
-    clocks::wall_clock::add_to_linker_get_host(&mut linker, closure)?;
-    clocks::monotonic_clock::add_to_linker_get_host(&mut linker, closure)?;
-    random::random::add_to_linker_get_host(&mut linker, closure)?;
-    // wasi:cli / wasi:filesystem / wasi:sockets are intentionally NOT
-    // registered. A plugin importing them fails to link with a clear
-    // unsatisfied-import error, which is the desired sandbox behaviour.
+    // Register the full WASI Preview 2 sync linker. Reality check vs the
+    // §6 spec: any plugin built via `cargo component build --target
+    // wasm32-wasip2` imports the full WASI surface transitively through
+    // the Preview 1 adapter, regardless of whether the plugin's Rust
+    // source ever uses stdio/cli/filesystem. Selectively linking only
+    // `wasi:clocks` + `wasi:random` (the original Task 4 plan) leaves the
+    // adapter's other imports unsatisfied, so plugins fail to instantiate.
+    //
+    // Privacy/isolation is provided by `HostContext::new_for_plugin`
+    // building an empty `WasiCtx` (no preopens, no stdin/stdout/stderr,
+    // no environment, no args). The plugin can name `wasi:cli/environment`
+    // but `get_environment()` returns an empty list. Same story for
+    // `wasi:filesystem/preopens` (empty) and `wasi:sockets/*` (no
+    // network handle). The capability-gated `yosh:plugin/*` imports
+    // remain the privileged surface.
+    wasmtime_wasi::add_to_linker_sync(&mut linker)?;
 
     // ── yosh:plugin/variables ───────────────────────────────────────────
     //
@@ -135,17 +140,6 @@ pub fn build_linker(
     }
 
     Ok(linker)
-}
-
-/// Helper used by wasmtime-wasi's `add_to_linker_get_host` closures to pin
-/// down the closure's argument type to `&mut T` for the generic
-/// `add_to_linker_get_host<T: WasiView>` signature. Same pattern that
-/// `wasmtime_wasi::add_to_linker_sync` uses internally.
-fn type_annotate<T, F>(val: F) -> F
-where
-    F: Fn(&mut T) -> wasmtime_wasi::WasiImpl<&mut T>,
-{
-    val
 }
 
 #[cfg(test)]

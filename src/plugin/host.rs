@@ -219,3 +219,71 @@ pub(super) fn deny_io_write(
 ) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for the metadata contract: every host import must
+    //! short-circuit to `Err(Denied)` when `HostContext.env` is null. This
+    //! is the canonical enforcement point for the §5 metadata-cannot-reach-
+    //! host-APIs invariant. The pointer is null during the single
+    //! `metadata()` call at startup and between `with_env` invocations, so
+    //! returning `Denied` from these functions blocks any plugin that tries
+    //! to call them outside of a properly-bound dispatch.
+    //!
+    //! Replaces what would have been `tests/plugin.rs::t04_metadata_cannot_
+    //! reach_host_apis` — a contrived plugin whose `metadata` calls `cwd()`
+    //! is harder to author than this direct call. Same invariant, simpler
+    //! test.
+    use super::*;
+    use yosh_plugin_api::CAP_ALL;
+
+    fn null_env_ctx() -> HostContext {
+        // Capabilities are deliberately CAP_ALL — the deny short-circuit
+        // we are testing fires regardless of granted capabilities, because
+        // it is enforced inside the *real* implementations. The deny stubs
+        // would also return `Denied` but for a different reason.
+        HostContext::new_for_plugin("<test>", CAP_ALL)
+    }
+
+    #[test]
+    fn metadata_contract_real_cwd_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_filesystem_cwd(&mut ctx);
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_set_cwd_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_filesystem_set_cwd(&mut ctx, "/tmp".into());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_io_write_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_io_write(&mut ctx, IoStream::Stdout, b"hi".to_vec());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_variables_get_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_variables_get(&mut ctx, "PATH".into());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_variables_set_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_variables_set(&mut ctx, "FOO".into(), "bar".into());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_variables_export_env_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_variables_export_env(&mut ctx, "FOO".into(), "bar".into());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+}

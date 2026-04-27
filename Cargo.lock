@@ -2533,6 +2533,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "trap_plugin"
+version = "0.2.0"
+dependencies = [
+ "yosh-plugin-sdk",
+]
+
+[[package]]
 name = "typenum"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

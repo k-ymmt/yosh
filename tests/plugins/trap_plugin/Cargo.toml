@@ -1,0 +1,23 @@
+[package]
+name = "trap_plugin"
+version = "0.2.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+yosh-plugin-sdk = { path = "../../../crates/yosh-plugin-sdk" }
+
+[package.metadata.component]
+package = "yosh:trap-plugin"
+
+[package.metadata.component.target]
+path  = "../../../crates/yosh-plugin-api/wit"
+world = "plugin-world"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"

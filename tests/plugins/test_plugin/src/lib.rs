@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use yosh_plugin_sdk::{Capability, HookName, Plugin, export, get_var, print};
+use yosh_plugin_sdk::{Capability, HookName, Plugin, export, get_var, print, set_var};
 
 static EVENT_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -12,7 +12,7 @@ struct TestPlugin;
 
 impl Plugin for TestPlugin {
     fn commands(&self) -> &[&'static str] {
-        &["test_cmd", "echo_var", "trap_now"]
+        &["test_cmd", "echo_var", "trap_now", "dump_events", "set_post_exec_marker"]
     }
 
     fn required_capabilities(&self) -> &[Capability] {
@@ -54,12 +54,37 @@ impl Plugin for TestPlugin {
                     let _: u32 = unreachable!("intentional trap");
                 }
             }
+            "dump_events" => {
+                // Dump the event log into the host-visible variable
+                // YOSH_TEST_EVENT_LOG so integration tests can inspect
+                // which hook callbacks ran without scraping stdout.
+                let log = EVENT_LOG
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .join(",");
+                let _ = set_var("YOSH_TEST_EVENT_LOG", &log);
+                0
+            }
+            "set_post_exec_marker" => {
+                // Used by the hook-suppression test to seed a known
+                // baseline value before exercising call_post_exec.
+                let _ = set_var("YOSH_TEST_POST_EXEC_FIRED", "0");
+                0
+            }
             _ => 127,
         }
     }
 
     fn hook_pre_exec(&mut self, command: &str) {
         record(format!("pre_exec:{}", command));
+    }
+
+    /// Note: NOT listed in `implemented_hooks`. The host should never invoke
+    /// this method because the dispatch filter checks `implements_hook` first.
+    /// If it ever does, this writes a sentinel the test will detect.
+    fn hook_post_exec(&mut self, command: &str, exit_code: i32) {
+        record(format!("post_exec:{}:{}", command, exit_code));
+        let _ = set_var("YOSH_TEST_POST_EXEC_FIRED", "1");
     }
 
     fn hook_on_cd(&mut self, old_dir: &str, new_dir: &str) {
