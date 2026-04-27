@@ -105,6 +105,12 @@ pub fn load_config(path: &Path) -> Result<Vec<PluginDecl>, String> {
                     entry.name
                 ));
             }
+            // Reject pre-v0.2.0 asset templates with {os}/{arch}/{ext}
+            // tokens; plugins now ship as single .wasm files.
+            if let Some(t) = &entry.asset {
+                crate::resolve::check_asset_template(t)
+                    .map_err(|e| format!("plugin '{}': {}", entry.name, e))?;
+            }
             Ok(PluginDecl {
                 name: entry.name,
                 source,
@@ -243,15 +249,30 @@ enabled = false
 name = "custom"
 source = "github:user/repo"
 version = "1.0.0"
-asset = "myplugin-{{os}}-{{arch}}.{{ext}}"
+asset = "myplugin-{{name}}.wasm"
 "#
         )
         .unwrap();
         let decls = load_config(f.path()).unwrap();
-        assert_eq!(
-            decls[0].asset.as_deref(),
-            Some("myplugin-{os}-{arch}.{ext}")
-        );
+        assert_eq!(decls[0].asset.as_deref(), Some("myplugin-{name}.wasm"));
+    }
+
+    #[test]
+    fn load_config_rejects_legacy_asset_template() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "old"
+source = "github:user/repo"
+version = "1.0.0"
+asset = "lib{{name}}-{{os}}-{{arch}}.{{ext}}"
+"#
+        )
+        .unwrap();
+        let err = load_config(f.path()).unwrap_err();
+        assert!(err.contains("v0.2.0"), "expected migration message: {}", err);
     }
 
     #[test]

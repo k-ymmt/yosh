@@ -18,19 +18,50 @@ pub struct LockEntry {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
-    /// SHA-256 of the file as it currently sits on disk. On macOS this includes
-    /// the locally-applied ad-hoc signature, so the value is machine-specific.
-    /// Used by `verify_checksum` to detect local tampering between syncs.
+    /// SHA-256 of the on-disk `.wasm` file. With the v0.2.0 component
+    /// model migration the file is no longer a Mach-O / ELF binary, so
+    /// this hash is identical to `upstream_sha256` (no local re-signing
+    /// step). Both fields are kept for round-trip compatibility with
+    /// older lockfiles.
     pub sha256: String,
-    /// SHA-256 of the asset as served by the upstream source (pre-resign on
-    /// macOS). Stable across machines for the same release artifact, so it
-    /// detects silent upstream replacement at re-download time. `None` for
-    /// local plugins or lock entries written before this field existed.
+    /// SHA-256 of the asset as served by the upstream source. Stable
+    /// across machines; detects silent upstream replacement at
+    /// re-download time. `None` for local plugins or lock entries
+    /// written before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_sha256: Option<String>,
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Path to the precompiled `.cwasm` next to the source `.wasm`.
+    /// Used by the host's cache validator to skip re-precompiling at
+    /// startup. `None` when precompile failed during sync (host falls
+    /// back to in-memory `Component::new` in that case).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwasm_path: Option<String>,
+    /// Wasmtime version that produced the `cwasm_path` artifact. Part
+    /// of the four-tuple cache key; the host rejects the cwasm if its
+    /// own pin differs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasmtime_version: Option<String>,
+    /// Target triple the cwasm was precompiled for. Cwasm files are
+    /// not portable across triples, so the host rejects mismatches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_triple: Option<String>,
+    /// Hex-encoded SHA-256 of the engine config fingerprint. Lets the
+    /// host detect when its `wasmtime::Config` changed since the cwasm
+    /// was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_config_hash: Option<String>,
+    /// Plugin-self-reported capability strings extracted at sync time.
+    /// Cached so `yosh-plugin list` can show capabilities without
+    /// instantiating each plugin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_capabilities: Option<Vec<String>>,
+    /// Plugin-self-reported hook names extracted at sync time. Same
+    /// caching rationale as `required_capabilities`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implemented_hooks: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -69,13 +100,19 @@ mod tests {
     fn sample_entry() -> LockEntry {
         LockEntry {
             name: "git-status".into(),
-            path: "~/.yosh/plugins/git-status/libgit_status.dylib".into(),
+            path: "~/.yosh/plugins/git-status/git_status.wasm".into(),
             enabled: true,
             capabilities: Some(vec!["variables:read".into(), "io".into()]),
             sha256: "abc123".into(),
             upstream_sha256: Some("upstream123".into()),
             source: "github:user/repo".into(),
             version: Some("1.2.3".into()),
+            cwasm_path: None,
+            wasmtime_version: None,
+            target_triple: None,
+            engine_config_hash: None,
+            required_capabilities: None,
+            implemented_hooks: None,
         }
     }
 
@@ -112,13 +149,19 @@ mod tests {
     fn local_entry_without_version() {
         let entry = LockEntry {
             name: "local-tool".into(),
-            path: "~/.yosh/plugins/liblocal.dylib".into(),
+            path: "~/.yosh/plugins/local.wasm".into(),
             enabled: true,
             capabilities: Some(vec!["io".into()]),
             sha256: "def456".into(),
             upstream_sha256: None,
-            source: "local:~/.yosh/plugins/liblocal.dylib".into(),
+            source: "local:~/.yosh/plugins/local.wasm".into(),
             version: None,
+            cwasm_path: None,
+            wasmtime_version: None,
+            target_triple: None,
+            engine_config_hash: None,
+            required_capabilities: None,
+            implemented_hooks: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let lock_path = dir.path().join("plugins.lock");
@@ -153,7 +196,7 @@ mod tests {
         let legacy = "\
 [[plugin]]
 name = \"old\"
-path = \"~/.yosh/plugins/old/libold.dylib\"
+path = \"~/.yosh/plugins/old/old.wasm\"
 enabled = true
 sha256 = \"deadbeef\"
 source = \"github:u/r\"

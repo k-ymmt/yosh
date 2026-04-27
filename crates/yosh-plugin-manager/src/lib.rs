@@ -2,9 +2,28 @@ pub mod config;
 pub mod github;
 pub mod install;
 pub mod lockfile;
+pub mod metadata_extract;
+pub mod precompile;
 pub mod resolve;
 pub mod sync;
 pub mod verify;
+
+/// wasmtime bindgen for the `plugin-world` WIT contract. The path is
+/// relative to this crate's `Cargo.toml` (the macro resolves against
+/// `CARGO_MANIFEST_DIR`).
+///
+/// This is independent from the host's bindgen invocation in
+/// `src/plugin/mod.rs` — the two crates produce separate generated
+/// types, so we cannot share. The host needs `HostContext` as the store
+/// type and full host imports; the manager needs `MetadataCtx` and
+/// deny-only imports.
+pub mod generated {
+    wasmtime::component::bindgen!({
+        path: "../yosh-plugin-api/wit",
+        world: "plugin-world",
+        async: false,
+    });
+}
 
 use clap::{Parser, Subcommand};
 
@@ -197,9 +216,34 @@ fn cmd_list() -> i32 {
                 Ok(false) => "\u{2717} checksum mismatch",
                 Err(_) => "\u{2717} file missing",
             };
+        // "cached" reflects whether a precompiled cwasm is present AND
+        // matches the manager's pinned wasmtime version. A mismatched
+        // version means the host will fall back to in-memory precompile
+        // at startup — not a hard failure, but worth surfacing here so
+        // the user can re-sync.
+        let cached = match (&entry.cwasm_path, &entry.wasmtime_version) {
+            (Some(p), Some(wv))
+                if std::path::Path::new(&config::expand_tilde_path(p)).exists()
+                    && wv == precompile::WASMTIME_VERSION =>
+            {
+                "\u{2713} cached"
+            }
+            _ => "\u{2717} stale",
+        };
+        let caps = entry
+            .required_capabilities
+            .as_ref()
+            .map(|v| {
+                if v.is_empty() {
+                    "[- (no capabilities)]".to_string()
+                } else {
+                    format!("[{}]", v.join(", "))
+                }
+            })
+            .unwrap_or_else(|| "[?]".into());
         println!(
-            "{:<16} {:<8} {:<48} {}",
-            entry.name, version, entry.source, verified
+            "{:<16} {:<8} {:<48} {} {} {}",
+            entry.name, version, entry.source, verified, cached, caps
         );
     }
 

@@ -8,8 +8,12 @@ fn sync_local_plugin_creates_lockfile() {
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::create_dir_all(&plugin_dir).unwrap();
 
-    // Create a fake plugin binary
-    let fake_binary = plugin_dir.join("liblocal.dylib");
+    // Create a fake plugin binary. v0.2.0+ requires `.wasm`; the file
+    // is not a real component but `sync_one`'s local-plugin path
+    // tolerates precompile + metadata failures and still records a
+    // lockfile entry, so the sha256-only smoke test below is still
+    // meaningful.
+    let fake_binary = plugin_dir.join("local.wasm");
     std::fs::write(&fake_binary, b"fake binary content").unwrap();
 
     // Create plugins.toml
@@ -47,23 +51,35 @@ fn lockfile_round_trip_with_multiple_entries() {
         plugin: vec![
             yosh_plugin_manager::lockfile::LockEntry {
                 name: "a".into(),
-                path: "/path/a.dylib".into(),
+                path: "/path/a.wasm".into(),
                 enabled: true,
                 capabilities: Some(vec!["io".into()]),
                 sha256: "aaa".into(),
                 upstream_sha256: Some("aaa-upstream".into()),
                 source: "github:u/a".into(),
                 version: Some("1.0.0".into()),
+                cwasm_path: None,
+                wasmtime_version: None,
+                target_triple: None,
+                engine_config_hash: None,
+                required_capabilities: None,
+                implemented_hooks: None,
             },
             yosh_plugin_manager::lockfile::LockEntry {
                 name: "b".into(),
-                path: "/path/b.dylib".into(),
+                path: "/path/b.wasm".into(),
                 enabled: false,
                 capabilities: None,
                 sha256: "bbb".into(),
                 upstream_sha256: None,
-                source: "local:/path/b.dylib".into(),
+                source: "local:/path/b.wasm".into(),
                 version: None,
+                cwasm_path: None,
+                wasmtime_version: None,
+                target_triple: None,
+                engine_config_hash: None,
+                required_capabilities: None,
+                implemented_hooks: None,
             },
         ],
     };

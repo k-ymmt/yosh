@@ -134,11 +134,32 @@ fn parse_github(rest: &str) -> Result<InstallTarget, String> {
 }
 
 /// Parse a local filesystem path (absolute or relative).
+///
+/// v0.2.0+ requires `.wasm` Component Model plugins; we reject any other
+/// extension at install time so the user sees the migration error
+/// immediately rather than at sync time.
 fn parse_local(arg: &str) -> Result<InstallTarget, String> {
     let path = Path::new(arg);
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("cannot resolve local path '{}': {}", arg, e))?;
+
+    // Require `.wasm` for local plugin installs. Directories are allowed
+    // (the file_stem-based fallback below handled them historically) so
+    // we only enforce the extension when one is present.
+    if canonical.is_file() {
+        let valid_ext = canonical
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("wasm"))
+            .unwrap_or(false);
+        if !valid_ext {
+            return Err(format!(
+                "{}: not a .wasm file (yosh v0.2.0 requires WebAssembly Component plugins)",
+                canonical.display()
+            ));
+        }
+    }
 
     let name = canonical
         .file_stem()
@@ -449,8 +470,9 @@ mod tests {
         let config_path = dir.path().join("plugins.toml");
         std::fs::write(&config_path, "").unwrap();
 
-        // Create a temp file to act as the local plugin binary
-        let lib_file = dir.path().join("libtest.dylib");
+        // Create a temp file to act as the local plugin binary.
+        // v0.2.0+ requires `.wasm` component plugins.
+        let lib_file = dir.path().join("test.wasm");
         std::fs::write(&lib_file, b"fake").unwrap();
         let lib_path = lib_file.to_string_lossy().to_string();
         // canonicalize resolves symlinks (e.g. /var -> /private/var on macOS)
@@ -463,9 +485,27 @@ mod tests {
         install(&lib_path, false, &config_path, None).unwrap();
 
         let content = std::fs::read_to_string(&config_path).unwrap();
-        assert!(content.contains("name = \"libtest\""));
+        assert!(content.contains("name = \"test\""));
         assert!(content.contains(&format!("source = \"local:{}\"", canonical_lib_path)));
         assert!(!content.contains("version"));
+    }
+
+    #[test]
+    fn install_rejects_non_wasm_local_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("plugins.toml");
+        std::fs::write(&config_path, "").unwrap();
+
+        let lib_file = dir.path().join("libtest.dylib");
+        std::fs::write(&lib_file, b"fake").unwrap();
+        let lib_path = lib_file.to_string_lossy().to_string();
+
+        let err = install(&lib_path, false, &config_path, None).unwrap_err();
+        assert!(
+            err.contains("not a .wasm file") || err.contains("v0.2.0"),
+            "expected wasm-only error, got: {}",
+            err
+        );
     }
 
     #[test]

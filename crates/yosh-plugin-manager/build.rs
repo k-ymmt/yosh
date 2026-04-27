@@ -24,4 +24,9 @@ fn main() {
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/heads");
     println!("cargo:rerun-if-changed=../../.git/packed-refs");
+
+    // Capture cargo's TARGET so the resulting binary knows which triple it
+    // was built for at runtime. Used by the cwasm cache key tuple.
+    let triple = std::env::var("TARGET").unwrap_or_else(|_| "unknown".into());
+    println!("cargo:rustc-env=TARGET={}", triple);
 }
