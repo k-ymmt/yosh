@@ -14,6 +14,20 @@ cargo test <test_name>               # Single test by name
 cargo bench                          # Criterion benchmarks
 ```
 
+### Plugin development
+
+```sh
+cargo install cargo-component --locked --version 0.18.0    # one-time
+rustup target add wasm32-wasip2                            # one-time
+cargo component build -p test_plugin --target wasm32-wasip2 --release
+```
+
+Run plugin integration tests with the `test-helpers` feature:
+
+```sh
+cargo test --features test-helpers --workspace
+```
+
 ## Architecture
 
 Processing pipeline: **Lexer** (`src/lexer/`) -> **Parser** (`src/parser/`) -> **Expander** (`src/expand/`) -> **Executor** (`src/exec/`)

@@ -51,13 +51,11 @@
 - [ ] Spec §8.4 "metadata cannot reach host APIs" — covered at the host-internal level via `src/plugin/host.rs::tests::metadata_contract_*` (every real host import returns `Err(Denied)` when `HostContext.env` is null). A contrived plugin whose `metadata()` calls `cwd()` would test the same invariant but requires SDK plumbing to override the trait's default `metadata` body, which Task 6 deferred. If the SDK gains an `override_metadata` hook in the future, add the integration-level companion.
 - [ ] Spec §8.10 "WASI surface lockdown" integration test — currently covered indirectly by `src/plugin/linker.rs::tests::linker_construction_smoke` and the empty-`WasiCtx` isolation property. A hand-crafted wasm component that imports `wasi:cli/stdout` and asserts an unsatisfied-import error at instantiate would be a stronger negative test, but requires fixture authoring (raw wasm) outside the cargo-component pipeline. Defer until a fixture pattern is established.
 - [ ] Spec §8.15 "boundary-crossing benchmark" — a criterion-based bench of `variables.get` was scoped out of Task 6. Add `benches/plugin_bench.rs` to track regression on the wasm host-call path. Threshold guidance: ~1–5 µs per `variables.get` on M1.
+- [ ] Plugin runtime limits (fuel / memory caps / pre-prompt timeout) — out of scope for v0.2.0 per spec §10; add wasmtime fuel metering and per-call memory caps when ready.
+- [ ] Plugin benchmark: add `benches/plugin_bench.rs` for `variables.get` / hook dispatch baseline — deferred from Task 6; use as regression guard for the wasm host-call path.
 - [ ] Runtime plugin load/unload — builtin commands `plugin load <path>` / `plugin unload <name>` for dynamic management
-- [ ] SemVer API version management — replace single `YOSH_PLUGIN_API_VERSION` check with semver range compatibility (`crates/yosh-plugin-api/`)
-- [ ] SDK `export!` macro `unsafe` lint — `#[allow(unsafe_attr_outside_unsafe)]` workaround in generated code; clean up when macro hygiene improves (`crates/yosh-plugin-sdk/src/lib.rs`)
-- [ ] Sandbox: warn on unknown capability strings in `plugins.toml` — currently `capabilities_from_strs` silently ignores typos like `"typo:read"`; should log warning in `load_from_config` (`src/plugin/config.rs`, `src/plugin/mod.rs`)
-- [ ] Sandbox: `CAP_ALL` manual sync risk — when adding new capabilities, `CAP_ALL` must be manually updated; consider deriving it from a list or using a test to verify completeness (`crates/yosh-plugin-api/src/lib.rs`)
 - [ ] `yosh-plugin sync`/`install`: suggest `YOSH_GITHUB_TOKEN` when GitHub API rate limit (60 req/hour) is hit without auth (`crates/yosh-plugin-manager/src/github.rs`, `crates/yosh-plugin-manager/src/install.rs`)
-- [ ] `yosh-plugin install`: tilde expansion for local paths — `~/my-plugin.dylib` not supported because `canonicalize()` doesn't expand `~`; consider reusing `config::expand_tilde_path` before canonicalization (`crates/yosh-plugin-manager/src/install.rs`)
+- [ ] `yosh-plugin install`: tilde expansion for local paths — `~/my-plugin.wasm` not supported because `canonicalize()` doesn't expand `~`; consider reusing `config::expand_tilde_path` before canonicalization (`crates/yosh-plugin-manager/src/install.rs`)
 - [ ] `yosh-plugin sync --prune`: remove empty plugin directories after deleting binaries (`crates/yosh-plugin-manager/src/sync.rs`)
 - [ ] Workspace default package: `cargo test` without `-p` or `--workspace` may not find yosh tests — document in CLAUDE.md or set `default-members` in workspace config (`Cargo.toml`)
 - [ ] `yosh-plugin update`: version replacement uses naive `String::replacen` which may target wrong plugin if two share the same version — consider using `toml_edit` for TOML-preserving edits (`crates/yosh-plugin-manager/src/main.rs`)
@@ -65,7 +63,6 @@
 - [ ] `verify.rs` reads entire file into memory for SHA-256 — use streaming `Digest::update()` for large binaries (`crates/yosh-plugin-manager/src/verify.rs`)
 - [ ] `GitHubClient` public API error type — `find_asset_url`, `latest_version`, `download` still return `Result<_, String>`; promote internal `GitHubApiError` to a public error type so callers can match on structured variants instead of string messages (`crates/yosh-plugin-manager/src/github.rs`)
 - [ ] Integration tests: add checksum mismatch re-download test and partial failure (404) test per spec (`crates/yosh-plugin-manager/tests/`)
-- [ ] Plugin preload validation in a sandbox process — even after the macOS ad-hoc resign in `sync.rs` (Issue #1), a corrupted/incompatible plugin dylib loaded inside the shell process can still take down the whole shell at `dlopen` time (e.g. kernel SIGKILL, panic in plugin init, ABI mismatch). Consider a fork-and-probe step that validates each plugin in a child process before the main shell loads it, so a bad plugin only fails its own load instead of killing yosh (`src/plugin/mod.rs`, `crates/yosh-plugin-manager/src/sync.rs`)
 
 ## Future: Code Quality Improvements
 

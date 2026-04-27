@@ -1,48 +1,48 @@
 # Plugins
 
-kish supports plugins as shared libraries (`.dylib` on macOS, `.so` on Linux) loaded at shell startup. Plugins can add custom commands and hook into shell events such as command execution, directory changes, and prompt display.
+yosh supports plugins as WebAssembly Components (`.wasm`), loaded at shell startup via the [wasmtime](https://wasmtime.dev/) runtime. Plugins can add custom commands and hook into shell events such as command execution, directory changes, and prompt display.
 
-Plugins communicate with kish through a stable C ABI boundary, with a safe Rust SDK (`kish-plugin-sdk`) that hides all `unsafe` details from plugin authors.
+Plugins communicate with yosh through a WIT-defined interface (`yosh:plugin`), with a safe Rust SDK (`yosh-plugin-sdk`) that hides all low-level bindings from plugin authors.
 
 ## User Guide
 
 ### Installing Plugins
 
-Use `kish plugin install` to register a plugin in your configuration:
+Use `yosh plugin install` to register a plugin in your configuration:
 
 ```sh
 # From GitHub (downloads the latest release)
-kish plugin install https://github.com/user/kish-plugin-git-status
+yosh plugin install https://github.com/user/yosh-plugin-git-status
 
 # From GitHub (pinned version)
-kish plugin install https://github.com/user/kish-plugin-git-status@1.2.0
+yosh plugin install https://github.com/user/yosh-plugin-git-status@1.2.0
 
 # From a local file
-kish plugin install /path/to/libmy_plugin.dylib
+yosh plugin install /path/to/my_local.wasm
 ```
 
 After installing from GitHub, download the binary:
 
 ```sh
-kish plugin sync
+yosh plugin sync
 ```
 
 Local plugins are ready immediately after `sync`.
 
 ### Syncing Plugins
 
-`kish plugin sync` reads `plugins.toml`, downloads any missing GitHub plugin binaries, computes SHA-256 checksums, and writes the lock file (`plugins.lock`). kish loads plugins from the lock file at startup.
+`yosh plugin sync` reads `plugins.toml`, downloads any missing GitHub plugin binaries, computes SHA-256 checksums, precompiles each `.wasm` to a cached `.cwasm`, and writes the lock file (`plugins.lock`). yosh loads plugins from the lock file at startup.
 
 ```sh
-kish plugin sync           # Download and verify all plugins
-kish plugin sync --prune   # Also remove binaries for plugins no longer in config
+yosh plugin sync           # Download, precompile, and verify all plugins
+yosh plugin sync --prune   # Also remove binaries for plugins no longer in config
 ```
 
 ### Updating Plugins
 
 ```sh
-kish plugin update              # Update all GitHub plugins to latest version
-kish plugin update git-status   # Update a specific plugin
+yosh plugin update              # Update all GitHub plugins to latest version
+yosh plugin update git-status   # Update a specific plugin
 ```
 
 This checks GitHub for the latest release, updates `plugins.toml`, and runs `sync` automatically.
@@ -50,24 +50,24 @@ This checks GitHub for the latest release, updates `plugins.toml`, and runs `syn
 ### Listing and Verifying
 
 ```sh
-kish plugin list     # Show installed plugins with version and checksum status
-kish plugin verify   # Verify SHA-256 checksums of all plugin binaries
+yosh plugin list     # Show installed plugins with version and checksum status
+yosh plugin verify   # Verify SHA-256 checksums of all plugin binaries
 ```
 
 ### Configuration
 
-Plugin configuration lives in `~/.config/kish/plugins.toml`:
+Plugin configuration lives in `~/.config/yosh/plugins.toml`:
 
 ```toml
 [[plugin]]
 name = "git-status"
-source = "github:user/kish-plugin-git-status"
+source = "github:user/yosh-plugin-git-status"
 version = "1.2.0"
 enabled = true
 
 [[plugin]]
-name = "my-local-plugin"
-source = "local:/path/to/libmy_plugin.dylib"
+name = "my-local"
+source = "local:/path/to/my_local.wasm"
 enabled = true
 ```
 
@@ -76,11 +76,11 @@ enabled = true
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | Yes | Plugin name (alphanumeric, hyphens, underscores) |
-| `source` | Yes | `github:owner/repo` or `local:/path/to/lib` |
+| `source` | Yes | `github:owner/repo` or `local:/path/to/plugin.wasm` |
 | `version` | GitHub only | SemVer version string |
 | `enabled` | No | `true` (default) or `false` to disable without removing |
 | `capabilities` | No | List of permitted capabilities (default: all requested) |
-| `asset` | No | Custom asset template for GitHub downloads |
+| `asset` | No | Custom asset filename for GitHub downloads |
 
 #### Restricting Capabilities
 
@@ -89,7 +89,7 @@ By default, a plugin receives all capabilities it requests. You can restrict a p
 ```toml
 [[plugin]]
 name = "untrusted-plugin"
-source = "github:someone/kish-plugin-untrusted"
+source = "github:someone/yosh-plugin-untrusted"
 version = "0.1.0"
 capabilities = ["variables:read", "io"]
 ```
@@ -107,26 +107,26 @@ Available capability strings:
 | `hooks:on_cd` | Run when the working directory changes |
 | `hooks:pre_prompt` | Run before the prompt is displayed |
 
-If a plugin calls a denied capability, kish prints an error to stderr and the call returns a failure code. There is no runtime overhead for permitted capabilities.
+If a plugin calls a denied capability, yosh returns `Err(error-code::denied)` to the guest. There is no runtime overhead for permitted capabilities.
 
-#### Custom Asset Templates
+#### Asset Filename
 
 For GitHub plugins, the default asset filename template is:
 
 ```
-lib{name}-{os}-{arch}.{ext}
+{name}.wasm
 ```
 
-Where `{name}` is the plugin name (hyphens replaced with underscores), `{os}` is `macos` or `linux`, `{arch}` is `x86_64` or `aarch64`, and `{ext}` is `dylib` or `so`.
+Where `{name}` is the plugin name. WebAssembly Components are platform-independent, so a single `.wasm` file serves all operating systems and architectures. Only `{name}` is supported as a template variable; `{os}`, `{arch}`, and `{ext}` are not available.
 
-Override with a custom template:
+Override with a custom asset filename:
 
 ```toml
 [[plugin]]
 name = "my-plugin"
-source = "github:user/kish-plugin-my-plugin"
+source = "github:user/yosh-plugin-my-plugin"
 version = "1.0.0"
-asset = "kish_{name}-{os}-{arch}.{ext}"
+asset = "yosh_my_plugin.wasm"
 ```
 
 ## Plugin Development Guide
@@ -135,142 +135,159 @@ asset = "kish_{name}-{os}-{arch}.{ext}"
 
 1. Create a new library crate:
 
-```sh
-cargo init --lib kish-plugin-hello
-cd kish-plugin-hello
-```
+   ```sh
+   cargo init --lib yosh-plugin-hello
+   cd yosh-plugin-hello
+   ```
 
-2. Set the crate type and add the SDK dependency in `Cargo.toml`:
+2. Set up `Cargo.toml`:
 
-```toml
-[lib]
-crate-type = ["cdylib"]
+   ```toml
+   [package]
+   name = "yosh-plugin-hello"
+   version = "0.1.0"
+   edition = "2024"
 
-[dependencies]
-kish-plugin-sdk = { git = "https://github.com/k-ymmt/kish", path = "crates/kish-plugin-sdk" }
-```
+   [lib]
+   crate-type = ["cdylib"]
 
-3. Implement the plugin in `src/lib.rs`:
+   [dependencies]
+   yosh-plugin-sdk = "0.2"
 
-```rust
-use kish_plugin_sdk::{Plugin, PluginApi, Capability, export};
+   [package.metadata.component]
+   package = "yourname:hello"
 
-#[derive(Default)]
-struct HelloPlugin;
+   [package.metadata.component.target.dependencies."yosh:plugin"]
+   path = "<path-to-yosh-checkout>/crates/yosh-plugin-api/wit"
 
-impl Plugin for HelloPlugin {
-    fn commands(&self) -> &[&str] {
-        &["hello"]
-    }
+   [profile.release]
+   opt-level = "s"
+   lto = true
+   strip = true
+   panic = "abort"
+   ```
 
-    fn required_capabilities(&self) -> &[Capability] {
-        &[Capability::Io]
-    }
+   The `panic = "abort"` setting is required: it prevents Rust `std`'s
+   panic-string formatting from pulling in `wasi:cli/stderr` at link time.
 
-    fn exec(&mut self, api: &PluginApi, _command: &str, args: &[&str]) -> i32 {
-        let name = args.first().unwrap_or(&"world");
-        api.print(&format!("Hello, {name}!\n"));
-        0
-    }
-}
+3. Write `src/lib.rs`:
 
-export!(HelloPlugin);
-```
+   ```rust
+   use yosh_plugin_sdk::{Capability, Plugin, export, print};
 
-4. Build and install locally:
+   #[derive(Default)]
+   struct HelloPlugin;
 
-```sh
-cargo build --release
-kish plugin install target/release/libkish_plugin_hello.dylib
-kish plugin sync
-```
+   impl Plugin for HelloPlugin {
+       fn commands(&self) -> &[&'static str] { &["hello"] }
+       fn required_capabilities(&self) -> &[Capability] { &[Capability::Io] }
 
-5. Restart kish and use your plugin:
+       fn exec(&mut self, _command: &str, args: &[String]) -> i32 {
+           let name = args.first().map(String::as_str).unwrap_or("world");
+           let _ = print(&format!("Hello, {name}!\n"));
+           0
+       }
+   }
 
-```sh
-$ hello
-Hello, world!
-$ hello kish
-Hello, kish!
-```
+   export!(HelloPlugin);
+   ```
+
+4. Build:
+
+   ```sh
+   cargo install cargo-component --locked --version 0.18.0
+   rustup target add wasm32-wasip2
+   cargo component build --target wasm32-wasip2 --release
+   ```
+
+   This produces `target/wasm32-wasip2/release/yosh_plugin_hello.wasm`.
+
+5. Install locally:
+
+   ```sh
+   yosh plugin install target/wasm32-wasip2/release/yosh_plugin_hello.wasm
+   yosh plugin sync
+   ```
 
 ### The Plugin Trait
 
-The `Plugin` trait defines the interface between kish and your plugin:
+The `Plugin` trait defines the interface between yosh and your plugin:
 
 ```rust
-pub trait Plugin: Send + Default {
+pub trait Plugin: Default {
     /// Command names this plugin provides. (required)
-    fn commands(&self) -> &[&str];
+    fn commands(&self) -> &[&'static str];
 
     /// Capabilities this plugin requires. (default: none)
     fn required_capabilities(&self) -> &[Capability] { &[] }
 
+    /// Hook names this plugin implements. Must be declared explicitly. (default: none)
+    fn implemented_hooks(&self) -> &'static [HookName] { &[] }
+
     /// Called when the plugin is loaded. Return Err to abort. (optional)
-    fn on_load(&mut self, api: &PluginApi) -> Result<(), String> { Ok(()) }
+    fn on_load(&mut self) -> Result<(), String> { Ok(()) }
 
     /// Execute a command. Returns exit status. (required)
-    fn exec(&mut self, api: &PluginApi, command: &str, args: &[&str]) -> i32;
+    fn exec(&mut self, command: &str, args: &[String]) -> i32;
 
     /// Called before each command execution. (optional)
-    fn hook_pre_exec(&mut self, api: &PluginApi, cmd: &str) {}
+    fn hook_pre_exec(&mut self, cmd: &str) {}
 
     /// Called after each command execution. (optional)
-    fn hook_post_exec(&mut self, api: &PluginApi, cmd: &str, exit_code: i32) {}
+    fn hook_post_exec(&mut self, cmd: &str, exit_code: i32) {}
 
     /// Called when the working directory changes. (optional)
-    fn hook_on_cd(&mut self, api: &PluginApi, old_dir: &str, new_dir: &str) {}
+    fn hook_on_cd(&mut self, old_dir: &str, new_dir: &str) {}
 
     /// Called before the interactive prompt is displayed. (optional)
-    fn hook_pre_prompt(&mut self, api: &PluginApi) {}
+    fn hook_pre_prompt(&mut self) {}
 
     /// Called when the plugin is about to be unloaded. (optional)
     fn on_unload(&mut self) {}
 }
 ```
 
-Your struct must implement `Default` (used by the `export!` macro to instantiate the plugin) and `Send` (plugins may be accessed from different threads).
+Your struct must implement `Default` (used by the `export!` macro to instantiate the plugin).
 
-### PluginApi Reference
+The `implemented_hooks()` method is the explicit declaration mechanism for hooks. yosh only dispatches a hook to your plugin if the hook name appears in the slice returned by `implemented_hooks()`. This avoids unnecessary guest calls for plugins that don't use hooks, and the declaration is also cached in `plugins.lock` for fast startup filtering.
 
-The `PluginApi` provides safe access to shell internals. Each method maps to a capability:
+### Plugin API Reference
+
+All host functions are free functions imported from `yosh_plugin_sdk`. Each maps to a capability:
 
 #### Variables (`variables:read`, `variables:write`)
 
 ```rust
 // Read a shell variable
-let value: Option<String> = api.get_var("HOME");
+let value: Result<Option<String>, ErrorCode> = get_var("HOME");
 
 // Set a shell variable
-api.set_var("MY_VAR", "value")?;
+set_var("MY_VAR", "value")?;
 
 // Set and export a variable (visible to child processes)
-api.export_var("MY_VAR", "value")?;
+export_env("MY_VAR", "value")?;
 ```
 
 #### Filesystem (`filesystem`)
 
 ```rust
 // Get the current working directory
-let cwd: String = api.cwd();
-
-// Change the working directory
-api.set_cwd("/tmp")?;
+let cwd: Result<String, ErrorCode> = cwd();
 ```
 
 #### I/O (`io`)
 
 ```rust
 // Write to stdout
-api.print("output message\n");
+print("output message\n")?;
 
 // Write to stderr
-api.eprint("error message\n");
+eprint("error message\n")?;
 ```
 
 ### Hooks
 
-Hooks let your plugin respond to shell events without the user explicitly invoking a command. Declare the corresponding capability and implement the hook method:
+Hooks let your plugin respond to shell events without the user explicitly invoking a command. Declare the corresponding capability, implement the hook method, **and** list the hook in `implemented_hooks()`:
 
 ```rust
 fn required_capabilities(&self) -> &[Capability] {
@@ -281,12 +298,16 @@ fn required_capabilities(&self) -> &[Capability] {
     ]
 }
 
-fn hook_pre_prompt(&mut self, api: &PluginApi) {
-    // Update prompt information before each prompt
-    api.print(&format!("[{}] ", self.compute_status()));
+fn implemented_hooks(&self) -> &'static [HookName] {
+    &[HookName::PrePrompt, HookName::OnCd]
 }
 
-fn hook_on_cd(&mut self, api: &PluginApi, _old_dir: &str, new_dir: &str) {
+fn hook_pre_prompt(&mut self) {
+    // Update prompt information before each prompt
+    let _ = print(&format!("[{}] ", self.compute_status()));
+}
+
+fn hook_on_cd(&mut self, _old_dir: &str, new_dir: &str) {
     // React to directory changes
     self.scan_directory(new_dir);
 }
@@ -301,16 +322,16 @@ fn hook_on_cd(&mut self, api: &PluginApi, _old_dir: &str, new_dir: &str) {
 
 ### Style Utilities
 
-The SDK includes `kish_plugin_sdk::style` for ANSI terminal styling:
+The SDK includes `yosh_plugin_sdk::style` for ANSI terminal styling:
 
 ```rust
-use kish_plugin_sdk::style::{Style, Color};
+use yosh_plugin_sdk::style::{Style, Color};
 
 let styled = Style::new()
     .fg(Color::Green)
     .bold()
     .paint("success");
-api.print(&format!("{styled}\n"));
+let _ = print(&format!("{styled}\n"));
 
 // 256-color and RGB are also supported
 let custom = Style::new().fg(Color::Rgb(255, 100, 0)).paint("orange");
@@ -318,73 +339,60 @@ let custom = Style::new().fg(Color::Rgb(255, 100, 0)).paint("orange");
 
 ### The export! Macro
 
-The `export!` macro generates all required C ABI entry points for your plugin. Place it at the top level of your crate:
+The `export!` macro bridges your `Plugin` implementation into the WIT-generated guest bindings. Place it at the top level of your crate:
 
 ```rust
 export!(MyPlugin);
 ```
 
-This generates the following exported symbols automatically:
-- `kish_plugin_decl` - Returns plugin metadata (name, version, API version, capabilities)
-- `kish_plugin_init` - Initializes the plugin instance
-- `kish_plugin_commands` - Returns the list of commands
-- `kish_plugin_exec` - Dispatches command execution
-- `kish_plugin_hook_*` - Hook entry points
-- `kish_plugin_destroy` - Cleanup
+This generates all required WIT guest exports automatically, including `metadata`, `exec`, and each hook entry point. There is no `unsafe extern "C" fn` and no `#[no_mangle]` — everything is handled through the Component Model ABI produced by `wit-bindgen`.
 
-The plugin name and version are read from your `Cargo.toml` at compile time.
+The plugin name and version are read from your `Cargo.toml` at compile time via `env!("CARGO_PKG_NAME")` and `env!("CARGO_PKG_VERSION")`.
 
 ### Distributing via GitHub Releases
 
-To distribute your plugin through `kish plugin install`:
-
-1. Build shared libraries for each target platform:
+WebAssembly Components are platform-independent — build once, ship once:
 
 ```sh
-# macOS (Apple Silicon)
-cargo build --release --target aarch64-apple-darwin
-
-# macOS (Intel)
-cargo build --release --target x86_64-apple-darwin
-
-# Linux (x86_64)
-cargo build --release --target x86_64-unknown-linux-gnu
-
-# Linux (ARM64)
-cargo build --release --target aarch64-unknown-linux-gnu
+cargo component build --target wasm32-wasip2 --release
 ```
 
-2. Name the release assets following the default template:
+Attach `target/wasm32-wasip2/release/<crate_name>.wasm` to a GitHub release with a SemVer tag (`v1.0.0` or `1.0.0`). The default asset filename template is `{name}.wasm`.
 
-```
-lib{name}-{os}-{arch}.{ext}
-```
-
-For example, a plugin crate named `kish-plugin-git-status`:
-
-```
-libkish_plugin_git_status-macos-aarch64.dylib
-libkish_plugin_git_status-macos-x86_64.dylib
-libkish_plugin_git_status-linux-x86_64.so
-libkish_plugin_git_status-linux-aarch64.so
-```
-
-Note: hyphens in the crate name are replaced with underscores in the library filename.
-
-3. Create a GitHub release with a SemVer tag (e.g., `v1.0.0` or `1.0.0`) and attach the binaries as release assets.
-
-Users can then install your plugin with:
+Users install with:
 
 ```sh
-kish plugin install https://github.com/yourname/kish-plugin-git-status
+yosh plugin install https://github.com/yourname/yosh-plugin-hello
+yosh plugin sync
 ```
 
 ## Architecture
 
 The plugin system has two layers:
 
-- **kish (shell binary)** - Reads `plugins.lock` at startup, loads shared libraries via `dlopen`, dispatches commands and hooks to plugins, and enforces capability sandboxing at the API table level.
+- **yosh (shell binary)** — Reads `plugins.lock` at startup, validates the
+  `.wasm` SHA-256 and the cwasm cache key tuple, instantiates each plugin
+  via `wasmtime` (with the granted-capability host import set), and routes
+  commands and hooks through `with_env` (an RAII wrapper that binds the
+  live `ShellEnv` for the duration of a single guest call). Capability
+  allowlists are applied at linker construction: granted imports get the
+  real implementation; denied imports get deny-stubs that return
+  `Err(error-code::denied)`. Hooks dispatch is filtered both by capability
+  and by `plugin-info.implemented-hooks` (declared by the plugin author).
 
-- **kish-plugin (manager binary)** - Reads and writes `plugins.toml` (user configuration), downloads binaries from GitHub releases, computes SHA-256 checksums, and generates `plugins.lock`.
+- **yosh-plugin (manager binary)** — Reads and writes `plugins.toml` (user
+  configuration), downloads `.wasm` from GitHub releases, computes SHA-256,
+  precompiles to `~/.yosh/plugins/<name>/<basename>.cwasm` (mode 0600,
+  parent dir 0700), and writes `plugins.lock` with a four-tuple cache key
+  `(wasm_sha256, wasmtime_version, target_triple, engine_config_hash)`
+  plus cached `required_capabilities` and `implemented_hooks` for fast
+  `yosh-plugin list`. Calls each plugin's `metadata` once per sync via an
+  all-deny linker (5-second epoch watchdog) — `metadata` is contractually
+  forbidden from using host APIs.
 
-The separation between `plugins.toml` (what the user wants) and `plugins.lock` (what is actually installed) ensures reproducible plugin state across machines.
+The separation between `plugins.toml` (what the user wants) and
+`plugins.lock` (what is actually installed and precompiled) ensures
+reproducible plugin state across machines. The `.wasm` is the only
+trusted artifact; `.cwasm` is a regenerable cache validated at every shell
+startup against five conditions: same-uid ownership, file mode 0600, dir
+mode 0700, cache key tuple match, and source `.wasm` SHA-256 match.
