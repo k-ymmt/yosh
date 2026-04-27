@@ -2,6 +2,35 @@
 # POSIX E2E Test Runner for yosh
 # Discovers and runs .sh test files under e2e/, comparing actual output
 # against metadata expectations (EXPECT_OUTPUT, EXPECT_EXIT, EXPECT_STDERR).
+#
+# ── CI / Toolchain notes ─────────────────────────────────────────────────────
+# When adding GitHub Actions CI, include these steps before `cargo test`:
+#
+#   - name: Install wasm32-wasip2 target
+#     run: rustup target add wasm32-wasip2
+#
+#   - name: Cache cargo-component
+#     uses: actions/cache@v4
+#     with:
+#       path: ~/.cargo/bin/cargo-component
+#       key: cargo-component-0.18.0
+#
+#   - name: Install cargo-component
+#     run: |
+#       if ! command -v cargo-component >/dev/null; then
+#         cargo install cargo-component --locked --version 0.18.0
+#       fi
+#
+#   - name: Build wasm test plugins
+#     run: |
+#       cargo component build -p test_plugin --target wasm32-wasip2 --release
+#       cargo component build -p trap_plugin --target wasm32-wasip2 --release
+#
+#   - name: Run tests
+#     run: cargo test --workspace --features test-helpers
+#
+# Local tooling: mise.toml pins cargo-component = 0.18.0.
+# ─────────────────────────────────────────────────────────────────────────────
 
 set -u
 
@@ -51,6 +80,16 @@ done
 if [ ! -x "$SHELL_UNDER_TEST" ]; then
     printf "Error: shell not found or not executable: %s\n" "$SHELL_UNDER_TEST" >&2
     exit 1
+fi
+
+# ── Build wasm test plugins ──────────────────────────────────────────
+if ! command -v cargo-component >/dev/null 2>&1; then
+    printf "WARN: cargo-component not installed, skipping wasm test-plugin builds\n"
+    printf "       run: cargo install cargo-component --locked --version 0.18.0\n"
+else
+    printf ">>> Building wasm test plugins\n"
+    cargo component build -p test_plugin --target wasm32-wasip2 --release
+    cargo component build -p trap_plugin --target wasm32-wasip2 --release
 fi
 
 # ── Locate e2e directory ─────────────────────────────────────────────
