@@ -64,6 +64,8 @@ pub fn capability_from_str(s: &str) -> Option<u32> {
         "hooks:post_exec" => Some(yosh_plugin_api::CAP_HOOK_POST_EXEC),
         "hooks:on_cd" => Some(yosh_plugin_api::CAP_HOOK_ON_CD),
         "hooks:pre_prompt" => Some(yosh_plugin_api::CAP_HOOK_PRE_PROMPT),
+        "files:read" => Some(yosh_plugin_api::CAP_FILES_READ),
+        "files:write" => Some(yosh_plugin_api::CAP_FILES_WRITE),
         _ => None,
     }
 }
@@ -217,6 +219,13 @@ path = "/usr/lib/libtrusted.dylib"
             Some(CAP_HOOK_PRE_PROMPT)
         );
         assert_eq!(capability_from_str("unknown"), None);
+    }
+
+    #[test]
+    fn parse_files_capability_strings_to_bitflags() {
+        use yosh_plugin_api::*;
+        assert_eq!(capability_from_str("files:read"), Some(CAP_FILES_READ));
+        assert_eq!(capability_from_str("files:write"), Some(CAP_FILES_WRITE));
     }
 
     #[test]
