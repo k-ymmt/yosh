@@ -343,4 +343,147 @@ source = "local:{}"
         ));
         assert!(!outcome.any_updated);
     }
+
+    #[test]
+    fn update_name_filter_only_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("plugins.toml");
+        std::fs::write(
+            &config_path,
+            r#"[[plugin]]
+name = "alpha"
+source = "github:owner/alpha"
+version = "1.0.0"
+
+[[plugin]]
+name = "beta"
+source = "github:owner/beta"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut server = mockito::Server::new();
+        // Only beta should be queried.
+        let _m_beta = server
+            .mock("GET", "/repos/owner/beta/releases/latest")
+            .with_status(200)
+            .with_body(r#"{"tag_name": "v2.0.0"}"#)
+            .create();
+
+        let client = GitHubClientWithBase::new(&server.url()).into_client();
+        let outcome = update(&config_path, Some("beta"), &client).unwrap();
+
+        let alpha = outcome.results.iter().find(|r| r.name == "alpha").unwrap();
+        let beta = outcome.results.iter().find(|r| r.name == "beta").unwrap();
+        assert!(matches!(
+            alpha.status,
+            UpdateStatus::Skipped(SkipReason::NotMatched)
+        ));
+        assert!(matches!(beta.status, UpdateStatus::Updated { .. }));
+
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        let reparsed = after.parse::<DocumentMut>().unwrap();
+        let plugins = reparsed["plugin"].as_array_of_tables().unwrap();
+        let alpha_tbl = plugins
+            .iter()
+            .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("alpha"))
+            .unwrap();
+        let beta_tbl = plugins
+            .iter()
+            .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("beta"))
+            .unwrap();
+        assert_eq!(
+            alpha_tbl.get("version").and_then(|v| v.as_str()),
+            Some("1.0.0"),
+            "alpha should be untouched"
+        );
+        assert_eq!(
+            beta_tbl.get("version").and_then(|v| v.as_str()),
+            Some("2.0.0"),
+            "beta should be updated"
+        );
+    }
+
+    #[test]
+    fn update_no_changes_does_not_touch_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("plugins.toml");
+        let original = r#"[[plugin]]
+name = "foo"
+source = "github:owner/foo"
+version = "1.0.0"
+"#;
+        std::fs::write(&config_path, original).unwrap();
+
+        let mut server = mockito::Server::new();
+        // Latest equals current: no rewrite.
+        let _m = server
+            .mock("GET", "/repos/owner/foo/releases/latest")
+            .with_status(200)
+            .with_body(r#"{"tag_name": "v1.0.0"}"#)
+            .create();
+
+        let client = GitHubClientWithBase::new(&server.url()).into_client();
+        let outcome = update(&config_path, None, &client).unwrap();
+
+        assert!(!outcome.any_updated);
+        assert!(matches!(
+            outcome.results[0].status,
+            UpdateStatus::AlreadyLatest { .. }
+        ));
+
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(after, original, "file content must be byte-identical");
+    }
+
+    #[test]
+    fn update_partial_failure_persists_successes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("plugins.toml");
+        std::fs::write(
+            &config_path,
+            r#"[[plugin]]
+name = "good"
+source = "github:owner/good"
+version = "1.0.0"
+
+[[plugin]]
+name = "bad"
+source = "github:owner/bad"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut server = mockito::Server::new();
+        let _m_good = server
+            .mock("GET", "/repos/owner/good/releases/latest")
+            .with_status(200)
+            .with_body(r#"{"tag_name": "v2.0.0"}"#)
+            .create();
+        let _m_bad = server
+            .mock("GET", "/repos/owner/bad/releases/latest")
+            .with_status(404)
+            .create();
+
+        let client = GitHubClientWithBase::new(&server.url()).into_client();
+        let outcome = update(&config_path, None, &client).unwrap();
+
+        let good = outcome.results.iter().find(|r| r.name == "good").unwrap();
+        let bad = outcome.results.iter().find(|r| r.name == "bad").unwrap();
+        assert!(matches!(good.status, UpdateStatus::Updated { .. }));
+        assert!(
+            matches!(&bad.status, UpdateStatus::Failed(_)),
+            "bad should be Failed, got: {:?}",
+            bad.status
+        );
+
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            after.contains(r#"version = "2.0.0""#),
+            "good's update must be persisted, got:\n{}",
+            after
+        );
+    }
 }
