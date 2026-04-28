@@ -6,6 +6,7 @@ pub mod metadata_extract;
 pub mod precompile;
 pub mod resolve;
 pub mod sync;
+pub mod update;
 pub mod verify;
 
 /// wasmtime bindgen for the `plugin-world` WIT contract. The path is
