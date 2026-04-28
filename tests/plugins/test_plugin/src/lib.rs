@@ -1,5 +1,8 @@
 use std::sync::Mutex;
-use yosh_plugin_sdk::{Capability, HookName, Plugin, export, get_var, print, set_var};
+use yosh_plugin_sdk::{
+    Capability, ErrorCode, HookName, Plugin, export, get_var, print, read_file, set_var,
+    write_string,
+};
 
 static EVENT_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -12,7 +15,15 @@ struct TestPlugin;
 
 impl Plugin for TestPlugin {
     fn commands(&self) -> &[&'static str] {
-        &["test_cmd", "echo_var", "trap_now", "dump_events", "set_post_exec_marker"]
+        &[
+            "test_cmd",
+            "echo_var",
+            "trap_now",
+            "dump_events",
+            "set_post_exec_marker",
+            "read-file",
+            "write-file",
+        ]
     }
 
     fn required_capabilities(&self) -> &[Capability] {
@@ -22,6 +33,8 @@ impl Plugin for TestPlugin {
             Capability::Io,
             Capability::HookPreExec,
             Capability::HookOnCd,
+            Capability::FilesRead,
+            Capability::FilesWrite,
         ]
     }
 
@@ -70,6 +83,29 @@ impl Plugin for TestPlugin {
                 // baseline value before exercising call_post_exec.
                 let _ = set_var("YOSH_TEST_POST_EXEC_FIRED", "0");
                 0
+            }
+            "read-file" => {
+                let Some(path) = args.first() else { return 1 };
+                match read_file(path) {
+                    Ok(bytes) => {
+                        if bytes == b"YOSH_TEST_CONTENT\n" {
+                            0
+                        } else {
+                            5 // contents mismatch
+                        }
+                    }
+                    Err(ErrorCode::Denied)   => 13,
+                    Err(ErrorCode::NotFound) => 4,
+                    Err(_)                   => 1,
+                }
+            }
+            "write-file" => {
+                let Some(path) = args.first() else { return 1 };
+                match write_string(path, "YOSH_TEST_CONTENT\n") {
+                    Ok(()) => 0,
+                    Err(ErrorCode::Denied) => 13,
+                    Err(_) => 1,
+                }
             }
             _ => 127,
         }
