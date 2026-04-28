@@ -575,6 +575,8 @@ fn log_denied_capabilities(plugin_name: &str, denied: u32) {
         Capability::HookPostExec,
         Capability::HookOnCd,
         Capability::HookPrePrompt,
+        Capability::FilesRead,
+        Capability::FilesWrite,
     ];
     for cap in caps {
         if denied & cap.to_bitflag() != 0 {
