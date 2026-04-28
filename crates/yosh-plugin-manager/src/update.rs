@@ -67,9 +67,61 @@ pub fn update(
 /// on missing/duplicate match or on structural anomalies in the
 /// `plugin` key.
 pub fn set_plugin_version(
-    _doc: &mut DocumentMut,
-    _name: &str,
-    _new_version: &str,
+    doc: &mut DocumentMut,
+    name: &str,
+    new_version: &str,
 ) -> Result<(), String> {
-    unimplemented!("Task 2")
+    let plugin_item = doc
+        .get_mut("plugin")
+        .ok_or_else(|| format!("plugin '{}' not found in config", name))?;
+    let plugins = plugin_item
+        .as_array_of_tables_mut()
+        .ok_or_else(|| "config 'plugin' key is not an array of tables".to_string())?;
+
+    let matches: Vec<usize> = plugins
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| {
+            if t.get("name").and_then(|v| v.as_str()) == Some(name) {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    match matches.as_slice() {
+        [] => Err(format!("plugin '{}' not found in config", name)),
+        [idx] => {
+            plugins
+                .get_mut(*idx)
+                .expect("index from filter_map is in-bounds")
+                .insert("version", toml_edit::value(new_version));
+            Ok(())
+        }
+        _ => Err(format!(
+            "plugin '{}' appears multiple times in config",
+            name
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_version_basic_replaces_existing() {
+        let toml = r#"[[plugin]]
+name = "foo"
+source = "github:owner/foo"
+version = "1.0.0"
+enabled = true
+"#;
+        let mut doc = toml.parse::<DocumentMut>().unwrap();
+        set_plugin_version(&mut doc, "foo", "2.0.0").unwrap();
+        let out = doc.to_string();
+        assert!(out.contains(r#"version = "2.0.0""#), "out:\n{}", out);
+        assert!(!out.contains(r#"version = "1.0.0""#), "out:\n{}", out);
+    }
 }
