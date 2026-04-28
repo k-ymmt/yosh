@@ -70,7 +70,7 @@ silently rewriting the first match — closing the same class of
 - `pub fn set_plugin_version(doc: &mut DocumentMut, name: &str, new_version: &str) -> Result<(), String>` — pure TOML helper, independently testable.
 - `pub struct UpdateOutcome { results, any_updated }`.
 - `pub struct PluginUpdateResult { name, status }`.
-- `pub enum UpdateStatus { Updated { from, to }, AlreadyLatest, Failed(String), Skipped(SkipReason) }`.
+- `pub enum UpdateStatus { Updated { from, to }, AlreadyLatest { current }, Failed(String), Skipped(SkipReason) }`.
 - `pub enum SkipReason { NotMatched, LocalSource, NoCurrentVersion }`.
 
 ## Public API (sketch)
@@ -83,7 +83,7 @@ use crate::github::GitHubClient;
 
 pub enum UpdateStatus {
     Updated { from: String, to: String },
-    AlreadyLatest,
+    AlreadyLatest { current: String },
     Failed(String),
     Skipped(SkipReason),
 }
