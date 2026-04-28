@@ -29,9 +29,10 @@ pub enum SkipReason {
     NotMatched,
     /// Plugin source is `local:`, not GitHub.
     LocalSource,
-    /// Defensive: GitHub plugin has empty/missing `version` field.
-    /// `config::load_config` rejects this case, so it should be unreachable
-    /// in practice; kept so the loop can surface it cleanly if it ever fires.
+    /// GitHub plugin has an empty `version` field (`version = ""` in TOML).
+    /// `config::load_config` rejects a missing `version` key for GitHub
+    /// sources but accepts an empty string; this branch surfaces the empty
+    /// case explicitly rather than treating it as `"" → latest`.
     NoCurrentVersion,
 }
 
@@ -406,7 +407,7 @@ version = "1.0.0"
     }
 
     #[test]
-    fn update_no_changes_does_not_touch_file() {
+    fn update_no_changes_preserves_file_contents() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("plugins.toml");
         let original = r#"[[plugin]]

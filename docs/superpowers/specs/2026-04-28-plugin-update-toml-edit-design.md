@@ -214,6 +214,17 @@ cases:
   ordering) verbatim, so manifest layout outside the touched value is
   unchanged.
 
+One narrow path changes behavior toward correctness: when a GitHub
+plugin has `version = ""` in `plugins.toml` (legal at the schema layer —
+`config::load_config` rejects only a missing key, not an empty string),
+HEAD prints `"  <name>  → <latest>"` (note the awkward double space)
+and sets its `updated` flag to `true` *without* rewriting the manifest
+(the inner `if !current.is_empty()` guard skips the `replacen`),
+spuriously triggering `cmd_sync(false)`. The new flow surfaces the
+case as `Skipped(NoCurrentVersion)`, suppresses the print, and does
+not trigger `cmd_sync`. The legacy "phantom update" was itself a bug;
+the new behavior is intentional.
+
 ## Testing
 
 ### Unit tests (`update.rs::tests`) — no GitHub I/O
