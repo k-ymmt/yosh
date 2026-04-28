@@ -124,4 +124,92 @@ enabled = true
         assert!(out.contains(r#"version = "2.0.0""#), "out:\n{}", out);
         assert!(!out.contains(r#"version = "1.0.0""#), "out:\n{}", out);
     }
+
+    #[test]
+    fn set_version_same_version_siblings_no_collision() {
+        let toml = r#"[[plugin]]
+name = "alpha"
+source = "github:owner/alpha"
+version = "1.0.0"
+enabled = true
+
+[[plugin]]
+name = "beta"
+source = "github:owner/beta"
+version = "1.0.0"
+enabled = true
+"#;
+        let mut doc = toml.parse::<DocumentMut>().unwrap();
+        set_plugin_version(&mut doc, "beta", "1.1.0").unwrap();
+        let out = doc.to_string();
+
+        let reparsed = out.parse::<DocumentMut>().unwrap();
+        let plugins = reparsed["plugin"].as_array_of_tables().unwrap();
+        assert_eq!(plugins.len(), 2);
+
+        let alpha = plugins
+            .iter()
+            .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("alpha"))
+            .expect("alpha entry survives");
+        let beta = plugins
+            .iter()
+            .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("beta"))
+            .expect("beta entry survives");
+
+        assert_eq!(
+            alpha.get("version").and_then(|v| v.as_str()),
+            Some("1.0.0"),
+            "sibling alpha was modified"
+        );
+        assert_eq!(
+            beta.get("version").and_then(|v| v.as_str()),
+            Some("1.1.0"),
+            "target beta was not updated"
+        );
+    }
+
+    #[test]
+    fn set_version_preserves_comments_and_layout() {
+        let toml = r#"# yosh plugin manifest
+# managed by yosh-plugin
+
+[[plugin]]
+name = "foo"
+source = "github:owner/foo"
+version = "1.0.0"
+enabled = true
+"#;
+        let mut doc = toml.parse::<DocumentMut>().unwrap();
+        set_plugin_version(&mut doc, "foo", "1.1.0").unwrap();
+        let out = doc.to_string();
+        assert!(out.contains("# yosh plugin manifest"), "out:\n{}", out);
+        assert!(out.contains("# managed by yosh-plugin"), "out:\n{}", out);
+        assert!(out.contains(r#"version = "1.1.0""#), "out:\n{}", out);
+    }
+
+    #[test]
+    fn set_version_inserts_when_missing() {
+        let toml = r#"[[plugin]]
+name = "foo"
+source = "github:owner/foo"
+enabled = true
+"#;
+        let mut doc = toml.parse::<DocumentMut>().unwrap();
+        set_plugin_version(&mut doc, "foo", "1.0.0").unwrap();
+        let out = doc.to_string();
+        assert!(out.contains(r#"version = "1.0.0""#), "out:\n{}", out);
+    }
+
+    #[test]
+    fn set_version_unknown_name_errors() {
+        let toml = r#"[[plugin]]
+name = "foo"
+source = "github:owner/foo"
+version = "1.0.0"
+"#;
+        let mut doc = toml.parse::<DocumentMut>().unwrap();
+        let err = set_plugin_version(&mut doc, "nonexistent", "2.0.0").unwrap_err();
+        assert!(err.contains("nonexistent"), "err: {}", err);
+        assert!(err.contains("not found"), "err: {}", err);
+    }
 }
