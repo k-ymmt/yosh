@@ -73,7 +73,7 @@ pub fn set_plugin_version(
 ) -> Result<(), String> {
     let plugin_item = doc
         .get_mut("plugin")
-        .ok_or_else(|| format!("plugin '{}' not found in config", name))?;
+        .ok_or_else(|| "config has no [[plugin]] array".to_string())?;
     let plugins = plugin_item
         .as_array_of_tables_mut()
         .ok_or_else(|| "config 'plugin' key is not an array of tables".to_string())?;
