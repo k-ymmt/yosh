@@ -220,9 +220,179 @@ pub(super) fn deny_io_write(
     Err(ErrorCode::Denied)
 }
 
-// ── yosh:plugin/files host imports (deny stubs only — real impls in Task 4) ──
+// ── yosh:plugin/files host imports ───────────────────────────────────
 
 use super::generated::yosh::plugin::files::{DirEntry, FileStat};
+use std::time::UNIX_EPOCH;
+
+pub(super) fn host_files_read_file(
+    ctx: &mut HostContext,
+    path: String,
+) -> Result<Vec<u8>, ErrorCode> {
+    if ctx.env_mut().is_none() {
+        return Err(ErrorCode::Denied);
+    }
+    if path.is_empty() {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ErrorCode::NotFound),
+        Err(_) => Err(ErrorCode::IoFailed),
+    }
+}
+
+pub(super) fn host_files_read_dir(
+    ctx: &mut HostContext,
+    path: String,
+) -> Result<Vec<DirEntry>, ErrorCode> {
+    if ctx.env_mut().is_none() {
+        return Err(ErrorCode::Denied);
+    }
+    if path.is_empty() {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    let iter = match std::fs::read_dir(&path) {
+        Ok(i) => i,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ErrorCode::NotFound),
+        Err(_) => return Err(ErrorCode::IoFailed),
+    };
+    let mut out = Vec::new();
+    for entry in iter {
+        let entry = entry.map_err(|_| ErrorCode::IoFailed)?;
+        let ft = entry.file_type().map_err(|_| ErrorCode::IoFailed)?;
+        out.push(DirEntry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            is_file: ft.is_file(),
+            is_dir: ft.is_dir(),
+            is_symlink: ft.is_symlink(),
+        });
+    }
+    Ok(out)
+}
+
+pub(super) fn host_files_metadata(
+    ctx: &mut HostContext,
+    path: String,
+) -> Result<FileStat, ErrorCode> {
+    if ctx.env_mut().is_none() {
+        return Err(ErrorCode::Denied);
+    }
+    if path.is_empty() {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    let md = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ErrorCode::NotFound),
+        Err(_) => return Err(ErrorCode::IoFailed),
+    };
+    let mtime_secs = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(-1);
+    Ok(FileStat {
+        is_file: md.is_file(),
+        is_dir: md.is_dir(),
+        is_symlink: md.file_type().is_symlink(),
+        size: md.len(),
+        mtime_secs,
+    })
+}
+
+pub(super) fn host_files_write_file(
+    ctx: &mut HostContext,
+    path: String,
+    data: Vec<u8>,
+) -> Result<(), ErrorCode> {
+    if ctx.env_mut().is_none() {
+        return Err(ErrorCode::Denied);
+    }
+    if path.is_empty() {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    std::fs::write(&path, &data).map_err(|_| ErrorCode::IoFailed)
+}
+
+pub(super) fn host_files_append_file(
+    ctx: &mut HostContext,
+    path: String,
+    data: Vec<u8>,
+) -> Result<(), ErrorCode> {
+    if ctx.env_mut().is_none() {
+        return Err(ErrorCode::Denied);
+    }
+    if path.is_empty() {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|_| ErrorCode::IoFailed)?;
+    f.write_all(&data).map_err(|_| ErrorCode::IoFailed)
+}
+
+pub(super) fn host_files_create_dir(
+    ctx: &mut HostContext,
+    path: String,
+    recursive: bool,
+) -> Result<(), ErrorCode> {
+    if ctx.env_mut().is_none() {
+        return Err(ErrorCode::Denied);
+    }
+    if path.is_empty() {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    let result = if recursive {
+        std::fs::create_dir_all(&path)
+    } else {
+        std::fs::create_dir(&path)
+    };
+    result.map_err(|_| ErrorCode::IoFailed)
+}
+
+pub(super) fn host_files_remove_file(
+    ctx: &mut HostContext,
+    path: String,
+) -> Result<(), ErrorCode> {
+    if ctx.env_mut().is_none() {
+        return Err(ErrorCode::Denied);
+    }
+    if path.is_empty() {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ErrorCode::NotFound),
+        Err(_) => Err(ErrorCode::IoFailed),
+    }
+}
+
+pub(super) fn host_files_remove_dir(
+    ctx: &mut HostContext,
+    path: String,
+    recursive: bool,
+) -> Result<(), ErrorCode> {
+    if ctx.env_mut().is_none() {
+        return Err(ErrorCode::Denied);
+    }
+    if path.is_empty() {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    let result = if recursive {
+        std::fs::remove_dir_all(&path)
+    } else {
+        std::fs::remove_dir(&path)
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ErrorCode::NotFound),
+        Err(_) => Err(ErrorCode::IoFailed),
+    }
+}
 
 pub(super) fn deny_files_read_file(
     _ctx: &mut HostContext,
@@ -348,6 +518,66 @@ mod tests {
     fn metadata_contract_real_variables_export_env_denied_when_env_null() {
         let mut ctx = null_env_ctx();
         let result = host_variables_export_env(&mut ctx, "FOO".into(), "bar".into());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_files_read_file_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_files_read_file(&mut ctx, "/tmp/anything".into());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_files_read_dir_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_files_read_dir(&mut ctx, "/tmp".into());
+        // `Vec<DirEntry>` doesn't impl `PartialEq` (bindgen-generated), so
+        // match on the error variant directly.
+        assert!(matches!(result, Err(ErrorCode::Denied)));
+    }
+
+    #[test]
+    fn metadata_contract_real_files_metadata_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_files_metadata(&mut ctx, "/tmp".into());
+        // `FileStat` doesn't impl `PartialEq` (bindgen-generated), so match
+        // on the error variant directly.
+        assert!(matches!(result, Err(ErrorCode::Denied)));
+    }
+
+    #[test]
+    fn metadata_contract_real_files_write_file_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_files_write_file(&mut ctx, "/tmp/x".into(), b"hi".to_vec());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_files_append_file_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_files_append_file(&mut ctx, "/tmp/x".into(), b"hi".to_vec());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_files_create_dir_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_files_create_dir(&mut ctx, "/tmp/newdir".into(), true);
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_files_remove_file_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_files_remove_file(&mut ctx, "/tmp/x".into());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn metadata_contract_real_files_remove_dir_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_files_remove_dir(&mut ctx, "/tmp/newdir".into(), true);
         assert_eq!(result, Err(ErrorCode::Denied));
     }
 }

@@ -14,8 +14,8 @@
 //!    preopens, no stdio, no environment, no args — the plugin can name
 //!    `wasi:cli/environment` etc. but every probe returns empty.
 //!
-//! 2. **`yosh:plugin/{variables,filesystem,io}`** — registered with either
-//!    the real implementation from `host.rs` or a deny-stub returning
+//! 2. **`yosh:plugin/{variables,filesystem,files,io}`** — registered with
+//!    either the real implementation from `host.rs` or a deny-stub returning
 //!    `Err(Denied)` based on the granted-capability bitfield.
 
 use wasmtime::Engine;
@@ -33,6 +33,9 @@ use super::host::{
     deny_files_remove_file, deny_files_write_file,
     deny_filesystem_cwd, deny_filesystem_set_cwd, deny_io_write,
     deny_variables_export_env, deny_variables_get, deny_variables_set,
+    host_files_append_file, host_files_create_dir, host_files_metadata,
+    host_files_read_dir, host_files_read_file, host_files_remove_dir,
+    host_files_remove_file, host_files_write_file,
     host_filesystem_cwd, host_filesystem_set_cwd, host_io_write,
     host_variables_export_env, host_variables_get, host_variables_set,
 };
@@ -149,15 +152,14 @@ pub fn build_linker(
 
     // Read group — gated by CAP_FILES_READ
     if has(allowed, CAP_FILES_READ) {
-        // Real impls land in Task 4; until then, granted reads also deny.
         files.func_wrap("read-file", |mut store, (path,): (String,)| {
-            Ok((deny_files_read_file(store.data_mut(), path),))
+            Ok((host_files_read_file(store.data_mut(), path),))
         })?;
         files.func_wrap("read-dir", |mut store, (path,): (String,)| {
-            Ok((deny_files_read_dir(store.data_mut(), path),))
+            Ok((host_files_read_dir(store.data_mut(), path),))
         })?;
         files.func_wrap("metadata", |mut store, (path,): (String,)| {
-            Ok((deny_files_metadata(store.data_mut(), path),))
+            Ok((host_files_metadata(store.data_mut(), path),))
         })?;
     } else {
         files.func_wrap("read-file", |mut store, (path,): (String,)| {
@@ -174,19 +176,19 @@ pub fn build_linker(
     // Write group — gated by CAP_FILES_WRITE
     if has(allowed, CAP_FILES_WRITE) {
         files.func_wrap("write-file", |mut store, (path, data): (String, Vec<u8>)| {
-            Ok((deny_files_write_file(store.data_mut(), path, data),))
+            Ok((host_files_write_file(store.data_mut(), path, data),))
         })?;
         files.func_wrap("append-file", |mut store, (path, data): (String, Vec<u8>)| {
-            Ok((deny_files_append_file(store.data_mut(), path, data),))
+            Ok((host_files_append_file(store.data_mut(), path, data),))
         })?;
         files.func_wrap("create-dir", |mut store, (path, recursive): (String, bool)| {
-            Ok((deny_files_create_dir(store.data_mut(), path, recursive),))
+            Ok((host_files_create_dir(store.data_mut(), path, recursive),))
         })?;
         files.func_wrap("remove-file", |mut store, (path,): (String,)| {
-            Ok((deny_files_remove_file(store.data_mut(), path),))
+            Ok((host_files_remove_file(store.data_mut(), path),))
         })?;
         files.func_wrap("remove-dir", |mut store, (path, recursive): (String, bool)| {
-            Ok((deny_files_remove_dir(store.data_mut(), path, recursive),))
+            Ok((host_files_remove_dir(store.data_mut(), path, recursive),))
         })?;
     } else {
         files.func_wrap("write-file", |mut store, (path, data): (String, Vec<u8>)| {
