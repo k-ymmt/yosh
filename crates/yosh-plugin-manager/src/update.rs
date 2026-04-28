@@ -55,11 +55,76 @@ pub struct UpdateOutcome {
 /// `DocumentMut`, and writes the result back exactly once if anything
 /// changed.
 pub fn update(
-    _config_path: &Path,
-    _name_filter: Option<&str>,
-    _client: &GitHubClient,
+    config_path: &Path,
+    name_filter: Option<&str>,
+    client: &GitHubClient,
 ) -> Result<UpdateOutcome, String> {
-    unimplemented!("Task 5")
+    let content = std::fs::read_to_string(config_path)
+        .map_err(|e| format!("{}: {}", config_path.display(), e))?;
+    let mut doc: DocumentMut = content
+        .parse()
+        .map_err(|e| format!("{}: {}", config_path.display(), e))?;
+
+    let decls = config::load_config(config_path)?;
+
+    let mut results = Vec::with_capacity(decls.len());
+    let mut any_updated = false;
+
+    for decl in &decls {
+        if name_filter.is_some_and(|f| decl.name != f) {
+            results.push(PluginUpdateResult {
+                name: decl.name.clone(),
+                status: UpdateStatus::Skipped(SkipReason::NotMatched),
+            });
+            continue;
+        }
+
+        let (owner, repo) = match &decl.source {
+            config::PluginSource::GitHub { owner, repo } => (owner, repo),
+            config::PluginSource::Local { .. } => {
+                results.push(PluginUpdateResult {
+                    name: decl.name.clone(),
+                    status: UpdateStatus::Skipped(SkipReason::LocalSource),
+                });
+                continue;
+            }
+        };
+
+        let current = match decl.version.as_deref() {
+            Some(v) if !v.is_empty() => v.to_string(),
+            _ => {
+                results.push(PluginUpdateResult {
+                    name: decl.name.clone(),
+                    status: UpdateStatus::Skipped(SkipReason::NoCurrentVersion),
+                });
+                continue;
+            }
+        };
+
+        let status = match client.latest_version(owner, repo) {
+            Ok(latest) if latest == current => UpdateStatus::AlreadyLatest { current },
+            Ok(latest) => match set_plugin_version(&mut doc, &decl.name, &latest) {
+                Ok(()) => {
+                    any_updated = true;
+                    UpdateStatus::Updated { from: current, to: latest }
+                }
+                Err(e) => UpdateStatus::Failed(e),
+            },
+            Err(e) => UpdateStatus::Failed(e),
+        };
+
+        results.push(PluginUpdateResult {
+            name: decl.name.clone(),
+            status,
+        });
+    }
+
+    if any_updated {
+        std::fs::write(config_path, doc.to_string())
+            .map_err(|e| format!("write {}: {}", config_path.display(), e))?;
+    }
+
+    Ok(UpdateOutcome { results, any_updated })
 }
 
 /// Pure TOML helper: locate the `[[plugin]]` table whose `name` equals
@@ -109,6 +174,7 @@ pub fn set_plugin_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::GitHubClientWithBase;
 
     #[test]
     fn set_version_basic_replaces_existing() {
@@ -244,5 +310,37 @@ version = "2.0.0"
         let mut doc = toml.parse::<DocumentMut>().unwrap();
         let err = set_plugin_version(&mut doc, "foo", "3.0.0").unwrap_err();
         assert!(err.contains("multiple"), "err: {}", err);
+    }
+
+    #[test]
+    fn update_skips_local_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("plugins.toml");
+        // Stage a local plugin file so config::load_config doesn't trip on the path.
+        let plugin_file = dir.path().join("local.wasm");
+        std::fs::write(&plugin_file, b"\0asm\x01\0\0\0").unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"[[plugin]]
+name = "local-only"
+source = "local:{}"
+"#,
+                plugin_file.display()
+            ),
+        )
+        .unwrap();
+
+        // Point at an unreachable base; if update tries to call out, the
+        // test would either hang or fail. LocalSource skip should bypass.
+        let client = GitHubClientWithBase::new("http://127.0.0.1:1").into_client();
+        let outcome = update(&config_path, None, &client).unwrap();
+
+        assert_eq!(outcome.results.len(), 1);
+        assert!(matches!(
+            outcome.results[0].status,
+            UpdateStatus::Skipped(SkipReason::LocalSource)
+        ));
+        assert!(!outcome.any_updated);
     }
 }

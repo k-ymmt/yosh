@@ -215,6 +215,13 @@ impl GitHubClientWithBase {
     pub fn download(&self, url: &str, dest: &Path) -> Result<(), String> {
         self.inner.download(url, dest)
     }
+
+    /// Unwrap to a plain `GitHubClient` so callers that need the
+    /// concrete type (e.g. `update::update`'s signature) can be driven
+    /// against a mockito server in tests.
+    pub fn into_client(self) -> GitHubClient {
+        self.inner
+    }
 }
 
 #[cfg(test)]
