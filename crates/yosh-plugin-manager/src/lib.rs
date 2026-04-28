@@ -134,60 +134,34 @@ fn cmd_sync(prune: bool) -> i32 {
 
 fn cmd_update(name_filter: Option<&str>) -> i32 {
     let config_path = sync::config_path();
-    let decls = match config::load_config(&config_path) {
-        Ok(d) => d,
+    let client = github::GitHubClient::new();
+    let outcome = match update::update(&config_path, name_filter, &client) {
+        Ok(o) => o,
         Err(e) => {
             eprintln!("yosh-plugin: {}", e);
             return 2;
         }
     };
 
-    let client = github::GitHubClient::new();
-
-    let content = match std::fs::read_to_string(&config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("yosh-plugin: {}: {}", config_path.display(), e);
-            return 2;
-        }
-    };
-    let mut new_content = content.clone();
-    let mut updated = false;
-
-    for decl in &decls {
-        if name_filter.is_some_and(|f| decl.name != f) {
-            continue;
-        }
-        if let config::PluginSource::GitHub { owner, repo } = &decl.source {
-            match client.latest_version(owner, repo) {
-                Ok(latest) => {
-                    let current = decl.version.as_deref().unwrap_or("");
-                    if latest != current {
-                        eprintln!("  {} {} \u{2192} {}", decl.name, current, latest);
-                        if !current.is_empty() {
-                            new_content = new_content.replacen(
-                                &format!("version = \"{}\"", current),
-                                &format!("version = \"{}\"", latest),
-                                1,
-                            );
-                        }
-                        updated = true;
-                    } else {
-                        eprintln!("  {} {} (already latest)", decl.name, current);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("  \u{2717} {}: {}", decl.name, e);
-                }
+    for result in &outcome.results {
+        match &result.status {
+            update::UpdateStatus::Updated { from, to } => {
+                eprintln!("  {} {} \u{2192} {}", result.name, from, to);
+            }
+            update::UpdateStatus::AlreadyLatest { current } => {
+                eprintln!("  {} {} (already latest)", result.name, current);
+            }
+            update::UpdateStatus::Failed(e) => {
+                eprintln!("  \u{2717} {}: {}", result.name, e);
+            }
+            update::UpdateStatus::Skipped(_) => {
+                // Silent: matches HEAD's behavior of not surfacing
+                // name_filter mismatches or local-source skips.
             }
         }
     }
 
-    if updated {
-        if let Err(e) = std::fs::write(&config_path, &new_content) {
-            eprintln!("yosh-plugin: write {}: {}", config_path.display(), e);
-            return 2;
-        }
+    if outcome.any_updated {
         return cmd_sync(false);
     }
 
