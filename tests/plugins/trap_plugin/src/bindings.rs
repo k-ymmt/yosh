@@ -457,6 +457,472 @@ pub mod yosh {
             }
         }
         #[allow(dead_code, clippy::all)]
+        pub mod files {
+            #[used]
+            #[doc(hidden)]
+            static __FORCE_SECTION_REF: fn() = super::super::super::__link_custom_section_describing_imports;
+            use super::super::super::_rt;
+            pub type ErrorCode = super::super::super::yosh::plugin::types::ErrorCode;
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            pub struct FileStat {
+                pub is_file: bool,
+                pub is_dir: bool,
+                pub is_symlink: bool,
+                pub size: u64,
+                pub mtime_secs: i64,
+            }
+            impl ::core::fmt::Debug for FileStat {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("FileStat")
+                        .field("is-file", &self.is_file)
+                        .field("is-dir", &self.is_dir)
+                        .field("is-symlink", &self.is_symlink)
+                        .field("size", &self.size)
+                        .field("mtime-secs", &self.mtime_secs)
+                        .finish()
+                }
+            }
+            #[derive(Clone)]
+            pub struct DirEntry {
+                pub name: _rt::String,
+                pub is_file: bool,
+                pub is_dir: bool,
+                pub is_symlink: bool,
+            }
+            impl ::core::fmt::Debug for DirEntry {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("DirEntry")
+                        .field("name", &self.name)
+                        .field("is-file", &self.is_file)
+                        .field("is-dir", &self.is_dir)
+                        .field("is-symlink", &self.is_symlink)
+                        .finish()
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            pub fn read_file(path: &str) -> Result<_rt::Vec<u8>, ErrorCode> {
+                unsafe {
+                    #[repr(align(1))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 9]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 9]);
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    extern "C" {
+                        #[link_name = "read-file"]
+                        fn wit_import(_: *mut u8, _: usize, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fn wit_import(_: *mut u8, _: usize, _: *mut u8) {
+                        unreachable!()
+                    }
+                    wit_import(ptr0.cast_mut(), len0, ptr1);
+                    let l2 = i32::from(*ptr1.add(0).cast::<u8>());
+                    match l2 {
+                        0 => {
+                            let e = {
+                                let l3 = *ptr1.add(1).cast::<*mut u8>();
+                                let l4 = *ptr1.add(5).cast::<usize>();
+                                let len5 = l4;
+                                _rt::Vec::from_raw_parts(l3.cast(), len5, len5)
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l6 = i32::from(*ptr1.add(1).cast::<u8>());
+                                super::super::super::yosh::plugin::types::ErrorCode::_lift(
+                                    l6 as u8,
+                                )
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    }
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            pub fn read_dir(path: &str) -> Result<_rt::Vec<DirEntry>, ErrorCode> {
+                unsafe {
+                    #[repr(align(1))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 9]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 9]);
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    extern "C" {
+                        #[link_name = "read-dir"]
+                        fn wit_import(_: *mut u8, _: usize, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fn wit_import(_: *mut u8, _: usize, _: *mut u8) {
+                        unreachable!()
+                    }
+                    wit_import(ptr0.cast_mut(), len0, ptr1);
+                    let l2 = i32::from(*ptr1.add(0).cast::<u8>());
+                    match l2 {
+                        0 => {
+                            let e = {
+                                let l3 = *ptr1.add(1).cast::<*mut u8>();
+                                let l4 = *ptr1.add(5).cast::<usize>();
+                                let base11 = l3;
+                                let len11 = l4;
+                                let mut result11 = _rt::Vec::with_capacity(len11);
+                                for i in 0..len11 {
+                                    let base = base11.add(i * 11);
+                                    let e11 = {
+                                        let l5 = *base.add(0).cast::<*mut u8>();
+                                        let l6 = *base.add(4).cast::<usize>();
+                                        let len7 = l6;
+                                        let bytes7 = _rt::Vec::from_raw_parts(
+                                            l5.cast(),
+                                            len7,
+                                            len7,
+                                        );
+                                        let l8 = i32::from(*base.add(8).cast::<u8>());
+                                        let l9 = i32::from(*base.add(9).cast::<u8>());
+                                        let l10 = i32::from(*base.add(10).cast::<u8>());
+                                        DirEntry {
+                                            name: _rt::string_lift(bytes7),
+                                            is_file: _rt::bool_lift(l8 as u8),
+                                            is_dir: _rt::bool_lift(l9 as u8),
+                                            is_symlink: _rt::bool_lift(l10 as u8),
+                                        }
+                                    };
+                                    result11.push(e11);
+                                }
+                                _rt::cabi_dealloc(base11, len11 * 11, 1);
+                                result11
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l12 = i32::from(*ptr1.add(1).cast::<u8>());
+                                super::super::super::yosh::plugin::types::ErrorCode::_lift(
+                                    l12 as u8,
+                                )
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    }
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            pub fn metadata(path: &str) -> Result<FileStat, ErrorCode> {
+                unsafe {
+                    #[repr(align(8))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 32]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 32]);
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    extern "C" {
+                        #[link_name = "metadata"]
+                        fn wit_import(_: *mut u8, _: usize, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fn wit_import(_: *mut u8, _: usize, _: *mut u8) {
+                        unreachable!()
+                    }
+                    wit_import(ptr0.cast_mut(), len0, ptr1);
+                    let l2 = i32::from(*ptr1.add(0).cast::<u8>());
+                    match l2 {
+                        0 => {
+                            let e = {
+                                let l3 = i32::from(*ptr1.add(8).cast::<u8>());
+                                let l4 = i32::from(*ptr1.add(9).cast::<u8>());
+                                let l5 = i32::from(*ptr1.add(10).cast::<u8>());
+                                let l6 = *ptr1.add(16).cast::<i64>();
+                                let l7 = *ptr1.add(24).cast::<i64>();
+                                FileStat {
+                                    is_file: _rt::bool_lift(l3 as u8),
+                                    is_dir: _rt::bool_lift(l4 as u8),
+                                    is_symlink: _rt::bool_lift(l5 as u8),
+                                    size: l6 as u64,
+                                    mtime_secs: l7,
+                                }
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l8 = i32::from(*ptr1.add(8).cast::<u8>());
+                                super::super::super::yosh::plugin::types::ErrorCode::_lift(
+                                    l8 as u8,
+                                )
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    }
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            pub fn write_file(path: &str, data: &[u8]) -> Result<(), ErrorCode> {
+                unsafe {
+                    #[repr(align(1))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 2]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 2]);
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let vec1 = data;
+                    let ptr1 = vec1.as_ptr().cast::<u8>();
+                    let len1 = vec1.len();
+                    let ptr2 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    extern "C" {
+                        #[link_name = "write-file"]
+                        fn wit_import(
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                        );
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fn wit_import(
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                    ) {
+                        unreachable!()
+                    }
+                    wit_import(ptr0.cast_mut(), len0, ptr1.cast_mut(), len1, ptr2);
+                    let l3 = i32::from(*ptr2.add(0).cast::<u8>());
+                    match l3 {
+                        0 => {
+                            let e = ();
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l4 = i32::from(*ptr2.add(1).cast::<u8>());
+                                super::super::super::yosh::plugin::types::ErrorCode::_lift(
+                                    l4 as u8,
+                                )
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    }
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            pub fn append_file(path: &str, data: &[u8]) -> Result<(), ErrorCode> {
+                unsafe {
+                    #[repr(align(1))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 2]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 2]);
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let vec1 = data;
+                    let ptr1 = vec1.as_ptr().cast::<u8>();
+                    let len1 = vec1.len();
+                    let ptr2 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    extern "C" {
+                        #[link_name = "append-file"]
+                        fn wit_import(
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                        );
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fn wit_import(
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                    ) {
+                        unreachable!()
+                    }
+                    wit_import(ptr0.cast_mut(), len0, ptr1.cast_mut(), len1, ptr2);
+                    let l3 = i32::from(*ptr2.add(0).cast::<u8>());
+                    match l3 {
+                        0 => {
+                            let e = ();
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l4 = i32::from(*ptr2.add(1).cast::<u8>());
+                                super::super::super::yosh::plugin::types::ErrorCode::_lift(
+                                    l4 as u8,
+                                )
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    }
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            pub fn create_dir(path: &str, recursive: bool) -> Result<(), ErrorCode> {
+                unsafe {
+                    #[repr(align(1))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 2]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 2]);
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    extern "C" {
+                        #[link_name = "create-dir"]
+                        fn wit_import(_: *mut u8, _: usize, _: i32, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fn wit_import(_: *mut u8, _: usize, _: i32, _: *mut u8) {
+                        unreachable!()
+                    }
+                    wit_import(
+                        ptr0.cast_mut(),
+                        len0,
+                        match &recursive {
+                            true => 1,
+                            false => 0,
+                        },
+                        ptr1,
+                    );
+                    let l2 = i32::from(*ptr1.add(0).cast::<u8>());
+                    match l2 {
+                        0 => {
+                            let e = ();
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l3 = i32::from(*ptr1.add(1).cast::<u8>());
+                                super::super::super::yosh::plugin::types::ErrorCode::_lift(
+                                    l3 as u8,
+                                )
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    }
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            pub fn remove_file(path: &str) -> Result<(), ErrorCode> {
+                unsafe {
+                    #[repr(align(1))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 2]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 2]);
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    extern "C" {
+                        #[link_name = "remove-file"]
+                        fn wit_import(_: *mut u8, _: usize, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fn wit_import(_: *mut u8, _: usize, _: *mut u8) {
+                        unreachable!()
+                    }
+                    wit_import(ptr0.cast_mut(), len0, ptr1);
+                    let l2 = i32::from(*ptr1.add(0).cast::<u8>());
+                    match l2 {
+                        0 => {
+                            let e = ();
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l3 = i32::from(*ptr1.add(1).cast::<u8>());
+                                super::super::super::yosh::plugin::types::ErrorCode::_lift(
+                                    l3 as u8,
+                                )
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    }
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            pub fn remove_dir(path: &str, recursive: bool) -> Result<(), ErrorCode> {
+                unsafe {
+                    #[repr(align(1))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 2]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 2]);
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    extern "C" {
+                        #[link_name = "remove-dir"]
+                        fn wit_import(_: *mut u8, _: usize, _: i32, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fn wit_import(_: *mut u8, _: usize, _: i32, _: *mut u8) {
+                        unreachable!()
+                    }
+                    wit_import(
+                        ptr0.cast_mut(),
+                        len0,
+                        match &recursive {
+                            true => 1,
+                            false => 0,
+                        },
+                        ptr1,
+                    );
+                    let l2 = i32::from(*ptr1.add(0).cast::<u8>());
+                    match l2 {
+                        0 => {
+                            let e = ();
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l3 = i32::from(*ptr1.add(1).cast::<u8>());
+                                super::super::super::yosh::plugin::types::ErrorCode::_lift(
+                                    l3 as u8,
+                                )
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    }
+                }
+            }
+        }
+        #[allow(dead_code, clippy::all)]
         pub mod io {
             #[used]
             #[doc(hidden)]
@@ -875,11 +1341,17 @@ mod _rt {
             core::hint::unreachable_unchecked()
         }
     }
-    #[cfg(target_arch = "wasm32")]
-    pub fn run_ctors_once() {
-        wit_bindgen_rt::run_ctors_once();
+    pub unsafe fn bool_lift(val: u8) -> bool {
+        if cfg!(debug_assertions) {
+            match val {
+                0 => false,
+                1 => true,
+                _ => panic!("invalid bool discriminant"),
+            }
+        } else {
+            val != 0
+        }
     }
-    pub use alloc_crate::alloc;
     pub unsafe fn cabi_dealloc(ptr: *mut u8, size: usize, align: usize) {
         if size == 0 {
             return;
@@ -887,6 +1359,11 @@ mod _rt {
         let layout = alloc::Layout::from_size_align_unchecked(size, align);
         alloc::dealloc(ptr, layout);
     }
+    #[cfg(target_arch = "wasm32")]
+    pub fn run_ctors_once() {
+        wit_bindgen_rt::run_ctors_once();
+    }
+    pub use alloc_crate::alloc;
     pub fn as_i32<T: AsI32>(t: T) -> i32 {
         t.as_i32()
     }
@@ -984,9 +1461,9 @@ pub(crate) use __export_plugin_world_impl as export;
 #[cfg(target_arch = "wasm32")]
 #[link_section = "component-type:wit-bindgen:0.31.0:yosh:plugin@0.1.0:plugin-world:encoded world"]
 #[doc(hidden)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1131] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xe8\x07\x01A\x02\x01\
-A\x0f\x01B\x0a\x01m\x05\x06denied\x10invalid-argument\x09io-failed\x09not-found\x05\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1530] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xf7\x0a\x01A\x02\x01\
+A\x11\x01B\x0a\x01m\x05\x06denied\x10invalid-argument\x09io-failed\x09not-found\x05\
 other\x04\0\x0aerror-code\x03\0\0\x01m\x02\x06stdout\x06stderr\x04\0\x09io-strea\
 m\x03\0\x02\x01m\x04\x08pre-exec\x09post-exec\x05on-cd\x0apre-prompt\x04\0\x09ho\
 ok-name\x03\0\x04\x01ps\x01p\x05\x01r\x05\x04names\x07versions\x08commands\x06\x15\
@@ -998,19 +1475,29 @@ required-capabilities\x06\x11implemented-hooks\x07\x04\0\x0bplugin-info\x03\0\x0
 iables@0.1.0\x05\x02\x01B\x08\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\x01\
 j\x01s\x01\x01\x01@\0\0\x02\x04\0\x03cwd\x01\x03\x01j\0\x01\x01\x01@\x01\x04path\
 s\0\x04\x04\0\x07set-cwd\x01\x05\x03\x01\x1cyosh:plugin/filesystem@0.1.0\x05\x03\
-\x02\x03\0\0\x09io-stream\x01B\x08\x02\x03\x02\x01\x04\x04\0\x09io-stream\x03\0\0\
-\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\x02\x01p}\x01j\0\x01\x03\x01@\x02\
-\x06target\x01\x04data\x04\0\x05\x04\0\x05write\x01\x06\x03\x01\x14yosh:plugin/i\
-o@0.1.0\x05\x05\x02\x03\0\0\x0bplugin-info\x01B\x0c\x02\x03\x02\x01\x06\x04\0\x0b\
-plugin-info\x03\0\0\x01@\0\0\x01\x04\0\x08metadata\x01\x02\x01j\0\x01s\x01@\0\0\x03\
-\x04\0\x07on-load\x01\x04\x01ps\x01@\x02\x07commands\x04args\x05\0z\x04\0\x04exe\
-c\x01\x06\x01@\0\x01\0\x04\0\x09on-unload\x01\x07\x04\x01\x18yosh:plugin/plugin@\
-0.1.0\x05\x07\x01B\x08\x01@\x01\x07commands\x01\0\x04\0\x08pre-exec\x01\0\x01@\x02\
-\x07commands\x09exit-codez\x01\0\x04\0\x09post-exec\x01\x01\x01@\x02\x07old-dirs\
-\x07new-dirs\x01\0\x04\0\x05on-cd\x01\x02\x01@\0\x01\0\x04\0\x0apre-prompt\x01\x03\
-\x04\x01\x17yosh:plugin/hooks@0.1.0\x05\x08\x04\x01\x1eyosh:plugin/plugin-world@\
-0.1.0\x04\0\x0b\x12\x01\0\x0cplugin-world\x03\0\0\0G\x09producers\x01\x0cprocess\
-ed-by\x02\x0dwit-component\x070.216.0\x10wit-bindgen-rust\x060.31.0";
+\x01B\x1a\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\x01r\x05\x07is-file\x7f\
+\x06is-dir\x7f\x0ais-symlink\x7f\x04sizew\x0amtime-secsx\x04\0\x09file-stat\x03\0\
+\x02\x01r\x04\x04names\x07is-file\x7f\x06is-dir\x7f\x0ais-symlink\x7f\x04\0\x09d\
+ir-entry\x03\0\x04\x01p}\x01j\x01\x06\x01\x01\x01@\x01\x04paths\0\x07\x04\0\x09r\
+ead-file\x01\x08\x01p\x05\x01j\x01\x09\x01\x01\x01@\x01\x04paths\0\x0a\x04\0\x08\
+read-dir\x01\x0b\x01j\x01\x03\x01\x01\x01@\x01\x04paths\0\x0c\x04\0\x08metadata\x01\
+\x0d\x01j\0\x01\x01\x01@\x02\x04paths\x04data\x06\0\x0e\x04\0\x0awrite-file\x01\x0f\
+\x04\0\x0bappend-file\x01\x0f\x01@\x02\x04paths\x09recursive\x7f\0\x0e\x04\0\x0a\
+create-dir\x01\x10\x01@\x01\x04paths\0\x0e\x04\0\x0bremove-file\x01\x11\x04\0\x0a\
+remove-dir\x01\x10\x03\x01\x17yosh:plugin/files@0.1.0\x05\x04\x02\x03\0\0\x09io-\
+stream\x01B\x08\x02\x03\x02\x01\x05\x04\0\x09io-stream\x03\0\0\x02\x03\x02\x01\x01\
+\x04\0\x0aerror-code\x03\0\x02\x01p}\x01j\0\x01\x03\x01@\x02\x06target\x01\x04da\
+ta\x04\0\x05\x04\0\x05write\x01\x06\x03\x01\x14yosh:plugin/io@0.1.0\x05\x06\x02\x03\
+\0\0\x0bplugin-info\x01B\x0c\x02\x03\x02\x01\x07\x04\0\x0bplugin-info\x03\0\0\x01\
+@\0\0\x01\x04\0\x08metadata\x01\x02\x01j\0\x01s\x01@\0\0\x03\x04\0\x07on-load\x01\
+\x04\x01ps\x01@\x02\x07commands\x04args\x05\0z\x04\0\x04exec\x01\x06\x01@\0\x01\0\
+\x04\0\x09on-unload\x01\x07\x04\x01\x18yosh:plugin/plugin@0.1.0\x05\x08\x01B\x08\
+\x01@\x01\x07commands\x01\0\x04\0\x08pre-exec\x01\0\x01@\x02\x07commands\x09exit\
+-codez\x01\0\x04\0\x09post-exec\x01\x01\x01@\x02\x07old-dirs\x07new-dirs\x01\0\x04\
+\0\x05on-cd\x01\x02\x01@\0\x01\0\x04\0\x0apre-prompt\x01\x03\x04\x01\x17yosh:plu\
+gin/hooks@0.1.0\x05\x09\x04\x01\x1eyosh:plugin/plugin-world@0.1.0\x04\0\x0b\x12\x01\
+\0\x0cplugin-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-compon\
+ent\x070.216.0\x10wit-bindgen-rust\x060.31.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
