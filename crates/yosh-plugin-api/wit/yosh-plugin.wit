@@ -64,6 +64,35 @@ interface io {
     write: func(target: io-stream, data: list<u8>) -> result<_, error-code>;
 }
 
+interface files {
+    use types.{error-code};
+
+    record file-stat {
+        is-file: bool,
+        is-dir: bool,
+        is-symlink: bool,
+        size: u64,
+        mtime-secs: s64,
+    }
+
+    record dir-entry {
+        name: string,
+        is-file: bool,
+        is-dir: bool,
+        is-symlink: bool,
+    }
+
+    read-file: func(path: string) -> result<list<u8>, error-code>;
+    read-dir:  func(path: string) -> result<list<dir-entry>, error-code>;
+    metadata:  func(path: string) -> result<file-stat, error-code>;
+
+    write-file:  func(path: string, data: list<u8>) -> result<_, error-code>;
+    append-file: func(path: string, data: list<u8>) -> result<_, error-code>;
+    create-dir:  func(path: string, recursive: bool) -> result<_, error-code>;
+    remove-file: func(path: string) -> result<_, error-code>;
+    remove-dir:  func(path: string, recursive: bool) -> result<_, error-code>;
+}
+
 interface plugin {
     use types.{plugin-info};
     metadata:  func() -> plugin-info;
@@ -82,6 +111,7 @@ interface hooks {
 world plugin-world {
     import variables;
     import filesystem;
+    import files;
     import io;
 
     export plugin;

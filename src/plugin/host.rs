@@ -220,6 +220,70 @@ pub(super) fn deny_io_write(
     Err(ErrorCode::Denied)
 }
 
+// ── yosh:plugin/files host imports (deny stubs only — real impls in Task 4) ──
+
+use super::generated::yosh::plugin::files::{DirEntry, FileStat};
+
+pub(super) fn deny_files_read_file(
+    _ctx: &mut HostContext,
+    _path: String,
+) -> Result<Vec<u8>, ErrorCode> {
+    Err(ErrorCode::Denied)
+}
+
+pub(super) fn deny_files_read_dir(
+    _ctx: &mut HostContext,
+    _path: String,
+) -> Result<Vec<DirEntry>, ErrorCode> {
+    Err(ErrorCode::Denied)
+}
+
+pub(super) fn deny_files_metadata(
+    _ctx: &mut HostContext,
+    _path: String,
+) -> Result<FileStat, ErrorCode> {
+    Err(ErrorCode::Denied)
+}
+
+pub(super) fn deny_files_write_file(
+    _ctx: &mut HostContext,
+    _path: String,
+    _data: Vec<u8>,
+) -> Result<(), ErrorCode> {
+    Err(ErrorCode::Denied)
+}
+
+pub(super) fn deny_files_append_file(
+    _ctx: &mut HostContext,
+    _path: String,
+    _data: Vec<u8>,
+) -> Result<(), ErrorCode> {
+    Err(ErrorCode::Denied)
+}
+
+pub(super) fn deny_files_create_dir(
+    _ctx: &mut HostContext,
+    _path: String,
+    _recursive: bool,
+) -> Result<(), ErrorCode> {
+    Err(ErrorCode::Denied)
+}
+
+pub(super) fn deny_files_remove_file(
+    _ctx: &mut HostContext,
+    _path: String,
+) -> Result<(), ErrorCode> {
+    Err(ErrorCode::Denied)
+}
+
+pub(super) fn deny_files_remove_dir(
+    _ctx: &mut HostContext,
+    _path: String,
+    _recursive: bool,
+) -> Result<(), ErrorCode> {
+    Err(ErrorCode::Denied)
+}
+
 #[cfg(test)]
 mod tests {
     //! Unit tests for the metadata contract: every host import must
