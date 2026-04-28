@@ -31,6 +31,8 @@ pub use self::yosh::plugin::types::{ErrorCode, HookName, IoStream, PluginInfo};
 pub use self::yosh::plugin::filesystem as host_filesystem;
 pub use self::yosh::plugin::io as host_io;
 pub use self::yosh::plugin::variables as host_variables;
+pub use self::yosh::plugin::files as host_files;
+pub use self::yosh::plugin::files::{DirEntry, FileStat};
 
 // ── Plugin author-facing types ───────────────────────────────────────
 
@@ -90,4 +92,61 @@ pub fn eprint(s: &str) -> Result<(), ErrorCode> {
 
 pub fn write_bytes(stream: IoStream, data: &[u8]) -> Result<(), ErrorCode> {
     host_io::write(stream, data)
+}
+
+// ── files:read helpers ───────────────────────────────────────────────
+
+pub fn read_file(path: &str) -> Result<Vec<u8>, ErrorCode> {
+    host_files::read_file(path)
+}
+
+pub fn read_to_string(path: &str) -> Result<String, ErrorCode> {
+    let bytes = host_files::read_file(path)?;
+    String::from_utf8(bytes).map_err(|_| ErrorCode::InvalidArgument)
+}
+
+pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, ErrorCode> {
+    host_files::read_dir(path)
+}
+
+pub fn metadata(path: &str) -> Result<FileStat, ErrorCode> {
+    host_files::metadata(path)
+}
+
+pub fn exists(path: &str) -> bool {
+    host_files::metadata(path).is_ok()
+}
+
+// ── files:write helpers ──────────────────────────────────────────────
+
+pub fn write_file(path: &str, data: &[u8]) -> Result<(), ErrorCode> {
+    host_files::write_file(path, data)
+}
+
+pub fn write_string(path: &str, s: &str) -> Result<(), ErrorCode> {
+    host_files::write_file(path, s.as_bytes())
+}
+
+pub fn append_file(path: &str, data: &[u8]) -> Result<(), ErrorCode> {
+    host_files::append_file(path, data)
+}
+
+pub fn create_dir(path: &str) -> Result<(), ErrorCode> {
+    host_files::create_dir(path, false)
+}
+
+pub fn create_dir_all(path: &str) -> Result<(), ErrorCode> {
+    host_files::create_dir(path, true)
+}
+
+pub fn remove_file(path: &str) -> Result<(), ErrorCode> {
+    host_files::remove_file(path)
+}
+
+pub fn remove_dir(path: &str) -> Result<(), ErrorCode> {
+    host_files::remove_dir(path, false)
+}
+
+pub fn remove_dir_all(path: &str) -> Result<(), ErrorCode> {
+    host_files::remove_dir(path, true)
 }
