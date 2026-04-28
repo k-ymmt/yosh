@@ -484,3 +484,175 @@ fn t09_wasm_sha_mismatch_refuses_to_load() {
     assert!(msg.contains("wasm SHA-256 mismatch"),
         "error must mention SHA-256 mismatch (was {:?})", msg);
 }
+
+/// §8.5 — `files:read` granted: real read returns file contents.
+///
+/// Creates a tempfile with the canonical YOSH_TEST_CONTENT marker, loads
+/// the plugin with `files:read` granted, and exercises `read-file`. The
+/// plugin returns 0 only when the bytes match exactly, so a passing test
+/// verifies both that the host import is wired and that bytes survive
+/// the host→guest round trip.
+#[test]
+fn t15_files_read_granted_works() {
+    let _g = lock_test();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("hello.txt");
+    std::fs::write(&path, b"YOSH_TEST_CONTENT\n").expect("write fixture");
+
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    let allowed = yosh_plugin_api::CAP_FILES_READ;
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+        .expect("load test_plugin with files:read");
+
+    let exec = mgr.exec_command(
+        &mut env,
+        "read-file",
+        &[path.to_string_lossy().into_owned()],
+    );
+    assert!(
+        matches!(exec, PluginExec::Handled(0)),
+        "read-file with files:read grant must Handled(0), got {:?}",
+        exec
+    );
+}
+
+/// §8.5 — `files:read` not granted: deny stub returns Denied (exit 13).
+#[test]
+fn t16_files_read_denied_returns_error() {
+    let _g = lock_test();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("hello.txt");
+    std::fs::write(&path, b"YOSH_TEST_CONTENT\n").expect("write fixture");
+
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    // Grant something else so the plugin loads, but NOT files:read.
+    let allowed = yosh_plugin_api::CAP_VARIABLES_READ;
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+        .expect("load test_plugin without files:read");
+
+    let exec = mgr.exec_command(
+        &mut env,
+        "read-file",
+        &[path.to_string_lossy().into_owned()],
+    );
+    assert!(
+        matches!(exec, PluginExec::Handled(13)),
+        "read-file without files:read grant must Handled(13) (Denied), got {:?}",
+        exec
+    );
+}
+
+/// §8.5 — `files:write` granted: real write produces the expected file.
+#[test]
+fn t17_files_write_granted_works() {
+    let _g = lock_test();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("out.txt");
+
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    let allowed = yosh_plugin_api::CAP_FILES_WRITE;
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+        .expect("load test_plugin with files:write");
+
+    let exec = mgr.exec_command(
+        &mut env,
+        "write-file",
+        &[path.to_string_lossy().into_owned()],
+    );
+    assert!(
+        matches!(exec, PluginExec::Handled(0)),
+        "write-file with files:write grant must Handled(0), got {:?}",
+        exec
+    );
+
+    let written = std::fs::read(&path).expect("read written file");
+    assert_eq!(
+        written, b"YOSH_TEST_CONTENT\n",
+        "host-side read of plugin-written file must match canonical marker",
+    );
+}
+
+/// §8.5 — `files:write` not granted: deny stub returns Denied (exit 13).
+#[test]
+fn t18_files_write_denied_returns_error() {
+    let _g = lock_test();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("out.txt");
+
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    let allowed = yosh_plugin_api::CAP_VARIABLES_READ;
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+        .expect("load test_plugin without files:write");
+
+    let exec = mgr.exec_command(
+        &mut env,
+        "write-file",
+        &[path.to_string_lossy().into_owned()],
+    );
+    assert!(
+        matches!(exec, PluginExec::Handled(13)),
+        "write-file without files:write grant must Handled(13) (Denied), got {:?}",
+        exec
+    );
+
+    assert!(
+        !path.exists(),
+        "deny stub must not create the file"
+    );
+}
+
+/// §8.5 — Read and write capabilities are independent: granting only
+/// `files:read` leaves `files:write` functions on deny stubs.
+#[test]
+fn t19_files_read_only_blocks_write() {
+    let _g = lock_test();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let read_path = dir.path().join("in.txt");
+    let write_path = dir.path().join("out.txt");
+    std::fs::write(&read_path, b"YOSH_TEST_CONTENT\n").expect("write fixture");
+
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    let allowed = yosh_plugin_api::CAP_FILES_READ; // read only
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+        .expect("load test_plugin with files:read only");
+
+    // Read should succeed.
+    let r = mgr.exec_command(
+        &mut env,
+        "read-file",
+        &[read_path.to_string_lossy().into_owned()],
+    );
+    assert!(
+        matches!(r, PluginExec::Handled(0)),
+        "read-file with files:read grant must Handled(0), got {:?}",
+        r
+    );
+
+    // Write should be denied.
+    let w = mgr.exec_command(
+        &mut env,
+        "write-file",
+        &[write_path.to_string_lossy().into_owned()],
+    );
+    assert!(
+        matches!(w, PluginExec::Handled(13)),
+        "write-file without files:write grant must Handled(13), got {:?}",
+        w
+    );
+    assert!(!write_path.exists(), "deny stub must not create the file");
+}
