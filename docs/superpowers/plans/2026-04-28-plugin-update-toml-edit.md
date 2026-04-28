@@ -405,7 +405,7 @@ Append inside `mod tests { ... }` in `crates/yosh-plugin-manager/src/update.rs`:
         let toml = "# empty config\n";
         let mut doc = toml.parse::<DocumentMut>().unwrap();
         let err = set_plugin_version(&mut doc, "foo", "1.0.0").unwrap_err();
-        assert!(err.contains("not found"), "err: {}", err);
+        assert!(err.contains("no [[plugin]] array"), "err: {}", err);
     }
 
     #[test]
