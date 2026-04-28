@@ -14,6 +14,8 @@ pub const CAP_HOOK_PRE_EXEC:   u32 = 0x10;
 pub const CAP_HOOK_POST_EXEC:  u32 = 0x20;
 pub const CAP_HOOK_ON_CD:      u32 = 0x40;
 pub const CAP_HOOK_PRE_PROMPT: u32 = 0x80;
+pub const CAP_FILES_READ:      u32 = 0x100;
+pub const CAP_FILES_WRITE:     u32 = 0x200;
 
 pub const CAP_ALL: u32 = CAP_VARIABLES_READ
     | CAP_VARIABLES_WRITE
@@ -22,7 +24,9 @@ pub const CAP_ALL: u32 = CAP_VARIABLES_READ
     | CAP_HOOK_PRE_EXEC
     | CAP_HOOK_POST_EXEC
     | CAP_HOOK_ON_CD
-    | CAP_HOOK_PRE_PROMPT;
+    | CAP_HOOK_PRE_PROMPT
+    | CAP_FILES_READ
+    | CAP_FILES_WRITE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {
@@ -34,6 +38,8 @@ pub enum Capability {
     HookPostExec,
     HookOnCd,
     HookPrePrompt,
+    FilesRead,
+    FilesWrite,
 }
 
 impl Capability {
@@ -47,6 +53,8 @@ impl Capability {
             Capability::HookPostExec   => CAP_HOOK_POST_EXEC,
             Capability::HookOnCd       => CAP_HOOK_ON_CD,
             Capability::HookPrePrompt  => CAP_HOOK_PRE_PROMPT,
+            Capability::FilesRead      => CAP_FILES_READ,
+            Capability::FilesWrite     => CAP_FILES_WRITE,
         }
     }
 
@@ -60,6 +68,8 @@ impl Capability {
             Capability::HookPostExec   => "hooks:post_exec",
             Capability::HookOnCd       => "hooks:on_cd",
             Capability::HookPrePrompt  => "hooks:pre_prompt",
+            Capability::FilesRead      => "files:read",
+            Capability::FilesWrite     => "files:write",
         }
     }
 }
@@ -76,6 +86,8 @@ pub fn parse_capability(s: &str) -> Option<Capability> {
         "hooks:post_exec"  => Capability::HookPostExec,
         "hooks:on_cd"      => Capability::HookOnCd,
         "hooks:pre_prompt" => Capability::HookPrePrompt,
+        "files:read"       => Capability::FilesRead,
+        "files:write"      => Capability::FilesWrite,
         _ => return None,
     })
 }
@@ -131,7 +143,28 @@ mod tests {
             Capability::HookPostExec,
             Capability::HookOnCd,
             Capability::HookPrePrompt,
+            Capability::FilesRead,
+            Capability::FilesWrite,
         ]);
         assert_eq!(bits, CAP_ALL);
+    }
+
+    #[test]
+    fn parse_files_capabilities() {
+        assert_eq!(parse_capability("files:read"), Some(Capability::FilesRead));
+        assert_eq!(parse_capability("files:write"), Some(Capability::FilesWrite));
+    }
+
+    #[test]
+    fn files_capabilities_round_trip() {
+        for cap in [Capability::FilesRead, Capability::FilesWrite] {
+            assert_eq!(parse_capability(cap.as_str()), Some(cap));
+        }
+    }
+
+    #[test]
+    fn cap_all_includes_files_bits() {
+        assert_eq!(CAP_ALL & CAP_FILES_READ, CAP_FILES_READ);
+        assert_eq!(CAP_ALL & CAP_FILES_WRITE, CAP_FILES_WRITE);
     }
 }
