@@ -212,4 +212,37 @@ version = "1.0.0"
         assert!(err.contains("nonexistent"), "err: {}", err);
         assert!(err.contains("not found"), "err: {}", err);
     }
+
+    #[test]
+    fn set_version_no_plugin_array_errors() {
+        let toml = "# empty config\n";
+        let mut doc = toml.parse::<DocumentMut>().unwrap();
+        let err = set_plugin_version(&mut doc, "foo", "1.0.0").unwrap_err();
+        assert!(err.contains("no [[plugin]] array"), "err: {}", err);
+    }
+
+    #[test]
+    fn set_version_plugin_key_wrong_type_errors() {
+        let toml = "plugin = \"not-an-array\"\n";
+        let mut doc = toml.parse::<DocumentMut>().unwrap();
+        let err = set_plugin_version(&mut doc, "foo", "1.0.0").unwrap_err();
+        assert!(err.contains("array of tables"), "err: {}", err);
+    }
+
+    #[test]
+    fn set_version_duplicate_name_errors() {
+        let toml = r#"[[plugin]]
+name = "foo"
+source = "github:owner/foo"
+version = "1.0.0"
+
+[[plugin]]
+name = "foo"
+source = "github:other/foo"
+version = "2.0.0"
+"#;
+        let mut doc = toml.parse::<DocumentMut>().unwrap();
+        let err = set_plugin_version(&mut doc, "foo", "3.0.0").unwrap_err();
+        assert!(err.contains("multiple"), "err: {}", err);
+    }
 }
