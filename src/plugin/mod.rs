@@ -149,17 +149,13 @@ impl PluginManager {
                 .capabilities
                 .as_ref()
                 .map(|strs| config::capabilities_from_strs(strs));
-            let entry_allowed_commands: Vec<String> = entry
-                .allowed_commands
-                .clone()
-                .unwrap_or_default();
             if let Err(e) = self.load_one(
                 &path,
                 env,
                 config_caps,
                 entry.cwasm_path.as_deref(),
                 entry.cache_key.as_ref(),
-                &entry_allowed_commands,
+                entry.allowed_commands.as_deref().unwrap_or_default(),
             ) {
                 eprintln!("yosh: plugin: {}", e);
             }
@@ -258,7 +254,7 @@ impl PluginManager {
                 .map_err(|e| format!("{}: component compile failed: {}", path.display(), e))?,
         };
 
-        // 3a. Parse the allowed_commands patterns up front so we can fail
+        // 4. Parse the allowed_commands patterns up front so we can fail
         //     fast before wasting time on the scratch linker.
         let parsed_allowed_commands: Vec<self::pattern::CommandPattern> = allowed_commands
             .iter()
@@ -269,7 +265,7 @@ impl PluginManager {
             })
             .collect::<Result<_, _>>()?;
 
-        // 3. Build a permissive linker first so we can call `metadata` to
+        // 5. Build a permissive linker first so we can call `metadata` to
         //    learn the plugin's requested capabilities. The metadata
         //    contract (host imports return `Err(Denied)` on null env) makes
         //    this safe — even a permissive linker rejects host calls during
@@ -297,7 +293,7 @@ impl PluginManager {
             .call_metadata(&mut scratch_store)
             .map_err(|e| format!("{}: metadata trap: {}", path.display(), e))?;
 
-        // 4. Negotiate capabilities. Parse the strings from `plugin-info`,
+        // 6. Negotiate capabilities. Parse the strings from `plugin-info`,
         //    intersect with the config allowlist, log denied bits.
         let requested_capabilities = parse_required_capabilities(&plugin_info, &plugin_info.name);
         let effective_capabilities = match config_capabilities {
@@ -312,7 +308,7 @@ impl PluginManager {
             }
         };
 
-        // 5. Build the real linker with the negotiated capability mask,
+        // 7. Build the real linker with the negotiated capability mask,
         //    create a fresh store, instantiate, and call on_load under
         //    with_env so the plugin can use its granted host imports.
         let real_linker = linker::build_linker(&self.engine, effective_capabilities)
@@ -334,7 +330,7 @@ impl PluginManager {
             .instantiate(&mut store)
             .map_err(|e| format!("{}: real instantiate: {}", path.display(), e))?;
 
-        // 6. on_load under with_env (host imports available).
+        // call on_load under with_env (host imports available).
         let on_load_result = {
             let mut guard = EnvGuard::bind(&mut store, env);
             bindings.yosh_plugin_plugin().call_on_load(guard.store())
@@ -349,7 +345,7 @@ impl PluginManager {
             }
         }
 
-        // 7. Stash.
+        // 8. Stash.
         self.plugins.push(LoadedPlugin {
             name: plugin_info.name.clone(),
             store,
