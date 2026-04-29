@@ -538,17 +538,23 @@ Add one command to `test_plugin`:
 
 Add new test cases:
 
-- `t16_commands_exec_granted_with_pattern_works`: capability +
-  `allowed_commands = ["echo:*"]`, assert stdout from echo
-- `t17_commands_exec_denied_without_capability`: no capability,
+(Renumbered to t20-t24 at implementation time because t16-t19 are
+already in use by the `files:read`/`files:write` integration suite.)
+
+- `t20_commands_exec_granted_with_pattern_works`: capability +
+  `allowed_commands = ["echo:*"]`, assert exit code 0. Stdout
+  byte-level assertion is covered by the host-side unit test
+  `host_commands_exec_runs_when_pattern_matches` because the
+  integration harness does not capture host stdout.
+- `t21_commands_exec_denied_without_capability`: no capability,
   assert exit code reflects `Denied`
-- `t18_commands_exec_pattern_not_allowed_without_match`: capability
+- `t22_commands_exec_pattern_not_allowed_without_match`: capability
   granted, `allowed_commands = ["ls:*"]`, attempt `echo`, assert exit
   code reflects `PatternNotAllowed`
-- `t19_commands_exec_exact_pattern_rejects_extra_args`:
+- `t23_commands_exec_exact_pattern_rejects_extra_args`:
   `allowed_commands = ["echo"]` (no `:*`), attempt `echo hello`,
   assert `PatternNotAllowed`
-- `t20_commands_exec_invalid_pattern_fails_plugin_load`:
+- `t24_commands_exec_invalid_pattern_fails_plugin_load`:
   `allowed_commands = [":*"]` causes plugin-load error
 
 `tests/plugins/test_plugin/Cargo.toml` (the wit metadata) gets

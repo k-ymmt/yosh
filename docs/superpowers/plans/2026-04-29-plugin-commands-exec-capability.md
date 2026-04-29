@@ -1242,6 +1242,14 @@ EOF
 **Files:**
 - Modify: `tests/plugin.rs`
 
+> **Implementation note (2026-04-30):** the names below were renumbered
+> to `t20`–`t24` at landing time because `tests/plugin.rs` already has
+> a `t16`–`t19` block for the `files:read`/`files:write` suite from
+> the prior branch. The semantics of each test are unchanged. The
+> `t16` → `t20`, `t17` → `t21`, etc. mapping is straight shift; the
+> last test (`t20`) becomes `t24`. Code below is left in original
+> form for diff history; mentally rename to `tNN+4` while reading.
+
 - [ ] **Step 1: Add the five test cases**
 
 Append to `tests/plugin.rs` (after the last existing test):

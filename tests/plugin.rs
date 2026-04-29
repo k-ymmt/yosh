@@ -668,6 +668,18 @@ fn t19_files_read_only_blocks_write() {
 }
 
 /// §10 t20 — `commands:exec` granted with matching pattern works.
+///
+/// Note: spec §10 also asks for "assert stdout from echo". `run-echo`
+/// already captures the spawned `echo` stdout via `sdk::exec` and
+/// forwards it to host stdout via `print()`, but the integration
+/// harness intentionally does not capture host stdout — `host_io_write`
+/// goes straight to `std::io::stdout()`. The end-to-end exec path
+/// (capability bit → pattern match → spawn → stdout capture in the
+/// SDK) is covered by `host_commands_exec_runs_when_pattern_matches`
+/// in `src/plugin/host.rs`, which asserts `out.stdout == b"hello\n"`
+/// directly. Here we verify the integration glue by checking that
+/// `run-echo` returns the child's exit code (0), which is reachable
+/// only if every guard passed.
 #[test]
 fn t20_commands_exec_granted_with_pattern_works() {
     let _g = lock_test();
