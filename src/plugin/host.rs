@@ -469,6 +469,7 @@ mod tests {
     //! is harder to author than this direct call. Same invariant, simpler
     //! test.
     use super::*;
+    use tempfile::tempdir;
     use yosh_plugin_api::CAP_ALL;
 
     fn null_env_ctx() -> HostContext {
@@ -477,6 +478,17 @@ mod tests {
         // it is enforced inside the *real* implementations. The deny stubs
         // would also return `Denied` but for a different reason.
         HostContext::new_for_plugin("<test>", CAP_ALL)
+    }
+
+    /// Counterpart to `null_env_ctx` for happy-path tests: binds a real
+    /// `ShellEnv` so `env_mut()` returns `Some(_)` and the real impls
+    /// proceed past the metadata-contract guard. Real impls only branch
+    /// on `is_none()` — they never read through the pointer — so the
+    /// concrete shell state is irrelevant.
+    fn bound_env_ctx(env: &mut ShellEnv) -> HostContext {
+        let mut ctx = HostContext::new_for_plugin("<test>", CAP_ALL);
+        ctx.env = env as *mut ShellEnv;
+        ctx
     }
 
     #[test]
@@ -579,5 +591,140 @@ mod tests {
         let mut ctx = null_env_ctx();
         let result = host_files_remove_dir(&mut ctx, "/tmp/newdir".into(), true);
         assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    // ── Spec §8 host happy-path / error-mapping tests ───────────────────
+    // Backfill of the 9 tests prescribed by
+    // docs/superpowers/specs/2026-04-29-plugin-files-rw-capability-design.md
+    // §8 that the original implementation plan omitted.
+
+    #[test]
+    fn host_files_read_file_roundtrip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("data.txt");
+        let payload = b"hello world".to_vec();
+        std::fs::write(&path, &payload).unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        let result = host_files_read_file(&mut ctx, path.to_string_lossy().into_owned());
+        assert_eq!(result, Ok(payload));
+    }
+
+    #[test]
+    fn host_files_read_dir_returns_entries() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        let entries =
+            host_files_read_dir(&mut ctx, dir.path().to_string_lossy().into_owned()).unwrap();
+
+        assert_eq!(entries.len(), 2);
+        let a = entries.iter().find(|e| e.name == "a.txt").expect("a.txt");
+        assert!(a.is_file);
+        assert!(!a.is_dir);
+        let sub = entries.iter().find(|e| e.name == "sub").expect("sub");
+        assert!(!sub.is_file);
+        assert!(sub.is_dir);
+    }
+
+    #[test]
+    fn host_files_metadata_distinguishes_file_and_dir() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("f");
+        std::fs::write(&file_path, b"abc").unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+
+        let f = host_files_metadata(&mut ctx, file_path.to_string_lossy().into_owned()).unwrap();
+        assert!(f.is_file);
+        assert!(!f.is_dir);
+        assert_eq!(f.size, 3);
+
+        let d = host_files_metadata(&mut ctx, dir.path().to_string_lossy().into_owned()).unwrap();
+        assert!(!d.is_file);
+        assert!(d.is_dir);
+    }
+
+    #[test]
+    fn host_files_read_file_returns_not_found_for_missing_path() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.txt");
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        let result = host_files_read_file(&mut ctx, missing.to_string_lossy().into_owned());
+        assert_eq!(result, Err(ErrorCode::NotFound));
+    }
+
+    #[test]
+    fn host_files_read_file_invalid_argument_on_empty_path() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        let result = host_files_read_file(&mut ctx, String::new());
+        assert_eq!(result, Err(ErrorCode::InvalidArgument));
+    }
+
+    #[test]
+    fn host_files_remove_dir_io_failed_on_nonempty_without_recursive() {
+        let dir = tempdir().unwrap();
+        let inner = dir.path().join("d");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::write(inner.join("f"), b"x").unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        let result = host_files_remove_dir(&mut ctx, inner.to_string_lossy().into_owned(), false);
+        assert_eq!(result, Err(ErrorCode::IoFailed));
+        assert!(inner.exists());
+    }
+
+    #[test]
+    fn host_files_append_file_appends() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("log");
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        let p = path.to_string_lossy().into_owned();
+
+        host_files_write_file(&mut ctx, p.clone(), b"hello".to_vec()).unwrap();
+        host_files_append_file(&mut ctx, p, b" world".to_vec()).unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes, b"hello world");
+    }
+
+    #[test]
+    fn host_files_create_dir_all_creates_intermediate_dirs() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("a/b/c");
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        host_files_create_dir(&mut ctx, nested.to_string_lossy().into_owned(), true).unwrap();
+
+        assert!(nested.is_dir());
+        assert!(dir.path().join("a").is_dir());
+        assert!(dir.path().join("a/b").is_dir());
+    }
+
+    #[test]
+    fn host_files_remove_dir_recursive_removes_subtree() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("tree");
+        std::fs::create_dir_all(root.join("inner")).unwrap();
+        std::fs::write(root.join("f"), b"x").unwrap();
+        std::fs::write(root.join("inner/g"), b"y").unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        host_files_remove_dir(&mut ctx, root.to_string_lossy().into_owned(), true).unwrap();
+
+        assert!(!root.exists());
     }
 }
