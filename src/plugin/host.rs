@@ -559,23 +559,21 @@ fn spawn_with_timeout(
                 }
                 thread::sleep(std::time::Duration::from_millis(10));
             }
-            // Drain pipes; the reader threads exit once the child
-            // closes its end. Discard whatever was buffered.
-            let _ = out_rx.recv_timeout(std::time::Duration::from_millis(100));
-            let _ = err_rx.recv_timeout(std::time::Duration::from_millis(100));
+            // Drain pipes: the child is dead (SIGKILL + wait), so the
+            // pipe fds are closed and the reader threads will EOF and
+            // terminate. Blocking recv() is safe here — it cannot hang.
+            let _ = out_rx.recv();
+            let _ = err_rx.recv();
             return Err(ErrorCode::Timeout);
         }
         thread::sleep(std::time::Duration::from_millis(10));
     };
 
-    let stdout = out_rx
-        .recv_timeout(std::time::Duration::from_millis(100))
-        .unwrap_or_else(|_| Ok(Vec::new()))
-        .unwrap_or_default();
-    let stderr = err_rx
-        .recv_timeout(std::time::Duration::from_millis(100))
-        .unwrap_or_else(|_| Ok(Vec::new()))
-        .unwrap_or_default();
+    // The child has exited (try_wait returned Some(_)), so the pipe fds
+    // are closed and the reader threads are guaranteed to terminate.
+    // Blocking recv() is safe — it cannot hang.
+    let stdout = out_rx.recv().ok().and_then(|r| r.ok()).unwrap_or_default();
+    let stderr = err_rx.recv().ok().and_then(|r| r.ok()).unwrap_or_default();
 
     Ok(ExecOutput {
         exit_code: exit_status.code().unwrap_or(-1),
@@ -965,6 +963,43 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_millis(2000),
             "timeout took {:?}, expected <2000ms",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn host_commands_exec_kills_child_on_timeout() {
+        // Spec §10: after a timeout-triggered call returns, the child must
+        // be reaped (no zombie). spawn_with_timeout calls `child.wait()`
+        // after SIGKILL, so a successful return implies the child PID has
+        // been reaped. The test verifies (a) the function returns within
+        // a bounded window — meaning child.wait() did NOT block forever
+        // waiting for a still-running child — and (b) the elapsed time
+        // covers SIGTERM + 100ms grace + SIGKILL + reaping. If any step
+        // were broken, this assertion would fail with either a hang or
+        // a too-fast / too-slow elapsed time.
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = ctx_with_allowed(&mut env, &["/bin/sleep:*"]);
+        let start = std::time::Instant::now();
+        let result = host_commands_exec(
+            &mut ctx,
+            "/bin/sleep".into(),
+            vec!["5".into()],
+        );
+        let elapsed = start.elapsed();
+        assert!(matches!(result, Err(ErrorCode::Timeout)));
+        // Lower bound: SIGTERM only fires after the 1000ms deadline.
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "elapsed {:?} too small — timeout fired before deadline",
+            elapsed
+        );
+        // Upper bound: deadline + grace + reasonable scheduling slack.
+        // If child.wait() blocked indefinitely waiting on an unkilled
+        // child, this would hang past 2000ms.
+        assert!(
+            elapsed < std::time::Duration::from_millis(2000),
+            "elapsed {:?} too large — child may not have been reaped",
             elapsed
         );
     }
