@@ -33,14 +33,14 @@ impl CommandPattern {
             return Err("pattern has `:*` but no tokens".to_string());
         }
 
+        if body.contains(":*") {
+            return Err("`:*` may only appear as a trailing suffix on the whole pattern".to_string());
+        }
+
         let tokens: Vec<String> = body
             .split_whitespace()
             .map(|t| t.to_string())
             .collect();
-
-        if tokens.is_empty() {
-            return Err("pattern has no tokens after splitting".to_string());
-        }
 
         Ok(CommandPattern { tokens, has_glob_suffix })
     }
@@ -115,6 +115,13 @@ mod tests {
     fn match_literal_compare() {
         let p = CommandPattern::parse("git:*").unwrap();
         assert!(!p.matches(&["/usr/bin/git".to_string(), "status".to_string()]));
+    }
+
+    #[test]
+    fn parse_mid_string_glob_suffix_errors() {
+        assert!(CommandPattern::parse("git:*:*").is_err());
+        assert!(CommandPattern::parse("git:* status:*").is_err());
+        assert!(CommandPattern::parse("foo:* bar").is_err());
     }
 
     #[test]
