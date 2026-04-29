@@ -94,7 +94,8 @@ pub fn load_config(path: &Path) -> Result<Vec<PluginDecl>, String> {
         std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))?;
     let raw: RawConfig =
         toml::from_str(&content).map_err(|e| format!("{}: {}", path.display(), e))?;
-    raw.plugin
+    let decls: Vec<PluginDecl> = raw
+        .plugin
         .into_iter()
         .map(|entry| {
             validate_plugin_name(&entry.name)?;
@@ -120,7 +121,19 @@ pub fn load_config(path: &Path) -> Result<Vec<PluginDecl>, String> {
                 asset: entry.asset,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for decl in &decls {
+        if !seen.insert(decl.name.as_str()) {
+            return Err(format!(
+                "plugin '{}': duplicate name (already defined earlier in config)",
+                decl.name
+            ));
+        }
+    }
+
+    Ok(decls)
 }
 
 pub fn expand_tilde_path(path: &str) -> std::path::PathBuf {
@@ -341,5 +354,59 @@ source = "local:/tmp/lib.dylib"
         write!(f, "").unwrap();
         let decls = load_config(f.path()).unwrap();
         assert!(decls.is_empty());
+    }
+
+    #[test]
+    fn reject_duplicate_plugin_names() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "dup"
+source = "local:/tmp/a.wasm"
+
+[[plugin]]
+name = "dup"
+source = "local:/tmp/b.wasm"
+"#
+        )
+        .unwrap();
+        let err = load_config(f.path()).unwrap_err();
+        assert!(
+            err.contains("duplicate"),
+            "expected duplicate-name error, got: {}",
+            err
+        );
+        assert!(
+            err.contains("'dup'"),
+            "expected duplicate name in error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn reject_duplicate_plugin_names_different_sources() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "shared"
+source = "github:owner/shared"
+version = "1.0.0"
+
+[[plugin]]
+name = "shared"
+source = "local:/tmp/shared.wasm"
+"#
+        )
+        .unwrap();
+        let err = load_config(f.path()).unwrap_err();
+        assert!(
+            err.contains("duplicate"),
+            "uniqueness must be enforced regardless of source kind, got: {}",
+            err
+        );
     }
 }
