@@ -986,6 +986,9 @@ pub mod yosh {
             static __FORCE_SECTION_REF: fn() = super::super::super::__link_custom_section_describing_imports;
             use super::super::super::_rt;
             pub type ErrorCode = super::super::super::yosh::plugin::types::ErrorCode;
+            /// Result of a successful (or process-exit) command run. Extended
+            /// in the future by adding new functions, never by changing this
+            /// record's shape.
             #[derive(Clone)]
             pub struct ExecOutput {
                 pub exit_code: i32,
@@ -1005,6 +1008,13 @@ pub mod yosh {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
+            /// Run an external program with the given argv, capturing
+            /// stdout/stderr and returning the exit code.
+            ///
+            /// Subject to a 1000ms hard timeout enforced by the host.
+            /// Subject to the per-plugin `allowed-commands` pattern allowlist.
+            /// CWD is the shell's current directory; environment is the
+            /// shell's full environment; stdin is `/dev/null`.
             pub fn exec(
                 program: &str,
                 args: &[_rt::String],

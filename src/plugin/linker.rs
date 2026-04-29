@@ -14,7 +14,7 @@
 //!    preopens, no stdio, no environment, no args — the plugin can name
 //!    `wasi:cli/environment` etc. but every probe returns empty.
 //!
-//! 2. **`yosh:plugin/{variables,filesystem,files,io}`** — registered with
+//! 2. **`yosh:plugin/{variables,filesystem,files,io,commands}`** — registered with
 //!    either the real implementation from `host.rs` or a deny-stub returning
 //!    `Err(Denied)` based on the granted-capability bitfield.
 
@@ -22,13 +22,13 @@ use wasmtime::Engine;
 use wasmtime::component::Linker;
 
 use yosh_plugin_api::{
-    CAP_FILES_READ, CAP_FILES_WRITE, CAP_FILESYSTEM, CAP_IO,
+    CAP_COMMANDS_EXEC, CAP_FILES_READ, CAP_FILES_WRITE, CAP_FILESYSTEM, CAP_IO,
     CAP_VARIABLES_READ, CAP_VARIABLES_WRITE,
 };
 
 use super::host::{
     HostContext,
-    deny_commands_exec,
+    deny_commands_exec, host_commands_exec,
     deny_files_append_file, deny_files_create_dir, deny_files_metadata,
     deny_files_read_dir, deny_files_read_file, deny_files_remove_dir,
     deny_files_remove_file, deny_files_write_file,
@@ -210,17 +210,22 @@ pub fn build_linker(
     }
 
     // ── yosh:plugin/commands ───────────────────────────────────────────
-    //
-    // host_commands_exec wiring lands in the next commit (Task 4). For
-    // now the deny stub is bound unconditionally so existing plugins
-    // still instantiate cleanly.
     let mut commands = linker.instance("yosh:plugin/commands@0.1.0")?;
-    commands.func_wrap(
-        "exec",
-        |mut store, (program, args): (String, Vec<String>)| {
-            Ok((deny_commands_exec(store.data_mut(), program, args),))
-        },
-    )?;
+    if has(allowed, CAP_COMMANDS_EXEC) {
+        commands.func_wrap(
+            "exec",
+            |mut store, (program, args): (String, Vec<String>)| {
+                Ok((host_commands_exec(store.data_mut(), program, args),))
+            },
+        )?;
+    } else {
+        commands.func_wrap(
+            "exec",
+            |mut store, (program, args): (String, Vec<String>)| {
+                Ok((deny_commands_exec(store.data_mut(), program, args),))
+            },
+        )?;
+    }
 
     Ok(linker)
 }

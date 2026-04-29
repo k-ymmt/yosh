@@ -98,12 +98,22 @@ interface files {
 interface commands {
     use types.{error-code};
 
+    /// Result of a successful (or process-exit) command run. Extended
+    /// in the future by adding new functions, never by changing this
+    /// record's shape.
     record exec-output {
         exit-code: s32,
         stdout: list<u8>,
         stderr: list<u8>,
     }
 
+    /// Run an external program with the given argv, capturing
+    /// stdout/stderr and returning the exit code.
+    ///
+    /// Subject to a 1000ms hard timeout enforced by the host.
+    /// Subject to the per-plugin `allowed-commands` pattern allowlist.
+    /// CWD is the shell's current directory; environment is the
+    /// shell's full environment; stdin is `/dev/null`.
     exec: func(program: string, args: list<string>) -> result<exec-output, error-code>;
 }
 

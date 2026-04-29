@@ -460,12 +460,128 @@ pub(super) fn deny_files_remove_dir(
 
 // ── yosh:plugin/commands host imports ───────────────────────────────
 
+pub(super) fn host_commands_exec(
+    ctx: &mut HostContext,
+    program: String,
+    args: Vec<String>,
+) -> Result<ExecOutput, ErrorCode> {
+    if ctx.env_mut().is_none() {
+        return Err(ErrorCode::Denied);
+    }
+    if program.is_empty() {
+        return Err(ErrorCode::InvalidArgument);
+    }
+
+    // argv = [program, args...]; pattern matcher consumes the literal
+    // strings (no PATH resolution, no basename normalization — see
+    // spec §5).
+    let mut argv = Vec::with_capacity(1 + args.len());
+    argv.push(program.clone());
+    argv.extend(args.iter().cloned());
+
+    if !ctx.allowed_commands.iter().any(|p| p.matches(&argv)) {
+        return Err(ErrorCode::PatternNotAllowed);
+    }
+
+    spawn_with_timeout(&program, &args, std::time::Duration::from_millis(1000))
+}
+
 pub(super) fn deny_commands_exec(
     _ctx: &mut HostContext,
     _program: String,
     _args: Vec<String>,
 ) -> Result<ExecOutput, ErrorCode> {
     Err(ErrorCode::Denied)
+}
+
+fn spawn_with_timeout(
+    program: &str,
+    args: &[String],
+    timeout: std::time::Duration,
+) -> Result<ExecOutput, ErrorCode> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Instant;
+
+    let mut child = match Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ErrorCode::NotFound),
+        Err(_) => return Err(ErrorCode::IoFailed),
+    };
+
+    // Drain stdout and stderr concurrently so a buffer-full child does
+    // not deadlock waiting on us. Each thread reads to EOF, which only
+    // happens after the child exits or its pipe is closed.
+    let mut stdout_pipe = child.stdout.take().expect("piped stdout");
+    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+    let (out_tx, out_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>();
+    let (err_tx, err_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>();
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let r = stdout_pipe.read_to_end(&mut buf).map(|_| buf);
+        let _ = out_tx.send(r);
+    });
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let r = stderr_pipe.read_to_end(&mut buf).map(|_| buf);
+        let _ = err_tx.send(r);
+    });
+
+    let deadline = Instant::now() + timeout;
+    let exit_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(_) => return Err(ErrorCode::IoFailed),
+        }
+        if Instant::now() >= deadline {
+            // Timeout: SIGTERM, 100ms grace, then SIGKILL.
+            let pid = nix::unistd::Pid::from_raw(child.id() as i32);
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
+            let grace = Instant::now() + std::time::Duration::from_millis(100);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    _ => {}
+                }
+                if Instant::now() >= grace {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+                thread::sleep(std::time::Duration::from_millis(10));
+            }
+            // Drain pipes; the reader threads exit once the child
+            // closes its end. Discard whatever was buffered.
+            let _ = out_rx.recv_timeout(std::time::Duration::from_millis(100));
+            let _ = err_rx.recv_timeout(std::time::Duration::from_millis(100));
+            return Err(ErrorCode::Timeout);
+        }
+        thread::sleep(std::time::Duration::from_millis(10));
+    };
+
+    let stdout = out_rx
+        .recv_timeout(std::time::Duration::from_millis(100))
+        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_default();
+    let stderr = err_rx
+        .recv_timeout(std::time::Duration::from_millis(100))
+        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_default();
+
+    Ok(ExecOutput {
+        exit_code: exit_status.code().unwrap_or(-1),
+        stdout,
+        stderr,
+    })
 }
 
 #[cfg(test)]
@@ -740,5 +856,116 @@ mod tests {
         host_files_remove_dir(&mut ctx, root.to_string_lossy().into_owned(), true).unwrap();
 
         assert!(!root.exists());
+    }
+
+    // ── commands:exec host tests (spec §10) ─────────────────────────────
+
+    fn ctx_with_allowed(env: &mut ShellEnv, patterns: &[&str]) -> HostContext {
+        let mut ctx = bound_env_ctx(env);
+        ctx.allowed_commands = patterns
+            .iter()
+            .map(|s| super::super::pattern::CommandPattern::parse(s).expect("valid pattern"))
+            .collect();
+        ctx
+    }
+
+    #[test]
+    fn host_commands_exec_metadata_contract_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = host_commands_exec(&mut ctx, "/bin/echo".into(), vec!["hi".into()]);
+        assert!(matches!(result, Err(ErrorCode::Denied)));
+    }
+
+    #[test]
+    fn host_commands_exec_invalid_argument_on_empty_program() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        let result = host_commands_exec(&mut ctx, String::new(), vec![]);
+        assert!(matches!(result, Err(ErrorCode::InvalidArgument)));
+    }
+
+    #[test]
+    fn host_commands_exec_pattern_not_allowed_when_no_match() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = ctx_with_allowed(&mut env, &["ls:*"]);
+        let result = host_commands_exec(&mut ctx, "echo".into(), vec!["hi".into()]);
+        assert!(matches!(result, Err(ErrorCode::PatternNotAllowed)));
+    }
+
+    #[test]
+    fn host_commands_exec_runs_when_pattern_matches() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = ctx_with_allowed(&mut env, &["/bin/echo:*"]);
+        let result = host_commands_exec(
+            &mut ctx,
+            "/bin/echo".into(),
+            vec!["hello".into()],
+        )
+        .expect("echo should succeed");
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, b"hello\n");
+        assert!(result.stderr.is_empty());
+    }
+
+    #[test]
+    fn host_commands_exec_captures_stderr_separately() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = ctx_with_allowed(&mut env, &["/bin/sh:*"]);
+        let result = host_commands_exec(
+            &mut ctx,
+            "/bin/sh".into(),
+            vec!["-c".into(), "echo out; echo err 1>&2".into()],
+        )
+        .expect("sh should succeed");
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, b"out\n");
+        assert_eq!(result.stderr, b"err\n");
+    }
+
+    #[test]
+    fn host_commands_exec_propagates_nonzero_exit() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = ctx_with_allowed(&mut env, &["/bin/sh:*"]);
+        let result = host_commands_exec(
+            &mut ctx,
+            "/bin/sh".into(),
+            vec!["-c".into(), "exit 42".into()],
+        )
+        .expect("sh should run to exit");
+        assert_eq!(result.exit_code, 42);
+    }
+
+    #[test]
+    fn host_commands_exec_returns_not_found_for_missing_binary() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = ctx_with_allowed(&mut env, &["/no/such/binary-xyz:*"]);
+        let result = host_commands_exec(
+            &mut ctx,
+            "/no/such/binary-xyz".into(),
+            vec![],
+        );
+        assert!(matches!(result, Err(ErrorCode::NotFound)));
+    }
+
+    #[test]
+    fn host_commands_exec_timeout_after_1000ms() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = ctx_with_allowed(&mut env, &["/bin/sleep:*"]);
+        let start = std::time::Instant::now();
+        let result = host_commands_exec(
+            &mut ctx,
+            "/bin/sleep".into(),
+            vec!["5".into()],
+        );
+        let elapsed = start.elapsed();
+        assert!(matches!(result, Err(ErrorCode::Timeout)));
+        // Hard cap is 1000ms + 100ms grace + a generous slack for thread
+        // scheduling. Anything past 2 seconds means the timeout enforcement
+        // is broken, not just slow.
+        assert!(
+            elapsed < std::time::Duration::from_millis(2000),
+            "timeout took {:?}, expected <2000ms",
+            elapsed
+        );
     }
 }
