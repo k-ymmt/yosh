@@ -292,6 +292,9 @@ path = "/tmp/x.wasm"
     #[test]
     fn parse_commands_exec_capability_string_to_bitflag() {
         use yosh_plugin_api::CAP_COMMANDS_EXEC;
-        assert_eq!(capability_from_str("commands:exec"), Some(CAP_COMMANDS_EXEC));
+        assert_eq!(
+            capability_from_str("commands:exec"),
+            Some(CAP_COMMANDS_EXEC)
+        );
     }
 }
