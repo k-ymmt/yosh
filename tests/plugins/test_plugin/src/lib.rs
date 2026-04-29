@@ -1,13 +1,16 @@
 use std::sync::Mutex;
 use yosh_plugin_sdk::{
-    Capability, ErrorCode, HookName, Plugin, export, get_var, print, read_file, set_var,
+    Capability, ErrorCode, HookName, Plugin, exec, export, get_var, print, read_file, set_var,
     write_string,
 };
 
 static EVENT_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 fn record(event: impl Into<String>) {
-    EVENT_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(event.into());
+    EVENT_LOG
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(event.into());
 }
 
 #[derive(Default)]
@@ -23,6 +26,7 @@ impl Plugin for TestPlugin {
             "set_post_exec_marker",
             "read-file",
             "write-file",
+            "run-echo",
         ]
     }
 
@@ -35,6 +39,7 @@ impl Plugin for TestPlugin {
             Capability::HookOnCd,
             Capability::FilesRead,
             Capability::FilesWrite,
+            Capability::CommandsExec,
         ]
     }
 
@@ -55,9 +60,15 @@ impl Plugin for TestPlugin {
             }
             "echo_var" => match args.first() {
                 Some(name) => match get_var(name) {
-                    Ok(Some(v)) => { let _ = print(&format!("{}\n", v)); 0 }
-                    Ok(None)    => { let _ = print("(unset)\n"); 0 }
-                    Err(_)      => 2,
+                    Ok(Some(v)) => {
+                        let _ = print(&format!("{}\n", v));
+                        0
+                    }
+                    Ok(None) => {
+                        let _ = print("(unset)\n");
+                        0
+                    }
+                    Err(_) => 2,
                 },
                 None => 1,
             },
@@ -94,9 +105,9 @@ impl Plugin for TestPlugin {
                             5 // contents mismatch
                         }
                     }
-                    Err(ErrorCode::Denied)   => 13,
+                    Err(ErrorCode::Denied) => 13,
                     Err(ErrorCode::NotFound) => 4,
-                    Err(_)                   => 1,
+                    Err(_) => 1,
                 }
             }
             "write-file" => {
@@ -105,6 +116,24 @@ impl Plugin for TestPlugin {
                     Ok(()) => 0,
                     Err(ErrorCode::Denied) => 13,
                     Err(_) => 1,
+                }
+            }
+            "run-echo" => {
+                // Args are passed through as the command's argv tail. The host's
+                // allowlist checks the full argv = ["echo", args...], so the
+                // integration test sets `allowed_commands` accordingly.
+                let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                match exec("echo", &args_refs) {
+                    Ok(out) => {
+                        // Print stdout verbatim so the test can assert on it.
+                        let _ = print(&String::from_utf8_lossy(&out.stdout));
+                        out.exit_code
+                    }
+                    Err(ErrorCode::Denied)            => 100,
+                    Err(ErrorCode::PatternNotAllowed) => 101,
+                    Err(ErrorCode::Timeout)           => 102,
+                    Err(ErrorCode::NotFound)          => 103,
+                    Err(_)                            => 1,
                 }
             }
             _ => 127,
