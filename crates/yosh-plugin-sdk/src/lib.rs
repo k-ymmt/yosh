@@ -33,6 +33,8 @@ pub use self::yosh::plugin::io as host_io;
 pub use self::yosh::plugin::variables as host_variables;
 pub use self::yosh::plugin::files as host_files;
 pub use self::yosh::plugin::files::{DirEntry, FileStat};
+pub use self::yosh::plugin::commands as host_commands;
+pub use self::yosh::plugin::commands::ExecOutput;
 
 // ── Plugin author-facing types ───────────────────────────────────────
 
@@ -149,4 +151,19 @@ pub fn remove_dir(path: &str) -> Result<(), ErrorCode> {
 
 pub fn remove_dir_all(path: &str) -> Result<(), ErrorCode> {
     host_files::remove_dir(path, true)
+}
+
+// ── commands:exec helpers ────────────────────────────────────────────
+
+/// Run an external command. Subject to the host's `commands:exec`
+/// capability and `allowed_commands` allowlist, plus a 1000ms timeout.
+///
+/// Returns the captured stdout/stderr and exit code on a normal
+/// process exit. Returns `Err(ErrorCode::PatternNotAllowed)` if the
+/// argv is not in the plugin's allowlist, `Err(ErrorCode::Timeout)`
+/// if the 1000ms cap is hit, `Err(ErrorCode::NotFound)` on PATH miss,
+/// `Err(ErrorCode::Denied)` if the capability isn't granted.
+pub fn exec(program: &str, args: &[&str]) -> Result<ExecOutput, ErrorCode> {
+    let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    host_commands::exec(program, &args_owned)
 }
