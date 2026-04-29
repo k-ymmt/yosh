@@ -433,7 +433,10 @@ fn t06_cwasm_missing_falls_back_to_in_memory() {
     // with CacheRejection::Missing and load_one falls back.
     let wasm_bytes = std::fs::read(&wasm).expect("read wasm");
     let wasm_sha = yosh::plugin::cache::sha256_hex(&wasm_bytes);
-    let key = CacheKey::for_runtime(wasm_sha, "v1;component_model=true;async=false;fuel=false;cranelift");
+    let key = CacheKey::for_runtime(
+        wasm_sha,
+        "v1;component_model=true;async=false;fuel=false;cranelift",
+    );
     let nonexistent_cwasm = wasm.with_extension("nonexistent.cwasm");
 
     test_helpers::load_plugin_with_cache(
@@ -449,8 +452,10 @@ fn t06_cwasm_missing_falls_back_to_in_memory() {
 
     // Plugin must still work via the in-memory fallback compile.
     let exec = mgr.exec_command(&mut env, "test_cmd", &["smoke".into()]);
-    assert!(matches!(exec, PluginExec::Handled(0)),
-        "plugin must work after cwasm fallback");
+    assert!(
+        matches!(exec, PluginExec::Handled(0)),
+        "plugin must work after cwasm fallback"
+    );
 }
 
 /// §8.9 — wasm SHA-256 mismatch refuses to load.
@@ -469,7 +474,10 @@ fn t09_wasm_sha_mismatch_refuses_to_load() {
 
     // Bogus expected SHA — does NOT match the on-disk wasm.
     let bogus_sha = "0".repeat(64);
-    let key = CacheKey::for_runtime(bogus_sha, "v1;component_model=true;async=false;fuel=false;cranelift");
+    let key = CacheKey::for_runtime(
+        bogus_sha,
+        "v1;component_model=true;async=false;fuel=false;cranelift",
+    );
     let nonexistent_cwasm = wasm.with_extension("nonexistent.cwasm");
 
     let result = test_helpers::load_plugin_with_cache(
@@ -483,8 +491,11 @@ fn t09_wasm_sha_mismatch_refuses_to_load() {
     );
     assert!(result.is_err(), "load with bad expected SHA must fail");
     let msg = result.unwrap_err();
-    assert!(msg.contains("wasm SHA-256 mismatch"),
-        "error must mention SHA-256 mismatch (was {:?})", msg);
+    assert!(
+        msg.contains("wasm SHA-256 mismatch"),
+        "error must mention SHA-256 mismatch (was {:?})",
+        msg
+    );
 }
 
 /// §8.5 — `files:read` granted: real read returns file contents.
@@ -609,10 +620,7 @@ fn t18_files_write_denied_returns_error() {
         exec
     );
 
-    assert!(
-        !path.exists(),
-        "deny stub must not create the file"
-    );
+    assert!(!path.exists(), "deny stub must not create the file");
 }
 
 /// §8.5 — Read and write capabilities are independent: granting only
@@ -657,4 +665,143 @@ fn t19_files_read_only_blocks_write() {
         w
     );
     assert!(!write_path.exists(), "deny stub must not create the file");
+}
+
+/// §10 t20 — `commands:exec` granted with matching pattern works.
+#[test]
+fn t20_commands_exec_granted_with_pattern_works() {
+    let _g = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    let allowed = yosh_plugin_api::CAP_COMMANDS_EXEC | yosh_plugin_api::CAP_IO;
+    test_helpers::load_plugin_with_caps(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        allowed,
+        &["echo:*".to_string()],
+    )
+    .expect("load test_plugin with commands:exec + echo:* allowlist");
+
+    let exec = mgr.exec_command(&mut env, "run-echo", &["hello".into()]);
+    assert!(
+        matches!(exec, PluginExec::Handled(0)),
+        "run-echo with allowed pattern must Handled(0), got {:?}",
+        exec
+    );
+}
+
+/// §10 t21 — `commands:exec` denied without capability bit.
+#[test]
+fn t21_commands_exec_denied_without_capability() {
+    let _g = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    // No CAP_COMMANDS_EXEC bit — even with a matching pattern, the deny
+    // stub fires.
+    let allowed = yosh_plugin_api::CAP_IO;
+    test_helpers::load_plugin_with_caps(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        allowed,
+        &["echo:*".to_string()],
+    )
+    .expect("load without commands:exec");
+
+    let exec = mgr.exec_command(&mut env, "run-echo", &["hi".into()]);
+    assert!(
+        matches!(exec, PluginExec::Handled(100)),
+        "run-echo without capability must map to exit 100 (Denied), got {:?}",
+        exec
+    );
+}
+
+/// §10 t22 — `commands:exec` granted but pattern doesn't match.
+#[test]
+fn t22_commands_exec_pattern_not_allowed_without_match() {
+    let _g = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    let allowed = yosh_plugin_api::CAP_COMMANDS_EXEC | yosh_plugin_api::CAP_IO;
+    test_helpers::load_plugin_with_caps(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        allowed,
+        // Allow `ls:*` but the plugin invokes `echo` — no match.
+        &["ls:*".to_string()],
+    )
+    .expect("load with non-matching allowlist");
+
+    let exec = mgr.exec_command(&mut env, "run-echo", &["hi".into()]);
+    assert!(
+        matches!(exec, PluginExec::Handled(101)),
+        "run-echo without matching pattern must map to exit 101 (PatternNotAllowed), got {:?}",
+        exec
+    );
+}
+
+/// §10 t23 — exact-match pattern (no `:*`) rejects extra args.
+#[test]
+fn t23_commands_exec_exact_pattern_rejects_extra_args() {
+    let _g = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    let allowed = yosh_plugin_api::CAP_COMMANDS_EXEC | yosh_plugin_api::CAP_IO;
+    test_helpers::load_plugin_with_caps(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        allowed,
+        // Exact-length pattern: argv must be EXACTLY ["echo"].
+        &["echo".to_string()],
+    )
+    .expect("load with exact-length allowlist");
+
+    // `run-echo hi` produces argv = ["echo", "hi"]; pattern "echo" only
+    // matches argv = ["echo"], so this is rejected.
+    let exec = mgr.exec_command(&mut env, "run-echo", &["hi".into()]);
+    assert!(
+        matches!(exec, PluginExec::Handled(101)),
+        "run-echo with extra args under exact pattern must map to exit 101, got {:?}",
+        exec
+    );
+}
+
+/// §10 t24 — invalid pattern fails plugin load.
+#[test]
+fn t24_commands_exec_invalid_pattern_fails_plugin_load() {
+    let _g = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    let allowed = yosh_plugin_api::CAP_COMMANDS_EXEC | yosh_plugin_api::CAP_IO;
+    let result = test_helpers::load_plugin_with_caps(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        allowed,
+        // Pattern body is empty after stripping `:*` — should error.
+        &[":*".to_string()],
+    );
+    assert!(
+        result.is_err(),
+        "load_plugin_with_caps should fail on invalid pattern, got Ok"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("invalid allowed_commands pattern"),
+        "error must mention the offending field, got: {}",
+        err
+    );
 }
