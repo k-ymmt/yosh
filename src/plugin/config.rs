@@ -30,6 +30,11 @@ pub struct PluginEntry {
     /// See `crate::plugin::cache::CacheKey`.
     #[serde(default)]
     pub cache_key: Option<crate::plugin::cache::CacheKey>,
+    /// Per-plugin allowlist of argv patterns that the `commands:exec`
+    /// capability is restricted to. `None` or empty means no command is
+    /// permitted; matching is OR across the list.
+    #[serde(default)]
+    pub allowed_commands: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -66,6 +71,7 @@ pub fn capability_from_str(s: &str) -> Option<u32> {
         "hooks:pre_prompt" => Some(yosh_plugin_api::CAP_HOOK_PRE_PROMPT),
         "files:read" => Some(yosh_plugin_api::CAP_FILES_READ),
         "files:write" => Some(yosh_plugin_api::CAP_FILES_WRITE),
+        "commands:exec" => Some(yosh_plugin_api::CAP_COMMANDS_EXEC),
         _ => None,
     }
 }
@@ -240,5 +246,52 @@ path = "/usr/lib/libtrusted.dylib"
             capabilities_from_strs(&strs),
             CAP_VARIABLES_READ | CAP_IO | CAP_HOOK_ON_CD
         );
+    }
+
+    #[test]
+    fn parse_allowed_commands_field() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "git-prompt"
+path = "/tmp/git-prompt.wasm"
+capabilities = ["commands:exec"]
+allowed_commands = ["git status:*", "git rev-parse:*"]
+"#
+        )
+        .unwrap();
+        let config = PluginConfig::load(f.path()).unwrap();
+        let entry = &config.plugin[0];
+        assert_eq!(
+            entry.allowed_commands,
+            Some(vec![
+                "git status:*".to_string(),
+                "git rev-parse:*".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_missing_allowed_commands_is_none() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "no-exec"
+path = "/tmp/x.wasm"
+"#
+        )
+        .unwrap();
+        let config = PluginConfig::load(f.path()).unwrap();
+        assert!(config.plugin[0].allowed_commands.is_none());
+    }
+
+    #[test]
+    fn parse_commands_exec_capability_string_to_bitflag() {
+        use yosh_plugin_api::CAP_COMMANDS_EXEC;
+        assert_eq!(capability_from_str("commands:exec"), Some(CAP_COMMANDS_EXEC));
     }
 }
