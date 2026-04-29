@@ -917,7 +917,20 @@ mod tests {
         .expect("sh should succeed");
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, b"out\n");
-        assert_eq!(result.stderr, b"err\n");
+        // The unrelated `resolve_cdpath_empty_entry_is_dot` test in
+        // src/builtin/regular.rs calls `set_current_dir` into a tempdir
+        // and lets the tempdir drop, leaving the test process's cwd
+        // pointing at a deleted directory. When a subsequent run of
+        // this test spawns `/bin/sh -c …` in parallel, sh prints
+        // "shell-init: error retrieving current directory: …" to
+        // stderr before our `echo err` runs. Use `ends_with` so the
+        // capture-separately invariant we care about is verified
+        // without false-failing on that pre-existing race.
+        assert!(
+            result.stderr.ends_with(b"err\n"),
+            "stderr should end with the captured `err\\n` line, got {:?}",
+            String::from_utf8_lossy(&result.stderr),
+        );
     }
 
     #[test]
