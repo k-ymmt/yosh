@@ -7,6 +7,8 @@ interface types {
         io-failed,
         not-found,
         other,
+        timeout,
+        pattern-not-allowed,
     }
 
     /// Identifies a standard I/O stream (stdout or stderr).
@@ -93,6 +95,18 @@ interface files {
     remove-dir:  func(path: string, recursive: bool) -> result<_, error-code>;
 }
 
+interface commands {
+    use types.{error-code};
+
+    record exec-output {
+        exit-code: s32,
+        stdout: list<u8>,
+        stderr: list<u8>,
+    }
+
+    exec: func(program: string, args: list<string>) -> result<exec-output, error-code>;
+}
+
 interface plugin {
     use types.{plugin-info};
     metadata:  func() -> plugin-info;
@@ -113,6 +127,7 @@ world plugin-world {
     import filesystem;
     import files;
     import io;
+    import commands;
 
     export plugin;
     export hooks;

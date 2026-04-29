@@ -28,6 +28,7 @@ use yosh_plugin_api::{
 
 use super::host::{
     HostContext,
+    deny_commands_exec,
     deny_files_append_file, deny_files_create_dir, deny_files_metadata,
     deny_files_read_dir, deny_files_read_file, deny_files_remove_dir,
     deny_files_remove_file, deny_files_write_file,
@@ -207,6 +208,19 @@ pub fn build_linker(
             Ok((deny_files_remove_dir(store.data_mut(), path, recursive),))
         })?;
     }
+
+    // ── yosh:plugin/commands ───────────────────────────────────────────
+    //
+    // host_commands_exec wiring lands in the next commit (Task 4). For
+    // now the deny stub is bound unconditionally so existing plugins
+    // still instantiate cleanly.
+    let mut commands = linker.instance("yosh:plugin/commands@0.1.0")?;
+    commands.func_wrap(
+        "exec",
+        |mut store, (program, args): (String, Vec<String>)| {
+            Ok((deny_commands_exec(store.data_mut(), program, args),))
+        },
+    )?;
 
     Ok(linker)
 }

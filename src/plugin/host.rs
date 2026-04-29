@@ -15,6 +15,8 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 use crate::env::ShellEnv;
 
 use super::generated::yosh::plugin::types::{ErrorCode, IoStream};
+use super::generated::yosh::plugin::commands::ExecOutput;
+use super::pattern::CommandPattern;
 
 /// Per-plugin store data. Carries:
 ///
@@ -38,6 +40,7 @@ pub struct HostContext {
 
     pub(super) wasi: WasiCtx,
     pub(super) resource_table: ResourceTable,
+    pub(super) allowed_commands: Vec<CommandPattern>,
 }
 
 // SAFETY: `*mut ShellEnv` is `!Send` by default, but the pointer is only
@@ -61,6 +64,7 @@ impl HostContext {
             capabilities,
             wasi,
             resource_table: ResourceTable::new(),
+            allowed_commands: Vec::new(),
         }
     }
 
@@ -451,6 +455,16 @@ pub(super) fn deny_files_remove_dir(
     _path: String,
     _recursive: bool,
 ) -> Result<(), ErrorCode> {
+    Err(ErrorCode::Denied)
+}
+
+// ── yosh:plugin/commands host imports ───────────────────────────────
+
+pub(super) fn deny_commands_exec(
+    _ctx: &mut HostContext,
+    _program: String,
+    _args: Vec<String>,
+) -> Result<ExecOutput, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
