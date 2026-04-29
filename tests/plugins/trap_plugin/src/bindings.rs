@@ -16,6 +16,8 @@ pub mod yosh {
                 IoFailed,
                 NotFound,
                 Other,
+                Timeout,
+                PatternNotAllowed,
             }
             impl ErrorCode {
                 pub fn name(&self) -> &'static str {
@@ -25,6 +27,8 @@ pub mod yosh {
                         ErrorCode::IoFailed => "io-failed",
                         ErrorCode::NotFound => "not-found",
                         ErrorCode::Other => "other",
+                        ErrorCode::Timeout => "timeout",
+                        ErrorCode::PatternNotAllowed => "pattern-not-allowed",
                     }
                 }
                 pub fn message(&self) -> &'static str {
@@ -34,6 +38,8 @@ pub mod yosh {
                         ErrorCode::IoFailed => "",
                         ErrorCode::NotFound => "",
                         ErrorCode::Other => "",
+                        ErrorCode::Timeout => "",
+                        ErrorCode::PatternNotAllowed => "",
                     }
                 }
             }
@@ -70,6 +76,8 @@ pub mod yosh {
                         2 => ErrorCode::IoFailed,
                         3 => ErrorCode::NotFound,
                         4 => ErrorCode::Other,
+                        5 => ErrorCode::Timeout,
+                        6 => ErrorCode::PatternNotAllowed,
                         _ => panic!("invalid enum discriminant"),
                     }
                 }
@@ -971,6 +979,128 @@ pub mod yosh {
                 }
             }
         }
+        #[allow(dead_code, clippy::all)]
+        pub mod commands {
+            #[used]
+            #[doc(hidden)]
+            static __FORCE_SECTION_REF: fn() = super::super::super::__link_custom_section_describing_imports;
+            use super::super::super::_rt;
+            pub type ErrorCode = super::super::super::yosh::plugin::types::ErrorCode;
+            #[derive(Clone)]
+            pub struct ExecOutput {
+                pub exit_code: i32,
+                pub stdout: _rt::Vec<u8>,
+                pub stderr: _rt::Vec<u8>,
+            }
+            impl ::core::fmt::Debug for ExecOutput {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("ExecOutput")
+                        .field("exit-code", &self.exit_code)
+                        .field("stdout", &self.stdout)
+                        .field("stderr", &self.stderr)
+                        .finish()
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            pub fn exec(
+                program: &str,
+                args: &[_rt::String],
+            ) -> Result<ExecOutput, ErrorCode> {
+                unsafe {
+                    #[repr(align(4))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 24]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 24]);
+                    let vec0 = program;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let vec2 = args;
+                    let len2 = vec2.len();
+                    let layout2 = _rt::alloc::Layout::from_size_align_unchecked(
+                        vec2.len() * 8,
+                        4,
+                    );
+                    let result2 = if layout2.size() != 0 {
+                        let ptr = _rt::alloc::alloc(layout2).cast::<u8>();
+                        if ptr.is_null() {
+                            _rt::alloc::handle_alloc_error(layout2);
+                        }
+                        ptr
+                    } else {
+                        ::core::ptr::null_mut()
+                    };
+                    for (i, e) in vec2.into_iter().enumerate() {
+                        let base = result2.add(i * 8);
+                        {
+                            let vec1 = e;
+                            let ptr1 = vec1.as_ptr().cast::<u8>();
+                            let len1 = vec1.len();
+                            *base.add(4).cast::<usize>() = len1;
+                            *base.add(0).cast::<*mut u8>() = ptr1.cast_mut();
+                        }
+                    }
+                    let ptr3 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "yosh:plugin/commands@0.1.0")]
+                    extern "C" {
+                        #[link_name = "exec"]
+                        fn wit_import(
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                        );
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fn wit_import(
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                    ) {
+                        unreachable!()
+                    }
+                    wit_import(ptr0.cast_mut(), len0, result2, len2, ptr3);
+                    let l4 = i32::from(*ptr3.add(0).cast::<u8>());
+                    if layout2.size() != 0 {
+                        _rt::alloc::dealloc(result2.cast(), layout2);
+                    }
+                    match l4 {
+                        0 => {
+                            let e = {
+                                let l5 = *ptr3.add(4).cast::<i32>();
+                                let l6 = *ptr3.add(8).cast::<*mut u8>();
+                                let l7 = *ptr3.add(12).cast::<usize>();
+                                let len8 = l7;
+                                let l9 = *ptr3.add(16).cast::<*mut u8>();
+                                let l10 = *ptr3.add(20).cast::<usize>();
+                                let len11 = l10;
+                                ExecOutput {
+                                    exit_code: l5,
+                                    stdout: _rt::Vec::from_raw_parts(l6.cast(), len8, len8),
+                                    stderr: _rt::Vec::from_raw_parts(l9.cast(), len11, len11),
+                                }
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l12 = i32::from(*ptr3.add(4).cast::<u8>());
+                                super::super::super::yosh::plugin::types::ErrorCode::_lift(
+                                    l12 as u8,
+                                )
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    }
+                }
+            }
+        }
     }
 }
 #[allow(dead_code)]
@@ -1359,11 +1489,11 @@ mod _rt {
         let layout = alloc::Layout::from_size_align_unchecked(size, align);
         alloc::dealloc(ptr, layout);
     }
+    pub use alloc_crate::alloc;
     #[cfg(target_arch = "wasm32")]
     pub fn run_ctors_once() {
         wit_bindgen_rt::run_ctors_once();
     }
-    pub use alloc_crate::alloc;
     pub fn as_i32<T: AsI32>(t: T) -> i32 {
         t.as_i32()
     }
@@ -1461,43 +1591,47 @@ pub(crate) use __export_plugin_world_impl as export;
 #[cfg(target_arch = "wasm32")]
 #[link_section = "component-type:wit-bindgen:0.31.0:yosh:plugin@0.1.0:plugin-world:encoded world"]
 #[doc(hidden)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1530] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xf7\x0a\x01A\x02\x01\
-A\x11\x01B\x0a\x01m\x05\x06denied\x10invalid-argument\x09io-failed\x09not-found\x05\
-other\x04\0\x0aerror-code\x03\0\0\x01m\x02\x06stdout\x06stderr\x04\0\x09io-strea\
-m\x03\0\x02\x01m\x04\x08pre-exec\x09post-exec\x05on-cd\x0apre-prompt\x04\0\x09ho\
-ok-name\x03\0\x04\x01ps\x01p\x05\x01r\x05\x04names\x07versions\x08commands\x06\x15\
-required-capabilities\x06\x11implemented-hooks\x07\x04\0\x0bplugin-info\x03\0\x08\
-\x03\x01\x17yosh:plugin/types@0.1.0\x05\0\x02\x03\0\0\x0aerror-code\x01B\x0a\x02\
-\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\x01ks\x01j\x01\x02\x01\x01\x01@\x01\
-\x04names\0\x03\x04\0\x03get\x01\x04\x01j\0\x01\x01\x01@\x02\x04names\x05values\0\
-\x05\x04\0\x03set\x01\x06\x04\0\x0aexport-env\x01\x06\x03\x01\x1byosh:plugin/var\
-iables@0.1.0\x05\x02\x01B\x08\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\x01\
-j\x01s\x01\x01\x01@\0\0\x02\x04\0\x03cwd\x01\x03\x01j\0\x01\x01\x01@\x01\x04path\
-s\0\x04\x04\0\x07set-cwd\x01\x05\x03\x01\x1cyosh:plugin/filesystem@0.1.0\x05\x03\
-\x01B\x1a\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\x01r\x05\x07is-file\x7f\
-\x06is-dir\x7f\x0ais-symlink\x7f\x04sizew\x0amtime-secsx\x04\0\x09file-stat\x03\0\
-\x02\x01r\x04\x04names\x07is-file\x7f\x06is-dir\x7f\x0ais-symlink\x7f\x04\0\x09d\
-ir-entry\x03\0\x04\x01p}\x01j\x01\x06\x01\x01\x01@\x01\x04paths\0\x07\x04\0\x09r\
-ead-file\x01\x08\x01p\x05\x01j\x01\x09\x01\x01\x01@\x01\x04paths\0\x0a\x04\0\x08\
-read-dir\x01\x0b\x01j\x01\x03\x01\x01\x01@\x01\x04paths\0\x0c\x04\0\x08metadata\x01\
-\x0d\x01j\0\x01\x01\x01@\x02\x04paths\x04data\x06\0\x0e\x04\0\x0awrite-file\x01\x0f\
-\x04\0\x0bappend-file\x01\x0f\x01@\x02\x04paths\x09recursive\x7f\0\x0e\x04\0\x0a\
-create-dir\x01\x10\x01@\x01\x04paths\0\x0e\x04\0\x0bremove-file\x01\x11\x04\0\x0a\
-remove-dir\x01\x10\x03\x01\x17yosh:plugin/files@0.1.0\x05\x04\x02\x03\0\0\x09io-\
-stream\x01B\x08\x02\x03\x02\x01\x05\x04\0\x09io-stream\x03\0\0\x02\x03\x02\x01\x01\
-\x04\0\x0aerror-code\x03\0\x02\x01p}\x01j\0\x01\x03\x01@\x02\x06target\x01\x04da\
-ta\x04\0\x05\x04\0\x05write\x01\x06\x03\x01\x14yosh:plugin/io@0.1.0\x05\x06\x02\x03\
-\0\0\x0bplugin-info\x01B\x0c\x02\x03\x02\x01\x07\x04\0\x0bplugin-info\x03\0\0\x01\
-@\0\0\x01\x04\0\x08metadata\x01\x02\x01j\0\x01s\x01@\0\0\x03\x04\0\x07on-load\x01\
-\x04\x01ps\x01@\x02\x07commands\x04args\x05\0z\x04\0\x04exec\x01\x06\x01@\0\x01\0\
-\x04\0\x09on-unload\x01\x07\x04\x01\x18yosh:plugin/plugin@0.1.0\x05\x08\x01B\x08\
-\x01@\x01\x07commands\x01\0\x04\0\x08pre-exec\x01\0\x01@\x02\x07commands\x09exit\
--codez\x01\0\x04\0\x09post-exec\x01\x01\x01@\x02\x07old-dirs\x07new-dirs\x01\0\x04\
-\0\x05on-cd\x01\x02\x01@\0\x01\0\x04\0\x0apre-prompt\x01\x03\x04\x01\x17yosh:plu\
-gin/hooks@0.1.0\x05\x09\x04\x01\x1eyosh:plugin/plugin-world@0.1.0\x04\0\x0b\x12\x01\
-\0\x0cplugin-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-compon\
-ent\x070.216.0\x10wit-bindgen-rust\x060.31.0";
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1701] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa2\x0c\x01A\x02\x01\
+A\x13\x01B\x0a\x01m\x07\x06denied\x10invalid-argument\x09io-failed\x09not-found\x05\
+other\x07timeout\x13pattern-not-allowed\x04\0\x0aerror-code\x03\0\0\x01m\x02\x06\
+stdout\x06stderr\x04\0\x09io-stream\x03\0\x02\x01m\x04\x08pre-exec\x09post-exec\x05\
+on-cd\x0apre-prompt\x04\0\x09hook-name\x03\0\x04\x01ps\x01p\x05\x01r\x05\x04name\
+s\x07versions\x08commands\x06\x15required-capabilities\x06\x11implemented-hooks\x07\
+\x04\0\x0bplugin-info\x03\0\x08\x03\x01\x17yosh:plugin/types@0.1.0\x05\0\x02\x03\
+\0\0\x0aerror-code\x01B\x0a\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\x01k\
+s\x01j\x01\x02\x01\x01\x01@\x01\x04names\0\x03\x04\0\x03get\x01\x04\x01j\0\x01\x01\
+\x01@\x02\x04names\x05values\0\x05\x04\0\x03set\x01\x06\x04\0\x0aexport-env\x01\x06\
+\x03\x01\x1byosh:plugin/variables@0.1.0\x05\x02\x01B\x08\x02\x03\x02\x01\x01\x04\
+\0\x0aerror-code\x03\0\0\x01j\x01s\x01\x01\x01@\0\0\x02\x04\0\x03cwd\x01\x03\x01\
+j\0\x01\x01\x01@\x01\x04paths\0\x04\x04\0\x07set-cwd\x01\x05\x03\x01\x1cyosh:plu\
+gin/filesystem@0.1.0\x05\x03\x01B\x1a\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\
+\0\0\x01r\x05\x07is-file\x7f\x06is-dir\x7f\x0ais-symlink\x7f\x04sizew\x0amtime-s\
+ecsx\x04\0\x09file-stat\x03\0\x02\x01r\x04\x04names\x07is-file\x7f\x06is-dir\x7f\
+\x0ais-symlink\x7f\x04\0\x09dir-entry\x03\0\x04\x01p}\x01j\x01\x06\x01\x01\x01@\x01\
+\x04paths\0\x07\x04\0\x09read-file\x01\x08\x01p\x05\x01j\x01\x09\x01\x01\x01@\x01\
+\x04paths\0\x0a\x04\0\x08read-dir\x01\x0b\x01j\x01\x03\x01\x01\x01@\x01\x04paths\
+\0\x0c\x04\0\x08metadata\x01\x0d\x01j\0\x01\x01\x01@\x02\x04paths\x04data\x06\0\x0e\
+\x04\0\x0awrite-file\x01\x0f\x04\0\x0bappend-file\x01\x0f\x01@\x02\x04paths\x09r\
+ecursive\x7f\0\x0e\x04\0\x0acreate-dir\x01\x10\x01@\x01\x04paths\0\x0e\x04\0\x0b\
+remove-file\x01\x11\x04\0\x0aremove-dir\x01\x10\x03\x01\x17yosh:plugin/files@0.1\
+.0\x05\x04\x02\x03\0\0\x09io-stream\x01B\x08\x02\x03\x02\x01\x05\x04\0\x09io-str\
+eam\x03\0\0\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\x02\x01p}\x01j\0\x01\x03\
+\x01@\x02\x06target\x01\x04data\x04\0\x05\x04\0\x05write\x01\x06\x03\x01\x14yosh\
+:plugin/io@0.1.0\x05\x06\x01B\x09\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\
+\x01p}\x01r\x03\x09exit-codez\x06stdout\x02\x06stderr\x02\x04\0\x0bexec-output\x03\
+\0\x03\x01ps\x01j\x01\x04\x01\x01\x01@\x02\x07programs\x04args\x05\0\x06\x04\0\x04\
+exec\x01\x07\x03\x01\x1ayosh:plugin/commands@0.1.0\x05\x07\x02\x03\0\0\x0bplugin\
+-info\x01B\x0c\x02\x03\x02\x01\x08\x04\0\x0bplugin-info\x03\0\0\x01@\0\0\x01\x04\
+\0\x08metadata\x01\x02\x01j\0\x01s\x01@\0\0\x03\x04\0\x07on-load\x01\x04\x01ps\x01\
+@\x02\x07commands\x04args\x05\0z\x04\0\x04exec\x01\x06\x01@\0\x01\0\x04\0\x09on-\
+unload\x01\x07\x04\x01\x18yosh:plugin/plugin@0.1.0\x05\x09\x01B\x08\x01@\x01\x07\
+commands\x01\0\x04\0\x08pre-exec\x01\0\x01@\x02\x07commands\x09exit-codez\x01\0\x04\
+\0\x09post-exec\x01\x01\x01@\x02\x07old-dirs\x07new-dirs\x01\0\x04\0\x05on-cd\x01\
+\x02\x01@\0\x01\0\x04\0\x0apre-prompt\x01\x03\x04\x01\x17yosh:plugin/hooks@0.1.0\
+\x05\x0a\x04\x01\x1eyosh:plugin/plugin-world@0.1.0\x04\0\x0b\x12\x01\0\x0cplugin\
+-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.216\
+.0\x10wit-bindgen-rust\x060.31.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
