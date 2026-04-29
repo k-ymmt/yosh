@@ -129,11 +129,11 @@ impl Plugin for TestPlugin {
                         let _ = print(&String::from_utf8_lossy(&out.stdout));
                         out.exit_code
                     }
-                    Err(ErrorCode::Denied)            => 100,
+                    Err(ErrorCode::Denied) => 100,
                     Err(ErrorCode::PatternNotAllowed) => 101,
-                    Err(ErrorCode::Timeout)           => 102,
-                    Err(ErrorCode::NotFound)          => 103,
-                    Err(_)                            => 1,
+                    Err(ErrorCode::Timeout) => 102,
+                    Err(ErrorCode::NotFound) => 103,
+                    Err(_) => 1,
                 }
             }
             _ => 127,
