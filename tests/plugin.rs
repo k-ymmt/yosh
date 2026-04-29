@@ -85,7 +85,7 @@ fn t01_capability_allowlist_applied_to_linker() {
     let mut mgr = PluginManager::new();
 
     let allowed = yosh_plugin_api::CAP_VARIABLES_READ | yosh_plugin_api::CAP_IO;
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed, &[])
         .expect("load test_plugin with restricted caps");
 
     env.vars
@@ -112,7 +112,7 @@ fn t02_wasm_trap_isolation_via_with_env() {
     let wasm = trap_plugin_wasm();
     let mut env = fresh_env();
     let mut mgr = PluginManager::new();
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL, &[])
         .expect("load trap_plugin");
 
     let r1 = mgr.exec_command(&mut env, "trap_now", &[]);
@@ -144,7 +144,7 @@ fn t03_with_env_resets_env_after_dispatch() {
     let wasm = test_plugin_wasm();
     let mut env = fresh_env();
     let mut mgr = PluginManager::new();
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL, &[])
         .expect("load test_plugin");
 
     // After load (which dispatches `on_load` under `with_env`), env must
@@ -207,7 +207,7 @@ fn t05_on_load_has_host_api_access() {
     let wasm = test_plugin_wasm();
     let mut env = fresh_env();
     let mut mgr = PluginManager::new();
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL, &[])
         .expect("load test_plugin");
 
     let exec = mgr.exec_command(&mut env, "dump_events", &[]);
@@ -297,7 +297,7 @@ fn t12_required_vs_granted_parity_warning_data_path() {
     // load_one's `denied` computation is exercised; the load must still
     // succeed and the granted operations must still work.
     let allowed = yosh_plugin_api::CAP_VARIABLES_READ | yosh_plugin_api::CAP_IO;
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed, &[])
         .expect("load with restricted caps must still succeed");
 
     env.vars.set("PARITY", "ok").expect("set sentinel");
@@ -326,7 +326,7 @@ fn t13_hook_dispatch_suppression_for_non_overridden_post_exec() {
     let wasm = test_plugin_wasm();
     let mut env = fresh_env();
     let mut mgr = PluginManager::new();
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL, &[])
         .expect("load test_plugin");
 
     // Seed the sentinel.
@@ -375,7 +375,7 @@ fn t13b_implemented_hook_does_fire() {
     let wasm = test_plugin_wasm();
     let mut env = fresh_env();
     let mut mgr = PluginManager::new();
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL, &[])
         .expect("load test_plugin");
 
     mgr.call_pre_exec(&mut env, "ls -la");
@@ -443,6 +443,7 @@ fn t06_cwasm_missing_falls_back_to_in_memory() {
         yosh_plugin_api::CAP_ALL,
         &nonexistent_cwasm,
         &key,
+        &[],
     )
     .expect("load with stale cwasm path must fall back, not fail");
 
@@ -478,6 +479,7 @@ fn t09_wasm_sha_mismatch_refuses_to_load() {
         yosh_plugin_api::CAP_ALL,
         &nonexistent_cwasm,
         &key,
+        &[],
     );
     assert!(result.is_err(), "load with bad expected SHA must fail");
     let msg = result.unwrap_err();
@@ -504,7 +506,7 @@ fn t15_files_read_granted_works() {
     let mut mgr = PluginManager::new();
 
     let allowed = yosh_plugin_api::CAP_FILES_READ;
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed, &[])
         .expect("load test_plugin with files:read");
 
     let exec = mgr.exec_command(
@@ -533,7 +535,7 @@ fn t16_files_read_denied_returns_error() {
 
     // Grant something else so the plugin loads, but NOT files:read.
     let allowed = yosh_plugin_api::CAP_VARIABLES_READ;
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed, &[])
         .expect("load test_plugin without files:read");
 
     let exec = mgr.exec_command(
@@ -560,7 +562,7 @@ fn t17_files_write_granted_works() {
     let mut mgr = PluginManager::new();
 
     let allowed = yosh_plugin_api::CAP_FILES_WRITE;
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed, &[])
         .expect("load test_plugin with files:write");
 
     let exec = mgr.exec_command(
@@ -593,7 +595,7 @@ fn t18_files_write_denied_returns_error() {
     let mut mgr = PluginManager::new();
 
     let allowed = yosh_plugin_api::CAP_VARIABLES_READ;
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed, &[])
         .expect("load test_plugin without files:write");
 
     let exec = mgr.exec_command(
@@ -628,7 +630,7 @@ fn t19_files_read_only_blocks_write() {
     let mut mgr = PluginManager::new();
 
     let allowed = yosh_plugin_api::CAP_FILES_READ; // read only
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed)
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed, &[])
         .expect("load test_plugin with files:read only");
 
     // Read should succeed.

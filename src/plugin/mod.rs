@@ -149,12 +149,17 @@ impl PluginManager {
                 .capabilities
                 .as_ref()
                 .map(|strs| config::capabilities_from_strs(strs));
+            let entry_allowed_commands: Vec<String> = entry
+                .allowed_commands
+                .clone()
+                .unwrap_or_default();
             if let Err(e) = self.load_one(
                 &path,
                 env,
                 config_caps,
                 entry.cwasm_path.as_deref(),
                 entry.cache_key.as_ref(),
+                &entry_allowed_commands,
             ) {
                 eprintln!("yosh: plugin: {}", e);
             }
@@ -167,7 +172,7 @@ impl PluginManager {
     /// `capabilities = [...]` field). Always falls back to in-memory
     /// compile (no cwasm cache lookup).
     pub fn load_plugin(&mut self, path: &Path, env: &mut ShellEnv) -> Result<(), String> {
-        self.load_one(path, env, None, None, None)
+        self.load_one(path, env, None, None, None, &[])
     }
 
     /// Load one plugin.
@@ -184,6 +189,7 @@ impl PluginManager {
         config_capabilities: Option<u32>,
         cwasm_path: Option<&Path>,
         expected_key: Option<&CacheKey>,
+        allowed_commands: &[String],
     ) -> Result<(), String> {
         // 1. Read the wasm bytes (needed for SHA verify and/or in-memory compile).
         let wasm_bytes = std::fs::read(path)
@@ -252,6 +258,17 @@ impl PluginManager {
                 .map_err(|e| format!("{}: component compile failed: {}", path.display(), e))?,
         };
 
+        // 3a. Parse the allowed_commands patterns up front so we can fail
+        //     fast before wasting time on the scratch linker.
+        let parsed_allowed_commands: Vec<self::pattern::CommandPattern> = allowed_commands
+            .iter()
+            .map(|s| {
+                self::pattern::CommandPattern::parse(s).map_err(|e| {
+                    format!("{}: invalid allowed_commands pattern '{}': {}", path.display(), s, e)
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
         // 3. Build a permissive linker first so we can call `metadata` to
         //    learn the plugin's requested capabilities. The metadata
         //    contract (host imports return `Err(Denied)` on null env) makes
@@ -307,10 +324,12 @@ impl PluginManager {
         )
         .map_err(|e| format!("{}: real bindings pre-init: {}", path.display(), e))?;
 
-        let mut store = Store::new(
-            &self.engine,
-            HostContext::new_for_plugin(plugin_info.name.clone(), effective_capabilities),
+        let mut host_ctx = HostContext::new_for_plugin(
+            plugin_info.name.clone(),
+            effective_capabilities,
         );
+        host_ctx.allowed_commands = parsed_allowed_commands;
+        let mut store = Store::new(&self.engine, host_ctx);
         let bindings = real_pre
             .instantiate(&mut store)
             .map_err(|e| format!("{}: real instantiate: {}", path.display(), e))?;
@@ -606,8 +625,9 @@ pub mod test_helpers {
         path: &Path,
         env: &mut ShellEnv,
         caps: u32,
+        allowed_commands: &[String],
     ) -> Result<(), String> {
-        manager.load_one(path, env, Some(caps), None, None)
+        manager.load_one(path, env, Some(caps), None, None, allowed_commands)
     }
 
     /// Load a plugin with an explicit cwasm cache + key. The host
@@ -620,8 +640,9 @@ pub mod test_helpers {
         caps: u32,
         cwasm_path: &Path,
         expected_key: &super::cache::CacheKey,
+        allowed_commands: &[String],
     ) -> Result<(), String> {
-        manager.load_one(path, env, Some(caps), Some(cwasm_path), Some(expected_key))
+        manager.load_one(path, env, Some(caps), Some(cwasm_path), Some(expected_key), allowed_commands)
     }
 
     /// Returns true if the most-recently-loaded plugin's `Store` has a
