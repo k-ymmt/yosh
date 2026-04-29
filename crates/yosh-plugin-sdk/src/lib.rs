@@ -5,8 +5,8 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-pub mod style;
 mod export;
+pub mod style;
 
 pub use yosh_plugin_api as ffi;
 
@@ -25,16 +25,16 @@ wit_bindgen::generate!({
 
 // Re-export under stable names so the `export!` macro can refer to them
 // predictably, and so plugin authors get one obvious import path.
-pub use self::exports::yosh::plugin::plugin as plugin_iface;
 pub use self::exports::yosh::plugin::hooks as hooks_iface;
-pub use self::yosh::plugin::types::{ErrorCode, HookName, IoStream, PluginInfo};
-pub use self::yosh::plugin::filesystem as host_filesystem;
-pub use self::yosh::plugin::io as host_io;
-pub use self::yosh::plugin::variables as host_variables;
-pub use self::yosh::plugin::files as host_files;
-pub use self::yosh::plugin::files::{DirEntry, FileStat};
+pub use self::exports::yosh::plugin::plugin as plugin_iface;
 pub use self::yosh::plugin::commands as host_commands;
 pub use self::yosh::plugin::commands::ExecOutput;
+pub use self::yosh::plugin::files as host_files;
+pub use self::yosh::plugin::files::{DirEntry, FileStat};
+pub use self::yosh::plugin::filesystem as host_filesystem;
+pub use self::yosh::plugin::io as host_io;
+pub use self::yosh::plugin::types::{ErrorCode, HookName, IoStream, PluginInfo};
+pub use self::yosh::plugin::variables as host_variables;
 
 // ── Plugin author-facing types ───────────────────────────────────────
 
@@ -44,13 +44,19 @@ pub use yosh_plugin_api::{Capability, capabilities_to_bitflags};
 pub trait Plugin: Send + Default + 'static {
     fn commands(&self) -> &[&'static str];
 
-    fn required_capabilities(&self) -> &[Capability] { &[] }
+    fn required_capabilities(&self) -> &[Capability] {
+        &[]
+    }
 
     /// Hooks this plugin actually overrides. Rust cannot reflectively
     /// detect default-method overrides, so plugins enumerate explicitly.
-    fn implemented_hooks(&self) -> &[HookName] { &[] }
+    fn implemented_hooks(&self) -> &[HookName] {
+        &[]
+    }
 
-    fn on_load(&mut self) -> Result<(), String> { Ok(()) }
+    fn on_load(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 
     fn exec(&mut self, command: &str, args: &[String]) -> i32;
 
@@ -158,11 +164,20 @@ pub fn remove_dir_all(path: &str) -> Result<(), ErrorCode> {
 /// Run an external command. Subject to the host's `commands:exec`
 /// capability and `allowed_commands` allowlist, plus a 1000ms timeout.
 ///
+/// The child inherits the shell's current working directory and full
+/// environment. Stdin is `/dev/null`.
+///
 /// Returns the captured stdout/stderr and exit code on a normal
-/// process exit. Returns `Err(ErrorCode::PatternNotAllowed)` if the
-/// argv is not in the plugin's allowlist, `Err(ErrorCode::Timeout)`
-/// if the 1000ms cap is hit, `Err(ErrorCode::NotFound)` on PATH miss,
-/// `Err(ErrorCode::Denied)` if the capability isn't granted.
+/// process exit.
+///
+/// # Errors
+///
+/// - `Err(ErrorCode::Denied)` — the `commands:exec` capability isn't granted.
+/// - `Err(ErrorCode::PatternNotAllowed)` — the argv is not matched by any
+///   entry in the plugin's `allowed_commands` allowlist.
+/// - `Err(ErrorCode::Timeout)` — the 1000ms host-enforced cap was hit.
+/// - `Err(ErrorCode::NotFound)` — `program` was not found on PATH.
+/// - `Err(ErrorCode::InvalidArgument)` — `program` is an empty string.
 pub fn exec(program: &str, args: &[&str]) -> Result<ExecOutput, ErrorCode> {
     let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     host_commands::exec(program, &args_owned)
