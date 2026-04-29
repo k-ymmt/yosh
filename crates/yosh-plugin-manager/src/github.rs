@@ -30,9 +30,12 @@ pub struct GitHubClient {
 }
 
 impl GitHubClient {
-    /// Create a new client, reading auth token from `KISH_GITHUB_TOKEN` or `GITHUB_TOKEN`.
+    /// Create a new client, reading auth token from `YOSH_GITHUB_TOKEN`
+    /// (preferred) or `GITHUB_TOKEN`. The legacy `KISH_GITHUB_TOKEN` env
+    /// var was removed as part of the kish→yosh rename cleanup in
+    /// v0.2.0.
     pub fn new() -> Self {
-        let token = std::env::var("KISH_GITHUB_TOKEN")
+        let token = std::env::var("YOSH_GITHUB_TOKEN")
             .ok()
             .or_else(|| std::env::var("GITHUB_TOKEN").ok());
         Self {

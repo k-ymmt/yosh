@@ -186,7 +186,7 @@ local-tool    -      local:~/.kish/plugins/liblocal.dylib    ✓ verified
 ### Authentication
 
 - **No token**: Public repositories only. Rate limit: 60 requests/hour.
-- **With token**: Set `KISH_GITHUB_TOKEN` or `GITHUB_TOKEN` environment variable. Sent as `Authorization: Bearer {token}`. Supports private repositories. Rate limit: 5,000 requests/hour.
+- **With token**: Set `YOSH_GITHUB_TOKEN` or `GITHUB_TOKEN` environment variable. Sent as `Authorization: Bearer {token}`. Supports private repositories. Rate limit: 5,000 requests/hour.
 
 ### API Usage
 
