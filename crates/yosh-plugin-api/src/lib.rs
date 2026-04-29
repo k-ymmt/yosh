@@ -16,6 +16,7 @@ pub const CAP_HOOK_ON_CD:      u32 = 0x40;
 pub const CAP_HOOK_PRE_PROMPT: u32 = 0x80;
 pub const CAP_FILES_READ:      u32 = 0x100;
 pub const CAP_FILES_WRITE:     u32 = 0x200;
+pub const CAP_COMMANDS_EXEC:   u32 = 0x400;
 
 pub const CAP_ALL: u32 = CAP_VARIABLES_READ
     | CAP_VARIABLES_WRITE
@@ -26,7 +27,8 @@ pub const CAP_ALL: u32 = CAP_VARIABLES_READ
     | CAP_HOOK_ON_CD
     | CAP_HOOK_PRE_PROMPT
     | CAP_FILES_READ
-    | CAP_FILES_WRITE;
+    | CAP_FILES_WRITE
+    | CAP_COMMANDS_EXEC;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {
@@ -40,6 +42,7 @@ pub enum Capability {
     HookPrePrompt,
     FilesRead,
     FilesWrite,
+    CommandsExec,
 }
 
 impl Capability {
@@ -55,6 +58,7 @@ impl Capability {
             Capability::HookPrePrompt  => CAP_HOOK_PRE_PROMPT,
             Capability::FilesRead      => CAP_FILES_READ,
             Capability::FilesWrite     => CAP_FILES_WRITE,
+            Capability::CommandsExec   => CAP_COMMANDS_EXEC,
         }
     }
 
@@ -70,6 +74,7 @@ impl Capability {
             Capability::HookPrePrompt  => "hooks:pre_prompt",
             Capability::FilesRead      => "files:read",
             Capability::FilesWrite     => "files:write",
+            Capability::CommandsExec   => "commands:exec",
         }
     }
 }
@@ -88,6 +93,7 @@ pub fn parse_capability(s: &str) -> Option<Capability> {
         "hooks:pre_prompt" => Capability::HookPrePrompt,
         "files:read"       => Capability::FilesRead,
         "files:write"      => Capability::FilesWrite,
+        "commands:exec"    => Capability::CommandsExec,
         _ => return None,
     })
 }
@@ -145,6 +151,7 @@ mod tests {
             Capability::HookPrePrompt,
             Capability::FilesRead,
             Capability::FilesWrite,
+            Capability::CommandsExec,
         ]);
         assert_eq!(bits, CAP_ALL);
     }
@@ -166,5 +173,22 @@ mod tests {
     fn cap_all_includes_files_bits() {
         assert_eq!(CAP_ALL & CAP_FILES_READ, CAP_FILES_READ);
         assert_eq!(CAP_ALL & CAP_FILES_WRITE, CAP_FILES_WRITE);
+    }
+
+    #[test]
+    fn parse_commands_exec_capability() {
+        assert_eq!(parse_capability("commands:exec"), Some(Capability::CommandsExec));
+    }
+
+    #[test]
+    fn commands_exec_capability_round_trip() {
+        assert_eq!(parse_capability(Capability::CommandsExec.as_str()), Some(Capability::CommandsExec));
+        assert_eq!(Capability::CommandsExec.as_str(), "commands:exec");
+        assert_eq!(Capability::CommandsExec.to_bitflag(), CAP_COMMANDS_EXEC);
+    }
+
+    #[test]
+    fn cap_all_includes_commands_exec_bit() {
+        assert_eq!(CAP_ALL & CAP_COMMANDS_EXEC, CAP_COMMANDS_EXEC);
     }
 }
