@@ -5,8 +5,12 @@ use std::path::Path;
 /// Error type for GitHub API requests made through `get_json`.
 #[derive(Debug)]
 enum GitHubApiError {
-    /// HTTP response with non-2xx status code.
+    /// HTTP response with non-2xx status code (excluding 403/429).
     HttpStatus(u16),
+    /// HTTP 403 or 429 — likely rate-limited, or auth-rejected when a
+    /// token is set. Surfaced separately so callers can attach a
+    /// "set YOSH_GITHUB_TOKEN" hint when no token is configured.
+    RateLimited(u16),
     /// Network/transport error (DNS, connection, timeout).
     Network(String),
     /// Response body could not be read or parsed as JSON.
@@ -17,11 +21,15 @@ impl std::fmt::Display for GitHubApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::HttpStatus(code) => write!(f, "HTTP {}", code),
+            Self::RateLimited(code) => write!(f, "HTTP {} (rate-limited or unauthorized)", code),
             Self::Network(msg) => write!(f, "request failed: {}", msg),
             Self::Parse(msg) => write!(f, "{}", msg),
         }
     }
 }
+
+const RATE_LIMIT_HINT: &str =
+    "hint: set YOSH_GITHUB_TOKEN or GITHUB_TOKEN to raise the rate limit (60 -> 5000 req/hour)";
 
 /// GitHub API client for fetching release information and downloading assets.
 pub struct GitHubClient {
@@ -54,6 +62,9 @@ impl GitHubClient {
         let body = req
             .call()
             .map_err(|e| match &e {
+                ureq::Error::StatusCode(code) if *code == 403 || *code == 429 => {
+                    GitHubApiError::RateLimited(*code)
+                }
                 ureq::Error::StatusCode(code) => GitHubApiError::HttpStatus(*code),
                 _ => GitHubApiError::Network(e.to_string()),
             })?
@@ -96,6 +107,10 @@ impl GitHubClient {
                         GitHubApiError::HttpStatus(404) => format!(
                             "release not found for {}/{} (tried tags '{}' and '{}')",
                             owner, repo, v_tag, version
+                        ),
+                        other @ GitHubApiError::RateLimited(_) if self.token.is_none() => format!(
+                            "failed to fetch release for {}/{} (tried tags '{}' and '{}'): {}\n  {}",
+                            owner, repo, v_tag, version, other, RATE_LIMIT_HINT
                         ),
                         other => format!(
                             "failed to fetch release for {}/{} (tried tags '{}' and '{}'): {}",
@@ -164,6 +179,10 @@ impl GitHubClient {
                 "no releases found for {}/{}: publish a GitHub Release first",
                 owner, repo
             ),
+            other @ GitHubApiError::RateLimited(_) if self.token.is_none() => format!(
+                "failed to fetch latest release for {}/{}: {}\n  {}",
+                owner, repo, other, RATE_LIMIT_HINT
+            ),
             other => format!(
                 "failed to fetch latest release for {}/{}: {}",
                 owner, repo, other
@@ -197,6 +216,15 @@ impl GitHubClientWithBase {
             inner: GitHubClient {
                 base_url: base_url.to_string(),
                 token: None,
+            },
+        }
+    }
+
+    pub fn with_token(base_url: &str, token: &str) -> Self {
+        Self {
+            inner: GitHubClient {
+                base_url: base_url.to_string(),
+                token: Some(token.to_string()),
             },
         }
     }
@@ -460,6 +488,79 @@ mod tests {
         assert!(
             err.contains("v1.0.0"),
             "expected tried tags in error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn latest_version_403_without_token_includes_hint() {
+        let mut server = mockito::Server::new();
+        let base = server.url();
+
+        let _m = server
+            .mock("GET", "/repos/owner/repo/releases/latest")
+            .with_status(403)
+            .with_body(r#"{"message": "API rate limit exceeded"}"#)
+            .create();
+
+        let client = GitHubClientWithBase::new(&base);
+        let err = client.latest_version("owner", "repo").unwrap_err();
+        assert!(
+            err.contains("YOSH_GITHUB_TOKEN"),
+            "expected hint mentioning YOSH_GITHUB_TOKEN, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn latest_version_403_with_token_no_hint() {
+        let mut server = mockito::Server::new();
+        let base = server.url();
+
+        let _m = server
+            .mock("GET", "/repos/owner/repo/releases/latest")
+            .with_status(403)
+            .with_body(r#"{"message": "Bad credentials"}"#)
+            .create();
+
+        let client = GitHubClientWithBase::with_token(&base, "fake-token");
+        let err = client.latest_version("owner", "repo").unwrap_err();
+        assert!(
+            !err.contains("YOSH_GITHUB_TOKEN"),
+            "should not suggest setting a token when one is already set, got: {}",
+            err
+        );
+        assert!(
+            err.contains("403"),
+            "should still surface the HTTP status, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn find_asset_url_429_without_token_includes_hint() {
+        let mut server = mockito::Server::new();
+        let base = server.url();
+
+        // Both v-prefix and bare-version tag attempts return 429 (rate-limited).
+        let _m1 = server
+            .mock("GET", "/repos/owner/repo/releases/tags/v1.0.0")
+            .with_status(429)
+            .with_body(r#"{"message": "Too many requests"}"#)
+            .create();
+        let _m2 = server
+            .mock("GET", "/repos/owner/repo/releases/tags/1.0.0")
+            .with_status(429)
+            .with_body(r#"{"message": "Too many requests"}"#)
+            .create();
+
+        let client = GitHubClientWithBase::new(&base);
+        let err = client
+            .find_asset_url("owner", "repo", "1.0.0", "asset.wasm")
+            .unwrap_err();
+        assert!(
+            err.contains("YOSH_GITHUB_TOKEN"),
+            "expected rate-limit hint, got: {}",
             err
         );
     }
