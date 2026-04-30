@@ -158,7 +158,7 @@ asset = "yosh_my_plugin.wasm"
    package = "yourname:hello"
 
    [package.metadata.component.target.dependencies."yosh:plugin"]
-   path = "<path-to-yosh-checkout>/crates/yosh-plugin-api/wit"
+   version = "0.2"
 
    [profile.release]
    opt-level = "s"
@@ -170,7 +170,22 @@ asset = "yosh_my_plugin.wasm"
    The `panic = "abort"` setting is required: it prevents Rust `std`'s
    panic-string formatting from pulling in `wasi:cli/stderr` at link time.
 
-3. Write `src/lib.rs`:
+3. Set up `wkg` to resolve the `yosh:plugin` WIT package from
+   [wa.dev]:
+
+   ```sh
+   cargo install wkg --locked
+   wkg config --default-registry wa.dev
+   ```
+
+   `cargo component build` (step 5) invokes `wkg` automatically to
+   fetch `yosh:plugin@<version>` on first build. This replaces the
+   `path = "<yosh-checkout>/..."` form used by yosh's in-repo test
+   plugins.
+
+   [wa.dev]: https://wa.dev/
+
+4. Write `src/lib.rs`:
 
    ```rust
    use yosh_plugin_sdk::{Capability, Plugin, export, print};
@@ -192,7 +207,7 @@ asset = "yosh_my_plugin.wasm"
    export!(HelloPlugin);
    ```
 
-4. Build:
+5. Build:
 
    ```sh
    cargo install cargo-component --locked --version 0.18.0
@@ -202,7 +217,7 @@ asset = "yosh_my_plugin.wasm"
 
    This produces `target/wasm32-wasip2/release/yosh_plugin_hello.wasm`.
 
-5. Install locally:
+6. Install locally:
 
    ```sh
    yosh plugin install target/wasm32-wasip2/release/yosh_plugin_hello.wasm
