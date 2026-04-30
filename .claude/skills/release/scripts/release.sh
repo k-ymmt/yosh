@@ -335,6 +335,47 @@ EOF
   echo "yosh-release: all crates published" >&2
 }
 
+phase_publish_wit() {
+  local wit="crates/yosh-plugin-api/wit/yosh-plugin.wit"
+  local sha_file="crates/yosh-plugin-api/.last-published-wit.sha256"
+
+  # 1. wkg available?
+  command -v wkg >/dev/null \
+    || fail "wkg not found in PATH. Install via 'cargo install wkg --locked'"
+
+  # 2. Crate version (must already be bumped by phase_bump).
+  local crate_ver
+  crate_ver="$(read_package_version "crates/yosh-plugin-api/Cargo.toml")"
+  [[ -n "$crate_ver" ]] \
+    || fail "could not read yosh-plugin-api version"
+
+  # 3. WIT package line present exactly once?
+  local pkg_count
+  pkg_count="$(grep -c '^package yosh:plugin@' "$wit" || true)"
+  [[ "$pkg_count" -eq 1 ]] \
+    || fail "WIT package declaration missing or duplicated in $wit"
+
+  # 4. HEAD is the bump commit produced by phase_bump?
+  local head_subj
+  head_subj="$(git log -1 --format=%s)"
+  [[ "$head_subj" == "chore: release v${crate_ver}" ]] \
+    || fail "HEAD is not 'chore: release v${crate_ver}' — saw '${head_subj}'. Reconcile manually."
+
+  # 5–6. Compare content SHA against last-published.
+  local new_sha old_sha=""
+  new_sha="$(compute_wit_content_sha "$wit")"
+  [[ -f "$sha_file" ]] && old_sha="$(cat "$sha_file")"
+
+  # 7. Skip when content unchanged.
+  if [[ "$new_sha" == "$old_sha" ]]; then
+    echo "yosh-release: WIT unchanged (sha256=$new_sha), skip wkg wit publish" >&2
+    return 0
+  fi
+
+  # Steps 8–12 (publish branch) are added in the next task.
+  fail "phase_publish_wit: publish branch not yet implemented (NEW_SHA=$new_sha)"
+}
+
 phase_push() {
   local ver
   ver="$(read_package_version "Cargo.toml")"

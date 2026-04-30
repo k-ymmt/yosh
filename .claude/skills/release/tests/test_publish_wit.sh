@@ -51,6 +51,51 @@ run_test() {
   fi
 }
 
+# Build a fake repo with crates/yosh-plugin-api/Cargo.toml and wit/yosh-plugin.wit.
+# Echo the repo root path on stdout. Caller is responsible for `rm -rf`.
+# Sets repo-local git user config so subsequent commits (including the
+# amend done by phase_publish_wit) succeed without inheriting global config.
+make_fake_repo() {
+  local root
+  root="$(mktemp -d)"
+  mkdir -p "$root/crates/yosh-plugin-api/wit"
+  cat > "$root/crates/yosh-plugin-api/Cargo.toml" <<EOF
+[package]
+name = "yosh-plugin-api"
+version = "0.2.6"
+edition = "2024"
+EOF
+  cat > "$root/crates/yosh-plugin-api/wit/yosh-plugin.wit" <<EOF
+package yosh:plugin@0.1.0;
+interface foo {
+  bar: func();
+}
+EOF
+  (
+    cd "$root" \
+      && git init -q \
+      && git config user.email t@t \
+      && git config user.name t \
+      && git add -A \
+      && git commit -q -m "chore: release v0.2.6"
+  )
+  echo "$root"
+}
+
+# Install a stub `wkg` on PATH (for one test). Logs invocations to $WKG_LOG.
+install_wkg_stub() {
+  local mode="${1:-success}"  # success | fail
+  local stubdir
+  stubdir="$(mktemp -d)"
+  cat > "$stubdir/wkg" <<EOF
+#!/usr/bin/env bash
+echo "wkg \$*" >> "\$WKG_LOG"
+[[ "$mode" == "success" ]] && exit 0 || exit 1
+EOF
+  chmod +x "$stubdir/wkg"
+  echo "$stubdir"
+}
+
 # Sanity: harness boots and can source release.sh.
 run_test "harness: source release.sh" '
   source "$RELEASE_SH"
@@ -132,6 +177,82 @@ WIT
     exit 1
   fi
   rm -rf "$tmp"
+'
+
+# Spec §8.2 cases 2, 4, 6, 7.
+
+run_test "phase_publish_wit: skip when SHA matches" '
+  source "$RELEASE_SH"
+  repo=$(make_fake_repo)
+  cd "$repo"
+  stub=$(install_wkg_stub success)
+  WKG_LOG=$(mktemp)
+  PATH="$stub:$PATH"
+  # Pre-populate SHA file with the current content sha so step 7 skips.
+  sha=$(compute_wit_content_sha "crates/yosh-plugin-api/wit/yosh-plugin.wit")
+  echo "$sha" > "crates/yosh-plugin-api/.last-published-wit.sha256"
+  out=$(phase_publish_wit 2>&1)
+  rc=$?
+  assert_eq "$rc" "0" "exit code on skip" || exit 1
+  assert_contains "$out" "WIT unchanged" "skip message" || exit 1
+  # wkg must not have been called.
+  assert_eq "$(wc -l < "$WKG_LOG" | tr -d " ")" "0" "wkg call count" || exit 1
+  rm -rf "$repo" "$stub" "$WKG_LOG"
+'
+
+run_test "phase_publish_wit: aborts when wkg missing" '
+  source "$RELEASE_SH"
+  repo=$(make_fake_repo)
+  cd "$repo"
+  # Empty PATH so no wkg is reachable. `if`-pattern keeps set -e happy
+  # when phase_publish_wit calls fail/exit 1 in the inner subshell.
+  if out=$(PATH="/usr/bin:/bin" phase_publish_wit 2>&1); then rc=0; else rc=$?; fi
+  if [[ "$rc" -eq 0 ]]; then
+    FAILURES+=("expected non-zero exit when wkg missing, got 0")
+    exit 1
+  fi
+  assert_contains "$out" "wkg not found" "missing-wkg message" || exit 1
+  rm -rf "$repo"
+'
+
+run_test "phase_publish_wit: aborts when WIT package line missing" '
+  source "$RELEASE_SH"
+  repo=$(make_fake_repo)
+  cd "$repo"
+  stub=$(install_wkg_stub success)
+  WKG_LOG=$(mktemp)
+  PATH="$stub:$PATH"
+  # Strip the package line.
+  sed -i.bak "/^package yosh:plugin@/d" \
+    "crates/yosh-plugin-api/wit/yosh-plugin.wit"
+  rm -f "crates/yosh-plugin-api/wit/yosh-plugin.wit.bak"
+  if out=$(phase_publish_wit 2>&1); then rc=0; else rc=$?; fi
+  if [[ "$rc" -eq 0 ]]; then
+    FAILURES+=("expected non-zero exit when WIT lacks package line, got 0")
+    exit 1
+  fi
+  assert_contains "$out" "package declaration" "missing-package message" || exit 1
+  rm -rf "$repo" "$stub" "$WKG_LOG"
+'
+
+run_test "phase_publish_wit: aborts when HEAD is not the bump commit" '
+  source "$RELEASE_SH"
+  repo=$(make_fake_repo)
+  cd "$repo"
+  stub=$(install_wkg_stub success)
+  WKG_LOG=$(mktemp)
+  PATH="$stub:$PATH"
+  # Add an extra commit on top so HEAD subject is not "chore: release v0.2.6".
+  echo trash > junk.txt
+  git add junk.txt
+  git -c user.email=t@t -c user.name=t commit -q -m "WIP: random work"
+  if out=$(phase_publish_wit 2>&1); then rc=0; else rc=$?; fi
+  if [[ "$rc" -eq 0 ]]; then
+    FAILURES+=("expected non-zero exit when HEAD is not bump commit, got 0")
+    exit 1
+  fi
+  assert_contains "$out" "chore: release v0.2.6" "head-not-bump message" || exit 1
+  rm -rf "$repo" "$stub" "$WKG_LOG"
 '
 
 echo "----"
