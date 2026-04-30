@@ -71,19 +71,24 @@ resolution target for `wkg`/`cargo component`).
 
 ### 3.2 Release Flow
 
+The actual ordering is bump → test → publish → push (the bump
+commit is created in `phase_bump`; the tag is created in `phase_push`
+after `git push origin main`):
+
 ```
-phase_bump          (existing, unchanged)
+phase_bump          (existing, unchanged — creates "chore: release vX" commit)
 phase_test          (existing, unchanged)
-phase_commit_tag    (existing, unchanged)
 phase_publish       (existing, unchanged — cargo publish to crates.io)
-phase_publish_wit   (NEW — wkg wit publish to wa.dev, conditional)
-phase_push          (existing, unchanged)
+phase_publish_wit   (NEW — wkg wit publish to wa.dev, conditional; amends the bump commit)
+phase_push          (existing, unchanged — creates and pushes the tag)
 ```
 
 Placement rationale: `phase_publish_wit` runs **after** crates.io
 publish so that the only state we may need to reconcile manually is
 "crates.io and wa.dev both have version X" (idempotent), never
-"wa.dev published but crates.io rejected" (hard to roll back).
+"wa.dev published but crates.io rejected" (hard to roll back). It
+runs **before** `phase_push` so the WIT/SHA changes can be amended
+into the local bump commit before the tag is created and pushed.
 
 ### 3.3 Plugin Author Experience
 
@@ -118,9 +123,9 @@ phase_publish_wit:
        grep -c '^package yosh:plugin@' "$WIT" == 1
      else die "WIT package declaration missing or duplicated"
 
-  4. Verify HEAD matches the tag created by phase_commit_tag:
-       git rev-parse HEAD == git rev-list -n 1 "v$CRATE_VER"
-     else die "HEAD diverged from tag v$CRATE_VER (manual commit?)"
+  4. Verify HEAD is the bump commit produced by phase_bump:
+       git log -1 --format=%s | grep -Fxq "chore: release v${CRATE_VER}"
+     else die "HEAD is not 'chore: release v$CRATE_VER' (manual commit?)"
 
   5. Compute content SHA, excluding the version line:
        NEW_SHA = sha256(grep -v '^package yosh:plugin@' "$WIT")
@@ -140,9 +145,11 @@ phase_publish_wit:
 
   10. echo "$NEW_SHA" > .last-published-wit.sha256
 
-  11. git add yosh-plugin.wit .last-published-wit.sha256
+  11. git add crates/yosh-plugin-api/wit/yosh-plugin.wit \
+              crates/yosh-plugin-api/.last-published-wit.sha256
       git commit --amend --no-edit
-      git tag -f "v$CRATE_VER" HEAD
+      # Tag is created later by phase_push pointing at HEAD; we don't
+      # touch tags here.
 
   12. echo "WIT published as yosh:plugin@${CRATE_VER}, sha256=$NEW_SHA"
 ```
@@ -164,15 +171,16 @@ crate version at the moment we publish. Consequence: the WIT file
 in the repo can lag behind the crate version when no interface
 change has occurred — this is fine and matches what wa.dev shows.
 
-### 4.5 `commit --amend` and `tag -f` Safety
+### 4.5 `commit --amend` Safety
 
-These operations rewrite history, but they target a commit and tag
-that `release.sh` itself just created in `phase_commit_tag` and that
-have not yet been pushed to the remote (push happens in `phase_push`,
-later). Step 4 (HEAD vs. tag check) guards against a maintainer
+`git commit --amend` rewrites the bump commit produced by
+`phase_bump`. That commit has not yet been pushed to the remote
+(push happens in `phase_push`, later, with the tag), so amending is
+local-only. Step 4 (commit-subject check) guards against a maintainer
 accidentally committing between phases. The CLAUDE.md prohibition on
 force-pushing applies to remote refs only, so local amend is
-acceptable.
+acceptable. We do not touch tags in `phase_publish_wit`; the tag is
+created by `phase_push` pointing at the (now-amended) HEAD.
 
 ## 5. Versioning Policy
 
@@ -247,8 +255,8 @@ exclusively. (User-confirmed during brainstorming.)
 | 3 | Same version already on wa.dev | wkg stderr | Should not occur (SHA-skip catches it earlier). If it does, the local `.last-published-wit.sha256` is out of sync with wa.dev — maintainer runs `wkg wit get yosh:plugin@<ver>`, compares, and either updates the SHA file (true match) or fixes a missed crate-version bump (real divergence). |
 | 4 | Missing/duplicated `package` line in WIT | step 3 grep count check | Abort. |
 | 5 | `cargo metadata` fails / version unreadable | non-zero exit | Abort. |
-| 6 | HEAD diverged from tag | step 4 rev-parse comparison | Abort with "HEAD diverged from tag" message. |
-| 7 | Partial success (publish OK, but step 10 SHA-write or step 11 amend/tag failed) | `git status` and `cat .last-published-wit.sha256` reveal which steps ran | Manual recovery, `wkg` is **not** retried (wa.dev rejects duplicate versions). If SHA file is up-to-date but the amend never ran, working tree shows uncommitted WIT + SHA changes — run `git add yosh-plugin.wit .last-published-wit.sha256 && git commit --amend --no-edit && git tag -f v<ver> HEAD` manually. If the SHA file was not updated, `wkg wit get yosh:plugin@<ver>` confirms wa.dev state and the maintainer either rolls the SHA file forward (publish succeeded) or re-runs after diagnosing why publish appeared to succeed. |
+| 6 | HEAD is not the bump commit | step 4 commit-subject check | Abort with "HEAD is not 'chore: release vX'" message. |
+| 7 | Partial success (publish OK, but step 10 SHA-write or step 11 amend failed) | `git status` and `cat .last-published-wit.sha256` reveal which steps ran | Manual recovery, `wkg` is **not** retried (wa.dev rejects duplicate versions). If SHA file is up-to-date but the amend never ran, working tree shows uncommitted WIT + SHA changes — run `git add crates/yosh-plugin-api/wit/yosh-plugin.wit crates/yosh-plugin-api/.last-published-wit.sha256 && git commit --amend --no-edit` manually. If the SHA file was not updated, `wkg wit get yosh:plugin@<ver>` confirms wa.dev state and the maintainer either rolls the SHA file forward (publish succeeded) or re-runs after diagnosing why publish appeared to succeed. |
 
 ### 7.1 Plugin-Author-Side Failures (Out of Scope, but Noted)
 
@@ -293,13 +301,13 @@ Cases:
    contains "WIT unchanged".
 3. **Changed publish** — pre-populate SHA file with a different
    value. Assert: `wkg` called, SHA file updated, version rewritten,
-   `git commit --amend` and `git tag -f` invoked.
+   `git commit --amend` invoked (no tag operations).
 4. **wkg missing** — temp PATH without wkg. Assert: abort at top,
    error mentions "wkg not found".
 5. **wkg fails** — stub returns 1. Assert: abort, stderr propagated.
-6. **HEAD divergence** — stub `git rev-parse HEAD` to return a SHA
-   different from `git rev-list -n 1 v<ver>`. Assert: abort with
-   "HEAD diverged" message.
+6. **HEAD is not bump commit** — set HEAD's commit subject to a
+   non-matching string. Assert: abort with "HEAD is not 'chore:
+   release vX'" message.
 7. **Missing package line** — fixture WIT without
    `^package yosh:plugin@` line. Assert: abort.
 
