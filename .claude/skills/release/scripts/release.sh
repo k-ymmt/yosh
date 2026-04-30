@@ -372,8 +372,27 @@ phase_publish_wit() {
     return 0
   fi
 
-  # Steps 8–12 (publish branch) are added in the next task.
-  fail "phase_publish_wit: publish branch not yet implemented (NEW_SHA=$new_sha)"
+  # 8. Rewrite WIT package version to match the crate version.
+  # `-i.bak + rm` is portable between BSD sed (macOS) and GNU sed (Linux).
+  sed -i.bak "s|^package yosh:plugin@.*|package yosh:plugin@${crate_ver};|" "$wit"
+  rm -f "${wit}.bak"
+
+  # 9. Publish to wa.dev.
+  echo "yosh-release: publishing yosh:plugin@${crate_ver} to wa.dev..." >&2
+  wkg wit publish "$(dirname "$wit")" \
+    || fail "wkg wit publish failed (auth / network / dup version) — see stderr above"
+
+  # 10. Persist new SHA.
+  echo "$new_sha" > "$sha_file"
+
+  # 11. Amend the bump commit so the WIT/SHA changes are part of the
+  # release tag that phase_push will create.
+  git add "$wit" "$sha_file" \
+    || fail "git add failed for WIT/SHA files"
+  git commit --amend --no-edit \
+    || fail "git commit --amend failed — recover manually"
+
+  echo "yosh-release: WIT published as yosh:plugin@${crate_ver}, sha256=${new_sha}" >&2
 }
 
 phase_push() {

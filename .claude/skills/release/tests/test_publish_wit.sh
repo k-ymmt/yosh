@@ -18,7 +18,7 @@ assert_eq() {
   if [[ "$actual" == "$expected" ]]; then
     return 0
   fi
-  FAILURES+=("${label}: expected ${expected@Q}, got ${actual@Q}")
+  FAILURES+=("${label}: expected '${expected}', got '${actual}'")
   return 1
 }
 
@@ -27,7 +27,7 @@ assert_contains() {
   if [[ "$haystack" == *"$needle"* ]]; then
     return 0
   fi
-  FAILURES+=("${label}: ${haystack@Q} did not contain ${needle@Q}")
+  FAILURES+=("${label}: '${haystack}' did not contain '${needle}'")
   return 1
 }
 
@@ -186,7 +186,7 @@ run_test "phase_publish_wit: skip when SHA matches" '
   repo=$(make_fake_repo)
   cd "$repo"
   stub=$(install_wkg_stub success)
-  WKG_LOG=$(mktemp)
+  export WKG_LOG=$(mktemp)
   PATH="$stub:$PATH"
   # Pre-populate SHA file with the current content sha so step 7 skips.
   sha=$(compute_wit_content_sha "crates/yosh-plugin-api/wit/yosh-plugin.wit")
@@ -220,7 +220,7 @@ run_test "phase_publish_wit: aborts when WIT package line missing" '
   repo=$(make_fake_repo)
   cd "$repo"
   stub=$(install_wkg_stub success)
-  WKG_LOG=$(mktemp)
+  export WKG_LOG=$(mktemp)
   PATH="$stub:$PATH"
   # Strip the package line.
   sed -i.bak "/^package yosh:plugin@/d" \
@@ -240,7 +240,7 @@ run_test "phase_publish_wit: aborts when HEAD is not the bump commit" '
   repo=$(make_fake_repo)
   cd "$repo"
   stub=$(install_wkg_stub success)
-  WKG_LOG=$(mktemp)
+  export WKG_LOG=$(mktemp)
   PATH="$stub:$PATH"
   # Add an extra commit on top so HEAD subject is not "chore: release v0.2.6".
   echo trash > junk.txt
@@ -252,6 +252,77 @@ run_test "phase_publish_wit: aborts when HEAD is not the bump commit" '
     exit 1
   fi
   assert_contains "$out" "chore: release v0.2.6" "head-not-bump message" || exit 1
+  rm -rf "$repo" "$stub" "$WKG_LOG"
+'
+
+# Spec §8.2 cases 1, 3, 5.
+
+run_test "phase_publish_wit: first publish creates SHA file and rewrites WIT version" '
+  source "$RELEASE_SH"
+  repo=$(make_fake_repo)
+  cd "$repo"
+  stub=$(install_wkg_stub success)
+  export WKG_LOG=$(mktemp)
+  PATH="$stub:$PATH"
+  # No SHA file present (first publish).
+  if out=$(phase_publish_wit 2>&1); then rc=0; else rc=$?; fi
+  assert_eq "$rc" "0" "exit code on first publish" || exit 1
+  # wkg should have been invoked exactly once with the wit dir.
+  assert_eq "$(wc -l < "$WKG_LOG" | tr -d " ")" "1" "wkg call count" || exit 1
+  assert_contains "$(cat "$WKG_LOG")" "wit publish" "wkg subcommand" || exit 1
+  # SHA file exists.
+  assert_file_exists "crates/yosh-plugin-api/.last-published-wit.sha256" \
+    "sha file" || exit 1
+  # WIT version was rewritten to match the crate version 0.2.6.
+  pkg_line=$(grep "^package yosh:plugin@" \
+    crates/yosh-plugin-api/wit/yosh-plugin.wit)
+  assert_eq "$pkg_line" "package yosh:plugin@0.2.6;" "wit version line" || exit 1
+  # HEAD subject is still the bump commit (amend kept the message).
+  subj=$(git log -1 --format=%s)
+  assert_eq "$subj" "chore: release v0.2.6" "head subject after amend" || exit 1
+  # WIT and SHA file are part of HEAD (committed via amend).
+  git diff --quiet HEAD -- crates/yosh-plugin-api/wit/yosh-plugin.wit \
+    || { FAILURES+=("WIT not committed by amend"); exit 1; }
+  git diff --quiet HEAD -- crates/yosh-plugin-api/.last-published-wit.sha256 \
+    || { FAILURES+=("SHA file not committed by amend"); exit 1; }
+  rm -rf "$repo" "$stub" "$WKG_LOG"
+'
+
+run_test "phase_publish_wit: changed publish overwrites stale SHA" '
+  source "$RELEASE_SH"
+  repo=$(make_fake_repo)
+  cd "$repo"
+  stub=$(install_wkg_stub success)
+  export WKG_LOG=$(mktemp)
+  PATH="$stub:$PATH"
+  # SHA file with a stale value triggers the publish branch.
+  echo "0000000000000000000000000000000000000000000000000000000000000000" \
+    > "crates/yosh-plugin-api/.last-published-wit.sha256"
+  git add crates/yosh-plugin-api/.last-published-wit.sha256
+  git commit -q --amend --no-edit
+  if out=$(phase_publish_wit 2>&1); then rc=0; else rc=$?; fi
+  assert_eq "$rc" "0" "exit code on changed publish" || exit 1
+  new_sha=$(cat "crates/yosh-plugin-api/.last-published-wit.sha256")
+  if [[ "$new_sha" == "0000000000000000000000000000000000000000000000000000000000000000" ]]; then
+    FAILURES+=("SHA file was not updated")
+    exit 1
+  fi
+  rm -rf "$repo" "$stub" "$WKG_LOG"
+'
+
+run_test "phase_publish_wit: aborts when wkg fails" '
+  source "$RELEASE_SH"
+  repo=$(make_fake_repo)
+  cd "$repo"
+  stub=$(install_wkg_stub fail)
+  export WKG_LOG=$(mktemp)
+  PATH="$stub:$PATH"
+  if out=$(phase_publish_wit 2>&1); then rc=0; else rc=$?; fi
+  if [[ "$rc" -eq 0 ]]; then
+    FAILURES+=("expected non-zero exit when wkg fails, got 0")
+    exit 1
+  fi
+  assert_contains "$out" "wkg wit publish failed" "wkg-fail message" || exit 1
   rm -rf "$repo" "$stub" "$WKG_LOG"
 '
 
