@@ -364,4 +364,8 @@ main() {
   esac
 }
 
-main "$@"
+# Only dispatch when executed as a script. Sourcing (e.g., from tests) imports
+# the helpers without firing main.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
