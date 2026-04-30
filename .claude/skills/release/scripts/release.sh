@@ -5,6 +5,7 @@
 #   release.sh test
 #   release.sh bump
 #   release.sh publish [--from <crate-name>]
+#   release.sh publish-wit
 #   release.sh push
 
 set -euo pipefail
@@ -424,12 +425,13 @@ main() {
   local phase="${1:-}"
   shift || true
   case "${phase}" in
-    test)    phase_test "$@" ;;
-    bump)    phase_bump "$@" ;;
-    publish) phase_publish "$@" ;;
-    push)    phase_push "$@" ;;
-    "")      fail "usage: release.sh {test|bump|publish|push}" ;;
-    *)       fail "unknown phase: ${phase}" ;;
+    test)        phase_test "$@" ;;
+    bump)        phase_bump "$@" ;;
+    publish)     phase_publish "$@" ;;
+    publish-wit) phase_publish_wit "$@" ;;
+    push)        phase_push "$@" ;;
+    "")          fail "usage: release.sh {test|bump|publish|publish-wit|push}" ;;
+    *)           fail "unknown phase: ${phase}" ;;
   esac
 }
 

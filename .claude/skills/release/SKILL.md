@@ -55,7 +55,17 @@ Run: `.claude/skills/release/scripts/release.sh publish`
 
 If exit code is non-zero, the publish sequence is in a partial state: some crates may already be on crates.io, others are not. Surface stderr verbatim (it includes the `--from <crate>` resume hint) and STOP. Do NOT run the push phase under any circumstances — pushing main and a version tag that references an incomplete publish would leave a released-but-broken version. The user must either resume with the script's suggested `publish --from <crate>` command until it fully succeeds and then run push, or abandon the release.
 
-### Phase 5: Push
+### Phase 5: Publish WIT to wa.dev
+
+Precondition: the user must have `wkg` on PATH (`cargo install wkg --locked`) and a wa.dev token configured in `~/.config/wasm-pkg/config.toml` (or `WKG_TOKEN`). If the script fails with "wkg not found" or an auth-related message, surface stderr and stop; the WIT publish is independent of crates.io and can be retried after fixing the local environment.
+
+Run: `.claude/skills/release/scripts/release.sh publish-wit`
+
+This phase is conditional: it only invokes `wkg wit publish` when the WIT content (excluding the `package` version line) has changed since the last successful publish. On a no-op patch release the phase prints "WIT unchanged" and exits 0 without touching wa.dev.
+
+If exit code is non-zero, surface stderr verbatim and stop. crates.io is already up-to-date at this point; the WIT publish can be re-attempted after fixing the cause without unwinding the crates.io publish.
+
+### Phase 6: Push
 
 Run: `.claude/skills/release/scripts/release.sh push`
 
@@ -63,6 +73,6 @@ If exit code is non-zero, surface stderr verbatim and stop.
 
 ## Completion
 
-When all five phases succeed, report a brief summary:
+When all six phases succeed, report a brief summary:
 
-> Released yosh v<new>. Published 4 crates to crates.io, pushed main + tag v<new> to origin.
+> Released yosh v<new>. Published 4 crates to crates.io and the yosh:plugin WIT package to wa.dev, pushed main + tag v<new> to origin.
