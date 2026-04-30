@@ -61,6 +61,79 @@ run_test "harness: source release.sh" '
   }
 '
 
+# Spec §8.1: SHA helper unit tests.
+
+run_test "sha: ignores changes to package version line" '
+  source "$RELEASE_SH"
+  tmp="$(mktemp -d)"
+  cat > "$tmp/a.wit" <<WIT
+package yosh:plugin@0.1.0;
+interface foo {
+  bar: func();
+}
+WIT
+  cat > "$tmp/b.wit" <<WIT
+package yosh:plugin@9.9.9;
+interface foo {
+  bar: func();
+}
+WIT
+  sha_a=$(compute_wit_content_sha "$tmp/a.wit")
+  sha_b=$(compute_wit_content_sha "$tmp/b.wit")
+  assert_eq "$sha_a" "$sha_b" "version-only diff" || exit 1
+  rm -rf "$tmp"
+'
+
+run_test "sha: detects interface change" '
+  source "$RELEASE_SH"
+  tmp="$(mktemp -d)"
+  cat > "$tmp/a.wit" <<WIT
+package yosh:plugin@0.1.0;
+interface foo {
+  bar: func();
+}
+WIT
+  cat > "$tmp/b.wit" <<WIT
+package yosh:plugin@0.1.0;
+interface foo {
+  bar: func();
+  baz: func();
+}
+WIT
+  sha_a=$(compute_wit_content_sha "$tmp/a.wit")
+  sha_b=$(compute_wit_content_sha "$tmp/b.wit")
+  if [[ "$sha_a" == "$sha_b" ]]; then
+    FAILURES+=("interface change should change SHA")
+    exit 1
+  fi
+  rm -rf "$tmp"
+'
+
+run_test "sha: detects comment change" '
+  source "$RELEASE_SH"
+  tmp="$(mktemp -d)"
+  cat > "$tmp/a.wit" <<WIT
+package yosh:plugin@0.1.0;
+interface foo {
+  bar: func();
+}
+WIT
+  cat > "$tmp/b.wit" <<WIT
+package yosh:plugin@0.1.0;
+// extra comment
+interface foo {
+  bar: func();
+}
+WIT
+  sha_a=$(compute_wit_content_sha "$tmp/a.wit")
+  sha_b=$(compute_wit_content_sha "$tmp/b.wit")
+  if [[ "$sha_a" == "$sha_b" ]]; then
+    FAILURES+=("comment change should change SHA")
+    exit 1
+  fi
+  rm -rf "$tmp"
+'
+
 echo "----"
 echo "Passed: $PASS"
 echo "Failed: $FAIL"

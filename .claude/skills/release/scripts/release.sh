@@ -82,6 +82,15 @@ rewrite_dep_version() {
   mv "$file.tmp" "$file"
 }
 
+# Compute SHA-256 of a WIT file's content with the `package yosh:plugin@<x>;`
+# declaration line stripped. The version line is rewritten by phase_publish_wit
+# itself; excluding it makes SHA equality strictly track interface equality.
+# Output: 64 hex chars on stdout, no trailing newline beyond what `cut` emits.
+compute_wit_content_sha() {
+  local wit="$1"
+  grep -v '^package yosh:plugin@' "$wit" | shasum -a 256 | cut -d' ' -f1
+}
+
 # Job list for parallel test execution. Format: "name|group|cargo-args..."
 # group: "pty" = serialized via PTY lock, "free" = unbounded parallel.
 # Edit this list when adding/removing test binaries or workspace crates.
