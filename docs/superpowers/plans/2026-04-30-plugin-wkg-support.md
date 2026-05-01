@@ -4,7 +4,7 @@
 
 **Goal:** Publish the `yosh:plugin` WIT package to wa.dev (via wkg) so external plugin authors can replace `path = "<yosh-checkout>/..."` with `version = "0.2"` in their `Cargo.toml`.
 
-**Architecture:** Add a conditional `phase_publish_wit` to `release.sh` that runs after `phase_publish` (crates.io) and before `phase_push` (tag creation). The phase uses SHA-256 of WIT content (excluding the `package` version line) to detect interface changes; on change it rewrites the WIT version line to match the crate version, runs `wkg wit publish`, updates the SHA file, and amends the bump commit. Behavior is fully driven from bash; no Rust runtime code changes.
+**Architecture:** Add a conditional `phase_publish_wit` to `release.sh` that runs after `phase_publish` (crates.io) and before `phase_push` (tag creation). The phase uses SHA-256 of WIT content (excluding the `package` version line) to detect interface changes; on change it rewrites the WIT version line to match the crate version, runs `wkg wit build` + `wkg publish`, updates the SHA file, and amends the bump commit. Behavior is fully driven from bash; no Rust runtime code changes.
 
 **Tech Stack:** bash 4+ (existing release.sh), `wkg` CLI (Bytecode Alliance), `shasum -a 256`, Rust dev-test in `crates/yosh-plugin-api/tests/`.
 
@@ -520,7 +520,7 @@ phase_publish_wit() {
 
   # 7. Skip when content unchanged.
   if [[ "$new_sha" == "$old_sha" ]]; then
-    echo "yosh-release: WIT unchanged (sha256=$new_sha), skip wkg wit publish" >&2
+    echo "yosh-release: WIT unchanged (sha256=$new_sha), skip publish" >&2
     return 0
   fi
 
@@ -561,7 +561,7 @@ EOF
 
 ### Task 5: Implement `phase_publish_wit` publish path (TDD)
 
-This finishes the algorithm: rewrite the WIT version line, run `wkg wit publish`, write the SHA file, amend the bump commit.
+This finishes the algorithm: rewrite the WIT version line, run `wkg wit build` to encode the WIT directory into a `.wasm` package, run `wkg publish` on that package, write the SHA file, amend the bump commit.
 
 **Files:**
 - Modify: `.claude/skills/release/tests/test_publish_wit.sh`
@@ -642,7 +642,7 @@ run_test "phase_publish_wit: aborts when wkg fails" '
     FAILURES+=("expected non-zero exit when wkg fails, got 0")
     exit 1
   fi
-  assert_contains "$out" "wkg wit publish failed" "wkg-fail message" || exit 1
+  assert_contains "$out" "wkg wit build failed" "wkg-fail message" || exit 1
   rm -rf "$repo" "$stub" "$WKG_LOG"
 '
 ```
@@ -673,10 +673,20 @@ with:
   "${sed_in_place[@]}" \
     "s|^package yosh:plugin@.*|package yosh:plugin@${crate_ver};|" "$wit"
 
-  # 9. Publish to wa.dev.
+  # 9. Build the WIT directory into a .wasm package, then publish.
+  # `wkg wit publish` does not exist; the supported flow is
+  # `wkg wit build` (encode the WIT dir into a .wasm) followed by
+  # `wkg publish <file>` (upload to the default registry).
+  local wit_tmpdir
+  wit_tmpdir="$(mktemp -d -t yosh_plugin_pkg.XXXXXX)"
+  local wit_pkg="$wit_tmpdir/yosh_plugin.wasm"
+  echo "yosh-release: building yosh:plugin@${crate_ver} package..." >&2
+  wkg wit build -d "$(dirname "$wit")" -o "$wit_pkg" \
+    || { rm -rf "$wit_tmpdir"; fail "wkg wit build failed — see stderr above"; }
   echo "yosh-release: publishing yosh:plugin@${crate_ver} to wa.dev..." >&2
-  wkg wit publish "$(dirname "$wit")" \
-    || fail "wkg wit publish failed (auth / network / dup version) — see stderr above"
+  wkg publish "$wit_pkg" \
+    || { rm -rf "$wit_tmpdir"; fail "wkg publish failed (auth / network / dup version) — see stderr above"; }
+  rm -rf "$wit_tmpdir"
 
   # 10. Persist new SHA.
   echo "$new_sha" > "$sha_file"
@@ -705,7 +715,7 @@ git commit -m "$(cat <<'EOF'
 feat(release): implement phase_publish_wit publish branch
 
 Steps 8-12 of §4.2: rewrite the WIT package line to the current
-crate version, run `wkg wit publish` against the wit directory,
+crate version, run `wkg wit build` + `wkg publish` against the wit directory,
 persist the new content SHA, and amend the bump commit so the WIT
 and SHA file land in the tag that phase_push creates.
 
@@ -780,7 +790,7 @@ Precondition: the user must have `wkg` on PATH (`cargo install wkg --locked`) an
 
 Run: `.claude/skills/release/scripts/release.sh publish-wit`
 
-This phase is conditional: it only invokes `wkg wit publish` when the WIT content (excluding the `package` version line) has changed since the last successful publish. On a no-op patch release the phase prints "WIT unchanged" and exits 0 without touching wa.dev.
+This phase is conditional: it only invokes the publish flow (`wkg wit build` followed by `wkg publish`) when the WIT content (excluding the `package` version line) has changed since the last successful publish. On a no-op patch release the phase prints "WIT unchanged" and exits 0 without touching wa.dev.
 
 If exit code is non-zero, surface stderr verbatim and stop. crates.io is already up-to-date at this point; the WIT publish can be re-attempted after fixing the cause without unwinding the crates.io publish.
 

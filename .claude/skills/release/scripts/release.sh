@@ -369,7 +369,7 @@ phase_publish_wit() {
 
   # 7. Skip when content unchanged.
   if [[ "$new_sha" == "$old_sha" ]]; then
-    echo "yosh-release: WIT unchanged (sha256=$new_sha), skip wkg wit publish" >&2
+    echo "yosh-release: WIT unchanged (sha256=$new_sha), skip publish" >&2
     return 0
   fi
 
@@ -378,10 +378,20 @@ phase_publish_wit() {
   sed -i.bak "s|^package yosh:plugin@.*|package yosh:plugin@${crate_ver};|" "$wit"
   rm -f "${wit}.bak"
 
-  # 9. Publish to wa.dev.
+  # 9. Build the WIT directory into a .wasm package, then publish.
+  # `wkg wit publish` does not exist; the supported flow is
+  # `wkg wit build` (encode the WIT dir into a .wasm) followed by
+  # `wkg publish <file>` (upload to the default registry).
+  local wit_tmpdir
+  wit_tmpdir="$(mktemp -d -t yosh_plugin_pkg.XXXXXX)"
+  local wit_pkg="$wit_tmpdir/yosh_plugin.wasm"
+  echo "yosh-release: building yosh:plugin@${crate_ver} package..." >&2
+  wkg wit build -d "$(dirname "$wit")" -o "$wit_pkg" \
+    || { rm -rf "$wit_tmpdir"; fail "wkg wit build failed — see stderr above"; }
   echo "yosh-release: publishing yosh:plugin@${crate_ver} to wa.dev..." >&2
-  wkg wit publish "$(dirname "$wit")" \
-    || fail "wkg wit publish failed (auth / network / dup version) — see stderr above"
+  wkg publish "$wit_pkg" \
+    || { rm -rf "$wit_tmpdir"; fail "wkg publish failed (auth / network / dup version) — see stderr above"; }
+  rm -rf "$wit_tmpdir"
 
   # 10. Persist new SHA.
   echo "$new_sha" > "$sha_file"

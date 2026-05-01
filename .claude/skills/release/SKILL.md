@@ -61,7 +61,7 @@ Precondition: the user must have `wkg` on PATH (`cargo install wkg --locked`) an
 
 Run: `.claude/skills/release/scripts/release.sh publish-wit`
 
-This phase is conditional: it only invokes `wkg wit publish` when the WIT content (excluding the `package` version line) has changed since the last successful publish. On a no-op patch release the phase prints "WIT unchanged" and exits 0 without touching wa.dev.
+This phase is conditional: it only invokes the publish flow (`wkg wit build` followed by `wkg publish`) when the WIT content (excluding the `package` version line) has changed since the last successful publish. On a no-op patch release the phase prints "WIT unchanged" and exits 0 without touching wa.dev.
 
 If exit code is non-zero, surface stderr verbatim and stop. crates.io is already up-to-date at this point; the WIT publish can be re-attempted after fixing the cause without unwinding the crates.io publish.
 

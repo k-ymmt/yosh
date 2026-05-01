@@ -79,7 +79,7 @@ after `git push origin main`):
 phase_bump          (existing, unchanged — creates "chore: release vX" commit)
 phase_test          (existing, unchanged)
 phase_publish       (existing, unchanged — cargo publish to crates.io)
-phase_publish_wit   (NEW — wkg wit publish to wa.dev, conditional; amends the bump commit)
+phase_publish_wit   (NEW — wkg wit build + wkg publish to wa.dev, conditional; amends the bump commit)
 phase_push          (existing, unchanged — creates and pushes the tag)
 ```
 
@@ -133,15 +133,20 @@ phase_publish_wit:
   6. OLD_SHA = (cat .last-published-wit.sha256 if present, else "")
 
   7. if NEW_SHA == OLD_SHA:
-       echo "WIT unchanged (sha256=$NEW_SHA), skip wkg wit publish"
+       echo "WIT unchanged (sha256=$NEW_SHA), skip publish"
        return 0
 
   8. Rewrite package line in place:
        sed -i.bak "s|^package yosh:plugin@.*|package yosh:plugin@${CRATE_VER};|" "$WIT"
        rm -f "${WIT}.bak"
 
-  9. wkg wit publish "$(dirname $WIT)" \
-       || die "wkg wit publish failed"
+  9a. # wkg has no `wit publish`; the supported flow is build → publish.
+      WIT_PKG=$(mktemp -d)/yosh_plugin.wasm
+      wkg wit build -d "$(dirname $WIT)" -o "$WIT_PKG" \
+        || die "wkg wit build failed"
+
+  9b. wkg publish "$WIT_PKG" \
+        || die "wkg publish failed"
 
   10. echo "$NEW_SHA" > .last-published-wit.sha256
 
@@ -189,7 +194,7 @@ created by `phase_push` pointing at the (now-amended) HEAD.
   (SHA-detected).
 - For releases that do not touch the interface (typical patch
   releases), the WIT file's `package yosh:plugin@<x>;` line stays at
-  the previous version and `wkg wit publish` is skipped.
+  the previous version and the publish step is skipped.
 - This effectively means: WIT version == "the crate version at the
   most recent interface change". This matches the user's stated
   intent ("sync with crate") while avoiding empty wa.dev publishes.
@@ -251,7 +256,7 @@ exclusively. (User-confirmed during brainstorming.)
 | # | Condition | Detection | Behavior |
 |---|-----------|-----------|----------|
 | 1 | `wkg` missing from PATH | `command -v wkg` | Abort at top of phase. `cargo publish` already done; rerun release.sh after installing wkg (idempotent — SHA-skip protects re-publish). |
-| 2 | wa.dev auth failure / network error | `wkg wit publish` non-zero exit | Abort, propagate stderr. Maintainer fixes auth/network and reruns. |
+| 2 | wa.dev auth failure / network error | `wkg publish` non-zero exit | Abort, propagate stderr. Maintainer fixes auth/network and reruns. |
 | 3 | Same version already on wa.dev | wkg stderr | Should not occur (SHA-skip catches it earlier). If it does, the local `.last-published-wit.sha256` is out of sync with wa.dev — maintainer runs `wkg wit get yosh:plugin@<ver>`, compares, and either updates the SHA file (true match) or fixes a missed crate-version bump (real divergence). |
 | 4 | Missing/duplicated `package` line in WIT | step 3 grep count check | Abort. |
 | 5 | `cargo metadata` fails / version unreadable | non-zero exit | Abort. |
@@ -269,7 +274,7 @@ exclusively. (User-confirmed during brainstorming.)
 ### 7.2 Deliberately Not Implemented
 
 - **Strict `wkg` version pinning.** wkg is on a 0.x release line; version checks would rot. Documentation states "tested with wkg 0.x" without a hard floor.
-- **`wkg wit publish --dry-run` pre-check.** SHA comparison already serves as the pre-check.
+- **`wkg publish --dry-run` pre-check.** SHA comparison already serves as the pre-check.
 - **WIT lint before publish.** `cargo component build -p test_plugin` in `phase_test` already exercises the WIT file end-to-end.
 
 ## 8. Testing Strategy
@@ -342,7 +347,7 @@ On the first `release.sh` run after this work merges:
   create `.last-published-wit.sha256`, and rewrite the WIT version line.
 - Verify `yosh:plugin@<ver>` is visible on wa.dev.
 - Optionally run a follow-up patch release: `phase_publish_wit`
-  should print "WIT unchanged, skip wkg wit publish".
+  should print "WIT unchanged, skip publish".
 
 ### 8.6 Coverage Summary
 

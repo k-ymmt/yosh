@@ -267,9 +267,11 @@ run_test "phase_publish_wit: first publish creates SHA file and rewrites WIT ver
   # No SHA file present (first publish).
   if out=$(phase_publish_wit 2>&1); then rc=0; else rc=$?; fi
   assert_eq "$rc" "0" "exit code on first publish" || exit 1
-  # wkg should have been invoked exactly once with the wit dir.
-  assert_eq "$(wc -l < "$WKG_LOG" | tr -d " ")" "1" "wkg call count" || exit 1
-  assert_contains "$(cat "$WKG_LOG")" "wit publish" "wkg subcommand" || exit 1
+  # wkg is invoked twice: once for `wit build`, once for top-level `publish`.
+  assert_eq "$(wc -l < "$WKG_LOG" | tr -d " ")" "2" "wkg call count" || exit 1
+  log="$(cat "$WKG_LOG")"
+  assert_contains "$log" "wit build" "wkg wit build invoked" || exit 1
+  assert_contains "$log" "publish " "wkg publish invoked" || exit 1
   # SHA file exists.
   assert_file_exists "crates/yosh-plugin-api/.last-published-wit.sha256" \
     "sha file" || exit 1
@@ -322,7 +324,9 @@ run_test "phase_publish_wit: aborts when wkg fails" '
     FAILURES+=("expected non-zero exit when wkg fails, got 0")
     exit 1
   fi
-  assert_contains "$out" "wkg wit publish failed" "wkg-fail message" || exit 1
+  # Stub fails any wkg invocation; build runs first, so that is the
+  # failure surfaced to the maintainer.
+  assert_contains "$out" "wkg wit build failed" "wkg-fail message" || exit 1
   rm -rf "$repo" "$stub" "$WKG_LOG"
 '
 
