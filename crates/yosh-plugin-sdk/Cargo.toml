@@ -1,11 +1,11 @@
 [package]
 name = "yosh-plugin-sdk"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Rust SDK for authoring yosh plugins (wit-bindgen wrapper)"
 license = "MIT"
 repository = "https://github.com/k-ymmt/yosh"
 
 [dependencies]
-yosh-plugin-api = { version = "0.2.0", path = "../yosh-plugin-api" }
+yosh-plugin-api = { version = "0.2.1", path = "../yosh-plugin-api" }
 wit-bindgen = "0.51"

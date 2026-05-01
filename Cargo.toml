@@ -22,7 +22,7 @@ default-members = [
 
 [package]
 name = "yosh"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "A POSIX-compliant shell implemented in Rust"
 license = "MIT"
@@ -34,8 +34,8 @@ libc = "0.2"
 crossterm = "0.29"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
-yosh-plugin-api = { version = "0.2.0", path = "crates/yosh-plugin-api" }
-yosh-plugin-manager = { version = "0.2.0", path = "crates/yosh-plugin-manager" }
+yosh-plugin-api = { version = "0.2.1", path = "crates/yosh-plugin-api" }
+yosh-plugin-manager = { version = "0.2.1", path = "crates/yosh-plugin-manager" }
 unicode-width = "0.2"
 owo-colors = "4"
 dhat = { version = "0.3", optional = true }
