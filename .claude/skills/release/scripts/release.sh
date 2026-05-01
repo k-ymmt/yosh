@@ -340,6 +340,13 @@ phase_publish_wit() {
   command -v wkg >/dev/null \
     || fail "wkg not found in PATH. Install via 'cargo install wkg --locked'"
 
+  # 1b. wasm-tools available? Needed to strip the `package-docs` custom
+  # section from the built WIT wasm: wkg 0.15 emits package-docs v1, but
+  # wa.dev currently rejects anything other than v0 with
+  # "expected package-docs version 0, got Some(1)".
+  command -v wasm-tools >/dev/null \
+    || fail "wasm-tools not found in PATH. Install via 'cargo install wasm-tools --locked'"
+
   # 2. Crate version (must already be bumped by phase_bump).
   local crate_ver
   crate_ver="$(read_package_version "crates/yosh-plugin-api/Cargo.toml")"
@@ -381,11 +388,16 @@ phase_publish_wit() {
   local wit_tmpdir
   wit_tmpdir="$(mktemp -d -t yosh_plugin_pkg.XXXXXX)"
   local wit_pkg="$wit_tmpdir/yosh_plugin.wasm"
+  local wit_pkg_stripped="$wit_tmpdir/yosh_plugin_stripped.wasm"
   echo "yosh-release: building yosh:plugin@${crate_ver} package..." >&2
   wkg wit build -d "$(dirname "$wit")" -o "$wit_pkg" \
     || { rm -rf "$wit_tmpdir"; fail "wkg wit build failed — see stderr above"; }
+  # Strip the `package-docs` custom section before upload: wa.dev rejects
+  # the v1 format that wkg 0.15 emits. See precondition note above.
+  wasm-tools strip -d 'package-docs' "$wit_pkg" -o "$wit_pkg_stripped" \
+    || { rm -rf "$wit_tmpdir"; fail "wasm-tools strip failed — see stderr above"; }
   echo "yosh-release: publishing yosh:plugin@${crate_ver} to wa.dev..." >&2
-  wkg publish "$wit_pkg" \
+  wkg publish "$wit_pkg_stripped" \
     || { rm -rf "$wit_tmpdir"; fail "wkg publish failed (auth / network / dup version) — see stderr above"; }
   rm -rf "$wit_tmpdir"
 

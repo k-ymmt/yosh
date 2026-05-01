@@ -57,11 +57,11 @@ If exit code is non-zero, the publish sequence is in a partial state: some crate
 
 ### Phase 5: Publish WIT to wa.dev
 
-Precondition: the user must have `wkg` on PATH (`cargo install wkg --locked`) and a wa.dev token configured in `~/.config/wasm-pkg/config.toml` (or `WKG_TOKEN`). If the script fails with "wkg not found" or an auth-related message, surface stderr and stop; the WIT publish is independent of crates.io and can be retried after fixing the local environment.
+Precondition: the user must have `wkg` and `wasm-tools` on PATH (`cargo install wkg --locked`, `cargo install wasm-tools --locked`), the default registry set to wa.dev (`wkg config --default-registry wa.dev`), the `yosh` namespace reserved on wa.dev, and a wa.dev token configured in `~/.config/wasm-pkg/config.toml` (or `WKG_TOKEN`). If the script fails with "wkg not found", "wasm-tools not found", or an auth-related message, surface stderr and stop; the WIT publish is independent of crates.io and can be retried after fixing the local environment.
 
 Run: `.claude/skills/release/scripts/release.sh publish-wit`
 
-This phase is conditional: it only invokes the publish flow (`wkg wit build` followed by `wkg publish`) when the WIT content (excluding the `package` version line) has changed since the last successful publish. On a no-op patch release the phase prints "WIT unchanged" and exits 0 without touching wa.dev.
+This phase is conditional: it only invokes the publish flow (`wkg wit build` → `wasm-tools strip -d 'package-docs'` → `wkg publish`) when the WIT content (excluding the `package` version line) has changed since the last successful publish. On a no-op patch release the phase prints "WIT unchanged" and exits 0 without touching wa.dev. The `wasm-tools strip` step removes the `package-docs` custom section that wkg 0.15 emits as v1 but wa.dev only accepts as v0.
 
 If exit code is non-zero, surface stderr verbatim and stop. crates.io is already up-to-date at this point; the WIT publish can be re-attempted after fixing the cause without unwinding the crates.io publish.
 
