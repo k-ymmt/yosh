@@ -313,11 +313,7 @@ phase_publish() {
     fi
 
     echo "yosh-release: publishing $crate..." >&2
-    if [[ "$crate" == "yosh" ]]; then
-      cmd=(cargo publish --no-verify)
-    else
-      cmd=(cargo publish --no-verify -p "$crate")
-    fi
+    cmd=(cargo publish --no-verify -p "$crate")
 
     if ! "${cmd[@]}"; then
       cat >&2 <<EOF
