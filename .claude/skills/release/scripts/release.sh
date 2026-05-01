@@ -107,7 +107,7 @@ PHASE_TEST_JOBS=(
   "ignored_on_entry|free|test --test ignored_on_entry"
   "interactive|free|test --test interactive"
   "parser_integration|free|test --test parser_integration"
-  "plugin|free|test --test plugin"
+  "plugin|free|test --test plugin --features test-helpers"
   "plugin_cli_help|free|test --test plugin_cli_help"
   "signals|free|test --test signals"
   "subshell|free|test --test subshell"

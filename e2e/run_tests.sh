@@ -97,6 +97,15 @@ else
     cargo component build -p trap_plugin --target wasm32-wasip2 --release
 fi
 
+# ── Isolated HOME ────────────────────────────────────────────────────
+# yosh reads ~/.config/yosh/plugins.lock on every startup. Without isolation,
+# the user's plugin config (e.g. broken or large entries) loads on each of the
+# hundreds of test invocations, causing per-test overhead and flakiness under
+# parallel load. Point HOME at an empty temp dir so the runner is hermetic.
+ISOLATED_HOME="$(mktemp -d "${TMPDIR:-/tmp}/yosh_e2e_home.XXXXXX")"
+trap 'rm -rf "$ISOLATED_HOME"' EXIT INT TERM
+export HOME="$ISOLATED_HOME"
+
 # ── Locate e2e directory ─────────────────────────────────────────────
 E2E_DIR="$(cd "$(dirname "$0")" && pwd)"
 
