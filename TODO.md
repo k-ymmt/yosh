@@ -17,8 +17,6 @@
 
 ## History: Known Limitations
 
-- [ ] `HISTCONTROL` colon-separated values — bash supports `ignoredups:ignorespace` but current implementation only accepts single values like `ignoreboth` (`src/interactive/history.rs`)
-- [ ] `history.save()` silently ignores write errors — disk-full or permission errors are swallowed (`src/interactive/history.rs`)
 - [ ] `suggest()` linear scan performance — iterates all history entries on each keystroke; acceptable for HISTSIZE ≤ 500, may need caching or indexing for larger histories (`src/interactive/history.rs`)
 
 ## Future: Interactive Mode Enhancements
@@ -27,7 +25,6 @@
 - [ ] Multiline editing — visual multiline editing with cursor movement across lines
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
-- [ ] `CLICOLOR=0` support in `should_colorize()` — disable colors even on TTY when `CLICOLOR=0` is set; many CLI tools support this alongside `NO_COLOR` (`src/main.rs`)
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
 - [ ] Right-aligned prompt (`PS1_RIGHT`) — starship-style right-side prompt display based on terminal width (`src/interactive/line_editor.rs`)
