@@ -133,6 +133,10 @@ impl Plugin for TestPlugin {
                     Err(ErrorCode::PatternNotAllowed) => 101,
                     Err(ErrorCode::Timeout) => 102,
                     Err(ErrorCode::NotFound) => 103,
+                    // `InvalidArgument` is unreachable here because
+                    // `program = "echo"` is a fixed non-empty string, but
+                    // the catch-all keeps the match exhaustive for any
+                    // future arm the host may add.
                     Err(_) => 1,
                 }
             }

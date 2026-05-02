@@ -760,7 +760,11 @@ fn t22_commands_exec_pattern_not_allowed_without_match() {
     );
 }
 
-/// §10 t23 — exact-match pattern (no `:*`) rejects extra args.
+/// §10 t23 — fixed-length allowlist pattern (no `:*` glob suffix) admits
+/// only an exact-length argv. With pattern `["echo"]`, argv `["echo", "hi"]`
+/// is rejected as PatternNotAllowed (exit 101). Distinguished from t22
+/// (which uses a non-matching first element) by the fact that the prefix
+/// matches but the trailing argument is the violation.
 #[test]
 fn t23_commands_exec_exact_pattern_rejects_extra_args() {
     let _g = lock_test();

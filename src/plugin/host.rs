@@ -465,6 +465,11 @@ pub(super) fn host_commands_exec(
     program: String,
     args: Vec<String>,
 ) -> Result<ExecOutput, ErrorCode> {
+    // `&mut HostContext` is here only for the metadata-contract null
+    // guard below; CWD and environment inheritance happen implicitly via
+    // `std::process::Command::new` defaults (spec §5: "CWD is the
+    // shell's current directory; environment is the shell's full
+    // environment"), not via fields read off `ctx`.
     if ctx.env_mut().is_none() {
         return Err(ErrorCode::Denied);
     }

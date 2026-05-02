@@ -133,6 +133,9 @@ mod tests {
             Capability::HookPostExec,
             Capability::HookOnCd,
             Capability::HookPrePrompt,
+            Capability::FilesRead,
+            Capability::FilesWrite,
+            Capability::CommandsExec,
         ] {
             assert_eq!(parse_capability(cap.as_str()), Some(cap));
         }
