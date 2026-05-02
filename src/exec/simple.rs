@@ -4,9 +4,11 @@ use nix::unistd::{ForkResult, execvp, fork};
 
 use crate::builtin::special::exec_special_builtin;
 use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
+use crate::env::ShellEnv;
 use crate::env::jobs;
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::expand::expand_words;
+use crate::parser::Parser;
 use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
 use crate::signal;
 
@@ -23,12 +25,9 @@ use super::redirect::RedirectState;
 /// Returns a Vec of `NAME=value` or `NAME` strings suitable for the
 /// existing builtin_export / builtin_readonly signatures.
 fn expand_assignment_builtin_args(
-    env: &mut crate::env::ShellEnv,
-    words: &[crate::parser::ast::Word],
+    env: &mut ShellEnv,
+    words: &[Word],
 ) -> crate::error::Result<Vec<String>> {
-    use crate::parser::Parser;
-    use crate::parser::ast::Assignment;
-
     let mut out = Vec::with_capacity(words.len());
     for word in words {
         match Parser::try_parse_assignment(word) {
@@ -43,7 +42,7 @@ fn expand_assignment_builtin_args(
                 // Not an assignment (e.g. `export NAME` bare form or `export -p`).
                 // Fall back to normal word expansion (may produce multiple fields
                 // after IFS split; we preserve all of them).
-                let expanded = crate::expand::expand_words(env, std::slice::from_ref(word))?;
+                let expanded = expand_words(env, std::slice::from_ref(word))?;
                 out.extend(expanded);
             }
         }

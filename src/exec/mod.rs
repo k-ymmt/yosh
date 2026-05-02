@@ -9,6 +9,7 @@ pub(crate) mod terminal_state;
 use nix::unistd::{ForkResult, fork};
 
 use crate::env::ShellEnv;
+use crate::env::jobs::JobSpecError;
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::parser::ast::{
     AndOrList, AndOrOp, Command, CompleteCommand, Program, SeparatorOp, WordPart,
@@ -470,7 +471,7 @@ impl Executor {
                                 ));
                             }
                         }
-                        Err(crate::env::jobs::JobSpecError::Ambiguous) => {
+                        Err(JobSpecError::Ambiguous) => {
                             let display = strip_job_spec_prefix(arg);
                             return Err(ShellError::runtime(
                                 RuntimeErrorKind::CommandNotFound,
@@ -642,7 +643,7 @@ impl Executor {
         } else {
             match self.env.process.jobs.resolve_job_spec(&args[0]) {
                 Ok(id) => id,
-                Err(crate::env::jobs::JobSpecError::Ambiguous) => {
+                Err(JobSpecError::Ambiguous) => {
                     let display = strip_job_spec_prefix(&args[0]);
                     return Err(ShellError::runtime(
                         RuntimeErrorKind::JobControlError,
@@ -744,7 +745,7 @@ impl Executor {
         } else {
             match self.env.process.jobs.resolve_job_spec(&args[0]) {
                 Ok(id) => id,
-                Err(crate::env::jobs::JobSpecError::Ambiguous) => {
+                Err(JobSpecError::Ambiguous) => {
                     let display = strip_job_spec_prefix(&args[0]);
                     return Err(ShellError::runtime(
                         RuntimeErrorKind::JobControlError,
