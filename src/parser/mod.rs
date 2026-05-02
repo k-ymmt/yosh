@@ -1070,7 +1070,10 @@ pub(crate) fn split_tildes_in_literal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ast::{AndOrOp, CaseTerminator, CompoundCommandKind, RedirectKind, SeparatorOp, WordPart};
+    use ast::{
+        AndOrOp, CaseTerminator, CompoundCommandKind, ParamExpr, RedirectKind, SeparatorOp,
+        WordPart,
+    };
 
     fn parse(input: &str) -> Program {
         let mut parser = Parser::new(input);
@@ -1686,7 +1689,6 @@ mod tests {
     fn assignment_rhs_param_then_colon_tilde_expands() {
         let (name, parts) = parse_first_assignment("x=$var:~/bin\n").unwrap();
         assert_eq!(name, "x");
-        use ast::ParamExpr;
         assert_eq!(
             parts,
             vec![
@@ -1702,7 +1704,6 @@ mod tests {
     fn assignment_rhs_param_then_tilde_no_colon_stays_literal() {
         let (name, parts) = parse_first_assignment("x=$var~/bin\n").unwrap();
         assert_eq!(name, "x");
-        use ast::ParamExpr;
         assert_eq!(
             parts,
             vec![
@@ -1963,11 +1964,13 @@ mod tests {
     #[test]
     fn parse_for_reserved_word_if_rejected() {
         // POSIX §2.10.2 Rule 5: NAME in `for` must not be a reserved word.
+        // `if` passes `is_valid_name`, so the only rejection path is
+        // Rule 5 — pin that exact message.
         let src = "for if in a; do :; done\n";
         let err = Parser::new(src).parse_program().unwrap_err();
         let msg = format!("{}", err);
         assert!(
-            msg.contains("reserved word") || msg.contains("not a valid"),
+            msg.contains("reserved word"),
             "expected reserved-word error, got: {}",
             msg
         );
@@ -1979,7 +1982,7 @@ mod tests {
         let err = Parser::new(src).parse_program().unwrap_err();
         let msg = format!("{}", err);
         assert!(
-            msg.contains("reserved word") || msg.contains("not a valid"),
+            msg.contains("reserved word"),
             "expected reserved-word error, got: {}",
             msg
         );
