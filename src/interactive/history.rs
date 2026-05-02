@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 
 /// Command history storage with navigation and persistence.
@@ -126,22 +126,20 @@ impl History {
         }
     }
 
-    pub fn save(&self, path: &Path, histfilesize: usize) {
+    pub fn save(&self, path: &Path, histfilesize: usize) -> io::Result<()> {
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent)?;
         }
-        let mut file = match fs::File::create(path) {
-            Ok(f) => f,
-            Err(_) => return,
-        };
+        let mut file = fs::File::create(path)?;
         let start = if histfilesize > 0 && self.entries.len() > histfilesize {
             self.entries.len() - histfilesize
         } else {
             0
         };
         for entry in &self.entries[start..] {
-            let _ = writeln!(file, "{}", entry);
+            writeln!(file, "{}", entry)?;
         }
+        Ok(())
     }
 }
 
@@ -257,7 +255,7 @@ mod tests {
         let mut h = History::new();
         h.add("cmd1", 500, "");
         h.add("cmd2", 500, "");
-        h.save(&path, 500);
+        h.save(&path, 500).unwrap();
         let mut h2 = History::new();
         h2.load(&path);
         assert_eq!(h2.entries(), &["cmd1", "cmd2"]);
@@ -278,10 +276,42 @@ mod tests {
         for i in 0..10 {
             h.add(&format!("cmd{}", i), 500, "");
         }
-        h.save(&path, 3);
+        h.save(&path, 3).unwrap();
         let mut h2 = History::new();
         h2.load(&path);
         assert_eq!(h2.entries(), &["cmd7", "cmd8", "cmd9"]);
+    }
+
+    #[test]
+    fn test_save_returns_err_on_unwritable_parent() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let readonly_parent = dir.path().join("readonly");
+        std::fs::create_dir(&readonly_parent).unwrap();
+        let mut perms = std::fs::metadata(&readonly_parent).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&readonly_parent, perms).unwrap();
+
+        let path = readonly_parent.join("history");
+        let mut h = History::new();
+        h.add("cmd1", 500, "");
+
+        let result = h.save(&path, 500);
+
+        // Restore writable mode so tempdir cleanup can succeed
+        let mut restore = std::fs::metadata(&readonly_parent).unwrap().permissions();
+        restore.set_mode(0o755);
+        std::fs::set_permissions(&readonly_parent, restore).ok();
+
+        // On macOS/Linux as non-root, File::create inside a 0o555 dir fails.
+        // If running as root (e.g., some CI containers), root bypasses mode bits and the
+        // create succeeds; in that case we skip the assertion since the bug isn't
+        // reproducible and the codepath is still exercised.
+        if nix::unistd::geteuid().is_root() {
+            eprintln!("test_save_returns_err_on_unwritable_parent: skipped (running as root)");
+            return;
+        }
+        assert!(result.is_err(), "expected Err when parent dir is read-only, got {:?}", result);
     }
 
     #[test]

@@ -308,10 +308,17 @@ impl Repl {
             .and_then(|s| s.parse().ok())
             .unwrap_or(500);
         if !histfile.is_empty() {
-            self.executor
+            if let Err(e) = self
+                .executor
                 .env
                 .history
-                .save(std::path::Path::new(&histfile), histfilesize);
+                .save(std::path::Path::new(&histfile), histfilesize)
+            {
+                eprintln!(
+                    "yosh: warning: cannot save history to {}: {}",
+                    histfile, e
+                );
+            }
         }
 
         self.executor.env.exec.last_exit_status
