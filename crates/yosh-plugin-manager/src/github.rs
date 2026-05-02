@@ -531,7 +531,40 @@ mod tests {
             err
         );
         assert!(
-            err.contains("403"),
+            err.contains("HTTP 403"),
+            "should still surface the HTTP status, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn find_asset_url_429_with_token_no_hint() {
+        let mut server = mockito::Server::new();
+        let base = server.url();
+
+        // Both v-prefix and bare-version tag attempts return 429.
+        let _m1 = server
+            .mock("GET", "/repos/owner/repo/releases/tags/v1.0.0")
+            .with_status(429)
+            .with_body(r#"{"message": "Too many requests"}"#)
+            .create();
+        let _m2 = server
+            .mock("GET", "/repos/owner/repo/releases/tags/1.0.0")
+            .with_status(429)
+            .with_body(r#"{"message": "Too many requests"}"#)
+            .create();
+
+        let client = GitHubClientWithBase::with_token(&base, "fake-token");
+        let err = client
+            .find_asset_url("owner", "repo", "1.0.0", "asset.wasm")
+            .unwrap_err();
+        assert!(
+            !err.contains("YOSH_GITHUB_TOKEN"),
+            "should not suggest setting a token when one is already set, got: {}",
+            err
+        );
+        assert!(
+            err.contains("HTTP 429"),
             "should still surface the HTTP status, got: {}",
             err
         );

@@ -417,6 +417,16 @@ version = "1.0.0"
 "#;
         std::fs::write(&config_path, original).unwrap();
 
+        // Capture mtime before the call so we can assert no write happened.
+        // Byte-identical content alone would not catch a regression that
+        // dropped the `if any_updated` guard at update.rs:122 — the rewrite
+        // would still produce identical bytes (set_plugin_version was not
+        // called), but the mtime would advance.
+        let before_mtime = std::fs::metadata(&config_path).unwrap().modified().unwrap();
+        // Sleep just long enough that a re-write would produce a distinct
+        // mtime on filesystems with second-resolution timestamps (HFS+).
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
         let mut server = mockito::Server::new();
         // Latest equals current: no rewrite.
         let _m = server
@@ -436,6 +446,11 @@ version = "1.0.0"
 
         let after = std::fs::read_to_string(&config_path).unwrap();
         assert_eq!(after, original, "file content must be byte-identical");
+        let after_mtime = std::fs::metadata(&config_path).unwrap().modified().unwrap();
+        assert_eq!(
+            before_mtime, after_mtime,
+            "config mtime must be unchanged when no plugin was updated",
+        );
     }
 
     #[test]

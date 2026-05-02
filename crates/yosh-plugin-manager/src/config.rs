@@ -196,7 +196,7 @@ mod tests {
             r#"
 [[plugin]]
 name = "git-status"
-source = "github:user/kish-plugin-git-status"
+source = "github:user/yosh-plugin-git-status"
 version = "1.2.3"
 capabilities = ["variables:read", "io"]
 
@@ -211,7 +211,7 @@ capabilities = ["io"]
         assert_eq!(decls.len(), 2);
         assert_eq!(decls[0].name, "git-status");
         assert!(
-            matches!(&decls[0].source, PluginSource::GitHub { owner, repo } if owner == "user" && repo == "kish-plugin-git-status")
+            matches!(&decls[0].source, PluginSource::GitHub { owner, repo } if owner == "user" && repo == "yosh-plugin-git-status")
         );
         assert_eq!(decls[0].version.as_deref(), Some("1.2.3"));
         assert_eq!(decls[1].name, "local-tool");

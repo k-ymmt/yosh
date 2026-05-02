@@ -39,7 +39,7 @@ pub fn write_plugin_entry(
 
     let plugins = doc["plugin"]
         .as_array_of_tables_mut()
-        .ok_or_else(|| "'plugin' key is not an array of tables".to_string())?;
+        .ok_or_else(|| "config 'plugin' key is not an array of tables".to_string())?;
 
     // Check for duplicates
     let existing_idx = plugins
@@ -359,13 +359,13 @@ mod tests {
 
     #[test]
     fn parse_github_url_no_version() {
-        let t = parse_install_arg("https://github.com/example/kish-plugin-foo").unwrap();
-        assert_eq!(t.name, "kish-plugin-foo");
+        let t = parse_install_arg("https://github.com/example/yosh-plugin-foo").unwrap();
+        assert_eq!(t.name, "yosh-plugin-foo");
         assert_eq!(
             t.source,
             PluginSource::GitHub {
                 owner: "example".into(),
-                repo: "kish-plugin-foo".into()
+                repo: "yosh-plugin-foo".into()
             }
         );
         assert_eq!(t.version, None);
