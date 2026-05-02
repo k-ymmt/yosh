@@ -35,7 +35,9 @@ impl RedirectState {
     /// On failure, any redirects already applied within this call are rolled back
     /// (via `self.restore()`), so the returned `Err` always reports a state where
     /// the caller's fd table is unchanged. `save=false` leaves `saved_fds` empty,
-    /// so the rollback is a no-op in that case.
+    /// so the rollback is a no-op in that case — meaning fds opened by successful
+    /// redirects preceding the failing one are leaked (out of scope per spec §C;
+    /// callers in this mode are forked children that exit on failure anyway).
     pub fn apply(
         &mut self,
         redirects: &[Redirect],

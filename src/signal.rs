@@ -378,27 +378,27 @@ mod tests {
 
     #[test]
     fn test_signal_name_to_number_int() {
-        assert_eq!(signal_name_to_number("INT").unwrap(), 2);
+        assert_eq!(signal_name_to_number("INT").unwrap(), libc::SIGINT);
     }
 
     #[test]
     fn test_signal_name_to_number_sigint() {
-        assert_eq!(signal_name_to_number("SIGINT").unwrap(), 2);
+        assert_eq!(signal_name_to_number("SIGINT").unwrap(), libc::SIGINT);
     }
 
     #[test]
     fn test_signal_name_to_number_case_insensitive() {
-        assert_eq!(signal_name_to_number("hup").unwrap(), 1);
+        assert_eq!(signal_name_to_number("hup").unwrap(), libc::SIGHUP);
     }
 
     #[test]
     fn test_signal_name_to_number_term() {
-        assert_eq!(signal_name_to_number("TERM").unwrap(), 15);
+        assert_eq!(signal_name_to_number("TERM").unwrap(), libc::SIGTERM);
     }
 
     #[test]
     fn test_signal_name_to_number_kill() {
-        assert_eq!(signal_name_to_number("KILL").unwrap(), 9);
+        assert_eq!(signal_name_to_number("KILL").unwrap(), libc::SIGKILL);
     }
 
     #[test]
@@ -408,17 +408,17 @@ mod tests {
 
     #[test]
     fn test_signal_number_to_name_2() {
-        assert_eq!(signal_number_to_name(2), Some("INT"));
+        assert_eq!(signal_number_to_name(libc::SIGINT), Some("INT"));
     }
 
     #[test]
     fn test_signal_number_to_name_15() {
-        assert_eq!(signal_number_to_name(15), Some("TERM"));
+        assert_eq!(signal_number_to_name(libc::SIGTERM), Some("TERM"));
     }
 
     #[test]
     fn test_signal_number_to_name_9() {
-        assert_eq!(signal_number_to_name(9), Some("KILL"));
+        assert_eq!(signal_number_to_name(libc::SIGKILL), Some("KILL"));
     }
 
     #[test]
