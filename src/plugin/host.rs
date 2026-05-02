@@ -35,7 +35,9 @@ pub struct HostContext {
     /// binding layer (vs. eight `unsafe extern "C" fn` callbacks in the
     /// dlopen version).
     pub(super) env: *mut ShellEnv,
+    #[allow(dead_code)] // diagnostics; held for future use by deny-stubs
     pub(super) plugin_name: String,
+    #[allow(dead_code)] // diagnostics; held for future use by deny-stubs
     pub(super) capabilities: u32,
 
     pub(super) wasi: WasiCtx,
@@ -548,9 +550,8 @@ fn spawn_with_timeout(
             let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
             let grace = Instant::now() + std::time::Duration::from_millis(100);
             loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    _ => {}
+                if let Ok(Some(_)) = child.try_wait() {
+                    break;
                 }
                 if Instant::now() >= grace {
                     let _ = child.kill();

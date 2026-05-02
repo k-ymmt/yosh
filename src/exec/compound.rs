@@ -85,12 +85,10 @@ impl Executor {
 
     fn exec_subshell(&mut self, body: &[CompleteCommand]) -> Result<i32, ShellError> {
         match unsafe { fork() } {
-            Err(e) => {
-                return Err(ShellError::runtime(
-                    RuntimeErrorKind::IoError,
-                    format!("fork: {}", e),
-                ));
-            }
+            Err(e) => Err(ShellError::runtime(
+                RuntimeErrorKind::IoError,
+                format!("fork: {}", e),
+            )),
             Ok(ForkResult::Child) => {
                 let ignored = self.env.traps.ignored_signals();
                 self.env.traps.reset_non_ignored();
@@ -207,7 +205,7 @@ impl Executor {
             if let Err(e) = self.env.vars.set(var, item.as_str()) {
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::ReadonlyVariable,
-                    format!("{}", e),
+                    e.to_string(),
                 ));
             }
 

@@ -78,6 +78,7 @@ pub struct PromptInfo {
     /// The final line displayed left of the input buffer.
     pub last_line: String,
     /// Display width of `last_line` (ANSI-stripped, Unicode-aware).
+    #[allow(dead_code)] // public prompt-info field; held for callers that need the width
     pub last_line_width: usize,
 }
 

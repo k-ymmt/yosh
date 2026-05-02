@@ -58,10 +58,11 @@ impl Repl {
         // which runs after each foreground wait — there the check IS
         // load-bearing. Keep both in sync so a future "simplification"
         // does not drop one and leave the other dangling.
-        if executor.env.mode.is_interactive && executor.env.mode.options.monitor {
-            if let Ok(Some(t)) = crate::exec::terminal_state::capture_tty_termios() {
-                executor.env.process.jobs.set_shell_tmodes(t);
-            }
+        if executor.env.mode.is_interactive
+            && executor.env.mode.options.monitor
+            && let Ok(Some(t)) = crate::exec::terminal_state::capture_tty_termios()
+        {
+            executor.env.process.jobs.set_shell_tmodes(t);
         }
 
         // Set history variable defaults
@@ -85,31 +86,31 @@ impl Repl {
         }
 
         // Source $ENV (POSIX: parameter-expanded path for interactive shells)
-        if let Some(env_val) = executor.env.vars.get("ENV").map(|s| s.to_string()) {
-            if !env_val.is_empty() {
-                // POSIX 2.6.1: tilde expansion occurs before parameter expansion
-                let home = executor.env.vars.get("HOME").map(|s| s.to_string());
-                let after_tilde = crate::expand::expand_tilde_prefix(home.as_deref(), &env_val);
+        if let Some(env_val) = executor.env.vars.get("ENV").map(|s| s.to_string())
+            && !env_val.is_empty()
+        {
+            // POSIX 2.6.1: tilde expansion occurs before parameter expansion
+            let home = executor.env.vars.get("HOME").map(|s| s.to_string());
+            let after_tilde = crate::expand::expand_tilde_prefix(home.as_deref(), &env_val);
 
-                // Parse as double-quoted word for parameter expansion
-                let input = format!("\"{}\"", after_tilde);
-                let expanded = match crate::lexer::Lexer::new(&input).next_token() {
-                    Ok(tok) => {
-                        if let crate::lexer::token::Token::Word(word) = tok.token {
-                            crate::expand::expand_word_to_string(&mut executor.env, &word)
-                                .ok()
-                                .or_else(|| Some(after_tilde.clone()))
-                        } else {
-                            Some(after_tilde.clone())
-                        }
-                    }
-                    Err(_) => Some(after_tilde.clone()),
-                };
-                if let Some(path) = expanded {
-                    if executor.source_file(std::path::Path::new(&path)).is_none() {
-                        eprintln!("yosh: {}: No such file or directory", path);
+            // Parse as double-quoted word for parameter expansion
+            let input = format!("\"{}\"", after_tilde);
+            let expanded = match crate::lexer::Lexer::new(&input).next_token() {
+                Ok(tok) => {
+                    if let crate::lexer::token::Token::Word(word) = tok.token {
+                        crate::expand::expand_word_to_string(&mut executor.env, &word)
+                            .ok()
+                            .or_else(|| Some(after_tilde.clone()))
+                    } else {
+                        Some(after_tilde.clone())
                     }
                 }
+                Err(_) => Some(after_tilde.clone()),
+            };
+            if let Some(path) = expanded
+                && executor.source_file(std::path::Path::new(&path)).is_none()
+            {
+                eprintln!("yosh: {}: No such file or directory", path);
             }
         }
 
@@ -307,15 +308,14 @@ impl Repl {
             .get("HISTFILESIZE")
             .and_then(|s| s.parse().ok())
             .unwrap_or(500);
-        if !histfile.is_empty() {
-            if let Err(e) = self
+        if !histfile.is_empty()
+            && let Err(e) = self
                 .executor
                 .env
                 .history
                 .save(std::path::Path::new(&histfile), histfilesize)
-            {
-                eprintln!("yosh: warning: cannot save history to {}: {}", histfile, e);
-            }
+        {
+            eprintln!("yosh: warning: cannot save history to {}: {}", histfile, e);
         }
 
         self.executor.env.exec.last_exit_status

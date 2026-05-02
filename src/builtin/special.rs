@@ -760,30 +760,6 @@ fn fc_substitute(operands: &[String], executor: &mut Executor) -> Result<i32, Sh
     Ok(executor.env.exec.last_exit_status)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::exec::Executor;
-
-    #[test]
-    fn exit_builtin_sets_exit_requested_in_interactive_mode() {
-        let mut executor = Executor::new("yosh", vec![]);
-        executor.env.mode.is_interactive = true;
-        let status = exec_special_builtin("exit", &["42".to_string()], &mut executor);
-        assert_eq!(status, 42);
-        assert_eq!(executor.exit_requested, Some(42));
-    }
-
-    #[test]
-    fn exit_builtin_uses_last_status_when_no_args() {
-        let mut executor = Executor::new("yosh", vec![]);
-        executor.env.mode.is_interactive = true;
-        executor.env.exec.last_exit_status = 7;
-        exec_special_builtin("exit", &[], &mut executor);
-        assert_eq!(executor.exit_requested, Some(7));
-    }
-}
-
 /// Create a temporary file with a random name and restrictive permissions (0o600).
 /// Uses `O_CREAT | O_EXCL` to atomically create the file, preventing TOCTOU races.
 fn create_secure_tempfile(prefix: &str) -> Result<String, String> {
@@ -814,4 +790,28 @@ fn create_secure_tempfile(prefix: &str) -> Result<String, String> {
     }
 
     Err("cannot create temp file: too many collisions".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::Executor;
+
+    #[test]
+    fn exit_builtin_sets_exit_requested_in_interactive_mode() {
+        let mut executor = Executor::new("yosh", vec![]);
+        executor.env.mode.is_interactive = true;
+        let status = exec_special_builtin("exit", &["42".to_string()], &mut executor);
+        assert_eq!(status, 42);
+        assert_eq!(executor.exit_requested, Some(42));
+    }
+
+    #[test]
+    fn exit_builtin_uses_last_status_when_no_args() {
+        let mut executor = Executor::new("yosh", vec![]);
+        executor.env.mode.is_interactive = true;
+        executor.env.exec.last_exit_status = 7;
+        exec_special_builtin("exit", &[], &mut executor);
+        assert_eq!(executor.exit_requested, Some(7));
+    }
 }

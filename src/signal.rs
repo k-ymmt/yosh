@@ -112,9 +112,7 @@ fn capture_ignored_on_entry() -> HashSet<i32> {
 /// Returns `true` if `sig` was inherited with SIG_IGN disposition at shell startup.
 /// Returns `false` if [`init_signal_handling`] has not been called yet.
 pub fn is_ignored_on_entry(sig: i32) -> bool {
-    IGNORED_ON_ENTRY
-        .get()
-        .map_or(false, |set| set.contains(&sig))
+    IGNORED_ON_ENTRY.get().is_some_and(|set| set.contains(&sig))
 }
 
 /// Like [`ignored_on_entry_set`] but returns `None` if the capture has not
@@ -294,7 +292,7 @@ pub fn default_signal(sig: i32) {
 pub fn reset_child_signals(ignored: &[i32]) {
     let entry_set = IGNORED_ON_ENTRY.get();
     for &(num, _) in HANDLED_SIGNALS {
-        let keep_ignored = ignored.contains(&num) || entry_set.map_or(false, |s| s.contains(&num));
+        let keep_ignored = ignored.contains(&num) || entry_set.is_some_and(|s| s.contains(&num));
         if keep_ignored {
             ignore_signal(num);
         } else {

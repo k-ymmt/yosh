@@ -15,9 +15,3 @@ package = "yosh:trap-plugin"
 [package.metadata.component.target]
 path  = "../../../crates/yosh-plugin-api/wit"
 world = "plugin-world"
-
-[profile.release]
-opt-level = "s"
-lto = true
-strip = true
-panic = "abort"

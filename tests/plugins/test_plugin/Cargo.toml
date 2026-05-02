@@ -18,9 +18,3 @@ world = "plugin-world"
 
 [package.metadata.component.dependencies]
 # wasi adapter is auto-resolved by cargo-component for the wasm32-wasip2 target.
-
-[profile.release]
-opt-level = "s"
-lto = true
-strip = true
-panic = "abort"

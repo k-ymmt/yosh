@@ -112,6 +112,7 @@ pub struct SidecarMeta {
 impl SidecarMeta {
     pub const SCHEMA_VERSION: u32 = 1;
 
+    #[allow(dead_code)] // used by yosh-plugin-manager precompile crate and cache.rs tests
     pub fn new(key: CacheKey) -> Self {
         SidecarMeta {
             schema: Self::SCHEMA_VERSION,

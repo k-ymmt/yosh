@@ -19,6 +19,12 @@ pub struct CommandCompleter {
     cached_path: String,
 }
 
+impl Default for CommandCompleter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandCompleter {
     pub fn new() -> Self {
         Self {

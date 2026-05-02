@@ -251,9 +251,9 @@ mod tests {
             .set_trap("TERM", TrapAction::Command("echo term".to_string()))
             .unwrap();
         store.reset_non_ignored();
-        assert!(store.signal_traps.get(&2).is_none());
+        assert!(!store.signal_traps.contains_key(&2));
         assert_eq!(store.signal_traps.get(&1), Some(&TrapAction::Ignore));
-        assert!(store.signal_traps.get(&15).is_none());
+        assert!(!store.signal_traps.contains_key(&15));
     }
 
     // -----------------------------------------------------------------------

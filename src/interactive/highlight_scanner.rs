@@ -166,6 +166,12 @@ pub struct HighlightScanner {
     checker: CommandChecker,
 }
 
+impl Default for HighlightScanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HighlightScanner {
     pub fn new() -> Self {
         Self {
@@ -271,10 +277,11 @@ impl HighlightScanner {
 
         while pos < chars.len() {
             // Periodically save checkpoints
-            if pos > 0 && pos % self.cache.checkpoint_interval == 0 {
-                if !self.cache.checkpoints.iter().any(|(cp, _)| *cp == pos) {
-                    self.cache.checkpoints.push((pos, state.clone()));
-                }
+            if pos > 0
+                && pos.is_multiple_of(self.cache.checkpoint_interval)
+                && !self.cache.checkpoints.iter().any(|(cp, _)| *cp == pos)
+            {
+                self.cache.checkpoints.push((pos, state.clone()));
             }
 
             match state.current_mode().clone() {
@@ -421,20 +428,20 @@ impl HighlightScanner {
             // Check if we are closing a CommandSub: the stack would be
             // [..., CommandSub, Normal] and current mode is Normal.
             let stack_len = state.mode_stack.len();
-            if stack_len >= 2 {
-                if let ScanMode::CommandSub { start } = state.mode_stack[stack_len - 2] {
-                    // Pop Normal, then pop CommandSub
-                    state.pop_mode(); // pops Normal
-                    spans.push(ColorSpan {
-                        start,
-                        end: pos + 1,
-                        style: HighlightStyle::CommandSub,
-                    });
-                    state.pop_mode(); // pops CommandSub
-                    state.word_start = false;
-                    state.command_position = false;
-                    return pos + 1;
-                }
+            if stack_len >= 2
+                && let ScanMode::CommandSub { start } = state.mode_stack[stack_len - 2]
+            {
+                // Pop Normal, then pop CommandSub
+                state.pop_mode(); // pops Normal
+                spans.push(ColorSpan {
+                    start,
+                    end: pos + 1,
+                    style: HighlightStyle::CommandSub,
+                });
+                state.pop_mode(); // pops CommandSub
+                state.word_start = false;
+                state.command_position = false;
+                return pos + 1;
             }
 
             // Otherwise, plain operator (subshell close, etc.)
@@ -466,20 +473,20 @@ impl HighlightScanner {
         // --- Backtick ---
         if ch == '`' {
             let stack_len = state.mode_stack.len();
-            if stack_len >= 2 {
-                if let ScanMode::Backtick { start } = state.mode_stack[stack_len - 2] {
-                    // Closing backtick
-                    state.pop_mode(); // pops Normal
-                    spans.push(ColorSpan {
-                        start,
-                        end: pos + 1,
-                        style: HighlightStyle::CommandSub,
-                    });
-                    state.pop_mode(); // pops Backtick
-                    state.word_start = false;
-                    state.command_position = false;
-                    return pos + 1;
-                }
+            if stack_len >= 2
+                && let ScanMode::Backtick { start } = state.mode_stack[stack_len - 2]
+            {
+                // Closing backtick
+                state.pop_mode(); // pops Normal
+                spans.push(ColorSpan {
+                    start,
+                    end: pos + 1,
+                    style: HighlightStyle::CommandSub,
+                });
+                state.pop_mode(); // pops Backtick
+                state.word_start = false;
+                state.command_position = false;
+                return pos + 1;
             }
             // Opening backtick — push Backtick then Normal
             state.push_mode(ScanMode::Backtick { start: pos });
@@ -627,29 +634,29 @@ impl HighlightScanner {
         let word: String = chars[start..end].iter().collect();
 
         // --- Check for assignment (VAR=value) in command position ---
-        if state.command_position {
-            if let Some(eq_idx) = word.find('=') {
-                let name_part = &word[..eq_idx];
-                if !name_part.is_empty() && is_valid_name(name_part) {
-                    // It's an assignment prefix. The part before = (inclusive) is
-                    // Assignment; the part after is Default.
-                    let eq_char_pos = start + eq_idx;
+        if state.command_position
+            && let Some(eq_idx) = word.find('=')
+        {
+            let name_part = &word[..eq_idx];
+            if !name_part.is_empty() && is_valid_name(name_part) {
+                // It's an assignment prefix. The part before = (inclusive) is
+                // Assignment; the part after is Default.
+                let eq_char_pos = start + eq_idx;
+                spans.push(ColorSpan {
+                    start,
+                    end: eq_char_pos + 1,
+                    style: HighlightStyle::Assignment,
+                });
+                if eq_char_pos + 1 < end {
                     spans.push(ColorSpan {
-                        start,
-                        end: eq_char_pos + 1,
-                        style: HighlightStyle::Assignment,
+                        start: eq_char_pos + 1,
+                        end,
+                        style: HighlightStyle::Default,
                     });
-                    if eq_char_pos + 1 < end {
-                        spans.push(ColorSpan {
-                            start: eq_char_pos + 1,
-                            end,
-                            style: HighlightStyle::Default,
-                        });
-                    }
-                    // command_position stays true after an assignment prefix
-                    state.word_start = true;
-                    return end;
                 }
+                // command_position stays true after an assignment prefix
+                state.word_start = true;
+                return end;
             }
         }
 

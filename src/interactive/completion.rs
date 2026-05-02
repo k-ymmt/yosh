@@ -206,6 +206,8 @@ pub struct CompletionResult {
     /// Longest common prefix among all candidates.
     pub common_prefix: String,
     /// Byte offset in the input buffer where the completion word starts.
+    #[allow(dead_code)]
+    // public completion-result field; held for callers that need the offset
     pub word_start: usize,
     /// The directory prefix string (as the user typed it, before expansion),
     /// used to reconstruct the replacement text.

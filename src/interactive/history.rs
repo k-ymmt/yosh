@@ -371,7 +371,7 @@ mod tests {
         let path = dir.path().join("history");
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "cmd1").unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         writeln!(f, "cmd2").unwrap();
         let mut h = History::new();
         h.load(&path);

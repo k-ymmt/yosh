@@ -41,6 +41,12 @@ struct YankState {
     len: usize,
 }
 
+impl Default for LineEditor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LineEditor {
     /// Create an empty line editor.
     pub fn new() -> Self {

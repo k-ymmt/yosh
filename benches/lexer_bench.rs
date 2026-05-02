@@ -18,14 +18,9 @@ const LARGE_SCRIPT: &str = include_str!("data/large_script.sh");
 
 fn lex_all(input: &str) {
     let mut lexer = Lexer::new(input);
-    loop {
-        match lexer.next_token() {
-            Ok(tok) => {
-                if tok.token == yosh::lexer::token::Token::Eof {
-                    break;
-                }
-            }
-            Err(_) => break,
+    while let Ok(tok) = lexer.next_token() {
+        if tok.token == yosh::lexer::token::Token::Eof {
+            break;
         }
     }
 }

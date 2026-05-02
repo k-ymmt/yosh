@@ -162,7 +162,7 @@ impl Executor {
                     self.env.exec.last_exit_status = 1;
                     return Err(ShellError::runtime(
                         RuntimeErrorKind::ReadonlyVariable,
-                        format!("{}", e),
+                        e.to_string(),
                     ));
                 }
             }
@@ -189,10 +189,11 @@ impl Executor {
 
         // Check for function call (before builtins, matching POSIX lookup order)
         if let Some(func_def) = self.env.functions.get(&command_name).cloned() {
-            let saved = self.apply_temp_assignments(&cmd.assignments).map_err(|e| {
-                self.env.exec.last_exit_status = 1;
-                e
-            })?;
+            let saved = self
+                .apply_temp_assignments(&cmd.assignments)
+                .inspect_err(|_| {
+                    self.env.exec.last_exit_status = 1;
+                })?;
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 self.restore_assignments(saved);
@@ -210,10 +211,11 @@ impl Executor {
 
         // wait needs Executor access (bg_jobs + signal processing)
         if command_name == "wait" {
-            let saved = self.apply_temp_assignments(&cmd.assignments).map_err(|e| {
-                self.env.exec.last_exit_status = 1;
-                e
-            })?;
+            let saved = self
+                .apply_temp_assignments(&cmd.assignments)
+                .inspect_err(|_| {
+                    self.env.exec.last_exit_status = 1;
+                })?;
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 self.restore_assignments(saved);
@@ -234,10 +236,11 @@ impl Executor {
 
         // fg/bg/jobs need Executor access for job table + terminal control
         if command_name == "fg" || command_name == "bg" || command_name == "jobs" {
-            let saved = self.apply_temp_assignments(&cmd.assignments).map_err(|e| {
-                self.env.exec.last_exit_status = 1;
-                e
-            })?;
+            let saved = self
+                .apply_temp_assignments(&cmd.assignments)
+                .inspect_err(|_| {
+                    self.env.exec.last_exit_status = 1;
+                })?;
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 self.restore_assignments(saved);
@@ -306,7 +309,7 @@ impl Executor {
                         self.env.exec.last_exit_status = 1;
                         return Err(ShellError::runtime(
                             RuntimeErrorKind::ReadonlyVariable,
-                            format!("{}", e),
+                            e.to_string(),
                         ));
                     }
                 }
@@ -339,10 +342,11 @@ impl Executor {
             }
             BuiltinKind::Regular => {
                 // Regular builtins: prefix assignments are temporary
-                let saved = self.apply_temp_assignments(&cmd.assignments).map_err(|e| {
-                    self.env.exec.last_exit_status = 1;
-                    e
-                })?;
+                let saved = self
+                    .apply_temp_assignments(&cmd.assignments)
+                    .inspect_err(|_| {
+                        self.env.exec.last_exit_status = 1;
+                    })?;
                 let mut redirect_state = RedirectState::new();
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                     self.restore_assignments(saved);
@@ -395,9 +399,8 @@ impl Executor {
                     PluginExec::NotHandled => {}
                 }
 
-                let env_vars = self.build_env_vars(&cmd.assignments).map_err(|e| {
+                let env_vars = self.build_env_vars(&cmd.assignments).inspect_err(|_| {
                     self.env.exec.last_exit_status = 1;
-                    e
                 })?;
                 let status = self.exec_external_with_redirects(
                     &command_name,

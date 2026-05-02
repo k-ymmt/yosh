@@ -192,15 +192,14 @@ impl Executor {
             // exits the shell.  Reaping is already handled by
             // reap_zombies() in the interactive loop.
             if sig == libc::SIGCHLD {
-                match self.env.traps.get_signal_trap(sig).cloned() {
-                    Some(crate::env::TrapAction::Command(cmd)) => {
-                        self.with_errexit_suppressed(|exec| {
-                            exec.eval_string(&cmd);
-                        });
-                    }
-                    // Default and Ignore: just ignore SIGCHLD (reaping
-                    // is done elsewhere).
-                    _ => {}
+                // Default and Ignore: just ignore SIGCHLD (reaping is done
+                // elsewhere). Only the user-installed `Command` trap runs.
+                if let Some(crate::env::TrapAction::Command(cmd)) =
+                    self.env.traps.get_signal_trap(sig).cloned()
+                {
+                    self.with_errexit_suppressed(|exec| {
+                        exec.eval_string(&cmd);
+                    });
                 }
                 continue;
             }
@@ -795,13 +794,14 @@ impl Executor {
 
     /// Apply the shell's captured termios snapshot when in interactive
     /// + monitor mode. Best-effort; silent on failure or when the
-    /// snapshot is not set (non-interactive, non-monitor, or capture
-    /// failed at REPL startup).
+    ///   snapshot is not set (non-interactive, non-monitor, or capture
+    ///   failed at REPL startup).
     fn restore_shell_termios_if_interactive(&self) {
-        if self.env.mode.is_interactive && self.env.mode.options.monitor {
-            if let Some(shell_t) = self.env.process.jobs.shell_tmodes() {
-                let _ = crate::exec::terminal_state::apply_tty_termios(shell_t);
-            }
+        if self.env.mode.is_interactive
+            && self.env.mode.options.monitor
+            && let Some(shell_t) = self.env.process.jobs.shell_tmodes()
+        {
+            let _ = crate::exec::terminal_state::apply_tty_termios(shell_t);
         }
     }
 

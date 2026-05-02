@@ -40,6 +40,12 @@ pub struct CommandChecker {
     cached_path: String,
 }
 
+impl Default for CommandChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandChecker {
     /// Create a new checker with an empty cache.
     pub fn new() -> Self {

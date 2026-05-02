@@ -349,7 +349,7 @@ fn test_last_bg_pid_inheritance() {
     let out = yosh_exec("true & PARENT_BG=$!; CHILD_BG=$(echo $!); echo \"$PARENT_BG $CHILD_BG\"");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+    let parts: Vec<&str> = stdout.split_whitespace().collect();
     assert_eq!(parts.len(), 2);
     assert_eq!(parts[0], parts[1]);
 }

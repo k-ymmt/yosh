@@ -156,38 +156,37 @@ fn sync_one(
             // checksum matches, AND we already have cwasm + metadata cached
             // in the lock. If anything is missing fall through to the
             // download / precompile / metadata path so we can repair.
-            if let Some(existing) = existing {
-                if existing.version.as_deref() == Some(version)
-                    && dest_path.exists()
-                    && existing.cwasm_path.is_some()
-                    && existing.required_capabilities.is_some()
-                {
-                    match verify_checksum(&dest_path, &existing.sha256) {
-                        Ok(true) => {
-                            // cwasm sidecar might still be stale on disk
-                            // (e.g. prior `prune` removed it). Verify the
-                            // file is present; if not, re-precompile only
-                            // (skip download).
-                            let cwasm_present = existing
-                                .cwasm_path
-                                .as_deref()
-                                .map(config::expand_tilde_path)
-                                .map(|p| p.exists())
-                                .unwrap_or(false);
-                            if cwasm_present {
-                                return Ok(existing.clone());
-                            }
-                            // Fall through to re-run precompile + metadata.
+            if let Some(existing) = existing
+                && existing.version.as_deref() == Some(version)
+                && dest_path.exists()
+                && existing.cwasm_path.is_some()
+                && existing.required_capabilities.is_some()
+            {
+                match verify_checksum(&dest_path, &existing.sha256) {
+                    Ok(true) => {
+                        // cwasm sidecar might still be stale on disk
+                        // (e.g. prior `prune` removed it). Verify the
+                        // file is present; if not, re-precompile only
+                        // (skip download).
+                        let cwasm_present = existing
+                            .cwasm_path
+                            .as_deref()
+                            .map(config::expand_tilde_path)
+                            .map(|p| p.exists())
+                            .unwrap_or(false);
+                        if cwasm_present {
+                            return Ok(existing.clone());
                         }
-                        Ok(false) => {
-                            eprintln!(
-                                "yosh-plugin: {}: local checksum mismatch, re-downloading",
-                                decl.name
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("yosh-plugin: {}: verify failed: {}", decl.name, e);
-                        }
+                        // Fall through to re-run precompile + metadata.
+                    }
+                    Ok(false) => {
+                        eprintln!(
+                            "yosh-plugin: {}: local checksum mismatch, re-downloading",
+                            decl.name
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("yosh-plugin: {}: verify failed: {}", decl.name, e);
                     }
                 }
             }
@@ -205,20 +204,18 @@ fn sync_one(
                 let sha = sha256_file(&dest_path)?;
 
                 // Re-download integrity check vs prior lock entry.
-                if let Some(existing) = existing {
-                    if existing.version.as_deref() == Some(version) {
-                        if let Some(prev_upstream) = existing.upstream_sha256.as_deref() {
-                            if sha != prev_upstream {
-                                let _ = std::fs::remove_file(&dest_path);
-                                return Err(format!(
-                                    "re-downloaded asset has different checksum \
-                                     (expected {}, got {}). \
-                                     The upstream release asset may have been replaced.",
-                                    prev_upstream, sha
-                                ));
-                            }
-                        }
-                    }
+                if let Some(existing) = existing
+                    && existing.version.as_deref() == Some(version)
+                    && let Some(prev_upstream) = existing.upstream_sha256.as_deref()
+                    && sha != prev_upstream
+                {
+                    let _ = std::fs::remove_file(&dest_path);
+                    return Err(format!(
+                        "re-downloaded asset has different checksum \
+                         (expected {}, got {}). \
+                         The upstream release asset may have been replaced.",
+                        prev_upstream, sha
+                    ));
                 }
                 sha
             } else {

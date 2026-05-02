@@ -38,7 +38,7 @@ use yosh_plugin_api::{
 
 use crate::env::ShellEnv;
 
-use self::cache::{CacheKey, CacheRejection, sha256_hex, sidecar_path, validate_cwasm};
+use self::cache::{CacheKey, sha256_hex, sidecar_path, validate_cwasm};
 use self::config::{PluginConfig, expand_tilde};
 use self::host::HostContext;
 
@@ -167,6 +167,7 @@ impl PluginManager {
     /// (no further restriction — equivalent to `plugins.toml` without a
     /// `capabilities = [...]` field). Always falls back to in-memory
     /// compile (no cwasm cache lookup).
+    #[allow(dead_code)] // public manager API; production loads go through load_from_config
     pub fn load_plugin(&mut self, path: &Path, env: &mut ShellEnv) -> Result<(), String> {
         self.load_one(path, env, None, None, None, &[])
     }
@@ -440,6 +441,7 @@ impl PluginManager {
 
     /// Call `on_unload` on every plugin and drop them. Best-effort: a trap
     /// in `on_unload` is logged and the plugin is dropped anyway.
+    #[allow(dead_code)] // public manager API; called by host shutdown paths
     pub fn unload_all(&mut self, env: &mut ShellEnv) {
         // Drain so the borrow checker lets us call `with_env` on each.
         let mut plugins = std::mem::take(&mut self.plugins);
@@ -456,12 +458,14 @@ impl PluginManager {
     }
 
     /// Check if any plugin provides the given command.
+    #[allow(dead_code)] // public manager API; used by completion / dispatch lookups
     pub fn has_command(&self, name: &str) -> bool {
         self.plugins.iter().any(|p| p.provides_command(name))
     }
 
     /// Engine fingerprint used in cache key tuples. Exposed for the manager
     /// in Task 5 so it precompiles into a key matching the host's runtime.
+    #[allow(dead_code)] // public manager API; consumed by yosh-plugin sync
     pub fn engine_fingerprint(&self) -> &str {
         &self.engine_fingerprint
     }
@@ -610,6 +614,7 @@ fn log_denied_capabilities(plugin_name: &str, denied: u32) {
 // what they need behind a feature gate so production code never sees the
 // internals.
 #[cfg(any(test, feature = "test-helpers"))]
+#[allow(dead_code)] // exercised from integration tests in tests/plugin.rs and benches/plugin_bench.rs
 pub mod test_helpers {
     use super::*;
 

@@ -1,3 +1,7 @@
+// Helpers are shared across many integration test binaries; only some are
+// referenced from any given binary, so dead-code warnings are noise.
+#![allow(dead_code)]
+
 pub mod mock_terminal;
 
 use std::os::unix::process::CommandExt;
@@ -34,7 +38,7 @@ unsafe fn reset_to_default(sig: libc::c_int) -> std::io::Result<()> {
 /// SIG_IGN inherited to exercise yosh's POSIX §2.11 capture path.
 pub fn reset_trap_signals(cmd: &mut Command) {
     unsafe {
-        cmd.pre_exec(|| unsafe {
+        cmd.pre_exec(|| {
             reset_to_default(libc::SIGINT)?;
             reset_to_default(libc::SIGQUIT)?;
             Ok(())

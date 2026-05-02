@@ -17,12 +17,19 @@ pub struct Keymap {
     numeric_arg: Option<u32>,
 }
 
+impl Default for Keymap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Keymap {
     pub fn new() -> Self {
         Self { numeric_arg: None }
     }
 
     /// Return the currently accumulated numeric argument, if any.
+    #[allow(dead_code)] // exercised from integration tests in tests/interactive.rs
     pub fn pending_numeric_arg(&self) -> Option<u32> {
         self.numeric_arg
     }
@@ -35,14 +42,14 @@ impl Keymap {
         let alt = mods.contains(KeyModifiers::ALT);
 
         // Alt+digit → accumulate numeric argument
-        if alt && !ctrl {
-            if let KeyCode::Char(ch) = key.code {
-                if let Some(digit) = ch.to_digit(10) {
-                    let current = self.numeric_arg.unwrap_or(0);
-                    self.numeric_arg = Some(current * 10 + digit);
-                    return (EditAction::SetNumericArg(digit as u8), 1);
-                }
-            }
+        if alt
+            && !ctrl
+            && let KeyCode::Char(ch) = key.code
+            && let Some(digit) = ch.to_digit(10)
+        {
+            let current = self.numeric_arg.unwrap_or(0);
+            self.numeric_arg = Some(current * 10 + digit);
+            return (EditAction::SetNumericArg(digit as u8), 1);
         }
 
         // Ctrl+G → cancel (reset numeric arg)

@@ -1,3 +1,7 @@
+// Shared across multiple integration test binaries; some helpers are unused
+// in any given binary, which would otherwise trip dead-code warnings.
+#![allow(dead_code)]
+
 use std::collections::VecDeque;
 use std::io;
 

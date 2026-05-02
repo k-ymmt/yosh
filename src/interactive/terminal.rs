@@ -33,6 +33,7 @@ pub trait Terminal {
     fn clear_current_line(&mut self) -> io::Result<()>;
 
     /// Clear from cursor to end of line.
+    #[allow(dead_code)] // implemented by mock terminal; held for future renderer use
     fn clear_until_newline(&mut self) -> io::Result<()>;
 
     /// Clear the entire screen and move cursor to top-left.

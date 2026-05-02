@@ -697,7 +697,7 @@ mod tests {
             let _ = env.vars.unset(name);
         }
         for (k, v) in pairs {
-            let _ = env.vars.set(*k, (*v).to_string());
+            let _ = env.vars.set(k, (*v).to_string());
         }
         env
     }

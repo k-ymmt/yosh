@@ -57,6 +57,7 @@ pub enum RuntimeErrorKind {
     InvalidArgument,
     IoError,
     ExecFailed,
+    #[allow(dead_code)] // reserved for future trap-handler error reporting
     TrapError,
     JobControlError,
 }

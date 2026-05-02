@@ -9,6 +9,7 @@ pub struct PluginConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // schema fields parsed from plugins.toml; consumed by yosh-plugin sync
 pub struct PluginEntry {
     pub name: String,
     pub path: String,
@@ -50,10 +51,10 @@ impl PluginConfig {
 }
 
 pub fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home).join(rest);
     }
     PathBuf::from(path)
 }

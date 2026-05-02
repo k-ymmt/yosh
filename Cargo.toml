@@ -98,3 +98,16 @@ required-features = ["test-helpers"]
 inherits = "release"
 debug = true
 strip = false
+
+# Wasm test plugins must be built standalone (cargo component build -p ...
+# --target wasm32-wasip2 --release). Their per-package profile settings
+# previously lived in their own Cargo.toml, but cargo ignores those for
+# workspace members; declare the same overrides here so the artefacts stay
+# size-optimised when built against the workspace.
+[profile.release.package.test_plugin]
+opt-level = "s"
+strip = true
+
+[profile.release.package.trap_plugin]
+opt-level = "s"
+strip = true
