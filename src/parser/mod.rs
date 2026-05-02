@@ -1875,22 +1875,26 @@ mod tests {
 
     // ── LINENO line-capture tests ───────────────────────────────
 
-    fn first_simple_cmd(source: &str) -> ast::SimpleCommand {
-        let program = Parser::new(source).parse_program().unwrap();
-        let cc = program.commands.into_iter().next().unwrap();
-        let (aol, _) = cc.items.into_iter().next().unwrap();
-        let cmd = aol.first.commands.into_iter().next().unwrap();
-        match cmd {
-            Command::Simple(s) => s,
-            _ => panic!("expected simple command"),
-        }
-    }
-
     fn first_compound_cmd(source: &str) -> ast::CompoundCommand {
-        let program = Parser::new(source).parse_program().unwrap();
-        let cc = program.commands.into_iter().next().unwrap();
-        let (aol, _) = cc.items.into_iter().next().unwrap();
-        let cmd = aol.first.commands.into_iter().next().unwrap();
+        let program = Parser::new(source)
+            .parse_program()
+            .expect("source should parse");
+        let cc = program
+            .commands
+            .into_iter()
+            .next()
+            .expect("program should contain at least one CompleteCommand");
+        let (aol, _) = cc
+            .items
+            .into_iter()
+            .next()
+            .expect("CompleteCommand should contain at least one AndOrList");
+        let cmd = aol
+            .first
+            .commands
+            .into_iter()
+            .next()
+            .expect("Pipeline should contain at least one Command");
         match cmd {
             Command::Compound(c, _) => c,
             _ => panic!("expected compound command"),
@@ -1899,13 +1903,13 @@ mod tests {
 
     #[test]
     fn parse_simple_command_captures_line() {
-        let cmd = first_simple_cmd("echo hi\n");
+        let cmd = parse_first_simple("echo hi\n");
         assert_eq!(cmd.line, 1);
     }
 
     #[test]
     fn parse_simple_command_on_third_line() {
-        let cmd = first_simple_cmd("\n\necho hi\n");
+        let cmd = parse_first_simple("\n\necho hi\n");
         assert_eq!(cmd.line, 3);
     }
 

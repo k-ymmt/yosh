@@ -590,31 +590,39 @@ mod tests {
         assert_eq!(rc, 0);
     }
 
+    /// Map a POSIX signal short-name (e.g. `"HUP"`) to its `libc::SIG*`
+    /// constant. Adding a new entry to `SIGNAL_TABLE` only requires
+    /// updating this single table, not both libc-constant tests below.
+    fn name_to_libc(name: &str) -> Option<i32> {
+        Some(match name {
+            "HUP" => libc::SIGHUP,
+            "INT" => libc::SIGINT,
+            "QUIT" => libc::SIGQUIT,
+            "ABRT" => libc::SIGABRT,
+            "KILL" => libc::SIGKILL,
+            "USR1" => libc::SIGUSR1,
+            "USR2" => libc::SIGUSR2,
+            "PIPE" => libc::SIGPIPE,
+            "ALRM" => libc::SIGALRM,
+            "TERM" => libc::SIGTERM,
+            "CHLD" => libc::SIGCHLD,
+            "CONT" => libc::SIGCONT,
+            "STOP" => libc::SIGSTOP,
+            "TSTP" => libc::SIGTSTP,
+            "TTIN" => libc::SIGTTIN,
+            "TTOU" => libc::SIGTTOU,
+            _ => return None,
+        })
+    }
+
     #[test]
     fn test_signal_table_matches_libc_constants() {
         // Portable check: the table must agree with libc on every entry.
         // Pre-fix this would have failed on macOS for USR1/USR2/CHLD/CONT/STOP/TSTP
         // because the table hard-coded Linux signal numbers.
         for &(num, name) in SIGNAL_TABLE {
-            let expected = match name {
-                "HUP" => libc::SIGHUP,
-                "INT" => libc::SIGINT,
-                "QUIT" => libc::SIGQUIT,
-                "ABRT" => libc::SIGABRT,
-                "KILL" => libc::SIGKILL,
-                "USR1" => libc::SIGUSR1,
-                "USR2" => libc::SIGUSR2,
-                "PIPE" => libc::SIGPIPE,
-                "ALRM" => libc::SIGALRM,
-                "TERM" => libc::SIGTERM,
-                "CHLD" => libc::SIGCHLD,
-                "CONT" => libc::SIGCONT,
-                "STOP" => libc::SIGSTOP,
-                "TSTP" => libc::SIGTSTP,
-                "TTIN" => libc::SIGTTIN,
-                "TTOU" => libc::SIGTTOU,
-                other => panic!("unexpected signal name in table: {other}"),
-            };
+            let expected = name_to_libc(name)
+                .unwrap_or_else(|| panic!("unexpected signal name in SIGNAL_TABLE: {name}"));
             assert_eq!(
                 num, expected,
                 "SIGNAL_TABLE entry for {name} has {num}, libc says {expected}"
@@ -625,16 +633,8 @@ mod tests {
     #[test]
     fn test_handled_signals_match_libc_constants() {
         for &(num, name) in HANDLED_SIGNALS {
-            let expected = match name {
-                "HUP" => libc::SIGHUP,
-                "INT" => libc::SIGINT,
-                "QUIT" => libc::SIGQUIT,
-                "ALRM" => libc::SIGALRM,
-                "TERM" => libc::SIGTERM,
-                "USR1" => libc::SIGUSR1,
-                "USR2" => libc::SIGUSR2,
-                other => panic!("unexpected signal name in HANDLED_SIGNALS: {other}"),
-            };
+            let expected = name_to_libc(name)
+                .unwrap_or_else(|| panic!("unexpected signal name in HANDLED_SIGNALS: {name}"));
             assert_eq!(
                 num, expected,
                 "HANDLED_SIGNALS entry for {name} has {num}, libc says {expected}"
