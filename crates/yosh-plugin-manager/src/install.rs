@@ -471,9 +471,13 @@ mod tests {
         }
         let result = parse_install_arg("~/tilde_test_plugin.wasm");
         if let Some(h) = prev_home {
-            unsafe { std::env::set_var("HOME", h); }
+            unsafe {
+                std::env::set_var("HOME", h);
+            }
         } else {
-            unsafe { std::env::remove_var("HOME"); }
+            unsafe {
+                std::env::remove_var("HOME");
+            }
         }
         let t = result.expect("tilde-prefixed local path should parse");
         assert_eq!(t.name, "tilde_test_plugin");

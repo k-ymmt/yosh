@@ -87,8 +87,7 @@ pub fn extract(engine: &Engine, wasm_bytes: &[u8]) -> Result<ExtractedMetadata, 
         .map_err(|e| format!("metadata: compile component: {}", e))?;
 
     let mut linker = Linker::<MetadataCtx>::new(engine);
-    register_limited_wasi(&mut linker)
-        .map_err(|e| format!("metadata: register WASI: {}", e))?;
+    register_limited_wasi(&mut linker).map_err(|e| format!("metadata: register WASI: {}", e))?;
     register_all_deny_imports(&mut linker)
         .map_err(|e| format!("metadata: register deny stubs: {}", e))?;
 
@@ -213,8 +212,7 @@ fn register_all_deny_imports(linker: &mut Linker<MetadataCtx>) -> wasmtime::Resu
     let mut io = linker.instance("yosh:plugin/io@0.1.0")?;
     io.func_wrap(
         "write",
-        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>,
-         (_, _): (IoStream, Vec<u8>)| {
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_, _): (IoStream, Vec<u8>)| {
             Ok::<_, wasmtime::Error>((Err::<(), ErrorCode>(ErrorCode::Denied),))
         },
     )?;

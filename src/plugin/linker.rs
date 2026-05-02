@@ -22,22 +22,18 @@ use wasmtime::Engine;
 use wasmtime::component::Linker;
 
 use yosh_plugin_api::{
-    CAP_COMMANDS_EXEC, CAP_FILES_READ, CAP_FILES_WRITE, CAP_FILESYSTEM, CAP_IO,
-    CAP_VARIABLES_READ, CAP_VARIABLES_WRITE,
+    CAP_COMMANDS_EXEC, CAP_FILES_READ, CAP_FILES_WRITE, CAP_FILESYSTEM, CAP_IO, CAP_VARIABLES_READ,
+    CAP_VARIABLES_WRITE,
 };
 
 use super::host::{
-    HostContext,
-    deny_commands_exec, host_commands_exec,
-    deny_files_append_file, deny_files_create_dir, deny_files_metadata,
-    deny_files_read_dir, deny_files_read_file, deny_files_remove_dir,
-    deny_files_remove_file, deny_files_write_file,
-    deny_filesystem_cwd, deny_filesystem_set_cwd, deny_io_write,
-    deny_variables_export_env, deny_variables_get, deny_variables_set,
-    host_files_append_file, host_files_create_dir, host_files_metadata,
-    host_files_read_dir, host_files_read_file, host_files_remove_dir,
-    host_files_remove_file, host_files_write_file,
-    host_filesystem_cwd, host_filesystem_set_cwd, host_io_write,
+    HostContext, deny_commands_exec, deny_files_append_file, deny_files_create_dir,
+    deny_files_metadata, deny_files_read_dir, deny_files_read_file, deny_files_remove_dir,
+    deny_files_remove_file, deny_files_write_file, deny_filesystem_cwd, deny_filesystem_set_cwd,
+    deny_io_write, deny_variables_export_env, deny_variables_get, deny_variables_set,
+    host_commands_exec, host_files_append_file, host_files_create_dir, host_files_metadata,
+    host_files_read_dir, host_files_read_file, host_files_remove_dir, host_files_remove_file,
+    host_files_write_file, host_filesystem_cwd, host_filesystem_set_cwd, host_io_write,
     host_variables_export_env, host_variables_get, host_variables_set,
 };
 
@@ -48,10 +44,7 @@ fn has(allowed: u32, cap: u32) -> bool {
 
 /// Construct a linker with the limited WASI surface plus the
 /// capability-gated `yosh:plugin/*` host imports.
-pub fn build_linker(
-    engine: &Engine,
-    allowed: u32,
-) -> Result<Linker<HostContext>, wasmtime::Error> {
+pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>, wasmtime::Error> {
     let mut linker = Linker::<HostContext>::new(engine);
 
     // ── WASI Preview 2 (sync) ──────────────────────────────────────────
@@ -133,19 +126,13 @@ pub fn build_linker(
     use super::generated::yosh::plugin::types::IoStream;
     let mut io = linker.instance("yosh:plugin/io@0.1.0")?;
     if has(allowed, CAP_IO) {
-        io.func_wrap(
-            "write",
-            |mut store, (target, data): (IoStream, Vec<u8>)| {
-                Ok((host_io_write(store.data_mut(), target, data),))
-            },
-        )?;
+        io.func_wrap("write", |mut store, (target, data): (IoStream, Vec<u8>)| {
+            Ok((host_io_write(store.data_mut(), target, data),))
+        })?;
     } else {
-        io.func_wrap(
-            "write",
-            |mut store, (target, data): (IoStream, Vec<u8>)| {
-                Ok((deny_io_write(store.data_mut(), target, data),))
-            },
-        )?;
+        io.func_wrap("write", |mut store, (target, data): (IoStream, Vec<u8>)| {
+            Ok((deny_io_write(store.data_mut(), target, data),))
+        })?;
     }
 
     // ── yosh:plugin/files ───────────────────────────────────────────────
@@ -176,37 +163,61 @@ pub fn build_linker(
 
     // Write group — gated by CAP_FILES_WRITE
     if has(allowed, CAP_FILES_WRITE) {
-        files.func_wrap("write-file", |mut store, (path, data): (String, Vec<u8>)| {
-            Ok((host_files_write_file(store.data_mut(), path, data),))
-        })?;
-        files.func_wrap("append-file", |mut store, (path, data): (String, Vec<u8>)| {
-            Ok((host_files_append_file(store.data_mut(), path, data),))
-        })?;
-        files.func_wrap("create-dir", |mut store, (path, recursive): (String, bool)| {
-            Ok((host_files_create_dir(store.data_mut(), path, recursive),))
-        })?;
+        files.func_wrap(
+            "write-file",
+            |mut store, (path, data): (String, Vec<u8>)| {
+                Ok((host_files_write_file(store.data_mut(), path, data),))
+            },
+        )?;
+        files.func_wrap(
+            "append-file",
+            |mut store, (path, data): (String, Vec<u8>)| {
+                Ok((host_files_append_file(store.data_mut(), path, data),))
+            },
+        )?;
+        files.func_wrap(
+            "create-dir",
+            |mut store, (path, recursive): (String, bool)| {
+                Ok((host_files_create_dir(store.data_mut(), path, recursive),))
+            },
+        )?;
         files.func_wrap("remove-file", |mut store, (path,): (String,)| {
             Ok((host_files_remove_file(store.data_mut(), path),))
         })?;
-        files.func_wrap("remove-dir", |mut store, (path, recursive): (String, bool)| {
-            Ok((host_files_remove_dir(store.data_mut(), path, recursive),))
-        })?;
+        files.func_wrap(
+            "remove-dir",
+            |mut store, (path, recursive): (String, bool)| {
+                Ok((host_files_remove_dir(store.data_mut(), path, recursive),))
+            },
+        )?;
     } else {
-        files.func_wrap("write-file", |mut store, (path, data): (String, Vec<u8>)| {
-            Ok((deny_files_write_file(store.data_mut(), path, data),))
-        })?;
-        files.func_wrap("append-file", |mut store, (path, data): (String, Vec<u8>)| {
-            Ok((deny_files_append_file(store.data_mut(), path, data),))
-        })?;
-        files.func_wrap("create-dir", |mut store, (path, recursive): (String, bool)| {
-            Ok((deny_files_create_dir(store.data_mut(), path, recursive),))
-        })?;
+        files.func_wrap(
+            "write-file",
+            |mut store, (path, data): (String, Vec<u8>)| {
+                Ok((deny_files_write_file(store.data_mut(), path, data),))
+            },
+        )?;
+        files.func_wrap(
+            "append-file",
+            |mut store, (path, data): (String, Vec<u8>)| {
+                Ok((deny_files_append_file(store.data_mut(), path, data),))
+            },
+        )?;
+        files.func_wrap(
+            "create-dir",
+            |mut store, (path, recursive): (String, bool)| {
+                Ok((deny_files_create_dir(store.data_mut(), path, recursive),))
+            },
+        )?;
         files.func_wrap("remove-file", |mut store, (path,): (String,)| {
             Ok((deny_files_remove_file(store.data_mut(), path),))
         })?;
-        files.func_wrap("remove-dir", |mut store, (path, recursive): (String, bool)| {
-            Ok((deny_files_remove_dir(store.data_mut(), path, recursive),))
-        })?;
+        files.func_wrap(
+            "remove-dir",
+            |mut store, (path, recursive): (String, bool)| {
+                Ok((deny_files_remove_dir(store.data_mut(), path, recursive),))
+            },
+        )?;
     }
 
     // ── yosh:plugin/commands ───────────────────────────────────────────

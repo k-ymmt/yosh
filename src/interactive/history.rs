@@ -358,7 +358,11 @@ mod tests {
             eprintln!("test_save_returns_err_on_unwritable_parent: skipped (running as root)");
             return;
         }
-        assert!(result.is_err(), "expected Err when parent dir is read-only, got {:?}", result);
+        assert!(
+            result.is_err(),
+            "expected Err when parent dir is read-only, got {:?}",
+            result
+        );
     }
 
     #[test]

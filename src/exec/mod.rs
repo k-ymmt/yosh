@@ -897,10 +897,11 @@ impl Executor {
                     // using, so `fg` can replay it on resume. Must run
                     // before we print anything, since the print itself
                     // happens in whatever termios the child left behind.
-                    let captured = if self.env.mode.is_interactive
-                        && self.env.mode.options.monitor
+                    let captured = if self.env.mode.is_interactive && self.env.mode.options.monitor
                     {
-                        crate::exec::terminal_state::capture_tty_termios().ok().flatten()
+                        crate::exec::terminal_state::capture_tty_termios()
+                            .ok()
+                            .flatten()
                     } else {
                         None
                     };

@@ -31,7 +31,10 @@ fn expand_assignment_builtin_args(
     let mut out = Vec::with_capacity(words.len());
     for word in words {
         match Parser::try_parse_assignment(word) {
-            Some(Assignment { name, value: Some(value_word) }) => {
+            Some(Assignment {
+                name,
+                value: Some(value_word),
+            }) => {
                 let value = crate::expand::expand_word_to_string(env, &value_word)?;
                 out.push(format!("{}={}", name, value));
             }

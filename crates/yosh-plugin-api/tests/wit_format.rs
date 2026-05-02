@@ -28,11 +28,7 @@ fn wit_starts_with_package_declaration() {
     let ver = &first_line[prefix.len()..first_line.len() - suffix.len()];
     let core: &str = ver.split('-').next().expect("non-empty version");
     let parts: Vec<&str> = core.split('.').collect();
-    assert_eq!(
-        parts.len(),
-        3,
-        "version core must be x.y.z, got {ver:?}"
-    );
+    assert_eq!(parts.len(), 3, "version core must be x.y.z, got {ver:?}");
     for p in &parts {
         assert!(
             !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()),

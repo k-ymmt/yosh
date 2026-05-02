@@ -50,7 +50,10 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
     // Fast path: if no field contains an unquoted IFS byte, the state
     // machine would emit each input field unchanged. Return without
     // allocating a new Vec or rebuilding ExpandedFields via `emit`.
-    if fields.iter().all(|f| !needs_splitting(f, &ifs_ws, &ifs_nws)) {
+    if fields
+        .iter()
+        .all(|f| !needs_splitting(f, &ifs_ws, &ifs_nws))
+    {
         return fields;
     }
 
@@ -181,9 +184,11 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
 /// the slow-path state machine would emit each input field unchanged,
 /// so we can return the input Vec as-is without any allocation.
 fn needs_splitting(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8]) -> bool {
-    field.value.bytes().enumerate().any(|(i, b)| {
-        !field.is_quoted(i) && (ifs_ws.contains(&b) || ifs_nws.contains(&b))
-    })
+    field
+        .value
+        .bytes()
+        .enumerate()
+        .any(|(i, b)| !field.is_quoted(i) && (ifs_ws.contains(&b) || ifs_nws.contains(&b)))
 }
 
 /// Append the UTF-8 character starting at byte position `i` in `source` to

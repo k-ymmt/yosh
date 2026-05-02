@@ -43,8 +43,11 @@ mod tests {
     #[test]
     fn capture_tty_termios_returns_none_when_stdin_redirected() {
         let result = capture_tty_termios();
-        assert!(matches!(result, Ok(None)),
-            "expected Ok(None) when stdin is not a TTY, got {:?}", result);
+        assert!(
+            matches!(result, Ok(None)),
+            "expected Ok(None) when stdin is not a TTY, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -52,7 +55,10 @@ mod tests {
         let zeroed: libc::termios = unsafe { std::mem::zeroed() };
         let tmodes: nix::sys::termios::Termios = zeroed.into();
         let result = apply_tty_termios(&tmodes);
-        assert!(result.is_ok(),
-            "expected Ok(()) when stdin is not a TTY, got {:?}", result);
+        assert!(
+            result.is_ok(),
+            "expected Ok(()) when stdin is not a TTY, got {:?}",
+            result
+        );
     }
 }

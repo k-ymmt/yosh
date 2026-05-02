@@ -10,8 +10,7 @@
 
 ## Code Format Drift
 
-- [ ] `src/env/jobs.rs` test asserts use deprecated single-line-broken `assert!(expr,\n    "msg")` style — `test_job_saved_tmodes_defaults_none`, `test_job_table_shell_tmodes_defaults_none`, `test_set_shell_tmodes_stores_value` all trigger `rustfmt --edition 2024 --check` diffs because rustfmt prefers the multi-line trailing-comma form. Pre-existing across the file; would block any future rustfmt CI gate. Reformat to the canonical multi-line form when next touching these tests (`src/env/jobs.rs`).
-- [ ] Project-wide `cargo fmt --check` drift — many files trigger rustfmt diffs because of manual column alignment or single-line `assert!`/`criterion_group!`/`CacheKey::for_runtime` calls that rustfmt rewrites. Affected sites observed during 2026-04-29 plugin commands:exec branch wrap-up: `benches/plugin_bench.rs:93` (`criterion_group!` body), `crates/yosh-plugin-api/src/lib.rs:6+` (capability constant alignment — `pub const CAP_VARIABLES_READ:  u32 = 0x01;` style), `crates/yosh-plugin-manager/src/{config,install,update,sync}.rs`, `src/exec/mod.rs:898`, `src/lexer/mod.rs:606,622`, `src/parser/mod.rs:1041,1493,1500,1564,1571,1606`. Pre-existing; CI gate would surface them all at once. Reformat in a dedicated commit when ready to enforce.
+- [ ] Add `cargo fmt --all -- --check` step to a GitHub Actions workflow so the workspace stays drift-free after the 2026-05-03 sweep. Workspace is currently fmt-clean but no CI enforcement exists; new contributions can re-introduce drift silently. Pair with `cargo clippy --all-targets -- -D warnings` if a lint gate is also wanted (`.github/workflows/`).
 
 ## History: Known Limitations
 

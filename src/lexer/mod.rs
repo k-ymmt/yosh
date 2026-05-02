@@ -606,7 +606,9 @@ mod tests {
             Token::Word(w) => &w.parts,
             other => panic!("expected Word, got {:?}", other),
         };
-        let has_escaped = parts.iter().any(|p| matches!(p, WordPart::EscapedLiteral(s) if s == "~"));
+        let has_escaped = parts
+            .iter()
+            .any(|p| matches!(p, WordPart::EscapedLiteral(s) if s == "~"));
         assert!(
             has_escaped,
             "expected EscapedLiteral(~) in parts, got {:?}",
@@ -622,7 +624,12 @@ mod tests {
             Token::Word(w) => &w.parts,
             other => panic!("expected Word, got {:?}", other),
         };
-        assert_eq!(parts.len(), 1, "expected single merged Literal, got {:?}", parts);
+        assert_eq!(
+            parts.len(),
+            1,
+            "expected single merged Literal, got {:?}",
+            parts
+        );
         match &parts[0] {
             WordPart::Literal(s) => assert_eq!(s, "x=foobar"),
             other => panic!("expected Literal, got {:?}", other),

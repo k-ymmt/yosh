@@ -185,8 +185,7 @@ pub fn validate_cwasm(
     check_filesystem_trust(cwasm_path)?;
 
     // Condition 4: sidecar key tuple match.
-    let meta = SidecarMeta::read_from(sidecar_path)
-        .map_err(CacheRejection::SidecarUnreadable)?;
+    let meta = SidecarMeta::read_from(sidecar_path).map_err(CacheRejection::SidecarUnreadable)?;
     if meta.schema != SidecarMeta::SCHEMA_VERSION {
         return Err(CacheRejection::SidecarUnreadable(format!(
             "schema {} != {}",
@@ -381,6 +380,9 @@ mod tests {
         let b = engine_config_hash("async=false;fuel=false");
         let c = engine_config_hash("async=true;fuel=false");
         assert_eq!(a, b, "same fingerprint must hash to the same digest");
-        assert_ne!(a, c, "different fingerprints must produce different digests");
+        assert_ne!(
+            a, c,
+            "different fingerprints must produce different digests"
+        );
     }
 }

@@ -107,7 +107,10 @@ pub fn update(
             Ok(latest) => match set_plugin_version(&mut doc, &decl.name, &latest) {
                 Ok(()) => {
                     any_updated = true;
-                    UpdateStatus::Updated { from: current, to: latest }
+                    UpdateStatus::Updated {
+                        from: current,
+                        to: latest,
+                    }
                 }
                 Err(e) => UpdateStatus::Failed(e),
             },
@@ -125,7 +128,10 @@ pub fn update(
             .map_err(|e| format!("write {}: {}", config_path.display(), e))?;
     }
 
-    Ok(UpdateOutcome { results, any_updated })
+    Ok(UpdateOutcome {
+        results,
+        any_updated,
+    })
 }
 
 /// Pure TOML helper: locate the `[[plugin]]` table whose `name` equals

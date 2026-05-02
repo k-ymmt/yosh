@@ -34,25 +34,25 @@ impl CommandPattern {
         }
 
         if body.contains(":*") {
-            return Err("`:*` may only appear as a trailing suffix on the whole pattern".to_string());
+            return Err(
+                "`:*` may only appear as a trailing suffix on the whole pattern".to_string(),
+            );
         }
 
-        let tokens: Vec<String> = body
-            .split_whitespace()
-            .map(|t| t.to_string())
-            .collect();
+        let tokens: Vec<String> = body.split_whitespace().map(|t| t.to_string()).collect();
 
-        Ok(CommandPattern { tokens, has_glob_suffix })
+        Ok(CommandPattern {
+            tokens,
+            has_glob_suffix,
+        })
     }
 
     /// Match this pattern against an argv slice (`[program, arg1, arg2, ...]`).
     pub fn matches(&self, argv: &[String]) -> bool {
         if self.has_glob_suffix {
-            argv.len() >= self.tokens.len()
-                && self.tokens.iter().zip(argv).all(|(p, a)| p == a)
+            argv.len() >= self.tokens.len() && self.tokens.iter().zip(argv).all(|(p, a)| p == a)
         } else {
-            argv.len() == self.tokens.len()
-                && self.tokens.iter().zip(argv).all(|(p, a)| p == a)
+            argv.len() == self.tokens.len() && self.tokens.iter().zip(argv).all(|(p, a)| p == a)
         }
     }
 }
@@ -96,18 +96,18 @@ mod tests {
     #[test]
     fn match_glob_suffix_many_extra() {
         let p = CommandPattern::parse("git:*").unwrap();
-        assert!(p.matches(&[
-            "git".to_string(),
-            "log".to_string(),
-            "-p".to_string(),
-        ]));
+        assert!(p.matches(&["git".to_string(), "log".to_string(), "-p".to_string(),]));
     }
 
     #[test]
     fn match_exact_requires_equal_length() {
         let p = CommandPattern::parse("git status").unwrap();
         assert!(p.matches(&["git".to_string(), "status".to_string()]));
-        assert!(!p.matches(&["git".to_string(), "status".to_string(), "--porcelain".to_string()]));
+        assert!(!p.matches(&[
+            "git".to_string(),
+            "status".to_string(),
+            "--porcelain".to_string()
+        ]));
         assert!(!p.matches(&["git".to_string()]));
     }
 
@@ -128,7 +128,11 @@ mod tests {
     fn match_glob_suffix_subcommand_lock() {
         let p = CommandPattern::parse("git status:*").unwrap();
         assert!(p.matches(&["git".to_string(), "status".to_string()]));
-        assert!(p.matches(&["git".to_string(), "status".to_string(), "--porcelain".to_string()]));
+        assert!(p.matches(&[
+            "git".to_string(),
+            "status".to_string(),
+            "--porcelain".to_string()
+        ]));
         assert!(!p.matches(&["git".to_string(), "log".to_string()]));
     }
 }

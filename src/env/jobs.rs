@@ -512,15 +512,19 @@ mod tests {
         let mut table = JobTable::default();
         let id = table.add_job(pid(42), vec![pid(42)], "cmd", false);
         let job = table.get(id).expect("job should exist");
-        assert!(job.saved_tmodes().is_none(),
-            "saved_tmodes() should default to None on new job");
+        assert!(
+            job.saved_tmodes().is_none(),
+            "saved_tmodes() should default to None on new job"
+        );
     }
 
     #[test]
     fn test_job_table_shell_tmodes_defaults_none() {
         let table = JobTable::default();
-        assert!(table.shell_tmodes().is_none(),
-            "shell_tmodes should default to None on new JobTable");
+        assert!(
+            table.shell_tmodes().is_none(),
+            "shell_tmodes should default to None on new JobTable"
+        );
     }
 
     #[test]
@@ -529,8 +533,10 @@ mod tests {
         let zeroed: libc::termios = unsafe { std::mem::zeroed() };
         let t: nix::sys::termios::Termios = zeroed.into();
         table.set_shell_tmodes(t);
-        assert!(table.shell_tmodes().is_some(),
-            "shell_tmodes should hold the value after set_shell_tmodes");
+        assert!(
+            table.shell_tmodes().is_some(),
+            "shell_tmodes should hold the value after set_shell_tmodes"
+        );
     }
 
     // -----------------------------------------------------------------------

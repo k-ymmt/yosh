@@ -95,7 +95,7 @@ impl Lexer {
                         if self.peek_byte() == b'\n' {
                             self.advance(); // consume '\'
                             self.advance(); // consume '\n'
-                            // loop continues with `literal` still accumulating
+                        // loop continues with `literal` still accumulating
                         } else {
                             if !literal.is_empty() {
                                 parts.push(WordPart::Literal(std::mem::take(&mut literal)));

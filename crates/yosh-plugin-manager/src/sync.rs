@@ -236,7 +236,11 @@ fn sync_one(
             let cache_dir = cache_dir_for(&decl.name);
             let pre = precompile::precompile(&dest_path, &cache_dir, precompile_engine)
                 .map_err(|e| format!("precompile: {}", e))?;
-            let cwasm_rel = format!("~/.yosh/plugins/{}/{}.cwasm", decl.name, asset_stem(&asset_name));
+            let cwasm_rel = format!(
+                "~/.yosh/plugins/{}/{}.cwasm",
+                decl.name,
+                asset_stem(&asset_name)
+            );
             // Use the literal precompile output path for the lock entry
             // (which encodes the absolute path) so the host can find it
             // verbatim. If HOME is set, use the ~-prefixed form for
@@ -282,15 +286,13 @@ fn sync_one(
             // without the cached fields so the host can still try to load
             // it the slow path. Tests exercise the no-metadata case with
             // throwaway "fake binary" content.
-            let (cwasm_fields, meta_fields): (
-                Option<PrecompileOutput>,
-                Option<ExtractedMetadata>,
-            ) = match (pre_result, metadata_result) {
-                (Ok(pre), Ok(meta)) => (Some(pre), Some(meta)),
-                (Ok(pre), Err(_)) => (Some(pre), None),
-                (Err(_), Ok(meta)) => (None, Some(meta)),
-                (Err(_), Err(_)) => (None, None),
-            };
+            let (cwasm_fields, meta_fields): (Option<PrecompileOutput>, Option<ExtractedMetadata>) =
+                match (pre_result, metadata_result) {
+                    (Ok(pre), Ok(meta)) => (Some(pre), Some(meta)),
+                    (Ok(pre), Err(_)) => (Some(pre), None),
+                    (Err(_), Ok(meta)) => (None, Some(meta)),
+                    (Err(_), Err(_)) => (None, None),
+                };
 
             let cwasm_path = cwasm_fields.as_ref().and_then(|p| tildify(&p.cwasm_path));
             let wasmtime_version = cwasm_fields
@@ -305,9 +307,7 @@ fn sync_one(
             let required_capabilities = meta_fields
                 .as_ref()
                 .map(|m| m.required_capabilities.clone());
-            let implemented_hooks = meta_fields
-                .as_ref()
-                .map(|m| m.implemented_hooks.clone());
+            let implemented_hooks = meta_fields.as_ref().map(|m| m.implemented_hooks.clone());
 
             Ok(LockEntry {
                 name: decl.name.clone(),
@@ -340,8 +340,7 @@ fn asset_stem(asset_name: &str) -> &str {
 fn tildify(p: &std::path::Path) -> Option<String> {
     let home = std::env::var("HOME").ok()?;
     let s = p.to_string_lossy();
-    s.strip_prefix(&home)
-        .map(|rest| format!("~{}", rest))
+    s.strip_prefix(&home).map(|rest| format!("~{}", rest))
 }
 
 #[cfg(test)]

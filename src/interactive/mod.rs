@@ -314,10 +314,7 @@ impl Repl {
                 .history
                 .save(std::path::Path::new(&histfile), histfilesize)
             {
-                eprintln!(
-                    "yosh: warning: cannot save history to {}: {}",
-                    histfile, e
-                );
+                eprintln!("yosh: warning: cannot save history to {}: {}", histfile, e);
             }
         }
 

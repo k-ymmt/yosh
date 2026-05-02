@@ -1041,9 +1041,7 @@ pub(crate) fn split_tildes_in_literal(
             push_literal(&mut out, ":");
         }
         let eligible = if i == 0 { start_at_boundary } else { true };
-        if eligible
-            && let Some(rest_after_tilde) = segment.strip_prefix('~')
-        {
+        if eligible && let Some(rest_after_tilde) = segment.strip_prefix('~') {
             let (user, tail) = match rest_after_tilde.find('/') {
                 Some(p) => (&rest_after_tilde[..p], &rest_after_tilde[p..]),
                 None => (rest_after_tilde, ""),
@@ -1496,12 +1494,18 @@ mod tests {
 
     #[test]
     fn split_no_tilde_returns_single_literal() {
-        assert_eq!(split_tildes_in_literal("foo/bar", true).0, vec![lit("foo/bar")]);
+        assert_eq!(
+            split_tildes_in_literal("foo/bar", true).0,
+            vec![lit("foo/bar")]
+        );
     }
 
     #[test]
     fn split_leading_tilde_only() {
-        assert_eq!(split_tildes_in_literal("~", true).0, vec![WordPart::Tilde(None)]);
+        assert_eq!(
+            split_tildes_in_literal("~", true).0,
+            vec![WordPart::Tilde(None)]
+        );
     }
 
     #[test]
@@ -1567,12 +1571,18 @@ mod tests {
 
     #[test]
     fn split_mid_word_tilde_stays_literal() {
-        assert_eq!(split_tildes_in_literal("foo~/bin", true).0, vec![lit("foo~/bin")]);
+        assert_eq!(
+            split_tildes_in_literal("foo~/bin", true).0,
+            vec![lit("foo~/bin")]
+        );
     }
 
     #[test]
     fn split_double_tilde_invalid_user() {
-        assert_eq!(split_tildes_in_literal("~~/bin", true).0, vec![lit("~~/bin")]);
+        assert_eq!(
+            split_tildes_in_literal("~~/bin", true).0,
+            vec![lit("~~/bin")]
+        );
     }
 
     #[test]
@@ -1609,10 +1619,7 @@ mod tests {
 
     #[test]
     fn split_returns_ends_with_colon_flag() {
-        assert_eq!(
-            split_tildes_in_literal("a:", true),
-            (vec![lit("a:")], true)
-        );
+        assert_eq!(split_tildes_in_literal("a:", true), (vec![lit("a:")], true));
     }
 
     // ── try_parse_assignment integration ────────────────────────
@@ -2025,8 +2032,7 @@ mod tests {
             .parse_program()
             .expect_err("';;' must not parse as a program");
         assert!(
-            err.message.contains("unexpected token")
-                || err.message.contains("syntax error"),
+            err.message.contains("unexpected token") || err.message.contains("syntax error"),
             "unexpected message: {}",
             err.message
         );

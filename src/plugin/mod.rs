@@ -22,14 +22,14 @@
 
 pub mod cache;
 pub mod config;
-pub mod pattern;
 mod host;
 mod linker;
+pub mod pattern;
 
 use std::path::Path;
 
-use wasmtime::{Engine, Store};
 use wasmtime::component::Component;
+use wasmtime::{Engine, Store};
 
 use yosh_plugin_api::{
     CAP_ALL, CAP_HOOK_ON_CD, CAP_HOOK_POST_EXEC, CAP_HOOK_PRE_EXEC, CAP_HOOK_PRE_PROMPT,
@@ -54,8 +54,8 @@ mod generated {
     });
 }
 
-use self::generated::{PluginWorld, PluginWorldPre};
 use self::generated::yosh::plugin::types::{HookName, PluginInfo};
+use self::generated::{PluginWorld, PluginWorldPre};
 
 // ── Public types ────────────────────────────────────────────────────────
 
@@ -188,8 +188,7 @@ impl PluginManager {
         allowed_commands: &[String],
     ) -> Result<(), String> {
         // 1. Read the wasm bytes (needed for SHA verify and/or in-memory compile).
-        let wasm_bytes = std::fs::read(path)
-            .map_err(|e| format!("{}: {}", path.display(), e))?;
+        let wasm_bytes = std::fs::read(path).map_err(|e| format!("{}: {}", path.display(), e))?;
 
         // 2. If the lockfile pinned a SHA, verify the on-disk wasm matches
         //    BEFORE trusting any cwasm. Per spec §5 step 1: this check is
@@ -232,10 +231,9 @@ impl PluginManager {
                         // for THIS wasm, on this same host with this same
                         // wasmtime version. That is the trust boundary
                         // Component::deserialize requires.
-                        unsafe { Component::deserialize(&self.engine, &cwasm_bytes) }
-                            .map_err(|e| {
-                                format!("{}: cwasm deserialize failed: {}", cwasm.display(), e)
-                            })?
+                        unsafe { Component::deserialize(&self.engine, &cwasm_bytes) }.map_err(
+                            |e| format!("{}: cwasm deserialize failed: {}", cwasm.display(), e),
+                        )?
                     }
                     Err(reason) => {
                         eprintln!(
@@ -260,7 +258,12 @@ impl PluginManager {
             .iter()
             .map(|s| {
                 self::pattern::CommandPattern::parse(s).map_err(|e| {
-                    format!("{}: invalid allowed_commands pattern '{}': {}", path.display(), s, e)
+                    format!(
+                        "{}: invalid allowed_commands pattern '{}': {}",
+                        path.display(),
+                        s,
+                        e
+                    )
                 })
             })
             .collect::<Result<_, _>>()?;
@@ -320,10 +323,8 @@ impl PluginManager {
         )
         .map_err(|e| format!("{}: real bindings pre-init: {}", path.display(), e))?;
 
-        let mut host_ctx = HostContext::new_for_plugin(
-            plugin_info.name.clone(),
-            effective_capabilities,
-        );
+        let mut host_ctx =
+            HostContext::new_for_plugin(plugin_info.name.clone(), effective_capabilities);
         host_ctx.allowed_commands = parsed_allowed_commands;
         let mut store = Store::new(&self.engine, host_ctx);
         let bindings = real_pre
@@ -338,7 +339,10 @@ impl PluginManager {
         match on_load_result {
             Ok(Ok(())) => {}
             Ok(Err(msg)) => {
-                return Err(format!("{}: on_load returned error: {}", plugin_info.name, msg));
+                return Err(format!(
+                    "{}: on_load returned error: {}",
+                    plugin_info.name, msg
+                ));
             }
             Err(e) => {
                 return Err(format!("{}: on_load trap: {}", plugin_info.name, e));
@@ -361,12 +365,7 @@ impl PluginManager {
     /// Dispatch a command name to the plugin layer.
     ///
     /// See `PluginExec` for the three-valued return semantics.
-    pub fn exec_command(
-        &mut self,
-        env: &mut ShellEnv,
-        name: &str,
-        args: &[String],
-    ) -> PluginExec {
+    pub fn exec_command(&mut self, env: &mut ShellEnv, name: &str, args: &[String]) -> PluginExec {
         let Some(idx) = self.plugins.iter().position(|p| p.provides_command(name)) else {
             return PluginExec::NotHandled;
         };
@@ -638,7 +637,14 @@ pub mod test_helpers {
         expected_key: &super::cache::CacheKey,
         allowed_commands: &[String],
     ) -> Result<(), String> {
-        manager.load_one(path, env, Some(caps), Some(cwasm_path), Some(expected_key), allowed_commands)
+        manager.load_one(
+            path,
+            env,
+            Some(caps),
+            Some(cwasm_path),
+            Some(expected_key),
+            allowed_commands,
+        )
     }
 
     /// Returns true if the most-recently-loaded plugin's `Store` has a

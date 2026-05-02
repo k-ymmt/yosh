@@ -14,8 +14,8 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::env::ShellEnv;
 
-use super::generated::yosh::plugin::types::{ErrorCode, IoStream};
 use super::generated::yosh::plugin::commands::ExecOutput;
+use super::generated::yosh::plugin::types::{ErrorCode, IoStream};
 use super::pattern::CommandPattern;
 
 /// Per-plugin store data. Carries:
@@ -128,9 +128,7 @@ pub(super) fn host_variables_set(
     let Some(env) = ctx.env_mut() else {
         return Err(ErrorCode::Denied);
     };
-    env.vars
-        .set(&name, &value)
-        .map_err(|_| ErrorCode::IoFailed)
+    env.vars.set(&name, &value).map_err(|_| ErrorCode::IoFailed)
 }
 
 pub(super) fn deny_variables_set(
@@ -358,10 +356,7 @@ pub(super) fn host_files_create_dir(
     result.map_err(|_| ErrorCode::IoFailed)
 }
 
-pub(super) fn host_files_remove_file(
-    ctx: &mut HostContext,
-    path: String,
-) -> Result<(), ErrorCode> {
+pub(super) fn host_files_remove_file(ctx: &mut HostContext, path: String) -> Result<(), ErrorCode> {
     if ctx.env_mut().is_none() {
         return Err(ErrorCode::Denied);
     }
@@ -899,12 +894,8 @@ mod tests {
     fn host_commands_exec_runs_when_pattern_matches() {
         let mut env = ShellEnv::new("yosh", vec![]);
         let mut ctx = ctx_with_allowed(&mut env, &["/bin/echo:*"]);
-        let result = host_commands_exec(
-            &mut ctx,
-            "/bin/echo".into(),
-            vec!["hello".into()],
-        )
-        .expect("echo should succeed");
+        let result = host_commands_exec(&mut ctx, "/bin/echo".into(), vec!["hello".into()])
+            .expect("echo should succeed");
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, b"hello\n");
         assert!(result.stderr.is_empty());
@@ -955,11 +946,7 @@ mod tests {
     fn host_commands_exec_returns_not_found_for_missing_binary() {
         let mut env = ShellEnv::new("yosh", vec![]);
         let mut ctx = ctx_with_allowed(&mut env, &["/no/such/binary-xyz:*"]);
-        let result = host_commands_exec(
-            &mut ctx,
-            "/no/such/binary-xyz".into(),
-            vec![],
-        );
+        let result = host_commands_exec(&mut ctx, "/no/such/binary-xyz".into(), vec![]);
         assert!(matches!(result, Err(ErrorCode::NotFound)));
     }
 
@@ -968,11 +955,7 @@ mod tests {
         let mut env = ShellEnv::new("yosh", vec![]);
         let mut ctx = ctx_with_allowed(&mut env, &["/bin/sleep:*"]);
         let start = std::time::Instant::now();
-        let result = host_commands_exec(
-            &mut ctx,
-            "/bin/sleep".into(),
-            vec!["5".into()],
-        );
+        let result = host_commands_exec(&mut ctx, "/bin/sleep".into(), vec!["5".into()]);
         let elapsed = start.elapsed();
         assert!(matches!(result, Err(ErrorCode::Timeout)));
         // Hard cap is 1000ms + 100ms grace + a generous slack for thread
@@ -999,11 +982,7 @@ mod tests {
         let mut env = ShellEnv::new("yosh", vec![]);
         let mut ctx = ctx_with_allowed(&mut env, &["/bin/sleep:*"]);
         let start = std::time::Instant::now();
-        let result = host_commands_exec(
-            &mut ctx,
-            "/bin/sleep".into(),
-            vec!["5".into()],
-        );
+        let result = host_commands_exec(&mut ctx, "/bin/sleep".into(), vec!["5".into()]);
         let elapsed = start.elapsed();
         assert!(matches!(result, Err(ErrorCode::Timeout)));
         // Lower bound: SIGTERM only fires after the 1000ms deadline.

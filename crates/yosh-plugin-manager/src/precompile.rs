@@ -173,8 +173,8 @@ pub fn precompile(
     cache_dir: &Path,
     engine: &wasmtime::Engine,
 ) -> Result<PrecompileOutput, String> {
-    let wasm_bytes = std::fs::read(wasm_path)
-        .map_err(|e| format!("read {}: {}", wasm_path.display(), e))?;
+    let wasm_bytes =
+        std::fs::read(wasm_path).map_err(|e| format!("read {}: {}", wasm_path.display(), e))?;
     let wasm_sha = sha256_hex(&wasm_bytes);
 
     // Ensure the cache directory exists with the right permissions.
@@ -211,7 +211,8 @@ pub fn precompile(
 /// Create the cache directory if missing and ensure mode 0700 (Unix only;
 /// other platforms fall back to existence check).
 fn ensure_cache_dir(dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("create cache dir {}: {}", dir.display(), e))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("create cache dir {}: {}", dir.display(), e))?;
     set_mode(dir, 0o700)?;
     Ok(())
 }

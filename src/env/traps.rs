@@ -94,12 +94,10 @@ impl TrapStore {
 
     /// Remove/reset a trap with an injected ignored-on-entry predicate.
     /// Silent no-op for ignored-on-entry signals per POSIX §2.11.
-    pub(crate) fn remove_trap_with(
-        &mut self,
-        condition: &str,
-        is_ignored: &dyn Fn(i32) -> bool,
-    ) {
-        let Some(num) = Self::signal_name_to_number(condition) else { return; };
+    pub(crate) fn remove_trap_with(&mut self, condition: &str, is_ignored: &dyn Fn(i32) -> bool) {
+        let Some(num) = Self::signal_name_to_number(condition) else {
+            return;
+        };
         if num == 0 {
             self.exit_trap = None;
             return;
@@ -272,7 +270,11 @@ mod tests {
             TrapAction::Command("echo caught".to_string()),
             &is_ignored,
         );
-        assert!(result.is_ok(), "silent-ignore must return Ok(()), got {:?}", result);
+        assert!(
+            result.is_ok(),
+            "silent-ignore must return Ok(()), got {:?}",
+            result
+        );
         assert!(
             store.signal_traps.is_empty(),
             "signal_traps should remain empty when set on ignored-on-entry; got {:?}",

@@ -93,7 +93,8 @@ fn bench_hook_pre_exec(c: &mut Criterion) {
     });
 }
 
-criterion_group!(plugin_benches,
+criterion_group!(
+    plugin_benches,
     bench_exec_no_host_call,
     bench_exec_with_var_get,
     bench_hook_pre_exec,

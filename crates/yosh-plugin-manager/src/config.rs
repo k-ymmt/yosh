@@ -285,7 +285,11 @@ asset = "lib{{name}}-{{os}}-{{arch}}.{{ext}}"
         )
         .unwrap();
         let err = load_config(f.path()).unwrap_err();
-        assert!(err.contains("v0.2.0"), "expected migration message: {}", err);
+        assert!(
+            err.contains("v0.2.0"),
+            "expected migration message: {}",
+            err
+        );
     }
 
     #[test]
