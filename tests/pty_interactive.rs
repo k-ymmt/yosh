@@ -136,12 +136,17 @@ struct TimeoutGuard<'a> {
 }
 
 impl<'a> TimeoutGuard<'a> {
-    fn new(session: &'a mut OsSession, temporary: Duration) -> Self {
-        // expectrl 0.8 doesn't expose a getter for the current timeout, so
-        // we trust that callers use this only after spawn_yosh() set TIMEOUT.
-        let saved = TIMEOUT;
+    /// Install `temporary` as the session's expect timeout, restoring
+    /// `prior` on drop. expectrl 0.8 has no getter for the current
+    /// timeout, so the caller must pass it explicitly — this prevents
+    /// a future test from silently restoring the wrong value if it has
+    /// already changed the timeout away from `TIMEOUT`.
+    fn new(session: &'a mut OsSession, temporary: Duration, prior: Duration) -> Self {
         session.set_expect_timeout(Some(temporary));
-        Self { session, saved }
+        Self {
+            session,
+            saved: prior,
+        }
     }
 }
 
@@ -163,9 +168,13 @@ impl<'a> Drop for TimeoutGuard<'a> {
 /// The regex lower-bound `0,` is intentional: we want "up to 8KB or
 /// whatever is there," not "at least one character." Changing it to
 /// `1,` reintroduces a hang when the buffer is already empty.
+///
+/// `PTY_DRAIN_MAX_BYTES` is the regex's *upper bound* on a single
+/// expect call — the actual drain depth is bounded by the 300 ms
+/// timeout window in `drain_pty_buffer`, not by this constant.
 const PTY_DRAIN_MAX_BYTES: usize = 8192;
 fn drain_pty_buffer(session: &mut OsSession) {
-    let guard = TimeoutGuard::new(session, Duration::from_millis(300));
+    let guard = TimeoutGuard::new(session, Duration::from_millis(300), TIMEOUT);
     // Two back-to-back reads: the first consumes what's currently
     // buffered; the second catches bytes that arrived during the first
     // read's brief timeout window.
