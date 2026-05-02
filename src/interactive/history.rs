@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
@@ -54,15 +55,15 @@ impl History {
             return;
         }
 
-        // ignorespace: skip lines starting with a space
-        if (histcontrol == "ignorespace" || histcontrol == "ignoreboth") && line.starts_with(' ') {
+        let tokens: HashSet<&str> = histcontrol.split(':').collect();
+        let ignore_space = tokens.contains("ignorespace") || tokens.contains("ignoreboth");
+        let ignore_dups = tokens.contains("ignoredups") || tokens.contains("ignoreboth");
+
+        if ignore_space && line.starts_with(' ') {
             return;
         }
 
-        // ignoredups: skip if same as last entry
-        if (histcontrol == "ignoredups" || histcontrol == "ignoreboth")
-            && self.entries.last().map(|s| s.as_str()) == Some(line)
-        {
+        if ignore_dups && self.entries.last().map(|s| s.as_str()) == Some(line) {
             return;
         }
 
@@ -181,6 +182,44 @@ mod tests {
         h.add(" secret", 500, "ignoreboth");
         h.add("pwd", 500, "ignoreboth");
         assert_eq!(h.entries(), &["ls", "pwd"]);
+    }
+
+    #[test]
+    fn test_add_histcontrol_colon_separated_dups_and_space() {
+        let mut h = History::new();
+        h.add("ls", 500, "ignoredups:ignorespace");
+        h.add("ls", 500, "ignoredups:ignorespace");
+        h.add(" secret", 500, "ignoredups:ignorespace");
+        h.add("pwd", 500, "ignoredups:ignorespace");
+        assert_eq!(h.entries(), &["ls", "pwd"]);
+    }
+
+    #[test]
+    fn test_add_histcontrol_colon_separated_reverse_order() {
+        let mut h = History::new();
+        h.add("ls", 500, "ignorespace:ignoredups");
+        h.add("ls", 500, "ignorespace:ignoredups");
+        h.add(" secret", 500, "ignorespace:ignoredups");
+        h.add("pwd", 500, "ignorespace:ignoredups");
+        assert_eq!(h.entries(), &["ls", "pwd"]);
+    }
+
+    #[test]
+    fn test_add_histcontrol_unknown_token_ignored() {
+        let mut h = History::new();
+        h.add("ls", 500, "foo:ignoredups");
+        h.add("ls", 500, "foo:ignoredups");
+        h.add(" visible", 500, "foo:ignoredups");
+        assert_eq!(h.entries(), &["ls", " visible"]);
+    }
+
+    #[test]
+    fn test_add_histcontrol_only_unknown_tokens() {
+        let mut h = History::new();
+        h.add("ls", 500, "foo:bar");
+        h.add("ls", 500, "foo:bar");
+        h.add(" leading_space", 500, "foo:bar");
+        assert_eq!(h.entries(), &["ls", "ls", " leading_space"]);
     }
 
     #[test]
