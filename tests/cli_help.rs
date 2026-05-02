@@ -100,3 +100,47 @@ fn help_clicolor_force_zero_does_not_force() {
         "CLICOLOR_FORCE=0 should not force ANSI escapes"
     );
 }
+
+#[test]
+fn help_clicolor_zero_disables_colors() {
+    let output = yosh_bin()
+        .arg("--help")
+        .env("CLICOLOR", "0")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains('\x1b'),
+        "CLICOLOR=0 should disable ANSI escapes"
+    );
+}
+
+#[test]
+fn help_clicolor_force_overrides_clicolor_zero() {
+    let output = yosh_bin()
+        .arg("--help")
+        .env("CLICOLOR_FORCE", "1")
+        .env("CLICOLOR", "0")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains('\x1b'),
+        "CLICOLOR_FORCE=1 should override CLICOLOR=0 (force wins, matching bat/git)"
+    );
+}
+
+#[test]
+fn help_no_color_overrides_clicolor() {
+    let output = yosh_bin()
+        .arg("--help")
+        .env("NO_COLOR", "1")
+        .env("CLICOLOR", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains('\x1b'),
+        "NO_COLOR should disable colors even with CLICOLOR=1"
+    );
+}

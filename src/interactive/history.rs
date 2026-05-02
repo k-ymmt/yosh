@@ -127,6 +127,14 @@ impl History {
         }
     }
 
+    /// Persist history entries to `path`, keeping at most `histfilesize` most-recent
+    /// entries (`0` means keep all).
+    ///
+    /// Errors from `create_dir_all`, `File::create`, and per-entry `writeln!` are
+    /// propagated. On a partial-write failure the file is left truncated to
+    /// whatever entries were written before the error; the caller surfaces the
+    /// error (currently as a `yosh: warning:` at shell exit, without affecting
+    /// the exit code).
     pub fn save(&self, path: &Path, histfilesize: usize) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
