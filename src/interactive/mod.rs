@@ -54,8 +54,8 @@ impl Repl {
         //
         // The `is_interactive && monitor` check is documentation-only at
         // this site (both flags were set unconditionally above), but
-        // mirrors the symmetric guard inside `wait_for_foreground_job`'s
-        // `restore_shell_termios_if_interactive`, where the check IS
+        // mirrors the symmetric guard in `restore_shell_termios_if_interactive`,
+        // which runs after each foreground wait — there the check IS
         // load-bearing. Keep both in sync so a future "simplification"
         // does not drop one and leave the other dangling.
         if executor.env.mode.is_interactive && executor.env.mode.options.monitor {

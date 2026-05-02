@@ -807,11 +807,12 @@ impl Executor {
     /// Apply the per-job state transition for `WaitStatus::Stopped`.
     ///
     /// Decides only on `(job_id, sig, captured)`: writes the Stopped
-    /// status, clears the foreground flag, and stores the captured
-    /// termios — including `None`, which intentionally clears any
-    /// previously saved snapshot. Preserves glibc-manual semantics across
-    /// mid-session `exec 0</dev/null`: a stale snapshot from a TTY the
-    /// shell no longer drives must not survive into a later `fg`.
+    /// status, resets the `notified` flag so the change is reported,
+    /// clears the foreground flag, and stores the captured termios —
+    /// including `None`, which intentionally clears any previously saved
+    /// snapshot. Preserves glibc-manual semantics across mid-session
+    /// `exec 0</dev/null`: a stale snapshot from a TTY the shell no
+    /// longer drives must not survive into a later `fg`.
     ///
     /// Silently no-ops if `job_id` is no longer in the table; the caller
     /// (`wait_for_foreground_job`) already tolerates that race.
@@ -824,6 +825,7 @@ impl Executor {
         use crate::env::jobs::JobStatus;
         if let Some(job) = self.env.process.jobs.get_mut(job_id) {
             job.status = JobStatus::Stopped(sig);
+            job.notified = false;
             job.foreground = false;
             job.set_saved_tmodes(captured);
         }
@@ -889,11 +891,7 @@ impl Executor {
                     last_status = code;
                     process_statuses.push((pid, code));
                 }
-                Ok(WaitStatus::Stopped(pid, sig)) => {
-                    self.env
-                        .process
-                        .jobs
-                        .update_status(pid, JobStatus::Stopped(sig as i32));
+                Ok(WaitStatus::Stopped(_pid, sig)) => {
                     // Snapshot the terminal state the stopped child was
                     // using, so `fg` can replay it on resume. Must run
                     // before we print anything, since the print itself
