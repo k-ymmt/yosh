@@ -164,9 +164,11 @@ pub fn get_var(name: &str) -> Result<Option<String>, ErrorCode> {
 
 /// Set a shell variable.
 ///
-/// Equivalent to `name=value` at the shell prompt. The variable is
-/// not exported to spawned-child environments; use [`export_var`]
-/// for that.
+/// Equivalent to `name=value` at the shell prompt: new variables are
+/// created unexported, while updates to an already-exported variable
+/// preserve its export flag. To both set the value and mark a
+/// variable for export to spawned-child environments, use
+/// [`export_var`].
 ///
 /// Requires the `variables:write` capability.
 ///
