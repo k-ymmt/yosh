@@ -327,6 +327,12 @@ impl PluginManager {
             &self.engine,
             HostContext::new_for_plugin("<probing>", CAP_ALL),
         );
+        // With epoch_interruption(true) on the engine, every store needs a
+        // deadline; the default is 0, which traps on the first instruction.
+        // metadata() should be microseconds; 100 ticks (~5s once the Task 2
+        // tick thread lands) is a generous bound that never trips for
+        // well-behaved plugins.
+        scratch_store.set_epoch_deadline(100);
         let scratch_world = scratch_pre
             .instantiate(&mut scratch_store)
             .map_err(|e| format!("{}: instantiate failed: {}", path.display(), e))?;
@@ -368,6 +374,11 @@ impl PluginManager {
             HostContext::new_for_plugin(plugin_info.name.clone(), effective_capabilities);
         host_ctx.allowed_commands = parsed_allowed_commands;
         let mut store = Store::new(&self.engine, host_ctx);
+        // Default-effectively-never deadline. `call_pre_prompt` overrides
+        // this with a tight bound on each invocation (Task 4); other
+        // hooks and `exec_command` keep this baseline so they don't trap
+        // unexpectedly.
+        store.set_epoch_deadline(u64::MAX / 2);
         let bindings = real_pre
             .instantiate(&mut store)
             .map_err(|e| format!("{}: real instantiate: {}", path.display(), e))?;

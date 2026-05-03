@@ -118,15 +118,16 @@ impl SidecarMeta {
 /// startup. Used by callers of `precompile()` so the produced cwasm
 /// matches the host's expectations exactly.
 ///
-/// `epoch_interruption` here is OFF — the metadata extraction sub-step in
-/// `sync.rs` builds its own engine with epoch_interruption ON for the
-/// 5-second watchdog. Mixing them would change the engine config hash and
-/// invalidate every precompile, so we keep them as two separate engines.
+/// `epoch_interruption` is ON to match the host (`src/plugin/mod.rs`),
+/// which uses it to bound the wall-clock time of `pre_prompt` hooks.
+/// Both engines must share the same flags so the cwasm produced here is
+/// loadable by the host without re-precompilation.
 pub fn make_engine() -> Result<wasmtime::Engine, String> {
     let mut config = wasmtime::Config::new();
     config.wasm_component_model(true);
     config.async_support(false);
     config.consume_fuel(false);
+    config.epoch_interruption(true);
     wasmtime::Engine::new(&config).map_err(|e| format!("wasmtime Engine::new: {}", e))
 }
 
