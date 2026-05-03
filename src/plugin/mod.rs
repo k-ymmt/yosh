@@ -144,6 +144,7 @@ pub struct PluginManager {
     plugins: Vec<LoadedPlugin>,
     /// Resolved pre-prompt timeout in milliseconds, captured once at
     /// construction from `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS`.
+    #[allow(dead_code)] // consumed by test helper (Task 3) and call_pre_prompt deadline (Task 4)
     pre_prompt_timeout_ms: u64,
     /// Background epoch-tick thread. `Some` while the manager is alive;
     /// joined on `Drop`.
@@ -171,7 +172,7 @@ impl TickThread {
         let handle = thread::Builder::new()
             .name("yosh-plugin-epoch-tick".to_string())
             .spawn(move || {
-                while !stop_inner.load(Ordering::SeqCst) {
+                while !stop_inner.load(Ordering::Acquire) {
                     thread::sleep(Duration::from_millis(TICK_MS));
                     // Cheap and safe to call concurrently with guest
                     // execution; wasmtime is designed for this exact
@@ -189,7 +190,7 @@ impl TickThread {
 
 impl Drop for TickThread {
     fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
         if let Some(h) = self.handle.take() {
             // The tick thread sleeps up to TICK_MS between flag checks,
             // so worst-case join wait is ~TICK_MS. We do not impose a
@@ -855,7 +856,7 @@ mod tests {
             .stop
             .clone();
         assert!(
-            !stop_flag.load(std::sync::atomic::Ordering::SeqCst),
+            !stop_flag.load(std::sync::atomic::Ordering::Acquire),
             "stop flag must be false while manager is alive"
         );
 
@@ -864,7 +865,7 @@ mod tests {
         let elapsed = t0.elapsed();
 
         assert!(
-            stop_flag.load(std::sync::atomic::Ordering::SeqCst),
+            stop_flag.load(std::sync::atomic::Ordering::Acquire),
             "stop flag must be true after PluginManager drops"
         );
         // Drop must join within a generous bound (one tick + slack). If
