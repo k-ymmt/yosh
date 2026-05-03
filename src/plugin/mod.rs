@@ -144,7 +144,6 @@ pub struct PluginManager {
     plugins: Vec<LoadedPlugin>,
     /// Resolved pre-prompt timeout in milliseconds, captured once at
     /// construction from `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS`.
-    #[allow(dead_code)] // overridden by test helper (Task 3); consumed by call_pre_prompt deadline (Task 4)
     pre_prompt_timeout_ms: u64,
     /// Background epoch-tick thread. `Some` while the manager is alive;
     /// joined on `Drop`.
@@ -502,8 +501,11 @@ impl PluginManager {
         match with_env(plugin, env, |bindings, store| {
             bindings.yosh_plugin_plugin().call_exec(store, name, args)
         }) {
-            Some(exit) => PluginExec::Handled(exit),
-            None => PluginExec::Failed,
+            Ok(exit) => PluginExec::Handled(exit),
+            Err(e) => {
+                log_with_env_failure(&plugin.name, &e);
+                PluginExec::Failed
+            }
         }
     }
 
@@ -515,9 +517,11 @@ impl PluginManager {
             if !plugin.implements_hook(HookName::PreExec) {
                 continue;
             }
-            let _ = with_env(plugin, env, |bindings, store| {
+            if let Err(e) = with_env(plugin, env, |bindings, store| {
                 bindings.yosh_plugin_hooks().call_pre_exec(store, cmd)
-            });
+            }) {
+                log_with_env_failure(&plugin.name, &e);
+            }
         }
     }
 
@@ -529,11 +533,13 @@ impl PluginManager {
             if !plugin.implements_hook(HookName::PostExec) {
                 continue;
             }
-            let _ = with_env(plugin, env, |bindings, store| {
+            if let Err(e) = with_env(plugin, env, |bindings, store| {
                 bindings
                     .yosh_plugin_hooks()
                     .call_post_exec(store, cmd, exit_code)
-            });
+            }) {
+                log_with_env_failure(&plugin.name, &e);
+            }
         }
     }
 
@@ -545,15 +551,20 @@ impl PluginManager {
             if !plugin.implements_hook(HookName::OnCd) {
                 continue;
             }
-            let _ = with_env(plugin, env, |bindings, store| {
+            if let Err(e) = with_env(plugin, env, |bindings, store| {
                 bindings
                     .yosh_plugin_hooks()
                     .call_on_cd(store, old_dir, new_dir)
-            });
+            }) {
+                log_with_env_failure(&plugin.name, &e);
+            }
         }
     }
 
     pub fn call_pre_prompt(&mut self, env: &mut ShellEnv) {
+        let ticks = self.pre_prompt_timeout_ms.div_ceil(TICK_MS);
+        let timeout_ms = self.pre_prompt_timeout_ms;
+
         for plugin in &mut self.plugins {
             if plugin.capabilities & CAP_HOOK_PRE_PROMPT == 0 {
                 continue;
@@ -561,9 +572,24 @@ impl PluginManager {
             if !plugin.implements_hook(HookName::PrePrompt) {
                 continue;
             }
-            let _ = with_env(plugin, env, |bindings, store| {
+            plugin.store.set_epoch_deadline(ticks);
+            let result = with_env(plugin, env, |bindings, store| {
                 bindings.yosh_plugin_hooks().call_pre_prompt(store)
             });
+            if let Err(e) = result {
+                match &e {
+                    WithEnvError::Skipped => {}
+                    WithEnvError::Trapped {
+                        is_interrupt: true, ..
+                    } => {
+                        eprintln!(
+                            "yosh: plugin '{}': pre_prompt exceeded {}ms timeout — disabling for the rest of this session",
+                            plugin.name, timeout_ms
+                        );
+                    }
+                    _ => log_with_env_failure(&plugin.name, &e),
+                }
+            }
         }
     }
 
@@ -577,9 +603,11 @@ impl PluginManager {
             if plugin.invalidated {
                 continue;
             }
-            let _ = with_env(plugin, env, |bindings, store| {
+            if let Err(e) = with_env(plugin, env, |bindings, store| {
                 bindings.yosh_plugin_plugin().call_on_unload(store)
-            });
+            }) {
+                log_with_env_failure(&plugin.name, &e);
+            }
         }
         // plugins drops here, releasing every Store and underlying instance.
         drop(plugins);
@@ -649,53 +677,76 @@ impl Drop for EnvGuard<'_> {
     }
 }
 
+/// Failure mode of a `with_env` dispatch. The caller decides how to
+/// phrase the user-visible message — pre_prompt timeouts in particular
+/// want hook-specific wording.
+enum WithEnvError {
+    /// Plugin instance was already invalidated by an earlier failure.
+    /// `with_env` has already printed a "skipped" line.
+    Skipped,
+    /// Guest trap. `is_interrupt` is true for `Trap::Interrupt` (epoch
+    /// deadline exceeded). The plugin has been marked invalidated.
+    Trapped {
+        is_interrupt: bool,
+        trap: wasmtime::Trap,
+    },
+    /// Non-trap host-side error (e.g. type mismatch). The plugin is NOT
+    /// invalidated; the failure is one-off.
+    Other(wasmtime::Error),
+}
+
 /// Canonical dispatch wrapper for any guest-bound call that needs host
 /// API access. Sets up `EnvGuard`, runs the callback, and converts
-/// `wasmtime::Error` into either a logged-and-invalidated `None` (trap)
-/// or a logged `None` (other error). Direct callers never observe
-/// `wasmtime::Error` themselves.
-///
-/// The callback receives both `&PluginWorld` (the bindings handle, used
-/// for accessor methods like `yosh_plugin_plugin()`) and `&mut Store`
-/// (passed into the typed call functions). We pass them as separate
-/// arguments so the closure does not need to move out of `plugin.bindings`
-/// — `PluginWorld` is not `Clone` in wasmtime 27's bindgen output.
+/// `wasmtime::Error` into a `WithEnvError`. Direct callers never observe
+/// `wasmtime::Error` themselves; they pattern-match on `WithEnvError` and
+/// pick their own message phrasing.
 fn with_env<R>(
     plugin: &mut LoadedPlugin,
     env: &mut ShellEnv,
     f: impl FnOnce(&PluginWorld, &mut Store<HostContext>) -> Result<R, wasmtime::Error>,
-) -> Option<R> {
+) -> Result<R, WithEnvError> {
     if plugin.invalidated {
         eprintln!(
             "yosh: plugin '{}': skipped (instance invalidated by earlier trap)",
             plugin.name
         );
-        return None;
+        return Err(WithEnvError::Skipped);
     }
 
-    // Split-borrow: `&plugin.bindings` and `&mut plugin.store` are
-    // disjoint fields, so we can hold both simultaneously.
     let bindings = &plugin.bindings;
     let result = {
         let mut guard = EnvGuard::bind(&mut plugin.store, env);
         f(bindings, guard.store())
-        // guard drops here, restoring env to null whether `f` returned
-        // Ok, Err, or unwound via panic.
     };
 
     match result {
-        Ok(r) => Some(r),
+        Ok(r) => Ok(r),
         Err(e) => {
             if let Some(trap) = e.downcast_ref::<wasmtime::Trap>() {
-                eprintln!(
-                    "yosh: plugin '{}': trapped: {} — disabling for the rest of this session",
-                    plugin.name, trap
-                );
+                let trap = *trap;
+                let is_interrupt = matches!(trap, wasmtime::Trap::Interrupt);
                 plugin.invalidated = true;
+                Err(WithEnvError::Trapped { is_interrupt, trap })
             } else {
-                eprintln!("yosh: plugin '{}': call failed: {}", plugin.name, e);
+                Err(WithEnvError::Other(e))
             }
-            None
+        }
+    }
+}
+
+/// Generic "with_env failure" logger for hooks that don't need
+/// hook-specific phrasing. Reproduces the pre-refactor messages exactly.
+fn log_with_env_failure(plugin_name: &str, err: &WithEnvError) {
+    match err {
+        WithEnvError::Skipped => {}
+        WithEnvError::Trapped { trap, .. } => {
+            eprintln!(
+                "yosh: plugin '{}': trapped: {} — disabling for the rest of this session",
+                plugin_name, trap
+            );
+        }
+        WithEnvError::Other(e) => {
+            eprintln!("yosh: plugin '{}': call failed: {}", plugin_name, e);
         }
     }
 }
