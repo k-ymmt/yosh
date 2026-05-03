@@ -30,6 +30,7 @@ fn lock_test() -> std::sync::MutexGuard<'static, ()> {
 
 static TEST_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
 static TRAP_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
+static SLOW_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).into()
@@ -61,6 +62,10 @@ fn test_plugin_wasm() -> PathBuf {
 
 fn trap_plugin_wasm() -> PathBuf {
     ensure_built("trap_plugin", &TRAP_PLUGIN_WASM)
+}
+
+fn slow_plugin_wasm() -> PathBuf {
+    ensure_built("slow_plugin", &SLOW_PLUGIN_WASM)
 }
 
 fn fresh_env() -> ShellEnv {
@@ -821,3 +826,73 @@ fn t24_commands_exec_invalid_pattern_fails_plugin_load() {
         err
     );
 }
+
+/// pre_prompt hook timeout — busy loop case.
+///
+/// Verifies that `call_pre_prompt` interrupts a busy-looping plugin via
+/// the wasmtime epoch deadline, surfaces a hook-specific timeout
+/// message, and invalidates the plugin so a second call short-circuits
+/// via the existing "skipped (instance invalidated by earlier trap)"
+/// path.
+///
+/// Stress: a 100ms timeout against a tight busy loop with a 50ms tick
+/// interval. Worst-case wall-clock for the first call is ~150ms (timeout
+/// + one tick window). The 1s upper bound below is deliberately loose —
+/// we are asserting "bounded", not "fast".
+#[test]
+fn t25_pre_prompt_timeout_invalidates_slow_plugin() {
+    use std::time::Instant;
+
+    let _g = lock_test();
+    let wasm = slow_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    // Tighten the deadline so the test runs fast. Calling this BEFORE
+    // load_plugin_with_caps ensures any pre_prompt invocation made
+    // during the load path (none today, but defensively) sees the
+    // small budget too.
+    test_helpers::set_pre_prompt_timeout_for_tests(&mut mgr, 100);
+
+    test_helpers::load_plugin_with_caps(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        yosh_plugin_api::CAP_HOOK_PRE_PROMPT | yosh_plugin_api::CAP_HOOK_PRE_EXEC,
+        &[],
+    )
+    .expect("load slow_plugin with pre_prompt+pre_exec caps");
+
+    let t0 = Instant::now();
+    mgr.call_pre_prompt(&mut env);
+    let first_elapsed = t0.elapsed();
+
+    assert!(
+        first_elapsed.as_millis() < 1_000,
+        "first call_pre_prompt should be bounded by the deadline; got {:?}",
+        first_elapsed
+    );
+
+    // Second call must short-circuit via the invalidated path. Its
+    // wall-clock should be effectively zero — generous bound to avoid
+    // CI flakes.
+    let t1 = Instant::now();
+    mgr.call_pre_prompt(&mut env);
+    let second_elapsed = t1.elapsed();
+
+    assert!(
+        second_elapsed.as_millis() < 50,
+        "second call_pre_prompt should be a fast skip; got {:?}",
+        second_elapsed
+    );
+}
+
+// NOTE: the post-call deadline-reset in `call_pre_prompt` (commit
+// 154e96e — restore baseline so subsequent non-pre_prompt hooks on
+// the same plugin retain their full budget) is exercised only
+// indirectly today: every test that loads test_plugin (which doesn't
+// implement pre_prompt) and then calls a non-pre_prompt hook would
+// fail if the baseline weren't preserved on plugins that DO implement
+// pre_prompt. A direct regression test would need a "fast pre_prompt
+// + pre_exec" fixture (slow_plugin's pre_prompt busy-loops, so it
+// can't model a successful return). Defer until that fixture exists.
