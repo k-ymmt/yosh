@@ -134,8 +134,16 @@ pub fn call_pre_prompt(&mut self, env: &mut ShellEnv) {
 ```
 
 `set_epoch_deadline` takes ticks-from-now-relative semantics: each call
-re-bases the deadline relative to the current epoch, so prior calls do not
-affect later ones.
+re-bases the deadline relative to the current epoch, so prior calls do
+not affect later ones. After every `pre_prompt` dispatch (regardless of
+whether the call returned `Ok`, host-rejected `Err`, or a non-interrupt
+trap that did not invalidate the plugin), `call_pre_prompt` restores the
+store's deadline to `STORE_BASELINE_DEADLINE_TICKS` (`u64::MAX / 2`,
+effectively never). This is required because wasmtime persists the
+deadline across calls — without the restore, the next non-`pre_prompt`
+hook on the same plugin would inherit the tight bound and trap on the
+next epoch tick. The restore is skipped on `Trapped` because the plugin
+is already invalidated and its deadline is moot.
 
 ### 3.4 Trap classification in `with_env`
 

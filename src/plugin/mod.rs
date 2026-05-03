@@ -76,6 +76,12 @@ const TICK_MS: u64 = 50;
 /// Environment variable that overrides `DEFAULT_PRE_PROMPT_TIMEOUT_MS`.
 const PRE_PROMPT_TIMEOUT_ENV: &str = "YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS";
 
+/// Effectively-never epoch deadline. Set as the persistent baseline on
+/// every `LoadedPlugin.store` so non-`pre_prompt` hooks never trap on
+/// the engine epoch. `call_pre_prompt` overrides this with a tight bound
+/// per invocation and restores it after the call.
+const STORE_BASELINE_DEADLINE_TICKS: u64 = u64::MAX / 2;
+
 /// Pure parser for the `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS` env var.
 ///
 /// * `Ok(n)` — caller should use `n` directly. `None` → default,
@@ -454,7 +460,7 @@ impl PluginManager {
         // this with a tight bound on each invocation (Task 4); other
         // hooks and `exec_command` keep this baseline so they don't trap
         // unexpectedly.
-        store.set_epoch_deadline(u64::MAX / 2);
+        store.set_epoch_deadline(STORE_BASELINE_DEADLINE_TICKS);
         let bindings = real_pre
             .instantiate(&mut store)
             .map_err(|e| format!("{}: real instantiate: {}", path.display(), e))?;
@@ -576,6 +582,13 @@ impl PluginManager {
             let result = with_env(plugin, env, |bindings, store| {
                 bindings.yosh_plugin_hooks().call_pre_prompt(store)
             });
+            // Restore the baseline so subsequent non-pre_prompt hooks
+            // (pre_exec, post_exec, on_cd, exec_command) on the same
+            // store retain their full budget. Skip on Trapped because
+            // the plugin is now invalidated and its deadline is moot.
+            if !matches!(&result, Err(WithEnvError::Trapped { .. })) {
+                plugin.store.set_epoch_deadline(STORE_BASELINE_DEADLINE_TICKS);
+            }
             if let Err(e) = result {
                 match &e {
                     WithEnvError::Skipped => {}
