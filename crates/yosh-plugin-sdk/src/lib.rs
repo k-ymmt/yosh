@@ -7,8 +7,9 @@
 //!
 //! Every host import (variables, filesystem, io, files, commands) is
 //! gated by a capability declared in [`Plugin::required_capabilities`].
-//! Without the matching capability, the corresponding helper returns
-//! [`ErrorCode::Denied`].
+//! Without the matching capability, the underlying host call returns
+//! [`ErrorCode::Denied`]. (Some helpers like [`exists`] swallow this
+//! into a default value — see each function's docs.)
 //!
 //! # `metadata` is special
 //!
@@ -117,14 +118,17 @@ pub trait Plugin: Send + Default + 'static {
     /// code (0 = success).
     fn exec(&mut self, command: &str, args: &[String]) -> i32;
 
-    /// Fires before each external command runs.
+    /// Fires before each command runs (functions, builtins, and
+    /// external commands all dispatch through the same hook point).
     ///
-    /// `command` is the command line as the user typed it.
+    /// `command` is the expanded command line (program name plus
+    /// space-joined args) as the host saw it.
     fn hook_pre_exec(&mut self, _command: &str) {}
 
-    /// Fires after each external command exits.
+    /// Fires after each command finishes (functions, builtins, and
+    /// external commands).
     ///
-    /// `exit_code` is the child's exit status.
+    /// `exit_code` is the command's exit status.
     fn hook_post_exec(&mut self, _command: &str, _exit_code: i32) {}
 
     /// Fires after a successful `cd`. Both arguments are absolute paths.
