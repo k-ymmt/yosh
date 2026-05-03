@@ -146,34 +146,125 @@ pub trait Plugin: Send + Default + 'static {
 
 // ── Host API helpers (typed wrappers over WIT-generated bindings) ────
 
+/// Look up a shell variable by name.
+///
+/// Requires the `variables:read` capability.
+///
+/// Returns `Ok(None)` if the variable is unset, `Ok(Some(""))` if it
+/// is set to the empty string. The outer `Result` carries denial; the
+/// inner `Option` distinguishes unset from set-to-empty.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `variables:read` not granted, or called
+///   from `metadata`-time methods on [`Plugin`].
 pub fn get_var(name: &str) -> Result<Option<String>, ErrorCode> {
     host_variables::get(name)
 }
 
+/// Set a shell variable.
+///
+/// Equivalent to `name=value` at the shell prompt. The variable is
+/// not exported to spawned-child environments; use [`export_var`]
+/// for that.
+///
+/// Requires the `variables:write` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `variables:write` not granted.
+/// - [`ErrorCode::IoFailed`] — the host's variable store rejected the
+///   assignment (e.g., readonly variable).
 pub fn set_var(name: &str, value: &str) -> Result<(), ErrorCode> {
     host_variables::set(name, value)
 }
 
+/// Set a shell variable and mark it for export to spawned-child
+/// environments (equivalent to `export name=value` in the shell).
+///
+/// Requires the `variables:write` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `variables:write` not granted.
+/// - [`ErrorCode::IoFailed`] — the host's variable store rejected the
+///   assignment.
 pub fn export_var(name: &str, value: &str) -> Result<(), ErrorCode> {
     host_variables::export_env(name, value)
 }
 
+/// Return the shell's current working directory as an absolute path.
+///
+/// Requires the `filesystem` capability — a single coarse capability
+/// covering both read and write of the cwd; not split into
+/// `filesystem:read` / `filesystem:write`.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `filesystem` not granted.
+/// - [`ErrorCode::IoFailed`] — the host could not read the cwd
+///   (e.g., the cwd was unlinked while the shell was running).
 pub fn cwd() -> Result<String, ErrorCode> {
     host_filesystem::cwd()
 }
 
+/// Change the shell's current working directory.
+///
+/// Affects every subsequent host call (cwd reads, relative-path file
+/// ops, child-process spawn cwd) — not just the calling plugin.
+///
+/// Requires the `filesystem` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `filesystem` not granted.
+/// - [`ErrorCode::IoFailed`] — the path does not exist or is not a
+///   directory, or the host process lacks permission to enter it.
 pub fn set_cwd(path: &str) -> Result<(), ErrorCode> {
     host_filesystem::set_cwd(path)
 }
 
+/// Write a UTF-8 string to the shell's stdout.
+///
+/// Convenience wrapper over [`write_bytes`] for the common case.
+/// Does not append a newline; pass `"foo\n"` if you want one.
+///
+/// Requires the `io` capability (single capability; no read/write split).
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `io` not granted.
+/// - [`ErrorCode::IoFailed`] — the underlying write failed (e.g.,
+///   broken pipe).
 pub fn print(s: &str) -> Result<(), ErrorCode> {
     host_io::write(IoStream::Stdout, s.as_bytes())
 }
 
+/// Write a UTF-8 string to the shell's stderr.
+///
+/// Convenience wrapper over [`write_bytes`]. Does not append a newline.
+///
+/// Requires the `io` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `io` not granted.
+/// - [`ErrorCode::IoFailed`] — the underlying write failed.
 pub fn eprint(s: &str) -> Result<(), ErrorCode> {
     host_io::write(IoStream::Stderr, s.as_bytes())
 }
 
+/// Write raw bytes to stdout or stderr.
+///
+/// Use this when output may contain non-UTF-8 (binary) data. For
+/// UTF-8 strings, prefer [`print`] / [`eprint`].
+///
+/// Requires the `io` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `io` not granted.
+/// - [`ErrorCode::IoFailed`] — the underlying write failed.
 pub fn write_bytes(stream: IoStream, data: &[u8]) -> Result<(), ErrorCode> {
     host_io::write(stream, data)
 }
