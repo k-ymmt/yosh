@@ -57,6 +57,45 @@ mod generated {
 use self::generated::yosh::plugin::types::{HookName, PluginInfo};
 use self::generated::{PluginWorld, PluginWorldPre};
 
+// ── Pre-prompt timeout constants ───────────────────────────────────────
+
+/// Default pre-prompt hook timeout in milliseconds. A plugin's
+/// `pre_prompt` hook is interrupted with `Trap::Interrupt` if it has not
+/// returned within this budget, then permanently invalidated for the
+/// session.
+const DEFAULT_PRE_PROMPT_TIMEOUT_MS: u64 = 500;
+
+/// Hard upper bound on the configurable pre-prompt timeout. Values above
+/// this clamp back to the default with a stderr warning.
+const MAX_PRE_PROMPT_TIMEOUT_MS: u64 = 60_000;
+
+/// Tick interval for the `PluginManager` epoch-bumping thread. Worst-case
+/// overshoot of any deadline is one tick window.
+#[allow(dead_code)] // Used by Task 2 tick thread.
+const TICK_MS: u64 = 50;
+
+/// Environment variable that overrides `DEFAULT_PRE_PROMPT_TIMEOUT_MS`.
+#[allow(dead_code)] // Used by Task 2 PluginManager::new env read.
+const PRE_PROMPT_TIMEOUT_ENV: &str = "YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS";
+
+/// Pure parser for the `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS` env var.
+///
+/// * `Ok(n)` — caller should use `n` directly. `None` → default,
+///   `Some(valid integer in [1, 60000])` → that integer.
+/// * `Err(raw)` — input was present but invalid (non-numeric, 0, or
+///   > 60000). The raw input is returned so the caller can phrase a
+///   warning that quotes what the user typed. The caller decides
+///   whether to fall back to the default.
+fn parse_pre_prompt_timeout(input: Option<&str>) -> Result<u64, String> {
+    let Some(s) = input else {
+        return Ok(DEFAULT_PRE_PROMPT_TIMEOUT_MS);
+    };
+    match s.parse::<u64>() {
+        Ok(n) if (1..=MAX_PRE_PROMPT_TIMEOUT_MS).contains(&n) => Ok(n),
+        _ => Err(s.to_string()),
+    }
+}
+
 // ── Public types ────────────────────────────────────────────────────────
 
 /// Result of attempting to dispatch a command to the plugin layer.
@@ -113,6 +152,7 @@ impl PluginManager {
         config.wasm_component_model(true);
         config.async_support(false);
         config.consume_fuel(false);
+        config.epoch_interruption(true);
         // Best-effort: enable system cache. If unavailable we just proceed
         // without it. cwasm precompile is the durable cache; this is the
         // lower-level wasmtime cranelift cache.
@@ -122,7 +162,7 @@ impl PluginManager {
         // compatibility. Any change to this string invalidates every
         // cached cwasm via `engine_config_hash`.
         let engine_fingerprint =
-            "v1;component_model=true;async=false;fuel=false;cranelift".to_string();
+            "v2;component_model=true;async=false;fuel=false;epoch=true;cranelift".to_string();
 
         let engine = Engine::new(&config).expect("wasmtime Engine::new");
 
@@ -658,5 +698,49 @@ pub mod test_helpers {
     pub fn env_pointer_is_null_in_store(manager: &PluginManager) -> Option<bool> {
         let plugin = manager.plugins.last()?;
         Some(plugin.store.data().env.is_null())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pre_prompt_timeout_unset_returns_ok_default() {
+        assert_eq!(
+            parse_pre_prompt_timeout(None),
+            Ok(DEFAULT_PRE_PROMPT_TIMEOUT_MS)
+        );
+    }
+
+    #[test]
+    fn parse_pre_prompt_timeout_valid_in_range() {
+        assert_eq!(parse_pre_prompt_timeout(Some("250")), Ok(250));
+        assert_eq!(parse_pre_prompt_timeout(Some("1")), Ok(1));
+        assert_eq!(parse_pre_prompt_timeout(Some("60000")), Ok(60_000));
+    }
+
+    #[test]
+    fn parse_pre_prompt_timeout_zero_returns_invalid() {
+        assert_eq!(parse_pre_prompt_timeout(Some("0")), Err("0".to_string()));
+    }
+
+    #[test]
+    fn parse_pre_prompt_timeout_above_max_returns_invalid() {
+        assert_eq!(
+            parse_pre_prompt_timeout(Some("60001")),
+            Err("60001".to_string())
+        );
+        assert_eq!(
+            parse_pre_prompt_timeout(Some("999999")),
+            Err("999999".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_pre_prompt_timeout_non_numeric_returns_invalid() {
+        assert_eq!(parse_pre_prompt_timeout(Some("abc")), Err("abc".to_string()));
+        assert_eq!(parse_pre_prompt_timeout(Some("")), Err("".to_string()));
+        assert_eq!(parse_pre_prompt_timeout(Some("-1")), Err("-1".to_string()));
     }
 }
