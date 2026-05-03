@@ -206,7 +206,7 @@ pub mod yosh {
                     let len0 = vec0.len();
                     let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/variables@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/variables@0.2.1")]
                     extern "C" {
                         #[link_name = "get"]
                         fn wit_import(_: *mut u8, _: usize, _: *mut u8);
@@ -269,7 +269,7 @@ pub mod yosh {
                     let len1 = vec1.len();
                     let ptr2 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/variables@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/variables@0.2.1")]
                     extern "C" {
                         #[link_name = "set"]
                         fn wit_import(
@@ -327,7 +327,7 @@ pub mod yosh {
                     let len1 = vec1.len();
                     let ptr2 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/variables@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/variables@0.2.1")]
                     extern "C" {
                         #[link_name = "export-env"]
                         fn wit_import(
@@ -384,7 +384,7 @@ pub mod yosh {
                     let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 9]);
                     let ptr0 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/filesystem@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/filesystem@0.2.1")]
                     extern "C" {
                         #[link_name = "cwd"]
                         fn wit_import(_: *mut u8);
@@ -434,7 +434,7 @@ pub mod yosh {
                     let len0 = vec0.len();
                     let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/filesystem@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/filesystem@0.2.1")]
                     extern "C" {
                         #[link_name = "set-cwd"]
                         fn wit_import(_: *mut u8, _: usize, _: *mut u8);
@@ -525,7 +525,7 @@ pub mod yosh {
                     let len0 = vec0.len();
                     let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.2.1")]
                     extern "C" {
                         #[link_name = "read-file"]
                         fn wit_import(_: *mut u8, _: usize, _: *mut u8);
@@ -570,7 +570,7 @@ pub mod yosh {
                     let len0 = vec0.len();
                     let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.2.1")]
                     extern "C" {
                         #[link_name = "read-dir"]
                         fn wit_import(_: *mut u8, _: usize, _: *mut u8);
@@ -641,7 +641,7 @@ pub mod yosh {
                     let len0 = vec0.len();
                     let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.2.1")]
                     extern "C" {
                         #[link_name = "metadata"]
                         fn wit_import(_: *mut u8, _: usize, _: *mut u8);
@@ -697,7 +697,7 @@ pub mod yosh {
                     let len1 = vec1.len();
                     let ptr2 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.2.1")]
                     extern "C" {
                         #[link_name = "write-file"]
                         fn wit_import(
@@ -752,7 +752,7 @@ pub mod yosh {
                     let len1 = vec1.len();
                     let ptr2 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.2.1")]
                     extern "C" {
                         #[link_name = "append-file"]
                         fn wit_import(
@@ -804,7 +804,7 @@ pub mod yosh {
                     let len0 = vec0.len();
                     let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.2.1")]
                     extern "C" {
                         #[link_name = "create-dir"]
                         fn wit_import(_: *mut u8, _: usize, _: i32, _: *mut u8);
@@ -852,7 +852,7 @@ pub mod yosh {
                     let len0 = vec0.len();
                     let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.2.1")]
                     extern "C" {
                         #[link_name = "remove-file"]
                         fn wit_import(_: *mut u8, _: usize, _: *mut u8);
@@ -892,7 +892,7 @@ pub mod yosh {
                     let len0 = vec0.len();
                     let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/files@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/files@0.2.1")]
                     extern "C" {
                         #[link_name = "remove-dir"]
                         fn wit_import(_: *mut u8, _: usize, _: i32, _: *mut u8);
@@ -949,7 +949,7 @@ pub mod yosh {
                     let len0 = vec0.len();
                     let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/io@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/io@0.2.1")]
                     extern "C" {
                         #[link_name = "write"]
                         fn wit_import(_: i32, _: *mut u8, _: usize, _: *mut u8);
@@ -1053,7 +1053,7 @@ pub mod yosh {
                     }
                     let ptr3 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
-                    #[link(wasm_import_module = "yosh:plugin/commands@0.1.0")]
+                    #[link(wasm_import_module = "yosh:plugin/commands@0.2.1")]
                     extern "C" {
                         #[link_name = "exec"]
                         fn wit_import(
@@ -1350,32 +1350,32 @@ pub mod exports {
                     fn on_unload();
                 }
                 #[doc(hidden)]
-                macro_rules! __export_yosh_plugin_plugin_0_1_0_cabi {
+                macro_rules! __export_yosh_plugin_plugin_0_2_1_cabi {
                     ($ty:ident with_types_in $($path_to_types:tt)*) => {
                         const _ : () = { #[export_name =
-                        "yosh:plugin/plugin@0.1.0#metadata"] unsafe extern "C" fn
+                        "yosh:plugin/plugin@0.2.1#metadata"] unsafe extern "C" fn
                         export_metadata() -> * mut u8 { $($path_to_types)*::
                         _export_metadata_cabi::<$ty > () } #[export_name =
-                        "cabi_post_yosh:plugin/plugin@0.1.0#metadata"] unsafe extern "C"
+                        "cabi_post_yosh:plugin/plugin@0.2.1#metadata"] unsafe extern "C"
                         fn _post_return_metadata(arg0 : * mut u8,) { $($path_to_types)*::
                         __post_return_metadata::<$ty > (arg0) } #[export_name =
-                        "yosh:plugin/plugin@0.1.0#on-load"] unsafe extern "C" fn
+                        "yosh:plugin/plugin@0.2.1#on-load"] unsafe extern "C" fn
                         export_on_load() -> * mut u8 { $($path_to_types)*::
                         _export_on_load_cabi::<$ty > () } #[export_name =
-                        "cabi_post_yosh:plugin/plugin@0.1.0#on-load"] unsafe extern "C"
+                        "cabi_post_yosh:plugin/plugin@0.2.1#on-load"] unsafe extern "C"
                         fn _post_return_on_load(arg0 : * mut u8,) { $($path_to_types)*::
                         __post_return_on_load::<$ty > (arg0) } #[export_name =
-                        "yosh:plugin/plugin@0.1.0#exec"] unsafe extern "C" fn
+                        "yosh:plugin/plugin@0.2.1#exec"] unsafe extern "C" fn
                         export_exec(arg0 : * mut u8, arg1 : usize, arg2 : * mut u8, arg3
                         : usize,) -> i32 { $($path_to_types)*:: _export_exec_cabi::<$ty >
                         (arg0, arg1, arg2, arg3) } #[export_name =
-                        "yosh:plugin/plugin@0.1.0#on-unload"] unsafe extern "C" fn
+                        "yosh:plugin/plugin@0.2.1#on-unload"] unsafe extern "C" fn
                         export_on_unload() { $($path_to_types)*::
                         _export_on_unload_cabi::<$ty > () } };
                     };
                 }
                 #[doc(hidden)]
-                pub(crate) use __export_yosh_plugin_plugin_0_1_0_cabi;
+                pub(crate) use __export_yosh_plugin_plugin_0_2_1_cabi;
                 #[repr(align(1))]
                 struct _RetArea([::core::mem::MaybeUninit<u8>; 40]);
                 static mut _RET_AREA: _RetArea = _RetArea(
@@ -1439,27 +1439,27 @@ pub mod exports {
                     fn pre_prompt();
                 }
                 #[doc(hidden)]
-                macro_rules! __export_yosh_plugin_hooks_0_1_0_cabi {
+                macro_rules! __export_yosh_plugin_hooks_0_2_1_cabi {
                     ($ty:ident with_types_in $($path_to_types:tt)*) => {
                         const _ : () = { #[export_name =
-                        "yosh:plugin/hooks@0.1.0#pre-exec"] unsafe extern "C" fn
+                        "yosh:plugin/hooks@0.2.1#pre-exec"] unsafe extern "C" fn
                         export_pre_exec(arg0 : * mut u8, arg1 : usize,) {
                         $($path_to_types)*:: _export_pre_exec_cabi::<$ty > (arg0, arg1) }
-                        #[export_name = "yosh:plugin/hooks@0.1.0#post-exec"] unsafe
+                        #[export_name = "yosh:plugin/hooks@0.2.1#post-exec"] unsafe
                         extern "C" fn export_post_exec(arg0 : * mut u8, arg1 : usize,
                         arg2 : i32,) { $($path_to_types)*:: _export_post_exec_cabi::<$ty
                         > (arg0, arg1, arg2) } #[export_name =
-                        "yosh:plugin/hooks@0.1.0#on-cd"] unsafe extern "C" fn
+                        "yosh:plugin/hooks@0.2.1#on-cd"] unsafe extern "C" fn
                         export_on_cd(arg0 : * mut u8, arg1 : usize, arg2 : * mut u8, arg3
                         : usize,) { $($path_to_types)*:: _export_on_cd_cabi::<$ty >
                         (arg0, arg1, arg2, arg3) } #[export_name =
-                        "yosh:plugin/hooks@0.1.0#pre-prompt"] unsafe extern "C" fn
+                        "yosh:plugin/hooks@0.2.1#pre-prompt"] unsafe extern "C" fn
                         export_pre_prompt() { $($path_to_types)*::
                         _export_pre_prompt_cabi::<$ty > () } };
                     };
                 }
                 #[doc(hidden)]
-                pub(crate) use __export_yosh_plugin_hooks_0_1_0_cabi;
+                pub(crate) use __export_yosh_plugin_hooks_0_2_1_cabi;
             }
         }
     }
@@ -1589,17 +1589,17 @@ macro_rules! __export_plugin_world_impl {
     };
     ($ty:ident with_types_in $($path_to_types_root:tt)*) => {
         $($path_to_types_root)*::
-        exports::yosh::plugin::plugin::__export_yosh_plugin_plugin_0_1_0_cabi!($ty
+        exports::yosh::plugin::plugin::__export_yosh_plugin_plugin_0_2_1_cabi!($ty
         with_types_in $($path_to_types_root)*:: exports::yosh::plugin::plugin);
         $($path_to_types_root)*::
-        exports::yosh::plugin::hooks::__export_yosh_plugin_hooks_0_1_0_cabi!($ty
+        exports::yosh::plugin::hooks::__export_yosh_plugin_hooks_0_2_1_cabi!($ty
         with_types_in $($path_to_types_root)*:: exports::yosh::plugin::hooks);
     };
 }
 #[doc(inline)]
 pub(crate) use __export_plugin_world_impl as export;
 #[cfg(target_arch = "wasm32")]
-#[link_section = "component-type:wit-bindgen:0.31.0:yosh:plugin@0.1.0:plugin-world:encoded world"]
+#[link_section = "component-type:wit-bindgen:0.31.0:yosh:plugin@0.2.1:plugin-world:encoded world"]
 #[doc(hidden)]
 pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1701] = *b"\
 \0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa2\x0c\x01A\x02\x01\
@@ -1608,14 +1608,14 @@ other\x07timeout\x13pattern-not-allowed\x04\0\x0aerror-code\x03\0\0\x01m\x02\x06
 stdout\x06stderr\x04\0\x09io-stream\x03\0\x02\x01m\x04\x08pre-exec\x09post-exec\x05\
 on-cd\x0apre-prompt\x04\0\x09hook-name\x03\0\x04\x01ps\x01p\x05\x01r\x05\x04name\
 s\x07versions\x08commands\x06\x15required-capabilities\x06\x11implemented-hooks\x07\
-\x04\0\x0bplugin-info\x03\0\x08\x03\x01\x17yosh:plugin/types@0.1.0\x05\0\x02\x03\
+\x04\0\x0bplugin-info\x03\0\x08\x03\x01\x17yosh:plugin/types@0.2.1\x05\0\x02\x03\
 \0\0\x0aerror-code\x01B\x0a\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\x01k\
 s\x01j\x01\x02\x01\x01\x01@\x01\x04names\0\x03\x04\0\x03get\x01\x04\x01j\0\x01\x01\
 \x01@\x02\x04names\x05values\0\x05\x04\0\x03set\x01\x06\x04\0\x0aexport-env\x01\x06\
-\x03\x01\x1byosh:plugin/variables@0.1.0\x05\x02\x01B\x08\x02\x03\x02\x01\x01\x04\
+\x03\x01\x1byosh:plugin/variables@0.2.1\x05\x02\x01B\x08\x02\x03\x02\x01\x01\x04\
 \0\x0aerror-code\x03\0\0\x01j\x01s\x01\x01\x01@\0\0\x02\x04\0\x03cwd\x01\x03\x01\
 j\0\x01\x01\x01@\x01\x04paths\0\x04\x04\0\x07set-cwd\x01\x05\x03\x01\x1cyosh:plu\
-gin/filesystem@0.1.0\x05\x03\x01B\x1a\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\
+gin/filesystem@0.2.1\x05\x03\x01B\x1a\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\
 \0\0\x01r\x05\x07is-file\x7f\x06is-dir\x7f\x0ais-symlink\x7f\x04sizew\x0amtime-s\
 ecsx\x04\0\x09file-stat\x03\0\x02\x01r\x04\x04names\x07is-file\x7f\x06is-dir\x7f\
 \x0ais-symlink\x7f\x04\0\x09dir-entry\x03\0\x04\x01p}\x01j\x01\x06\x01\x01\x01@\x01\
@@ -1624,22 +1624,22 @@ ecsx\x04\0\x09file-stat\x03\0\x02\x01r\x04\x04names\x07is-file\x7f\x06is-dir\x7f
 \0\x0c\x04\0\x08metadata\x01\x0d\x01j\0\x01\x01\x01@\x02\x04paths\x04data\x06\0\x0e\
 \x04\0\x0awrite-file\x01\x0f\x04\0\x0bappend-file\x01\x0f\x01@\x02\x04paths\x09r\
 ecursive\x7f\0\x0e\x04\0\x0acreate-dir\x01\x10\x01@\x01\x04paths\0\x0e\x04\0\x0b\
-remove-file\x01\x11\x04\0\x0aremove-dir\x01\x10\x03\x01\x17yosh:plugin/files@0.1\
-.0\x05\x04\x02\x03\0\0\x09io-stream\x01B\x08\x02\x03\x02\x01\x05\x04\0\x09io-str\
+remove-file\x01\x11\x04\0\x0aremove-dir\x01\x10\x03\x01\x17yosh:plugin/files@0.2\
+.1\x05\x04\x02\x03\0\0\x09io-stream\x01B\x08\x02\x03\x02\x01\x05\x04\0\x09io-str\
 eam\x03\0\0\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\x02\x01p}\x01j\0\x01\x03\
 \x01@\x02\x06target\x01\x04data\x04\0\x05\x04\0\x05write\x01\x06\x03\x01\x14yosh\
-:plugin/io@0.1.0\x05\x06\x01B\x09\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\
+:plugin/io@0.2.1\x05\x06\x01B\x09\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\
 \x01p}\x01r\x03\x09exit-codez\x06stdout\x02\x06stderr\x02\x04\0\x0bexec-output\x03\
 \0\x03\x01ps\x01j\x01\x04\x01\x01\x01@\x02\x07programs\x04args\x05\0\x06\x04\0\x04\
-exec\x01\x07\x03\x01\x1ayosh:plugin/commands@0.1.0\x05\x07\x02\x03\0\0\x0bplugin\
+exec\x01\x07\x03\x01\x1ayosh:plugin/commands@0.2.1\x05\x07\x02\x03\0\0\x0bplugin\
 -info\x01B\x0c\x02\x03\x02\x01\x08\x04\0\x0bplugin-info\x03\0\0\x01@\0\0\x01\x04\
 \0\x08metadata\x01\x02\x01j\0\x01s\x01@\0\0\x03\x04\0\x07on-load\x01\x04\x01ps\x01\
 @\x02\x07commands\x04args\x05\0z\x04\0\x04exec\x01\x06\x01@\0\x01\0\x04\0\x09on-\
-unload\x01\x07\x04\x01\x18yosh:plugin/plugin@0.1.0\x05\x09\x01B\x08\x01@\x01\x07\
+unload\x01\x07\x04\x01\x18yosh:plugin/plugin@0.2.1\x05\x09\x01B\x08\x01@\x01\x07\
 commands\x01\0\x04\0\x08pre-exec\x01\0\x01@\x02\x07commands\x09exit-codez\x01\0\x04\
 \0\x09post-exec\x01\x01\x01@\x02\x07old-dirs\x07new-dirs\x01\0\x04\0\x05on-cd\x01\
-\x02\x01@\0\x01\0\x04\0\x0apre-prompt\x01\x03\x04\x01\x17yosh:plugin/hooks@0.1.0\
-\x05\x0a\x04\x01\x1eyosh:plugin/plugin-world@0.1.0\x04\0\x0b\x12\x01\0\x0cplugin\
+\x02\x01@\0\x01\0\x04\0\x0apre-prompt\x01\x03\x04\x01\x17yosh:plugin/hooks@0.2.1\
+\x05\x0a\x04\x01\x1eyosh:plugin/plugin-world@0.2.1\x04\0\x0b\x12\x01\0\x0cplugin\
 -world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.216\
 .0\x10wit-bindgen-rust\x060.31.0";
 #[inline(never)]
