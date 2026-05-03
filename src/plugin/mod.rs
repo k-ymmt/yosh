@@ -71,11 +71,9 @@ const MAX_PRE_PROMPT_TIMEOUT_MS: u64 = 60_000;
 
 /// Tick interval for the `PluginManager` epoch-bumping thread. Worst-case
 /// overshoot of any deadline is one tick window.
-#[allow(dead_code)] // Used by Task 2 tick thread.
 const TICK_MS: u64 = 50;
 
 /// Environment variable that overrides `DEFAULT_PRE_PROMPT_TIMEOUT_MS`.
-#[allow(dead_code)] // Used by Task 2 PluginManager::new env read.
 const PRE_PROMPT_TIMEOUT_ENV: &str = "YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS";
 
 /// Pure parser for the `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS` env var.
@@ -144,6 +142,61 @@ pub struct PluginManager {
     /// `engine_config_hash` field of the `CacheKey` tuple.
     engine_fingerprint: String,
     plugins: Vec<LoadedPlugin>,
+    /// Resolved pre-prompt timeout in milliseconds, captured once at
+    /// construction from `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS`.
+    pre_prompt_timeout_ms: u64,
+    /// Background epoch-tick thread. `Some` while the manager is alive;
+    /// joined on `Drop`.
+    tick_thread: Option<TickThread>,
+}
+
+/// Background thread that increments the wasmtime epoch counter at a
+/// fixed interval (`TICK_MS`). One per `PluginManager`. The handle and
+/// stop flag are wrapped so `Drop for PluginManager` can request a
+/// clean shutdown.
+struct TickThread {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl TickThread {
+    fn spawn(engine: wasmtime::Engine) -> Self {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+        use std::time::Duration;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_inner = stop.clone();
+        let handle = thread::Builder::new()
+            .name("yosh-plugin-epoch-tick".to_string())
+            .spawn(move || {
+                while !stop_inner.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(TICK_MS));
+                    // Cheap and safe to call concurrently with guest
+                    // execution; wasmtime is designed for this exact
+                    // pattern.
+                    engine.increment_epoch();
+                }
+            })
+            .expect("spawn yosh-plugin-epoch-tick thread");
+        TickThread {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for TickThread {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(h) = self.handle.take() {
+            // The tick thread sleeps up to TICK_MS between flag checks,
+            // so worst-case join wait is ~TICK_MS. We do not impose a
+            // join timeout here because the loop is tight and bounded.
+            let _ = h.join();
+        }
+    }
 }
 
 impl PluginManager {
@@ -167,10 +220,32 @@ impl PluginManager {
 
         let engine = Engine::new(&config).expect("wasmtime Engine::new");
 
+        // Resolve the pre-prompt timeout once. Invalid values warn and
+        // fall back to the default. The pure parser stays unit-testable;
+        // the warning lives here because it is I/O.
+        let raw = std::env::var(PRE_PROMPT_TIMEOUT_ENV).ok();
+        let pre_prompt_timeout_ms = match parse_pre_prompt_timeout(raw.as_deref()) {
+            Ok(n) => n,
+            Err(invalid) => {
+                eprintln!(
+                    "yosh: plugin: {}={:?} invalid (must be 1..={} ms); using default {}ms",
+                    PRE_PROMPT_TIMEOUT_ENV,
+                    invalid,
+                    MAX_PRE_PROMPT_TIMEOUT_MS,
+                    DEFAULT_PRE_PROMPT_TIMEOUT_MS
+                );
+                DEFAULT_PRE_PROMPT_TIMEOUT_MS
+            }
+        };
+
+        let tick_thread = Some(TickThread::spawn(engine.clone()));
+
         PluginManager {
             engine,
             engine_fingerprint,
             plugins: Vec::new(),
+            pre_prompt_timeout_ms,
+            tick_thread,
         }
     }
 
@@ -529,10 +604,21 @@ impl Default for PluginManager {
     }
 }
 
-// Note: no `Drop` impl — `unload_all` requires `&mut ShellEnv`, which we
-// can't synthesize at drop time. The shell's main loop must call
-// `unload_all` explicitly before dropping the manager. The `Store`s drop
-// without calling `on_unload`, which matches a hard process exit.
+// `Drop for PluginManager` joins the tick thread. The note about
+// `unload_all` requiring `&mut ShellEnv` still applies — plugin
+// `on_unload` callbacks must be invoked from the shell main loop
+// before the manager is dropped. Drop here only cleans up the
+// tick-thread background resource, which has no `ShellEnv` dependency.
+impl Drop for PluginManager {
+    fn drop(&mut self) {
+        // Setting tick_thread to None drops the TickThread, which
+        // signals stop and joins the worker. We do this explicitly
+        // (rather than relying on the field's natural drop order) so
+        // the join is the first thing that happens when this impl
+        // runs — keeps the intent local to the body.
+        self.tick_thread = None;
+    }
+}
 
 // ── EnvGuard + with_env ────────────────────────────────────────────────
 
@@ -754,5 +840,40 @@ mod tests {
         assert_eq!(parse_pre_prompt_timeout(Some("abc")), Err("abc".to_string()));
         assert_eq!(parse_pre_prompt_timeout(Some("")), Err("".to_string()));
         assert_eq!(parse_pre_prompt_timeout(Some("-1")), Err("-1".to_string()));
+    }
+
+    #[test]
+    fn tick_thread_stops_when_manager_drops() {
+        use std::time::Instant;
+
+        let manager = PluginManager::new();
+        // Capture a clone of the stop flag to observe post-drop state.
+        let stop_flag = manager
+            .tick_thread
+            .as_ref()
+            .expect("tick thread must be running while manager is alive")
+            .stop
+            .clone();
+        assert!(
+            !stop_flag.load(std::sync::atomic::Ordering::SeqCst),
+            "stop flag must be false while manager is alive"
+        );
+
+        let t0 = Instant::now();
+        drop(manager);
+        let elapsed = t0.elapsed();
+
+        assert!(
+            stop_flag.load(std::sync::atomic::Ordering::SeqCst),
+            "stop flag must be true after PluginManager drops"
+        );
+        // Drop must join within a generous bound (one tick + slack). If
+        // the tick thread sleeps for the full TICK_MS without checking
+        // the flag, worst case is ~TICK_MS. 500ms is generous.
+        assert!(
+            elapsed.as_millis() < 500,
+            "Drop took {:?} (>500ms); tick thread is not exiting promptly",
+            elapsed
+        );
     }
 }
