@@ -6,6 +6,7 @@ members = [
     "crates/yosh-plugin-manager",
     "tests/plugins/test_plugin",
     "tests/plugins/trap_plugin",
+    "tests/plugins/slow_plugin",
 ]
 # Exclude wasm-component test plugins from default builds. They are
 # `crate-type = ["cdylib"]` for `wasm32-wasip2` only and fail to link
@@ -109,5 +110,9 @@ opt-level = "s"
 strip = true
 
 [profile.release.package.trap_plugin]
+opt-level = "s"
+strip = true
+
+[profile.release.package.slow_plugin]
 opt-level = "s"
 strip = true
