@@ -257,7 +257,7 @@ pub fn eprint(s: &str) -> Result<(), ErrorCode> {
 /// Write raw bytes to stdout or stderr.
 ///
 /// Use this when output may contain non-UTF-8 (binary) data. For
-/// UTF-8 strings, prefer [`print`] / [`eprint`].
+/// UTF-8 strings, prefer [`fn@print`] / [`fn@eprint`].
 ///
 /// Requires the `io` capability.
 ///
