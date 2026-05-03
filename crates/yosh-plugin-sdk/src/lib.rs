@@ -273,23 +273,90 @@ pub fn write_bytes(stream: IoStream, data: &[u8]) -> Result<(), ErrorCode> {
 
 // ── files:read helpers ───────────────────────────────────────────────
 
+/// Read the entire file at `path` into a byte vector.
+///
+/// Requires the `files:read` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:read` not granted.
+/// - [`ErrorCode::InvalidArgument`] — `path` is empty.
+/// - [`ErrorCode::NotFound`] — the file does not exist.
+/// - [`ErrorCode::IoFailed`] — any other I/O error (permission
+///   denied, is-a-directory, etc.).
 pub fn read_file(path: &str) -> Result<Vec<u8>, ErrorCode> {
     host_files::read_file(path)
 }
 
+/// Read the entire file at `path` and decode as UTF-8.
+///
+/// Requires the `files:read` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:read` not granted.
+/// - [`ErrorCode::InvalidArgument`] — **two distinct conditions
+///   collapse to this code:** (1) `path` is empty, OR (2) the file
+///   contents are not valid UTF-8. Callers cannot distinguish "binary
+///   content" from "bad path" through the error code alone. **For
+///   files that may contain non-UTF-8 bytes, prefer [`read_file`] and
+///   decode explicitly with [`String::from_utf8`].**
+/// - [`ErrorCode::NotFound`] — the file does not exist.
+/// - [`ErrorCode::IoFailed`] — any other I/O error.
 pub fn read_to_string(path: &str) -> Result<String, ErrorCode> {
     let bytes = host_files::read_file(path)?;
     String::from_utf8(bytes).map_err(|_| ErrorCode::InvalidArgument)
 }
 
+/// List the entries of a directory.
+///
+/// Each [`DirEntry`] reports `is_file` / `is_dir` / `is_symlink`
+/// based on the entry's own type without following symlinks (unlike
+/// [`metadata`], which does follow them — see that function's docs).
+///
+/// Requires the `files:read` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:read` not granted.
+/// - [`ErrorCode::InvalidArgument`] — `path` is empty.
+/// - [`ErrorCode::NotFound`] — the directory does not exist.
+/// - [`ErrorCode::IoFailed`] — any other I/O error.
 pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, ErrorCode> {
     host_files::read_dir(path)
 }
 
+/// Return file metadata for `path`.
+///
+/// **Symlink behavior:** the host follows symlinks before reading
+/// metadata, so [`FileStat::is_symlink`] is effectively always
+/// `false` even when `path` itself is a symlink. To detect symlinks
+/// today, call [`read_dir`] on the parent directory and inspect the
+/// matching [`DirEntry::is_symlink`].
+///
+/// Requires the `files:read` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:read` not granted.
+/// - [`ErrorCode::InvalidArgument`] — `path` is empty.
+/// - [`ErrorCode::NotFound`] — the path does not exist.
+/// - [`ErrorCode::IoFailed`] — any other I/O error.
 pub fn metadata(path: &str) -> Result<FileStat, ErrorCode> {
     host_files::metadata(path)
 }
 
+/// Test whether `path` exists.
+///
+/// **Hazard:** returns `false` if the path is missing **or** the
+/// `files:read` capability is not granted **or** any I/O error
+/// occurred. Callers cannot distinguish these cases through the
+/// boolean alone. If you need to tell `Denied` apart from "really
+/// not there" (e.g., for clearer error messages), call [`metadata`]
+/// directly and inspect the [`Err`] variant.
+///
+/// Requires the `files:read` capability (silently treated as
+/// "missing" on denial).
 pub fn exists(path: &str) -> bool {
     host_files::metadata(path).is_ok()
 }
