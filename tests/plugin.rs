@@ -435,7 +435,7 @@ fn t06_cwasm_missing_falls_back_to_in_memory() {
     let wasm_sha = yosh::plugin::cache::sha256_hex(&wasm_bytes);
     let key = CacheKey::for_runtime(
         wasm_sha,
-        "v2;component_model=true;async=false;fuel=false;epoch=true;cranelift",
+        yosh_plugin_manager::precompile::ENGINE_FINGERPRINT,
     );
     let nonexistent_cwasm = wasm.with_extension("nonexistent.cwasm");
 
@@ -476,7 +476,7 @@ fn t09_wasm_sha_mismatch_refuses_to_load() {
     let bogus_sha = "0".repeat(64);
     let key = CacheKey::for_runtime(
         bogus_sha,
-        "v2;component_model=true;async=false;fuel=false;epoch=true;cranelift",
+        yosh_plugin_manager::precompile::ENGINE_FINGERPRINT,
     );
     let nonexistent_cwasm = wasm.with_extension("nonexistent.cwasm");
 

@@ -160,9 +160,10 @@ impl PluginManager {
 
         // Stable fingerprint: covers the flags relevant to cwasm
         // compatibility. Any change to this string invalidates every
-        // cached cwasm via `engine_config_hash`.
-        let engine_fingerprint =
-            "v2;component_model=true;async=false;fuel=false;epoch=true;cranelift".to_string();
+        // cached cwasm via `engine_config_hash`. The canonical literal
+        // lives in `yosh_plugin_manager::precompile::ENGINE_FINGERPRINT`
+        // so both sides cannot drift.
+        let engine_fingerprint = yosh_plugin_manager::precompile::ENGINE_FINGERPRINT.to_string();
 
         let engine = Engine::new(&config).expect("wasmtime Engine::new");
 

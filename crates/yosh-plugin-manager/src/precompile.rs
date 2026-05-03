@@ -131,15 +131,16 @@ pub fn make_engine() -> Result<wasmtime::Engine, String> {
     wasmtime::Engine::new(&config).map_err(|e| format!("wasmtime Engine::new: {}", e))
 }
 
-/// Build a wasmtime `Engine` for the metadata-extraction sub-step. Same
-/// flags as `make_engine` PLUS `epoch_interruption(true)` so an
-/// out-of-band thread can interrupt a hung `metadata()` call by bumping
-/// the engine epoch.
+/// Build a wasmtime `Engine` for the metadata-extraction sub-step.
 ///
-/// NOTE: epoch_interruption changes the engine fingerprint conceptually
-/// but the cwasm produced by the precompile engine is what gets cached —
-/// metadata extraction works off a fresh in-memory `Component::new`, not
-/// the cwasm. So the two engines never need to share artefacts.
+/// Now that `make_engine()` also enables `epoch_interruption(true)`, both
+/// engines are flag-equivalent. This entry point is preserved as a
+/// distinct function because `metadata_extract.rs` calls it directly
+/// and the watchdog semantics there (1-tick deadline + 5-second
+/// detached epoch bump) are conceptually a different contract from the
+/// host's per-call deadlines, even when the underlying engine config
+/// matches. If a future change makes the two engines actually diverge
+/// again, restore the divergence here.
 pub fn make_metadata_engine() -> Result<wasmtime::Engine, String> {
     let mut config = wasmtime::Config::new();
     config.wasm_component_model(true);
