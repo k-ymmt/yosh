@@ -144,7 +144,7 @@ pub struct PluginManager {
     plugins: Vec<LoadedPlugin>,
     /// Resolved pre-prompt timeout in milliseconds, captured once at
     /// construction from `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS`.
-    #[allow(dead_code)] // consumed by test helper (Task 3) and call_pre_prompt deadline (Task 4)
+    #[allow(dead_code)] // overridden by test helper (Task 3); consumed by call_pre_prompt deadline (Task 4)
     pre_prompt_timeout_ms: u64,
     /// Background epoch-tick thread. `Some` while the manager is alive;
     /// joined on `Drop`.
@@ -797,6 +797,14 @@ pub mod test_helpers {
     pub fn env_pointer_is_null_in_store(manager: &PluginManager) -> Option<bool> {
         let plugin = manager.plugins.last()?;
         Some(plugin.store.data().env.is_null())
+    }
+
+    /// Override the resolved pre-prompt timeout for this manager. Tests
+    /// use this instead of mutating `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS`
+    /// in the process environment, which is `unsafe` in Rust 2024 and
+    /// races across parallel tests.
+    pub fn set_pre_prompt_timeout_for_tests(manager: &mut PluginManager, ms: u64) {
+        manager.pre_prompt_timeout_ms = ms;
     }
 }
 
