@@ -70,9 +70,9 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
     //
     // Function names follow the WIT (kebab-case in the `func_wrap` path
     // string). The interface path uses the package's full qualified form
-    // including the `@0.1.0` version (matching the `package` declaration
+    // including the `@0.2.1` version (matching the `package` declaration
     // in the WIT and the bindgen-generated import expectations).
-    let mut vars = linker.instance("yosh:plugin/variables@0.1.0")?;
+    let mut vars = linker.instance("yosh:plugin/variables@0.2.1")?;
     if has(allowed, CAP_VARIABLES_READ) {
         vars.func_wrap("get", |mut store, (name,): (String,)| {
             Ok((host_variables_get(store.data_mut(), name),))
@@ -105,7 +105,7 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
     }
 
     // ── yosh:plugin/filesystem ──────────────────────────────────────────
-    let mut fs = linker.instance("yosh:plugin/filesystem@0.1.0")?;
+    let mut fs = linker.instance("yosh:plugin/filesystem@0.2.1")?;
     if has(allowed, CAP_FILESYSTEM) {
         fs.func_wrap("cwd", |mut store, (): ()| {
             Ok((host_filesystem_cwd(store.data_mut()),))
@@ -124,7 +124,7 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
 
     // ── yosh:plugin/io ──────────────────────────────────────────────────
     use super::generated::yosh::plugin::types::IoStream;
-    let mut io = linker.instance("yosh:plugin/io@0.1.0")?;
+    let mut io = linker.instance("yosh:plugin/io@0.2.1")?;
     if has(allowed, CAP_IO) {
         io.func_wrap("write", |mut store, (target, data): (IoStream, Vec<u8>)| {
             Ok((host_io_write(store.data_mut(), target, data),))
@@ -136,7 +136,7 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
     }
 
     // ── yosh:plugin/files ───────────────────────────────────────────────
-    let mut files = linker.instance("yosh:plugin/files@0.1.0")?;
+    let mut files = linker.instance("yosh:plugin/files@0.2.1")?;
 
     // Read group — gated by CAP_FILES_READ
     if has(allowed, CAP_FILES_READ) {
@@ -221,7 +221,7 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
     }
 
     // ── yosh:plugin/commands ───────────────────────────────────────────
-    let mut commands = linker.instance("yosh:plugin/commands@0.1.0")?;
+    let mut commands = linker.instance("yosh:plugin/commands@0.2.1")?;
     if has(allowed, CAP_COMMANDS_EXEC) {
         commands.func_wrap(
             "exec",

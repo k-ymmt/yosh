@@ -175,7 +175,7 @@ where
 /// `metadata()`; this is the active enforcement vs. the host's "null env
 /// pointer" enforcement (both produce the same WIT result).
 fn register_all_deny_imports(linker: &mut Linker<MetadataCtx>) -> wasmtime::Result<()> {
-    let mut vars = linker.instance("yosh:plugin/variables@0.1.0")?;
+    let mut vars = linker.instance("yosh:plugin/variables@0.2.1")?;
     vars.func_wrap(
         "get",
         |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_,): (String,)| {
@@ -195,7 +195,7 @@ fn register_all_deny_imports(linker: &mut Linker<MetadataCtx>) -> wasmtime::Resu
         },
     )?;
 
-    let mut fs = linker.instance("yosh:plugin/filesystem@0.1.0")?;
+    let mut fs = linker.instance("yosh:plugin/filesystem@0.2.1")?;
     fs.func_wrap(
         "cwd",
         |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (): ()| {
@@ -209,7 +209,7 @@ fn register_all_deny_imports(linker: &mut Linker<MetadataCtx>) -> wasmtime::Resu
         },
     )?;
 
-    let mut io = linker.instance("yosh:plugin/io@0.1.0")?;
+    let mut io = linker.instance("yosh:plugin/io@0.2.1")?;
     io.func_wrap(
         "write",
         |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_, _): (IoStream, Vec<u8>)| {
