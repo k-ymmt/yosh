@@ -2,6 +2,29 @@
 //!
 //! Plugins implement the [`Plugin`] trait and invoke [`export!`] to wire
 //! the trait into the WIT-generated guest bindings.
+//!
+//! # Capabilities
+//!
+//! Every host import (variables, filesystem, io, files, commands) is
+//! gated by a capability declared in [`Plugin::required_capabilities`].
+//! Without the matching capability, the corresponding helper returns
+//! [`ErrorCode::Denied`].
+//!
+//! # `metadata` is special
+//!
+//! The host calls [`Plugin::commands`], [`Plugin::required_capabilities`],
+//! and [`Plugin::implemented_hooks`] without an active `ShellEnv`
+//! binding (to read static plugin metadata). Any host import (e.g.
+//! [`cwd`], [`get_var`]) called from inside those methods returns
+//! [`ErrorCode::Denied`] regardless of granted capabilities. Treat
+//! these methods as pure functions of `&self`.
+//!
+//! # `files:write` sandbox
+//!
+//! The `files:write` capability has no per-path allowlist. Once
+//! granted, a plugin can write to or delete any path the host process
+//! can reach. The capability grant is the entire access boundary;
+//! treat it accordingly when configuring plugin permissions.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -40,31 +63,80 @@ pub use self::yosh::plugin::variables as host_variables;
 
 pub use yosh_plugin_api::{Capability, capabilities_to_bitflags};
 
-/// The trait every plugin implements.
+/// The trait every yosh plugin implements.
+///
+/// Plugins are instantiated once per load via `Default::default()` and
+/// kept alive in the host's wasm store for the lifetime of the load.
+/// `Send + 'static` is required so the host can move the instance
+/// across awaits in interactive use.
+///
+/// `commands`, `required_capabilities`, and `implemented_hooks` are
+/// invoked as part of static metadata synthesis without an active
+/// `ShellEnv`; they MUST NOT call any host import. See the
+/// crate-level `metadata is special` section.
 pub trait Plugin: Send + Default + 'static {
+    /// The subcommands this plugin handles.
+    ///
+    /// When the user types `name args...` at the shell prompt, if
+    /// `name` matches one of these strings the host dispatches to
+    /// [`Self::exec`].
     fn commands(&self) -> &[&'static str];
 
+    /// The capabilities this plugin needs to function.
+    ///
+    /// Each capability listed here must be granted by host
+    /// configuration. Missing capabilities cause the plugin to fail
+    /// to load. Default: no capabilities.
     fn required_capabilities(&self) -> &[Capability] {
         &[]
     }
 
-    /// Hooks this plugin actually overrides. Rust cannot reflectively
-    /// detect default-method overrides, so plugins enumerate explicitly.
+    /// Hooks this plugin actually overrides.
+    ///
+    /// Rust cannot reflectively detect default-method overrides, so
+    /// plugins enumerate explicitly. Listing a hook here registers it
+    /// with the host; not listing it means the host skips dispatching
+    /// even if you have overridden the corresponding `hook_*` method.
     fn implemented_hooks(&self) -> &[HookName] {
         &[]
     }
 
+    /// Called once after the plugin is loaded and capability checks
+    /// pass.
+    ///
+    /// Use for one-time setup. Returning `Err(_)` aborts the load and
+    /// surfaces the message to the user.
     fn on_load(&mut self) -> Result<(), String> {
         Ok(())
     }
 
+    /// Entry point for every dispatched subcommand.
+    ///
+    /// `command` is one of the strings returned by [`Self::commands`].
+    /// `args` is the remaining argv. Return value is the shell exit
+    /// code (0 = success).
     fn exec(&mut self, command: &str, args: &[String]) -> i32;
 
+    /// Fires before each external command runs.
+    ///
+    /// `command` is the command line as the user typed it.
     fn hook_pre_exec(&mut self, _command: &str) {}
+
+    /// Fires after each external command exits.
+    ///
+    /// `exit_code` is the child's exit status.
     fn hook_post_exec(&mut self, _command: &str, _exit_code: i32) {}
+
+    /// Fires after a successful `cd`. Both arguments are absolute paths.
     fn hook_on_cd(&mut self, _old_dir: &str, _new_dir: &str) {}
+
+    /// Fires before each interactive prompt is rendered.
     fn hook_pre_prompt(&mut self) {}
 
+    /// Best-effort cleanup before the plugin is dropped.
+    ///
+    /// Not guaranteed to run if the host process crashes. Persistent
+    /// state should be flushed eagerly, not deferred to here.
     fn on_unload(&mut self) {}
 }
 
