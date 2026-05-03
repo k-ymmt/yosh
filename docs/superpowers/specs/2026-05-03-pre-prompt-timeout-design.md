@@ -251,16 +251,21 @@ Cargo.toml mirrors `test_plugin/Cargo.toml` with a different package name.
 - The env-var resolver is factored as a pure function:
 
   ```rust
-  fn parse_pre_prompt_timeout(input: Option<&str>) -> u64
+  fn parse_pre_prompt_timeout(input: Option<&str>) -> Result<u64, String>
   ```
 
-  taking the env value as an `Option<&str>` (so tests pass literals;
+  Taking the env value as an `Option<&str>` (so tests pass literals;
   production calls `std::env::var("YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS").ok()`
-  at the call site). This is the only piece that needs unit testing for
-  configuration; no process-env mutation in tests.
+  at the call site). `Ok(n)` carries a usable timeout; `Err(raw)` carries
+  the original invalid input so the caller can quote it in a warning. The
+  caller (`PluginManager::new`) is responsible for the stderr warning and
+  the default fallback. This factoring keeps the parser pure and the
+  warning testable indirectly through behaviour rather than through env
+  mutation.
 
-- `parse_pre_prompt_timeout_env` covers: `None`, valid, `Some("0")`,
-  `Some("60001")`, `Some("notanumber")`. Pure parsing, no engine.
+- `parse_pre_prompt_timeout_*` unit tests cover: `None`, valid integer in
+  range, `Some("0")`, `Some("60001")`, `Some("999999")`, `Some("abc")`,
+  `Some("")`, `Some("-1")`. Pure parsing, no engine.
 - `tick_thread_stops_on_drop` covers: spawn the tick thread, drop, verify
   the thread joined within a generous timeout. Catches future regressions
   where `Drop` fails to signal stop.
