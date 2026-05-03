@@ -363,34 +363,127 @@ pub fn exists(path: &str) -> bool {
 
 // ── files:write helpers ──────────────────────────────────────────────
 
+/// Write `data` to `path`, creating or truncating the file.
+///
+/// Requires the `files:write` capability. The capability has no
+/// per-path allowlist; see the crate-level "files:write sandbox" note.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:write` not granted.
+/// - [`ErrorCode::InvalidArgument`] — `path` is empty.
+/// - [`ErrorCode::IoFailed`] — any I/O error, **including parent
+///   directory missing**. Unlike the read side, the write helpers do
+///   not map a missing parent to [`ErrorCode::NotFound`].
 pub fn write_file(path: &str, data: &[u8]) -> Result<(), ErrorCode> {
     host_files::write_file(path, data)
 }
 
+/// Write a UTF-8 string to `path`, creating or truncating the file.
+///
+/// Convenience wrapper over [`write_file`].
+///
+/// Requires the `files:write` capability. See [`write_file`] for the
+/// sandbox note and full error list.
+///
+/// # Errors
+///
+/// Same as [`write_file`].
 pub fn write_string(path: &str, s: &str) -> Result<(), ErrorCode> {
     host_files::write_file(path, s.as_bytes())
 }
 
+/// Append `data` to `path`, creating the file if it does not exist.
+///
+/// Requires the `files:write` capability. See the crate-level
+/// "files:write sandbox" note.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:write` not granted.
+/// - [`ErrorCode::InvalidArgument`] — `path` is empty.
+/// - [`ErrorCode::IoFailed`] — any I/O error (parent dir missing
+///   collapses here, as with [`write_file`]).
 pub fn append_file(path: &str, data: &[u8]) -> Result<(), ErrorCode> {
     host_files::append_file(path, data)
 }
 
+/// Create a directory at `path`. Fails if any ancestor is missing.
+///
+/// For `mkdir -p` semantics, use [`create_dir_all`] instead.
+///
+/// Requires the `files:write` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:write` not granted.
+/// - [`ErrorCode::InvalidArgument`] — `path` is empty.
+/// - [`ErrorCode::IoFailed`] — any I/O error, including parent
+///   directory missing or `path` already existing.
 pub fn create_dir(path: &str) -> Result<(), ErrorCode> {
     host_files::create_dir(path, false)
 }
 
+/// Create a directory at `path`, including all missing ancestors
+/// (`mkdir -p` semantics).
+///
+/// Requires the `files:write` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:write` not granted.
+/// - [`ErrorCode::InvalidArgument`] — `path` is empty.
+/// - [`ErrorCode::IoFailed`] — any I/O error.
 pub fn create_dir_all(path: &str) -> Result<(), ErrorCode> {
     host_files::create_dir(path, true)
 }
 
+/// Delete the file at `path`.
+///
+/// Requires the `files:write` capability. The capability grants
+/// destructive access to any path the host process can reach; see
+/// the crate-level "files:write sandbox" note.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:write` not granted.
+/// - [`ErrorCode::InvalidArgument`] — `path` is empty.
+/// - [`ErrorCode::NotFound`] — the file does not exist.
+/// - [`ErrorCode::IoFailed`] — any other I/O error (permission denied,
+///   is-a-directory, etc.).
 pub fn remove_file(path: &str) -> Result<(), ErrorCode> {
     host_files::remove_file(path)
 }
 
+/// Remove an empty directory at `path`.
+///
+/// For recursive removal, use [`remove_dir_all`].
+///
+/// Requires the `files:write` capability.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:write` not granted.
+/// - [`ErrorCode::InvalidArgument`] — `path` is empty.
+/// - [`ErrorCode::NotFound`] — the directory does not exist.
+/// - [`ErrorCode::IoFailed`] — any other I/O error (directory not
+///   empty, permission denied, etc.).
 pub fn remove_dir(path: &str) -> Result<(), ErrorCode> {
     host_files::remove_dir(path, false)
 }
 
+/// Recursively remove a directory and all its contents.
+///
+/// Requires the `files:write` capability. The capability grants
+/// recursive destructive access to any path the host process can
+/// reach; see the crate-level "files:write sandbox" note.
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — `files:write` not granted.
+/// - [`ErrorCode::InvalidArgument`] — `path` is empty.
+/// - [`ErrorCode::NotFound`] — the directory does not exist.
+/// - [`ErrorCode::IoFailed`] — any other I/O error.
 pub fn remove_dir_all(path: &str) -> Result<(), ErrorCode> {
     host_files::remove_dir(path, true)
 }
