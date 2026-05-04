@@ -43,7 +43,8 @@ pub fn target_triple() -> &'static str {
 /// `PluginManager::new()` computes (`src/plugin/mod.rs`) for the manager
 /// to write a cwasm the host will accept. Both sides use this string
 /// verbatim and feed it through `engine_config_hash`.
-pub const ENGINE_FINGERPRINT: &str = "v2;component_model=true;async=false;fuel=false;epoch=true;cranelift";
+pub const ENGINE_FINGERPRINT: &str =
+    "v2;component_model=true;async=false;fuel=false;epoch=true;cranelift";
 
 /// Hex-encoded SHA-256 of the engine fingerprint string. Same algorithm
 /// the host uses; same input string => same hash. Reusing the canonical

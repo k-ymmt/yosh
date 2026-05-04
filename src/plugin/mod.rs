@@ -598,7 +598,9 @@ impl PluginManager {
             // store retain their full budget. Skip on Trapped because
             // the plugin is now invalidated and its deadline is moot.
             if !matches!(&result, Err(WithEnvError::Trapped { .. })) {
-                plugin.store.set_epoch_deadline(STORE_BASELINE_DEADLINE_TICKS);
+                plugin
+                    .store
+                    .set_epoch_deadline(STORE_BASELINE_DEADLINE_TICKS);
             }
             if let Err(e) = result {
                 match &e {
@@ -925,7 +927,10 @@ mod tests {
 
     #[test]
     fn parse_pre_prompt_timeout_non_numeric_returns_invalid() {
-        assert_eq!(parse_pre_prompt_timeout(Some("abc")), Err("abc".to_string()));
+        assert_eq!(
+            parse_pre_prompt_timeout(Some("abc")),
+            Err("abc".to_string())
+        );
         assert_eq!(parse_pre_prompt_timeout(Some("")), Err("".to_string()));
         assert_eq!(parse_pre_prompt_timeout(Some("-1")), Err("-1".to_string()));
     }
