@@ -5,6 +5,14 @@
 //! after `pre_prompt` keeps the plugin's other hooks usable when the
 //! pre_prompt itself returned in time (regression for the post-call
 //! reset bug fixed in commit 154e96e).
+//!
+//! The plugin makes **zero host calls** by design. The test goal is to
+//! verify that wasmtime's epoch-interrupt path itself terminates the
+//! busy loop — *not* that the host-call deny short-circuit terminates
+//! it. Adding any host call here (even a benign `print()`) would let
+//! the host-side capability check fire first and mask whether the
+//! pure-wasm interrupt mechanism actually works. Keep this plugin host-
+//! call free.
 
 use yosh_plugin_sdk::{Capability, HookName, Plugin, export};
 
