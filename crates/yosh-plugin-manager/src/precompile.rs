@@ -115,13 +115,20 @@ impl SidecarMeta {
 }
 
 /// Build a wasmtime `Engine` configured the same way the shell does at
-/// startup. Used by callers of `precompile()` so the produced cwasm
-/// matches the host's expectations exactly.
+/// startup. Used in two places:
+///
+/// 1. `precompile()` callers — the produced cwasm must match the host's
+///    engine flags exactly so it deserializes without re-precompilation.
+/// 2. `metadata_extract` — runs each plugin's `metadata()` once behind a
+///    one-shot watchdog (1-tick deadline + 5-second detached epoch bump)
+///    to time-bound malformed components.
 ///
 /// `epoch_interruption` is ON to match the host (`src/plugin/mod.rs`),
 /// which uses it to bound the wall-clock time of `pre_prompt` hooks.
-/// Both engines must share the same flags so the cwasm produced here is
-/// loadable by the host without re-precompilation.
+/// All three sites share these flags so cwasm artefacts are universally
+/// loadable. Per-call timeout semantics differ between sites (host =
+/// per-invocation deadline, metadata = one-shot watchdog), but the
+/// engine config itself is shared.
 pub fn make_engine() -> Result<wasmtime::Engine, String> {
     let mut config = wasmtime::Config::new();
     config.wasm_component_model(true);
@@ -129,25 +136,6 @@ pub fn make_engine() -> Result<wasmtime::Engine, String> {
     config.consume_fuel(false);
     config.epoch_interruption(true);
     wasmtime::Engine::new(&config).map_err(|e| format!("wasmtime Engine::new: {}", e))
-}
-
-/// Build a wasmtime `Engine` for the metadata-extraction sub-step.
-///
-/// Now that `make_engine()` also enables `epoch_interruption(true)`, both
-/// engines are flag-equivalent. This entry point is preserved as a
-/// distinct function because `metadata_extract.rs` calls it directly
-/// and the watchdog semantics there (1-tick deadline + 5-second
-/// detached epoch bump) are conceptually a different contract from the
-/// host's per-call deadlines, even when the underlying engine config
-/// matches. If a future change makes the two engines actually diverge
-/// again, restore the divergence here.
-pub fn make_metadata_engine() -> Result<wasmtime::Engine, String> {
-    let mut config = wasmtime::Config::new();
-    config.wasm_component_model(true);
-    config.async_support(false);
-    config.consume_fuel(false);
-    config.epoch_interruption(true);
-    wasmtime::Engine::new(&config).map_err(|e| format!("wasmtime metadata Engine::new: {}", e))
 }
 
 /// Result of a successful precompile.
@@ -294,10 +282,5 @@ mod tests {
     #[test]
     fn make_engine_succeeds() {
         let _engine = make_engine().expect("engine");
-    }
-
-    #[test]
-    fn make_metadata_engine_succeeds() {
-        let _engine = make_metadata_engine().expect("metadata engine");
     }
 }

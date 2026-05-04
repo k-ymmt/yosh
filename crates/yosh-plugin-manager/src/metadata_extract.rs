@@ -20,7 +20,7 @@
 //!
 //! ## Watchdog
 //!
-//! The engine in `precompile::make_metadata_engine()` has
+//! The engine returned by `precompile::make_engine()` has
 //! `epoch_interruption(true)`. We bump the epoch from a detached thread
 //! after 5 seconds to interrupt a hung `metadata()` call. A well-behaved
 //! plugin runs `metadata` in microseconds.
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn linker_registration_smoke() {
-        let engine = crate::precompile::make_metadata_engine().unwrap();
+        let engine = crate::precompile::make_engine().unwrap();
         let mut linker = Linker::<MetadataCtx>::new(&engine);
         register_limited_wasi(&mut linker).expect("limited wasi");
         register_all_deny_imports(&mut linker).expect("deny stubs");

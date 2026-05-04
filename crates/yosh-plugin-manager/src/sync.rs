@@ -63,9 +63,11 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
     let client = GitHubClient::new();
     // One engine each, shared across plugins. Building engines is non-trivial
     // (cranelift initialisation), so reusing them for the whole sync run
-    // amortises the cost.
+    // amortises the cost. precompile and metadata engines are flag-equivalent
+    // but kept as separate handles so each call site documents its semantic
+    // intent (cwasm production vs one-shot metadata watchdog).
     let precompile_engine = precompile::make_engine()?;
-    let metadata_engine = precompile::make_metadata_engine()?;
+    let metadata_engine = precompile::make_engine()?;
 
     let mut new_entries: Vec<LockEntry> = Vec::new();
     let mut succeeded: Vec<String> = Vec::new();
@@ -374,7 +376,7 @@ mod tests {
         let client = GitHubClient::new();
         let empty_lock = LockFile { plugin: vec![] };
         let pre_engine = precompile::make_engine().unwrap();
-        let meta_engine = precompile::make_metadata_engine().unwrap();
+        let meta_engine = precompile::make_engine().unwrap();
         let entry = sync_one(&client, &decl, &empty_lock, &pre_engine, &meta_engine).unwrap();
         assert_eq!(entry.name, "local-test");
         assert_eq!(entry.path, path);
@@ -402,7 +404,7 @@ mod tests {
         let client = GitHubClient::new();
         let empty_lock = LockFile { plugin: vec![] };
         let pre_engine = precompile::make_engine().unwrap();
-        let meta_engine = precompile::make_metadata_engine().unwrap();
+        let meta_engine = precompile::make_engine().unwrap();
         let result = sync_one(&client, &decl, &empty_lock, &pre_engine, &meta_engine);
         assert!(result.is_err());
     }
