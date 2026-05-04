@@ -40,7 +40,7 @@ After this plan completes, `src/parser/` will contain:
 cargo test --lib parser:: 2>&1 | tee /tmp/parser-baseline.txt
 ```
 
-Expected: a line like `test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; ...`. Record the `96 passed` figure — every later task must reproduce it.
+Expected: a line like `test result: ok. 99 passed; 0 failed; 0 ignored; ...` for the main lib test binary (96 of those live in `parser::tests::*` — the ones being moved — and 3 live in `parser::ast::tests::*` and stay put). Record the `99 passed` figure — every later task must reproduce it.
 
 - [ ] **Step 2: Snapshot visibility / cfg-test markers in `parser/mod.rs`**
 
@@ -160,7 +160,7 @@ cargo build -p yosh
 cargo test --lib parser::
 ```
 
-Expected: build succeeds; test count equals the Task 0 baseline (96 passed).
+Expected: build succeeds; test count equals the Task 0 baseline (99 passed).
 
 If `cargo build` fails with "unresolved import `super::Parser`" inside `word.rs`, double-check the new file's `use` block.
 
@@ -256,7 +256,7 @@ cargo build -p yosh
 cargo test --lib parser::
 ```
 
-Expected: 96 passed (same as baseline).
+Expected: 99 passed (same as baseline).
 
 If a test fails with "cannot find function `parse` in this scope", the test in `function.rs::tests` is calling the shared `parse` helper from `mod.rs::tests`. Confirm `use super::super::tests::parse;` is present in `function.rs::tests`.
 
@@ -359,7 +359,7 @@ cargo build -p yosh
 cargo test --lib parser::
 ```
 
-Expected: 96 passed.
+Expected: 99 passed.
 
 - [ ] **Step 9: Commit**
 
@@ -466,7 +466,7 @@ cargo build -p yosh
 cargo test --lib parser::
 ```
 
-Expected: 96 passed.
+Expected: 99 passed.
 
 If `cargo build` reports `error[E0425]: cannot find function 'split_tildes_in_literal'` inside `simple.rs`, confirm `use super::word::split_tildes_in_literal;` is present.
 
@@ -614,7 +614,7 @@ cargo build -p yosh
 cargo test --lib parser::
 ```
 
-Expected: 96 passed.
+Expected: 99 passed.
 
 - [ ] **Step 11: Commit**
 
@@ -677,7 +677,7 @@ cargo build -p yosh
 cargo test --lib parser::
 ```
 
-Expected: 96 passed.
+Expected: 99 passed.
 
 - [ ] **Step 5: Commit only if changes were made**
 
@@ -801,7 +801,7 @@ EOF
 
 Per spec §4.3, immediately `git revert <last-commit>` if any of the following appear:
 
-- `cargo test --lib parser::` count drops below the Task 0 baseline (96).
+- `cargo test --lib parser::` count drops below the Task 0 baseline (99).
 - `cargo build` fails for a reason other than missing `use` (e.g. trait duplication, orphan-rule violation, recursive module).
 - `cargo clippy` produces a new error (warnings excluded) attributable to the split.
 
