@@ -1,7 +1,5 @@
 use super::Parser;
-use super::ast::{
-    CaseItem, CaseTerminator, CompleteCommand, CompoundCommand, CompoundCommandKind,
-};
+use super::ast::{CaseItem, CaseTerminator, CompleteCommand, CompoundCommand, CompoundCommandKind};
 use super::word::is_valid_name;
 use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::token::Token;

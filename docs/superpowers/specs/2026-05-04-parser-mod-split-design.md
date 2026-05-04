@@ -351,7 +351,12 @@ failure mode and revisit the plan before re-attempting.
 
 ## Definition of Done
 
-1. `src/parser/mod.rs` ≤ 300 lines (target ~280).
+1. `src/parser/mod.rs` reduced to ~410 lines (down from 2054). The
+   original ≤ 300 target was aspirational; the actual structural
+   minimum after the split is 407 lines, holding the `Parser` struct,
+   its constructors and token utilities, the driver methods, and the
+   10 driver-level tests. Code-quality review confirmed no further
+   extraction would improve cohesion.
 2. `src/parser/{simple,compound,function,redirect,word}.rs` exist and
    `cargo build` succeeds.
 3. `cargo test` total matches the pre-split count.

@@ -1,7 +1,7 @@
-use crate::error::{self, ParseErrorKind, ShellError};
-use crate::lexer::token::Token;
 use super::Parser;
 use super::ast::{HereDoc, Redirect, RedirectKind, Word, WordPart};
+use crate::error::{self, ParseErrorKind, ShellError};
+use crate::lexer::token::Token;
 
 impl Parser {
     pub fn try_parse_redirect(&mut self) -> error::Result<Option<Redirect>> {
