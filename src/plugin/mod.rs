@@ -82,6 +82,13 @@ const PRE_PROMPT_TIMEOUT_ENV: &str = "YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS";
 /// per invocation and restores it after the call.
 const STORE_BASELINE_DEADLINE_TICKS: u64 = u64::MAX / 2;
 
+/// Epoch deadline applied to the one-shot scratch store used during
+/// `metadata()` extraction at plugin load. With `epoch_interruption(true)`
+/// every store needs an explicit deadline (default 0 traps immediately);
+/// 100 ticks (~5 s at `TICK_MS = 50`) is a generous bound that never
+/// trips for well-behaved plugins while still catching infinite loops.
+const METADATA_SCRATCH_DEADLINE_TICKS: u64 = 100;
+
 /// Pure parser for the `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS` env var.
 ///
 /// * `Ok(n)` — caller should use `n` directly. `None` → default,
@@ -233,10 +240,15 @@ impl PluginManager {
         let pre_prompt_timeout_ms = match parse_pre_prompt_timeout(raw.as_deref()) {
             Ok(n) => n,
             Err(invalid) => {
+                let display: &str = if invalid.is_empty() {
+                    "<empty>"
+                } else {
+                    &invalid
+                };
                 eprintln!(
-                    "yosh: plugin: {}={:?} invalid (must be 1..={} ms); using default {}ms",
+                    "yosh: plugin: {}={} invalid (must be 1..={} ms); using default {}ms",
                     PRE_PROMPT_TIMEOUT_ENV,
-                    invalid,
+                    display,
                     MAX_PRE_PROMPT_TIMEOUT_MS,
                     DEFAULT_PRE_PROMPT_TIMEOUT_MS
                 );
@@ -411,10 +423,9 @@ impl PluginManager {
         );
         // With epoch_interruption(true) on the engine, every store needs a
         // deadline; the default is 0, which traps on the first instruction.
-        // metadata() should be microseconds; 100 ticks (~5s once the Task 2
-        // tick thread lands) is a generous bound that never trips for
-        // well-behaved plugins.
-        scratch_store.set_epoch_deadline(100);
+        // metadata() should be microseconds; the scratch deadline is a
+        // generous bound that never trips for well-behaved plugins.
+        scratch_store.set_epoch_deadline(METADATA_SCRATCH_DEADLINE_TICKS);
         let scratch_world = scratch_pre
             .instantiate(&mut scratch_store)
             .map_err(|e| format!("{}: instantiate failed: {}", path.display(), e))?;
@@ -868,6 +879,10 @@ pub mod test_helpers {
     /// in the process environment, which is `unsafe` in Rust 2024 and
     /// races across parallel tests.
     pub fn set_pre_prompt_timeout_for_tests(manager: &mut PluginManager, ms: u64) {
+        debug_assert!(
+            ms >= 1,
+            "set_pre_prompt_timeout_for_tests(0) would trap on the first epoch tick — use a positive deadline"
+        );
         manager.pre_prompt_timeout_ms = ms;
     }
 }
