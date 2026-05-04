@@ -5,7 +5,7 @@ use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::token::Token;
 
 impl Parser {
-    pub fn parse_compound_command(&mut self) -> error::Result<CompoundCommand> {
+    pub(super) fn parse_compound_command(&mut self) -> error::Result<CompoundCommand> {
         let line = self.current.span.line;
         let kind = if self.is_reserved("if") {
             self.parse_if_clause()?
@@ -39,7 +39,10 @@ impl Parser {
     /// empty, returns a parse error of the form
     /// `syntax error: empty compound list in {context}` so callers can
     /// surface context-aware diagnostics.
-    pub fn parse_compound_list(&mut self, context: &str) -> error::Result<Vec<CompleteCommand>> {
+    pub(super) fn parse_compound_list(
+        &mut self,
+        context: &str,
+    ) -> error::Result<Vec<CompleteCommand>> {
         self.skip_newlines()?;
         let mut commands = Vec::new();
         while !self.is_at_end() && !self.is_complete_command_end() {
@@ -60,7 +63,7 @@ impl Parser {
     }
 
     /// Parse: if compound_list then compound_list [elif compound_list then compound_list]... [else compound_list] fi
-    pub fn parse_if_clause(&mut self) -> error::Result<CompoundCommandKind> {
+    pub(super) fn parse_if_clause(&mut self) -> error::Result<CompoundCommandKind> {
         self.expect_reserved("if")?;
         let condition = self.parse_compound_list("'if' condition")?;
         self.expect_reserved("then")?;
@@ -96,7 +99,7 @@ impl Parser {
     }
 
     /// Parse: for name [in [word ...]] do compound_list done
-    pub fn parse_for_clause(&mut self) -> error::Result<CompoundCommandKind> {
+    pub(super) fn parse_for_clause(&mut self) -> error::Result<CompoundCommandKind> {
         self.expect_reserved("for")?;
 
         // Expect a valid variable name
@@ -188,7 +191,7 @@ impl Parser {
     }
 
     /// Parse: do compound_list done
-    pub fn parse_do_group(&mut self) -> error::Result<Vec<CompleteCommand>> {
+    pub(super) fn parse_do_group(&mut self) -> error::Result<Vec<CompleteCommand>> {
         self.expect_reserved("do")?;
         let body = self.parse_compound_list("'do' body")?;
         self.expect_reserved("done")?;
@@ -196,7 +199,7 @@ impl Parser {
     }
 
     /// Parse: while compound_list do compound_list done
-    pub fn parse_while_clause(&mut self) -> error::Result<CompoundCommandKind> {
+    pub(super) fn parse_while_clause(&mut self) -> error::Result<CompoundCommandKind> {
         self.expect_reserved("while")?;
         let condition = self.parse_compound_list("'while' condition")?;
         let body = self.parse_do_group()?;
@@ -204,7 +207,7 @@ impl Parser {
     }
 
     /// Parse: until compound_list do compound_list done
-    pub fn parse_until_clause(&mut self) -> error::Result<CompoundCommandKind> {
+    pub(super) fn parse_until_clause(&mut self) -> error::Result<CompoundCommandKind> {
         self.expect_reserved("until")?;
         let condition = self.parse_compound_list("'until' condition")?;
         let body = self.parse_do_group()?;
@@ -212,7 +215,7 @@ impl Parser {
     }
 
     /// Parse: case word in [pattern [| pattern]... ) compound-list ;; ]... esac
-    pub fn parse_case_clause(&mut self) -> error::Result<CompoundCommandKind> {
+    pub(super) fn parse_case_clause(&mut self) -> error::Result<CompoundCommandKind> {
         self.expect_reserved("case")?;
         let word = self.expect_word("case subject")?;
         self.skip_newlines()?;
@@ -285,7 +288,7 @@ impl Parser {
     }
 
     /// Parse: { compound_list }
-    pub fn parse_brace_group(&mut self) -> error::Result<CompoundCommandKind> {
+    pub(super) fn parse_brace_group(&mut self) -> error::Result<CompoundCommandKind> {
         self.expect_reserved("{")?;
         let body = self.parse_compound_list("brace group")?;
         self.expect_reserved("}")?;
@@ -293,7 +296,7 @@ impl Parser {
     }
 
     /// Parse: ( compound_list )
-    pub fn parse_subshell(&mut self) -> error::Result<CompoundCommandKind> {
+    pub(super) fn parse_subshell(&mut self) -> error::Result<CompoundCommandKind> {
         self.eat(&Token::LParen)?;
         let body = self.parse_compound_list("subshell")?;
         if !self.eat(&Token::RParen)? {

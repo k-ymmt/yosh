@@ -5,7 +5,7 @@ use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::token::Token;
 
 impl Parser {
-    pub fn parse_simple_command(&mut self) -> error::Result<SimpleCommand> {
+    pub(super) fn parse_simple_command(&mut self) -> error::Result<SimpleCommand> {
         let line = self.current.span.line;
         let mut assignments = Vec::new();
         let mut words = Vec::new();

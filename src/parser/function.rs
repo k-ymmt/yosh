@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 impl Parser {
     /// Try to parse a function definition: NAME ( ) linebreak compound_command [redirect_list]
-    pub fn try_parse_function_def(&mut self) -> error::Result<Option<FunctionDef>> {
+    pub(super) fn try_parse_function_def(&mut self) -> error::Result<Option<FunctionDef>> {
         // Check if current token is a Word with a valid name
         let name = match &self.current.token {
             Token::Word(word) => {

@@ -4,7 +4,7 @@ use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::token::Token;
 
 impl Parser {
-    pub fn try_parse_redirect(&mut self) -> error::Result<Option<Redirect>> {
+    pub(super) fn try_parse_redirect(&mut self) -> error::Result<Option<Redirect>> {
         // Check for optional IO number (e.g., 2> or 1<)
         let fd = if let Token::IoNumber(n) = &self.current.token {
             let n = *n;
@@ -90,7 +90,7 @@ impl Parser {
         Ok(Some(Redirect { fd, kind }))
     }
 
-    pub fn parse_redirect_list(&mut self) -> error::Result<Vec<Redirect>> {
+    pub(super) fn parse_redirect_list(&mut self) -> error::Result<Vec<Redirect>> {
         let mut redirects = Vec::new();
         while let Some(redirect) = self.try_parse_redirect()? {
             redirects.push(redirect);

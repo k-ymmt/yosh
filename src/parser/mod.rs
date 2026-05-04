@@ -71,12 +71,11 @@ impl Parser {
         self.pre_current_pos
     }
 
-    #[allow(dead_code)]
     pub fn current_token(&self) -> &Token {
         &self.current.token
     }
 
-    pub fn current_span(&self) -> Span {
+    pub(super) fn current_span(&self) -> Span {
         self.current.span
     }
 
@@ -87,7 +86,7 @@ impl Parser {
     }
 
     /// Advance if current token matches expected, returns true if matched.
-    pub fn eat(&mut self, expected: &Token) -> error::Result<bool> {
+    pub(super) fn eat(&mut self, expected: &Token) -> error::Result<bool> {
         if self.current.token == *expected {
             self.advance()?;
             Ok(true)
@@ -97,7 +96,7 @@ impl Parser {
     }
 
     /// Advance if current token is reserved word matching keyword, else error.
-    pub fn expect_reserved(&mut self, keyword: &str) -> error::Result<()> {
+    pub(super) fn expect_reserved(&mut self, keyword: &str) -> error::Result<()> {
         if self.current.token.matches_keyword(keyword) {
             self.advance()?;
             Ok(())
@@ -113,7 +112,7 @@ impl Parser {
     }
 
     /// Consume all consecutive Newline tokens.
-    pub fn skip_newlines(&mut self) -> error::Result<()> {
+    pub(super) fn skip_newlines(&mut self) -> error::Result<()> {
         while self.current.token == Token::Newline {
             self.advance()?;
             if self.lexer.has_pending_heredocs() {
@@ -127,7 +126,7 @@ impl Parser {
         self.current.token == Token::Eof
     }
 
-    pub fn is_reserved(&self, keyword: &str) -> bool {
+    pub(super) fn is_reserved(&self, keyword: &str) -> bool {
         self.current.token.matches_keyword(keyword)
     }
 
@@ -178,7 +177,7 @@ impl Parser {
 
     /// Parse separator: ; → Semi, & → Amp, Newline → Semi (as terminator)
     /// Returns None if no separator found.
-    pub fn parse_separator_op(&mut self) -> error::Result<Option<SeparatorOp>> {
+    pub(super) fn parse_separator_op(&mut self) -> error::Result<Option<SeparatorOp>> {
         match self.current.token {
             Token::Semi => {
                 self.advance()?;
@@ -199,7 +198,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_and_or(&mut self) -> error::Result<AndOrList> {
+    pub(super) fn parse_and_or(&mut self) -> error::Result<AndOrList> {
         let first = self.parse_pipeline()?;
         let mut rest = Vec::new();
 
@@ -218,7 +217,7 @@ impl Parser {
         Ok(AndOrList { first, rest })
     }
 
-    pub fn parse_pipeline(&mut self) -> error::Result<Pipeline> {
+    pub(super) fn parse_pipeline(&mut self) -> error::Result<Pipeline> {
         let negated = if self.is_reserved("!") {
             self.advance()?;
             true
@@ -254,7 +253,7 @@ impl Parser {
         Ok(Pipeline { negated, commands })
     }
 
-    pub fn parse_command(&mut self) -> error::Result<Command> {
+    pub(super) fn parse_command(&mut self) -> error::Result<Command> {
         if self.is_compound_command_start() {
             let compound = self.parse_compound_command()?;
             let redirects = self.parse_redirect_list()?;
@@ -270,7 +269,7 @@ impl Parser {
     }
 
     /// Returns true when we've reached a token that ends a complete command.
-    pub fn is_complete_command_end(&self) -> bool {
+    pub(super) fn is_complete_command_end(&self) -> bool {
         match &self.current.token {
             Token::Eof => true,
             Token::RParen => true,
@@ -290,7 +289,7 @@ impl Parser {
 
     // ---- Compound commands and function defs ----
 
-    pub fn is_compound_command_start(&self) -> bool {
+    pub(super) fn is_compound_command_start(&self) -> bool {
         match &self.current.token {
             Token::LParen => true,
             Token::Word(_) => {

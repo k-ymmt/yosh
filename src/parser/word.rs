@@ -4,7 +4,7 @@ use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::token::Token;
 
 impl Parser {
-    pub fn expect_word(&mut self, context: &str) -> error::Result<Word> {
+    pub(super) fn expect_word(&mut self, context: &str) -> error::Result<Word> {
         if let Token::Word(word) = &self.current.token.clone() {
             let word = word.clone();
             self.advance()?;
@@ -51,7 +51,7 @@ pub(super) fn is_valid_name(s: &str) -> bool {
 ///
 /// Tildes inside quoted, escaped, or substituted parts must never
 /// reach this function.
-pub(crate) fn split_tildes_in_literal(
+pub(super) fn split_tildes_in_literal(
     s: &str,
     start_at_boundary: bool,
 ) -> (Vec<ast::WordPart>, bool) {
