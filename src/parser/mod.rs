@@ -1,4 +1,5 @@
 pub mod ast;
+mod function;
 mod word;
 
 use crate::error::{self, ParseErrorKind, ShellError};
@@ -6,10 +7,9 @@ use crate::lexer::Lexer;
 use crate::lexer::token::{Span, SpannedToken, Token};
 use ast::{
     AndOrList, AndOrOp, Assignment, CaseItem, CaseTerminator, Command, CompleteCommand,
-    CompoundCommand, CompoundCommandKind, FunctionDef, HereDoc, Pipeline, Program, Redirect,
-    RedirectKind, SeparatorOp, SimpleCommand, Word, WordPart,
+    CompoundCommand, CompoundCommandKind, HereDoc, Pipeline, Program, Redirect, RedirectKind,
+    SeparatorOp, SimpleCommand, Word, WordPart,
 };
-use std::rc::Rc;
 use word::{is_valid_name, split_tildes_in_literal};
 
 pub struct Parser {
@@ -765,65 +765,6 @@ impl Parser {
         Ok(CompoundCommandKind::Subshell { body })
     }
 
-    /// Try to parse a function definition: NAME ( ) linebreak compound_command [redirect_list]
-    pub fn try_parse_function_def(&mut self) -> error::Result<Option<FunctionDef>> {
-        // Check if current token is a Word with a valid name
-        let name = match &self.current.token {
-            Token::Word(word) => {
-                if let Some(lit) = word.as_literal() {
-                    if is_valid_name(lit) {
-                        lit.to_string()
-                    } else {
-                        return Ok(None);
-                    }
-                } else {
-                    return Ok(None);
-                }
-            }
-            _ => return Ok(None),
-        };
-
-        // Save state for backtracking
-        let saved_lexer_state = self.lexer.save_state();
-        let saved_current = self.current.clone();
-
-        // Advance past the name
-        self.advance()?;
-
-        // Check for (
-        if self.current.token != Token::LParen {
-            // Restore state
-            self.lexer.restore_state(saved_lexer_state);
-            self.current = saved_current;
-            return Ok(None);
-        }
-        self.advance()?;
-
-        // Check for )
-        if self.current.token != Token::RParen {
-            // Restore state
-            self.lexer.restore_state(saved_lexer_state);
-            self.current = saved_current;
-            return Ok(None);
-        }
-        self.advance()?;
-
-        // Skip newlines (linebreak)
-        self.skip_newlines()?;
-
-        // Parse compound command body
-        let body = self.parse_compound_command()?;
-
-        // Parse optional redirect list
-        let redirects = self.parse_redirect_list()?;
-
-        Ok(Some(FunctionDef {
-            name,
-            body: Rc::new(body),
-            redirects,
-        }))
-    }
-
     // ---- Redirect parsing (Task 9) ----
 
     pub fn try_parse_redirect(&mut self) -> error::Result<Option<Redirect>> {
@@ -979,7 +920,7 @@ mod tests {
         WordPart,
     };
 
-    fn parse(input: &str) -> Program {
+    pub(super) fn parse(input: &str) -> Program {
         let mut parser = Parser::new(input);
         parser.parse_program().unwrap()
     }
@@ -1318,29 +1259,6 @@ mod tests {
     fn test_subshell() {
         let kind = parse_first_compound("(echo hello)");
         assert!(matches!(kind, CompoundCommandKind::Subshell { .. }));
-    }
-
-    #[test]
-    fn test_function_def() {
-        let prog = parse("myfunc() { echo hello; }");
-        let cmd = &prog.commands[0].items[0].0.first.commands[0];
-        match cmd {
-            Command::FunctionDef(fd) => assert_eq!(fd.name, "myfunc"),
-            _ => panic!(),
-        }
-    }
-
-    #[test]
-    fn test_function_def_with_redirect() {
-        let prog = parse("myfunc() { echo hello; } > out.txt");
-        let cmd = &prog.commands[0].items[0].0.first.commands[0];
-        match cmd {
-            Command::FunctionDef(fd) => {
-                assert_eq!(fd.name, "myfunc");
-                assert_eq!(fd.redirects.len(), 1);
-            }
-            _ => panic!(),
-        }
     }
 
     // ---- Task 12: here-document tests ----
