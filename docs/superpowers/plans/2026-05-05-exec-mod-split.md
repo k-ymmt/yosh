@@ -111,7 +111,7 @@ This task does **not** produce a commit.
 - Tests: `record_stopped_state_clears_stale_saved_tmodes_on_none_capture`, `record_stopped_state_stores_some_capture`, `record_stopped_state_no_op_on_unknown_job` (lines 1328–1426).
 
 **What changes visibility in `mod.rs`:**
-- Nothing. `preview_command` stays private. `job_control.rs::builtin_jobs` reaches it via `use super::preview_command;` because Rust private items are visible to descendant modules, and `crate::exec::job_control` is a child of `crate::exec` (where `preview_command` is defined).
+- Nothing. `preview_command` stays private and is NOT imported by `job_control.rs` — none of the moved items reference it (only `exec_async` uses it, and `exec_async` stays in `mod.rs` until Task 2).
 
 **Visibility plan for moved symbols:**
 
@@ -173,7 +173,7 @@ Write `src/exec/job_control.rs` with the structure shown below. Replace each `//
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::Pid;
 
-use super::{Executor, preview_command};
+use super::Executor;
 use crate::env::jobs::{self, JobSpecError, JobStatus};
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::signal;

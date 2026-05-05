@@ -106,7 +106,7 @@ external callers transparently through the struct.
 | `Executor::with_errexit_suppressed`, `should_errexit`, `check_errexit` | `pub` | Errexit policy, used by `compound.rs`, `main.rs`. |
 | `Executor::process_pending_signals`, `handle_default_signal`, `execute_exit_trap` | `pub` / `pub(crate)` | Signal handling; many external call sites. |
 | `exit_child` (free fn) | `pub(crate)` | Post-fork helper used by `simple.rs`, `compound.rs`, `pipeline.rs`, and the new `control.rs` (`exec_async`). |
-| `preview_command` (free fn) | `fn` (private, unchanged) | Used by both `control.rs::exec_async` and `job_control.rs::builtin_jobs`. Stays private: Rust private items are visible to descendant modules, and both new submodules are direct children of `crate::exec` (where `preview_command` is defined). No promotion is required. |
+| `preview_command` (free fn) | `fn` (private, unchanged) | Used by `control.rs::exec_async` (after Task 2 moves `exec_async` from `mod.rs` to `control.rs`). Stays private: Rust private items are visible to descendant modules, and `control` is a direct child of `crate::exec` (where `preview_command` is defined). No promotion is required. |
 | `plugin_config_path` (free fn) | `fn` (private) | Used only by `Executor::load_plugins`. |
 
 ### 1.2 Moves to `control.rs`
@@ -199,13 +199,13 @@ helpers.
 
 - `exit_child` (mod.rs) is called by four sibling files plus the new
   `control.rs::exec_async`. Visibility unchanged at `pub(crate)`.
-- `preview_command` (mod.rs) is called by both `control.rs::exec_async`
-  (parent process side, after the background fork) and
-  `job_control.rs::builtin_jobs` (preview formatting in the `jobs`
-  output). It stays private. Rust visibility rules grant descendant
-  modules access to a parent's private items, and both new submodules
-  are direct children of `crate::exec`, so a plain `use super::preview_command;`
-  inside each submodule is sufficient.
+- `preview_command` (mod.rs) is called only by `exec_async` (parent
+  process side, after the background fork — `eprintln!("[{}] {}", job_id,
+  child.as_raw())`'s preceding `let command_name = preview_command(...)`).
+  It stays private. After Task 2 moves `exec_async` into `control.rs`,
+  the `control` submodule reaches `preview_command` via a plain
+  `use super::preview_command;` — Rust visibility rules grant descendant
+  modules access to a parent's private items.
 - `strip_job_spec_prefix` is called only by job-control built-ins — moves
   with them as a private fn in `job_control.rs`.
 - `ForegroundWaitResult` is returned by `wait_for_foreground_job` and
@@ -263,9 +263,8 @@ helpers.
    helpers, `ForegroundWaitResult`, and their tests. Update
    `mod job_control;` in `mod.rs`. Adjust visibility of cross-submodule
    touch points (`pub(super)` on moved methods, struct, and fields).
-   `builtin_jobs` reaches `preview_command` (still in `mod.rs`) via
-   `use super::preview_command;` — no promotion needed because
-   `job_control` is a descendant of `crate::exec`. Verify `cargo build`
+   None of the moved items reference `preview_command`, so
+   `job_control.rs` does not need to import it. Verify `cargo build`
    + `cargo test` + `./e2e/run_tests.sh` clean. Commit.
 2. **Step 2 — Create `control.rs`**: move execution-control methods
    (`exec_program`, `exec_complete_command`, `exec_and_or`, `exec_async`,
