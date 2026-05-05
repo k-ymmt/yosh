@@ -277,8 +277,9 @@ helpers.
    DoD checklist, record final line counts at the bottom of this spec
    document. Commit.
 
-## 7. Final Line Counts (filled post-implementation)
+## 7. Final Line Counts (post-implementation)
 
-- `src/exec/mod.rs`: TBD
-- `src/exec/control.rs`: TBD
-- `src/exec/job_control.rs`: TBD
+- `src/exec/mod.rs`: 333 lines (was 1460 — reduced by 1127 lines, 77%)
+- `src/exec/control.rs`: 504 lines (200 production + 270 tests + imports)
+- `src/exec/job_control.rs`: 632 lines (production + 3 tests)
+- Total `src/exec/{mod,control,job_control}.rs`: 1469 lines (vs. 1460 pre-split — 9-line growth from per-file imports and module declarations)
