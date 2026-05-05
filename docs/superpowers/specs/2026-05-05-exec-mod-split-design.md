@@ -280,6 +280,6 @@ helpers.
 ## 7. Final Line Counts (post-implementation)
 
 - `src/exec/mod.rs`: 333 lines (was 1460 — reduced by 1127 lines, 77%)
-- `src/exec/control.rs`: 504 lines (200 production + 270 tests + imports)
+- `src/exec/control.rs`: 504 lines (~198 production + ~298 tests + imports/blanks)
 - `src/exec/job_control.rs`: 632 lines (production + 3 tests)
 - Total `src/exec/{mod,control,job_control}.rs`: 1469 lines (vs. 1460 pre-split — 9-line growth from per-file imports and module declarations)
