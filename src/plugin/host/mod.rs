@@ -23,13 +23,13 @@ use super::generated::yosh::plugin::types::ErrorCode;
 use super::pattern::CommandPattern;
 
 mod all;
+mod commands;
 mod files;
 mod filesystem;
 mod io;
 mod variables;
 
-pub(super) use all::deny_commands_exec;
-pub(super) use all::host_commands_exec;
+pub(super) use commands::{deny_commands_exec, host_commands_exec};
 pub(super) use files::{
     deny_files_append_file, deny_files_create_dir, deny_files_metadata,
     deny_files_read_dir, deny_files_read_file, deny_files_remove_dir,
