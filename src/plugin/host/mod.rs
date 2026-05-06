@@ -23,17 +23,20 @@ use super::generated::yosh::plugin::types::ErrorCode;
 use super::pattern::CommandPattern;
 
 mod all;
+mod variables;
 
 pub(super) use all::{
     deny_commands_exec, deny_files_append_file, deny_files_create_dir, deny_files_metadata,
     deny_files_read_dir, deny_files_read_file, deny_files_remove_dir, deny_files_remove_file,
     deny_files_write_file, deny_filesystem_cwd, deny_filesystem_set_cwd, deny_io_write,
-    deny_variables_export_env, deny_variables_get, deny_variables_set,
 };
 pub(super) use all::{
     host_commands_exec, host_files_append_file, host_files_create_dir, host_files_metadata,
     host_files_read_dir, host_files_read_file, host_files_remove_dir, host_files_remove_file,
     host_files_write_file, host_filesystem_cwd, host_filesystem_set_cwd, host_io_write,
+};
+pub(super) use variables::{
+    deny_variables_export_env, deny_variables_get, deny_variables_set,
     host_variables_export_env, host_variables_get, host_variables_set,
 };
 

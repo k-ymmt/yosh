@@ -12,73 +12,6 @@ use super::super::generated::yosh::plugin::commands::ExecOutput;
 use super::super::generated::yosh::plugin::files::{DirEntry, FileStat};
 use super::super::generated::yosh::plugin::types::{ErrorCode, IoStream};
 
-// ── yosh:plugin/variables host imports ──────────────────────────────────
-
-/// `variables.get` — granted: read from `ShellEnv::vars`. Denied: log nothing,
-/// return `Err(Denied)` (the WIT error value is the canonical signal).
-pub fn host_variables_get(
-    ctx: &mut HostContext,
-    name: String,
-) -> Result<Option<String>, ErrorCode> {
-    let Some(env) = ctx.env_mut() else {
-        // metadata-contract enforcement OR null between calls.
-        return Err(ErrorCode::Denied);
-    };
-    Ok(env.vars.get(&name).map(|s| s.to_string()))
-}
-
-pub fn deny_variables_get(
-    _ctx: &mut HostContext,
-    _name: String,
-) -> Result<Option<String>, ErrorCode> {
-    Err(ErrorCode::Denied)
-}
-
-pub fn host_variables_set(
-    ctx: &mut HostContext,
-    name: String,
-    value: String,
-) -> Result<(), ErrorCode> {
-    let Some(env) = ctx.env_mut() else {
-        return Err(ErrorCode::Denied);
-    };
-    env.vars.set(&name, &value).map_err(|_| ErrorCode::IoFailed)
-}
-
-pub fn deny_variables_set(
-    _ctx: &mut HostContext,
-    _name: String,
-    _value: String,
-) -> Result<(), ErrorCode> {
-    Err(ErrorCode::Denied)
-}
-
-/// `variables.export-env` — name in WIT is `export-env` (because `export`
-/// is a reserved WIT keyword); the wit-bindgen-generated Rust function
-/// is `export_env`.
-pub fn host_variables_export_env(
-    ctx: &mut HostContext,
-    name: String,
-    value: String,
-) -> Result<(), ErrorCode> {
-    let Some(env) = ctx.env_mut() else {
-        return Err(ErrorCode::Denied);
-    };
-    env.vars
-        .set(&name, &value)
-        .map_err(|_| ErrorCode::IoFailed)?;
-    env.vars.export(&name);
-    Ok(())
-}
-
-pub fn deny_variables_export_env(
-    _ctx: &mut HostContext,
-    _name: String,
-    _value: String,
-) -> Result<(), ErrorCode> {
-    Err(ErrorCode::Denied)
-}
-
 // ── yosh:plugin/filesystem host imports ─────────────────────────────────
 
 pub fn host_filesystem_cwd(ctx: &mut HostContext) -> Result<String, ErrorCode> {
@@ -557,27 +490,6 @@ mod tests {
     fn metadata_contract_real_io_write_denied_when_env_null() {
         let mut ctx = null_env_ctx();
         let result = host_io_write(&mut ctx, IoStream::Stdout, b"hi".to_vec());
-        assert_eq!(result, Err(ErrorCode::Denied));
-    }
-
-    #[test]
-    fn metadata_contract_real_variables_get_denied_when_env_null() {
-        let mut ctx = null_env_ctx();
-        let result = host_variables_get(&mut ctx, "PATH".into());
-        assert_eq!(result, Err(ErrorCode::Denied));
-    }
-
-    #[test]
-    fn metadata_contract_real_variables_set_denied_when_env_null() {
-        let mut ctx = null_env_ctx();
-        let result = host_variables_set(&mut ctx, "FOO".into(), "bar".into());
-        assert_eq!(result, Err(ErrorCode::Denied));
-    }
-
-    #[test]
-    fn metadata_contract_real_variables_export_env_denied_when_env_null() {
-        let mut ctx = null_env_ctx();
-        let result = host_variables_export_env(&mut ctx, "FOO".into(), "bar".into());
         assert_eq!(result, Err(ErrorCode::Denied));
     }
 
