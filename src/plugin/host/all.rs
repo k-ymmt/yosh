@@ -507,28 +507,9 @@ mod tests {
     //! is harder to author than this direct call. Same invariant, simpler
     //! test.
     use super::*;
+    use super::super::test_helpers::{bound_env_ctx, ctx_with_allowed, null_env_ctx};
     use tempfile::tempdir;
-    use yosh_plugin_api::CAP_ALL;
     use crate::env::ShellEnv;
-
-    fn null_env_ctx() -> HostContext {
-        // Capabilities are deliberately CAP_ALL — the deny short-circuit
-        // we are testing fires regardless of granted capabilities, because
-        // it is enforced inside the *real* implementations. The deny stubs
-        // would also return `Denied` but for a different reason.
-        HostContext::new_for_plugin("<test>", CAP_ALL)
-    }
-
-    /// Counterpart to `null_env_ctx` for happy-path tests: binds a real
-    /// `ShellEnv` so `env_mut()` returns `Some(_)` and the real impls
-    /// proceed past the metadata-contract guard. Real impls only branch
-    /// on `is_none()` — they never read through the pointer — so the
-    /// concrete shell state is irrelevant.
-    fn bound_env_ctx(env: &mut ShellEnv) -> HostContext {
-        let mut ctx = HostContext::new_for_plugin("<test>", CAP_ALL);
-        ctx.env = env as *mut ShellEnv;
-        ctx
-    }
 
     #[test]
     fn ensure_bound_returns_denied_when_env_null() {
@@ -796,15 +777,6 @@ mod tests {
     }
 
     // ── commands:exec host tests (spec §10) ─────────────────────────────
-
-    fn ctx_with_allowed(env: &mut ShellEnv, patterns: &[&str]) -> HostContext {
-        let mut ctx = bound_env_ctx(env);
-        ctx.allowed_commands = patterns
-            .iter()
-            .map(|s| super::super::super::pattern::CommandPattern::parse(s).expect("valid pattern"))
-            .collect();
-        ctx
-    }
 
     #[test]
     fn host_commands_exec_metadata_contract_denied_when_env_null() {

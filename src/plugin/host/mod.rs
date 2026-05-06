@@ -127,3 +127,41 @@ impl WasiView for HostContext {
         &mut self.resource_table
     }
 }
+
+#[cfg(test)]
+pub(super) mod test_helpers {
+    //! Test fixtures shared by every capability submodule.
+    //!
+    //! `null_env_ctx` produces a `HostContext` with `env = null` to
+    //! exercise the metadata-contract guard. `bound_env_ctx` binds a
+    //! real `ShellEnv` so happy-path tests can proceed past the guard.
+    //! `ctx_with_allowed` adds command-pattern allowlists for
+    //! `commands_exec` tests.
+
+    use super::super::pattern::CommandPattern;
+    use super::HostContext;
+    use crate::env::ShellEnv;
+    use yosh_plugin_api::CAP_ALL;
+
+    pub fn null_env_ctx() -> HostContext {
+        // CAP_ALL is intentional — the deny short-circuit we test
+        // fires regardless of granted capabilities, because it lives
+        // inside the *real* implementations.
+        HostContext::new_for_plugin("<test>", CAP_ALL)
+    }
+
+    pub fn bound_env_ctx(env: &mut ShellEnv) -> HostContext {
+        let mut ctx = HostContext::new_for_plugin("<test>", CAP_ALL);
+        ctx.env = env as *mut ShellEnv;
+        ctx
+    }
+
+    pub fn ctx_with_allowed(env: &mut ShellEnv, patterns: &[&str]) -> HostContext {
+        let mut ctx = bound_env_ctx(env);
+        ctx.allowed_commands = patterns
+            .iter()
+            .map(|s| CommandPattern::parse(s).expect("valid pattern"))
+            .collect();
+        ctx
+    }
+}
