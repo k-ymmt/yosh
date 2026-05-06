@@ -7,12 +7,10 @@
 //!
 //! Layout (per SP1 redesign,
 //! docs/superpowers/specs/2026-05-06-sp1-plugin-host-redesign-design.md):
-//! - this `mod.rs` owns `HostContext`, its `WasiView` impl, and the
-//!   `ensure_bound` / `bound_env` helpers.
-//! - During PR-A, `all.rs` is a temporary single-file home for every
-//!   `host_*` and `deny_*` function with bodies preserved bit-for-bit.
-//! - PR-B will split `all.rs` into per-capability submodules
-//!   (`variables.rs`, `filesystem.rs`, `io.rs`, `files.rs`, `commands.rs`).
+//! - this `mod.rs` owns `HostContext`, its `WasiView` impl, the
+//!   `ensure_bound` / `bound_env` helpers, and helper tests.
+//! - Per-capability submodules (`variables.rs`, `filesystem.rs`, `io.rs`,
+//!   `files.rs`, `commands.rs`) own every `host_*` and `deny_*` function.
 
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
@@ -22,7 +20,6 @@ use crate::env::ShellEnv;
 use super::generated::yosh::plugin::types::ErrorCode;
 use super::pattern::CommandPattern;
 
-mod all;
 mod commands;
 mod files;
 mod filesystem;
@@ -173,5 +170,46 @@ pub(super) mod test_helpers {
             .map(|s| CommandPattern::parse(s).expect("valid pattern"))
             .collect();
         ctx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for the metadata-contract helpers (`ensure_bound` and
+    //! `bound_env`). These are the canonical enforcement point for the §5
+    //! metadata-cannot-reach-host-APIs invariant. Per-capability submodules
+    //! also keep one spot test confirming the deny path is reachable through
+    //! the host function, but the structural guarantee is verified here.
+
+    use super::super::generated::yosh::plugin::types::ErrorCode;
+    use super::test_helpers::{bound_env_ctx, null_env_ctx};
+    use crate::env::ShellEnv;
+
+    #[test]
+    fn ensure_bound_returns_denied_when_env_null() {
+        let ctx = null_env_ctx();
+        assert_eq!(ctx.ensure_bound(), Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn ensure_bound_returns_ok_when_env_bound() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let ctx = bound_env_ctx(&mut env);
+        assert_eq!(ctx.ensure_bound(), Ok(()));
+    }
+
+    #[test]
+    fn bound_env_returns_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = ctx.bound_env();
+        assert!(matches!(result, Err(ErrorCode::Denied)));
+    }
+
+    #[test]
+    fn bound_env_returns_env_when_bound() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        let result = ctx.bound_env();
+        assert!(result.is_ok());
     }
 }
