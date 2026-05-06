@@ -1,130 +1,22 @@
-//! HostContext + WasiView impl + the real / deny implementations of the
-//! `yosh:plugin/*` host imports.
+//! Temporary single-file home for host_* and deny_* functions.
 //!
-//! See `docs/superpowers/specs/2026-04-27-wasm-plugin-runtime-design.md`
-//! §5 "Execution Model" — `HostContext`, `with_env`, and metadata contract
-//! enforcement (host imports return `Err(Denied)` whenever the live
-//! `ShellEnv` pointer is null, which is exactly the state during the
-//! single `metadata()` call at startup).
+//! PR-A scaffolding step (see
+//! `docs/superpowers/specs/2026-05-06-sp1-plugin-host-redesign-design.md`).
+//! PR-B splits this file into per-capability submodules and deletes it.
 
 use std::io::Write;
+use std::time::UNIX_EPOCH;
 
-use wasmtime::component::ResourceTable;
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
-
-use crate::env::ShellEnv;
-
-use super::generated::yosh::plugin::commands::ExecOutput;
-use super::generated::yosh::plugin::types::{ErrorCode, IoStream};
-use super::pattern::CommandPattern;
-
-/// Per-plugin store data. Carries:
-///
-/// * A raw `*mut ShellEnv` updated by `with_env` immediately before each
-///   guest-bound call and reset to `null` on every exit path (see the
-///   `EnvGuard` RAII guard in `mod.rs`). NULL during the single
-///   `metadata()` call — enforces the metadata contract by short-circuiting
-///   every host import to `Err(Denied)`.
-/// * Plugin name and granted capability bitfield, used by deny-stubs and
-///   diagnostics.
-/// * `WasiCtx` + `ResourceTable` for the `wasi:clocks` / `wasi:random`
-///   linker subset; the `WasiView` impl below exposes them per-store.
-pub struct HostContext {
-    /// Raw pointer to the live `ShellEnv`. Confined to a single `unsafe`
-    /// helper (`env_mut`); this is the only `unsafe` site in the new host
-    /// binding layer (vs. eight `unsafe extern "C" fn` callbacks in the
-    /// dlopen version).
-    pub(super) env: *mut ShellEnv,
-    #[allow(dead_code)] // diagnostics; held for future use by deny-stubs
-    pub(super) plugin_name: String,
-    #[allow(dead_code)] // diagnostics; held for future use by deny-stubs
-    pub(super) capabilities: u32,
-
-    pub(super) wasi: WasiCtx,
-    pub(super) resource_table: ResourceTable,
-    pub(super) allowed_commands: Vec<CommandPattern>,
-}
-
-// SAFETY: `*mut ShellEnv` is `!Send` by default, but the pointer is only
-// ever dereferenced via `with_env` which holds an `&mut ShellEnv` for the
-// duration of the call. The shell is single-threaded for plugin dispatch
-// (matches dlopen), and the pointer is null when no call is in progress.
-unsafe impl Send for HostContext {}
-// SAFETY: same rationale; we never share a `&HostContext` across threads
-// in practice (per-store, single-threaded shell).
-unsafe impl Sync for HostContext {}
-
-impl HostContext {
-    pub fn new_for_plugin(plugin_name: impl Into<String>, capabilities: u32) -> Self {
-        // wasmtime-wasi 27 builder: defaults are sufficient (clocks use the
-        // host clock, random is seeded; stdout/stderr are eaten — plugins
-        // do their own host-side I/O via the `yosh:plugin/io` interface).
-        let wasi = WasiCtxBuilder::new().build();
-        HostContext {
-            env: std::ptr::null_mut(),
-            plugin_name: plugin_name.into(),
-            capabilities,
-            wasi,
-            resource_table: ResourceTable::new(),
-            allowed_commands: Vec::new(),
-        }
-    }
-
-    /// Borrow the live `ShellEnv` if currently bound. Returns `None` when
-    /// `env` is null (during `metadata()` calls or between `with_env`
-    /// invocations).
-    ///
-    /// SAFETY: callers must hold exclusive access to the `Store<HostContext>`,
-    /// which is implied by `&mut self` here. The pointer's lifetime is
-    /// managed by `EnvGuard` in `mod.rs` and is guaranteed to be valid
-    /// for the duration of any `with_env` callback.
-    pub(super) fn env_mut(&mut self) -> Option<&mut ShellEnv> {
-        if self.env.is_null() {
-            None
-        } else {
-            // SAFETY: `EnvGuard::bind` set this pointer from a live
-            // `&mut ShellEnv`; it is reset to null on guard drop. The
-            // shell is single-threaded for plugin dispatch.
-            Some(unsafe { &mut *self.env })
-        }
-    }
-
-    /// Metadata-contract guard: returns `Err(Denied)` if env is null
-    /// (during `metadata()` or between `with_env` invocations), `Ok(())`
-    /// otherwise. Used by host functions that do not need to read or
-    /// write `ShellEnv` but still must reject calls during the
-    /// metadata phase.
-    pub(super) fn ensure_bound(&self) -> Result<(), ErrorCode> {
-        if self.env.is_null() {
-            Err(ErrorCode::Denied)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Metadata-contract guard that also returns the bound `&mut ShellEnv`.
-    /// Returns `Err(Denied)` if env is null. Used by host functions that
-    /// need to read or write shell state.
-    pub(super) fn bound_env(&mut self) -> Result<&mut ShellEnv, ErrorCode> {
-        self.env_mut().ok_or(ErrorCode::Denied)
-    }
-}
-
-impl WasiView for HostContext {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi
-    }
-
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.resource_table
-    }
-}
+use super::HostContext;
+use super::super::generated::yosh::plugin::commands::ExecOutput;
+use super::super::generated::yosh::plugin::files::{DirEntry, FileStat};
+use super::super::generated::yosh::plugin::types::{ErrorCode, IoStream};
 
 // ── yosh:plugin/variables host imports ──────────────────────────────────
 
 /// `variables.get` — granted: read from `ShellEnv::vars`. Denied: log nothing,
 /// return `Err(Denied)` (the WIT error value is the canonical signal).
-pub(super) fn host_variables_get(
+pub fn host_variables_get(
     ctx: &mut HostContext,
     name: String,
 ) -> Result<Option<String>, ErrorCode> {
@@ -135,14 +27,14 @@ pub(super) fn host_variables_get(
     Ok(env.vars.get(&name).map(|s| s.to_string()))
 }
 
-pub(super) fn deny_variables_get(
+pub fn deny_variables_get(
     _ctx: &mut HostContext,
     _name: String,
 ) -> Result<Option<String>, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
-pub(super) fn host_variables_set(
+pub fn host_variables_set(
     ctx: &mut HostContext,
     name: String,
     value: String,
@@ -153,7 +45,7 @@ pub(super) fn host_variables_set(
     env.vars.set(&name, &value).map_err(|_| ErrorCode::IoFailed)
 }
 
-pub(super) fn deny_variables_set(
+pub fn deny_variables_set(
     _ctx: &mut HostContext,
     _name: String,
     _value: String,
@@ -164,7 +56,7 @@ pub(super) fn deny_variables_set(
 /// `variables.export-env` — name in WIT is `export-env` (because `export`
 /// is a reserved WIT keyword); the wit-bindgen-generated Rust function
 /// is `export_env`.
-pub(super) fn host_variables_export_env(
+pub fn host_variables_export_env(
     ctx: &mut HostContext,
     name: String,
     value: String,
@@ -179,7 +71,7 @@ pub(super) fn host_variables_export_env(
     Ok(())
 }
 
-pub(super) fn deny_variables_export_env(
+pub fn deny_variables_export_env(
     _ctx: &mut HostContext,
     _name: String,
     _value: String,
@@ -189,7 +81,7 @@ pub(super) fn deny_variables_export_env(
 
 // ── yosh:plugin/filesystem host imports ─────────────────────────────────
 
-pub(super) fn host_filesystem_cwd(ctx: &mut HostContext) -> Result<String, ErrorCode> {
+pub fn host_filesystem_cwd(ctx: &mut HostContext) -> Result<String, ErrorCode> {
     if ctx.env_mut().is_none() {
         return Err(ErrorCode::Denied);
     }
@@ -198,11 +90,11 @@ pub(super) fn host_filesystem_cwd(ctx: &mut HostContext) -> Result<String, Error
         .map_err(|_| ErrorCode::IoFailed)
 }
 
-pub(super) fn deny_filesystem_cwd(_ctx: &mut HostContext) -> Result<String, ErrorCode> {
+pub fn deny_filesystem_cwd(_ctx: &mut HostContext) -> Result<String, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
-pub(super) fn host_filesystem_set_cwd(
+pub fn host_filesystem_set_cwd(
     ctx: &mut HostContext,
     path: String,
 ) -> Result<(), ErrorCode> {
@@ -212,7 +104,7 @@ pub(super) fn host_filesystem_set_cwd(
     std::env::set_current_dir(&path).map_err(|_| ErrorCode::IoFailed)
 }
 
-pub(super) fn deny_filesystem_set_cwd(
+pub fn deny_filesystem_set_cwd(
     _ctx: &mut HostContext,
     _path: String,
 ) -> Result<(), ErrorCode> {
@@ -221,7 +113,7 @@ pub(super) fn deny_filesystem_set_cwd(
 
 // ── yosh:plugin/io host imports ─────────────────────────────────────────
 
-pub(super) fn host_io_write(
+pub fn host_io_write(
     ctx: &mut HostContext,
     target: IoStream,
     data: Vec<u8>,
@@ -236,7 +128,7 @@ pub(super) fn host_io_write(
     result.map_err(|_| ErrorCode::IoFailed)
 }
 
-pub(super) fn deny_io_write(
+pub fn deny_io_write(
     _ctx: &mut HostContext,
     _target: IoStream,
     _data: Vec<u8>,
@@ -246,10 +138,7 @@ pub(super) fn deny_io_write(
 
 // ── yosh:plugin/files host imports ───────────────────────────────────
 
-use super::generated::yosh::plugin::files::{DirEntry, FileStat};
-use std::time::UNIX_EPOCH;
-
-pub(super) fn host_files_read_file(
+pub fn host_files_read_file(
     ctx: &mut HostContext,
     path: String,
 ) -> Result<Vec<u8>, ErrorCode> {
@@ -266,7 +155,7 @@ pub(super) fn host_files_read_file(
     }
 }
 
-pub(super) fn host_files_read_dir(
+pub fn host_files_read_dir(
     ctx: &mut HostContext,
     path: String,
 ) -> Result<Vec<DirEntry>, ErrorCode> {
@@ -295,7 +184,7 @@ pub(super) fn host_files_read_dir(
     Ok(out)
 }
 
-pub(super) fn host_files_metadata(
+pub fn host_files_metadata(
     ctx: &mut HostContext,
     path: String,
 ) -> Result<FileStat, ErrorCode> {
@@ -325,7 +214,7 @@ pub(super) fn host_files_metadata(
     })
 }
 
-pub(super) fn host_files_write_file(
+pub fn host_files_write_file(
     ctx: &mut HostContext,
     path: String,
     data: Vec<u8>,
@@ -339,7 +228,7 @@ pub(super) fn host_files_write_file(
     std::fs::write(&path, &data).map_err(|_| ErrorCode::IoFailed)
 }
 
-pub(super) fn host_files_append_file(
+pub fn host_files_append_file(
     ctx: &mut HostContext,
     path: String,
     data: Vec<u8>,
@@ -359,7 +248,7 @@ pub(super) fn host_files_append_file(
     f.write_all(&data).map_err(|_| ErrorCode::IoFailed)
 }
 
-pub(super) fn host_files_create_dir(
+pub fn host_files_create_dir(
     ctx: &mut HostContext,
     path: String,
     recursive: bool,
@@ -378,7 +267,7 @@ pub(super) fn host_files_create_dir(
     result.map_err(|_| ErrorCode::IoFailed)
 }
 
-pub(super) fn host_files_remove_file(ctx: &mut HostContext, path: String) -> Result<(), ErrorCode> {
+pub fn host_files_remove_file(ctx: &mut HostContext, path: String) -> Result<(), ErrorCode> {
     if ctx.env_mut().is_none() {
         return Err(ErrorCode::Denied);
     }
@@ -392,7 +281,7 @@ pub(super) fn host_files_remove_file(ctx: &mut HostContext, path: String) -> Res
     }
 }
 
-pub(super) fn host_files_remove_dir(
+pub fn host_files_remove_dir(
     ctx: &mut HostContext,
     path: String,
     recursive: bool,
@@ -415,28 +304,28 @@ pub(super) fn host_files_remove_dir(
     }
 }
 
-pub(super) fn deny_files_read_file(
+pub fn deny_files_read_file(
     _ctx: &mut HostContext,
     _path: String,
 ) -> Result<Vec<u8>, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
-pub(super) fn deny_files_read_dir(
+pub fn deny_files_read_dir(
     _ctx: &mut HostContext,
     _path: String,
 ) -> Result<Vec<DirEntry>, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
-pub(super) fn deny_files_metadata(
+pub fn deny_files_metadata(
     _ctx: &mut HostContext,
     _path: String,
 ) -> Result<FileStat, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
-pub(super) fn deny_files_write_file(
+pub fn deny_files_write_file(
     _ctx: &mut HostContext,
     _path: String,
     _data: Vec<u8>,
@@ -444,7 +333,7 @@ pub(super) fn deny_files_write_file(
     Err(ErrorCode::Denied)
 }
 
-pub(super) fn deny_files_append_file(
+pub fn deny_files_append_file(
     _ctx: &mut HostContext,
     _path: String,
     _data: Vec<u8>,
@@ -452,7 +341,7 @@ pub(super) fn deny_files_append_file(
     Err(ErrorCode::Denied)
 }
 
-pub(super) fn deny_files_create_dir(
+pub fn deny_files_create_dir(
     _ctx: &mut HostContext,
     _path: String,
     _recursive: bool,
@@ -460,14 +349,14 @@ pub(super) fn deny_files_create_dir(
     Err(ErrorCode::Denied)
 }
 
-pub(super) fn deny_files_remove_file(
+pub fn deny_files_remove_file(
     _ctx: &mut HostContext,
     _path: String,
 ) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
-pub(super) fn deny_files_remove_dir(
+pub fn deny_files_remove_dir(
     _ctx: &mut HostContext,
     _path: String,
     _recursive: bool,
@@ -477,7 +366,7 @@ pub(super) fn deny_files_remove_dir(
 
 // ── yosh:plugin/commands host imports ───────────────────────────────
 
-pub(super) fn host_commands_exec(
+pub fn host_commands_exec(
     ctx: &mut HostContext,
     program: String,
     args: Vec<String>,
@@ -508,7 +397,7 @@ pub(super) fn host_commands_exec(
     spawn_with_timeout(&program, &args, std::time::Duration::from_millis(1000))
 }
 
-pub(super) fn deny_commands_exec(
+pub fn deny_commands_exec(
     _ctx: &mut HostContext,
     _program: String,
     _args: Vec<String>,
@@ -620,6 +509,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use yosh_plugin_api::CAP_ALL;
+    use crate::env::ShellEnv;
 
     fn null_env_ctx() -> HostContext {
         // Capabilities are deliberately CAP_ALL — the deny short-circuit
@@ -911,7 +801,7 @@ mod tests {
         let mut ctx = bound_env_ctx(env);
         ctx.allowed_commands = patterns
             .iter()
-            .map(|s| super::super::pattern::CommandPattern::parse(s).expect("valid pattern"))
+            .map(|s| super::super::super::pattern::CommandPattern::parse(s).expect("valid pattern"))
             .collect();
         ctx
     }
