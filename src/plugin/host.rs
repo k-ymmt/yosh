@@ -88,6 +88,26 @@ impl HostContext {
             Some(unsafe { &mut *self.env })
         }
     }
+
+    /// Metadata-contract guard: returns `Err(Denied)` if env is null
+    /// (during `metadata()` or between `with_env` invocations), `Ok(())`
+    /// otherwise. Used by host functions that do not need to read or
+    /// write `ShellEnv` but still must reject calls during the
+    /// metadata phase.
+    pub(super) fn ensure_bound(&self) -> Result<(), ErrorCode> {
+        if self.env.is_null() {
+            Err(ErrorCode::Denied)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Metadata-contract guard that also returns the bound `&mut ShellEnv`.
+    /// Returns `Err(Denied)` if env is null. Used by host functions that
+    /// need to read or write shell state.
+    pub(super) fn bound_env(&mut self) -> Result<&mut ShellEnv, ErrorCode> {
+        self.env_mut().ok_or(ErrorCode::Denied)
+    }
 }
 
 impl WasiView for HostContext {
@@ -618,6 +638,34 @@ mod tests {
         let mut ctx = HostContext::new_for_plugin("<test>", CAP_ALL);
         ctx.env = env as *mut ShellEnv;
         ctx
+    }
+
+    #[test]
+    fn ensure_bound_returns_denied_when_env_null() {
+        let ctx = null_env_ctx();
+        assert_eq!(ctx.ensure_bound(), Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn ensure_bound_returns_ok_when_env_bound() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let ctx = bound_env_ctx(&mut env);
+        assert_eq!(ctx.ensure_bound(), Ok(()));
+    }
+
+    #[test]
+    fn bound_env_returns_denied_when_env_null() {
+        let mut ctx = null_env_ctx();
+        let result = ctx.bound_env();
+        assert!(matches!(result, Err(ErrorCode::Denied)));
+    }
+
+    #[test]
+    fn bound_env_returns_env_when_bound() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut ctx = bound_env_ctx(&mut env);
+        let result = ctx.bound_env();
+        assert!(result.is_ok());
     }
 
     #[test]
