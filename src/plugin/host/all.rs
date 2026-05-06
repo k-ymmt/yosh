@@ -4,38 +4,12 @@
 //! `docs/superpowers/specs/2026-05-06-sp1-plugin-host-redesign-design.md`).
 //! PR-B splits this file into per-capability submodules and deletes it.
 
-use std::io::Write;
 use std::time::UNIX_EPOCH;
 
 use super::HostContext;
 use super::super::generated::yosh::plugin::commands::ExecOutput;
 use super::super::generated::yosh::plugin::files::{DirEntry, FileStat};
-use super::super::generated::yosh::plugin::types::{ErrorCode, IoStream};
-
-// ── yosh:plugin/io host imports ─────────────────────────────────────────
-
-pub fn host_io_write(
-    ctx: &mut HostContext,
-    target: IoStream,
-    data: Vec<u8>,
-) -> Result<(), ErrorCode> {
-    if ctx.env_mut().is_none() {
-        return Err(ErrorCode::Denied);
-    }
-    let result = match target {
-        IoStream::Stdout => std::io::stdout().write_all(&data),
-        IoStream::Stderr => std::io::stderr().write_all(&data),
-    };
-    result.map_err(|_| ErrorCode::IoFailed)
-}
-
-pub fn deny_io_write(
-    _ctx: &mut HostContext,
-    _target: IoStream,
-    _data: Vec<u8>,
-) -> Result<(), ErrorCode> {
-    Err(ErrorCode::Denied)
-}
+use super::super::generated::yosh::plugin::types::ErrorCode;
 
 // ── yosh:plugin/files host imports ───────────────────────────────────
 
@@ -438,13 +412,6 @@ mod tests {
         let mut ctx = bound_env_ctx(&mut env);
         let result = ctx.bound_env();
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn metadata_contract_real_io_write_denied_when_env_null() {
-        let mut ctx = null_env_ctx();
-        let result = host_io_write(&mut ctx, IoStream::Stdout, b"hi".to_vec());
-        assert_eq!(result, Err(ErrorCode::Denied));
     }
 
     #[test]
