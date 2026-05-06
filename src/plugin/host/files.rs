@@ -16,10 +16,7 @@ use super::super::generated::yosh::plugin::files::{DirEntry, FileStat};
 use super::super::generated::yosh::plugin::types::ErrorCode;
 use super::HostContext;
 
-pub fn host_files_read_file(
-    ctx: &mut HostContext,
-    path: String,
-) -> Result<Vec<u8>, ErrorCode> {
+pub fn host_files_read_file(ctx: &mut HostContext, path: String) -> Result<Vec<u8>, ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
@@ -58,10 +55,7 @@ pub fn host_files_read_dir(
     Ok(out)
 }
 
-pub fn host_files_metadata(
-    ctx: &mut HostContext,
-    path: String,
-) -> Result<FileStat, ErrorCode> {
+pub fn host_files_metadata(ctx: &mut HostContext, path: String) -> Result<FileStat, ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
@@ -166,10 +160,7 @@ pub fn host_files_remove_dir(
     }
 }
 
-pub fn deny_files_read_file(
-    _ctx: &mut HostContext,
-    _path: String,
-) -> Result<Vec<u8>, ErrorCode> {
+pub fn deny_files_read_file(_ctx: &mut HostContext, _path: String) -> Result<Vec<u8>, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
@@ -180,10 +171,7 @@ pub fn deny_files_read_dir(
     Err(ErrorCode::Denied)
 }
 
-pub fn deny_files_metadata(
-    _ctx: &mut HostContext,
-    _path: String,
-) -> Result<FileStat, ErrorCode> {
+pub fn deny_files_metadata(_ctx: &mut HostContext, _path: String) -> Result<FileStat, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
@@ -211,10 +199,7 @@ pub fn deny_files_create_dir(
     Err(ErrorCode::Denied)
 }
 
-pub fn deny_files_remove_file(
-    _ctx: &mut HostContext,
-    _path: String,
-) -> Result<(), ErrorCode> {
+pub fn deny_files_remove_file(_ctx: &mut HostContext, _path: String) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
