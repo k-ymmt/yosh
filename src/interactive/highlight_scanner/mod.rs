@@ -2,8 +2,10 @@ use super::command_checker::{CheckerEnv, CommandChecker, CommandExistence};
 use super::highlight::{ColorSpan, HighlightStyle};
 
 mod cache;
+mod comment;
 mod ctx;
 mod helpers;
+mod quotes;
 mod state;
 
 use cache::HighlightCache;
@@ -145,13 +147,13 @@ impl HighlightScanner {
                     pos = self.scan_normal(chars, pos, state, &mut spans, checker_env);
                 }
                 ScanMode::SingleQuote { start } => {
-                    pos = Self::scan_single_quote(chars, pos, start, state, &mut spans);
+                    pos = quotes::scan_single_quote(chars, pos, start, state, &mut spans);
                 }
                 ScanMode::DoubleQuote { start } => {
                     pos = self.scan_double_quote(chars, pos, start, state, &mut spans, checker_env);
                 }
                 ScanMode::DollarSingleQuote { start } => {
-                    pos = Self::scan_dollar_single_quote(chars, pos, start, state, &mut spans);
+                    pos = quotes::scan_dollar_single_quote(chars, pos, start, state, &mut spans);
                 }
                 ScanMode::Parameter { start, braced } => {
                     pos = Self::scan_parameter(chars, pos, start, braced, state, &mut spans);
@@ -171,7 +173,7 @@ impl HighlightScanner {
                     pos = Self::scan_arith_sub(chars, pos, start, state, &mut spans);
                 }
                 ScanMode::Comment { start } => {
-                    pos = Self::scan_comment(chars, pos, start, state, &mut spans);
+                    pos = comment::scan_comment(chars, pos, start, state, &mut spans);
                 }
             }
         }
@@ -582,33 +584,6 @@ impl HighlightScanner {
         end
     }
 
-    // -----------------------------------------------------------------------
-    // scan_single_quote
-    // -----------------------------------------------------------------------
-
-    fn scan_single_quote(
-        chars: &[char],
-        pos: usize,
-        start: usize,
-        state: &mut ScannerState,
-        spans: &mut Vec<ColorSpan>,
-    ) -> usize {
-        let mut p = pos;
-        while p < chars.len() {
-            if chars[p] == '\'' {
-                spans.push(ColorSpan {
-                    start,
-                    end: p + 1,
-                    style: HighlightStyle::String,
-                });
-                state.pop_mode();
-                return p + 1;
-            }
-            p += 1;
-        }
-        // Unclosed — mark_unclosed_errors will handle it
-        p
-    }
 
     // -----------------------------------------------------------------------
     // scan_double_quote
@@ -795,41 +770,6 @@ impl HighlightScanner {
         p
     }
 
-    // -----------------------------------------------------------------------
-    // scan_dollar_single_quote
-    // -----------------------------------------------------------------------
-
-    fn scan_dollar_single_quote(
-        chars: &[char],
-        pos: usize,
-        start: usize,
-        state: &mut ScannerState,
-        spans: &mut Vec<ColorSpan>,
-    ) -> usize {
-        let mut p = pos;
-        while p < chars.len() {
-            if chars[p] == '\\' {
-                // escape: skip next
-                p += 1;
-                if p < chars.len() {
-                    p += 1;
-                }
-                continue;
-            }
-            if chars[p] == '\'' {
-                spans.push(ColorSpan {
-                    start,
-                    end: p + 1,
-                    style: HighlightStyle::String,
-                });
-                state.pop_mode();
-                return p + 1;
-            }
-            p += 1;
-        }
-        // Unclosed
-        p
-    }
 
     // -----------------------------------------------------------------------
     // scan_parameter (braced)
@@ -888,26 +828,6 @@ impl HighlightScanner {
         chars.len()
     }
 
-    // -----------------------------------------------------------------------
-    // scan_comment
-    // -----------------------------------------------------------------------
-
-    fn scan_comment(
-        chars: &[char],
-        _pos: usize,
-        start: usize,
-        state: &mut ScannerState,
-        spans: &mut Vec<ColorSpan>,
-    ) -> usize {
-        // Comment spans to the end of the input.
-        spans.push(ColorSpan {
-            start,
-            end: chars.len(),
-            style: HighlightStyle::Comment,
-        });
-        state.pop_mode();
-        chars.len()
-    }
 
 }
 
