@@ -13,7 +13,7 @@ mod tilde;
 pub use heredoc::expand_body as expand_heredoc_body;
 use pipeline::expand_word_to_fields;
 pub(crate) use scan::skip_balanced_parens;
-pub(crate) use tilde::{expand_tilde_prefix, expand_tilde_user};
+pub(crate) use tilde::expand_tilde_prefix;
 
 use crate::env::ShellEnv;
 use crate::parser::ast::Word;

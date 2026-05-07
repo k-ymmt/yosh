@@ -32,83 +32,103 @@ fn expand_part_to_fields(
     in_double_quote: bool,
 ) -> crate::error::Result<()> {
     match part {
-        // ── Quoted literals ───────────────────────────────────────────────
-        WordPart::Literal(s) => {
-            if in_double_quote {
-                fields.last_mut().unwrap().push_quoted(s);
-            } else {
-                fields.last_mut().unwrap().push_unquoted(s);
-            }
-        }
-        WordPart::EscapedLiteral(s) => {
-            // Expand identically to Literal — the escape served its purpose
-            // at parse time by suppressing tilde recognition. The escape also
-            // removes the "subject to field splitting" property, so escaped
-            // text must be treated as quoted content for IFS purposes.
-            fields.last_mut().unwrap().push_quoted(s);
-        }
-        WordPart::SingleQuoted(s) => {
-            // Single quotes protect everything
-            fields.last_mut().unwrap().push_quoted(s);
-        }
-        WordPart::DollarSingleQuoted(s) => {
-            // $'...' also protects from splitting/glob
-            fields.last_mut().unwrap().push_quoted(s);
-        }
-
-        // ── Double-quoted group ───────────────────────────────────────────
-        WordPart::DoubleQuoted(parts) => {
-            // Mark as quoted even when parts is empty (e.g. "")
-            fields.last_mut().unwrap().was_quoted = true;
-            for inner in parts {
-                expand_part_to_fields(env, inner, fields, true)?;
-            }
-        }
-
-        // ── Tilde expansion ───────────────────────────────────────────────
-        WordPart::Tilde(None) => {
-            let home = env.vars.get("HOME").map(|s| s.to_string());
-            let result = home.unwrap_or_else(|| "~".to_string());
-            fields.last_mut().unwrap().push_quoted(&result);
-        }
-        WordPart::Tilde(Some(user)) => {
-            let result = super::expand_tilde_user(user);
-            fields.last_mut().unwrap().push_quoted(&result);
-        }
-
-        // ── Parameter expansion ───────────────────────────────────────────
-        WordPart::Parameter(param) => {
-            expand_param_to_fields(env, param, fields, in_double_quote)?;
-        }
-
-        // ── Command substitution ──────────────────────────────────────────
+        WordPart::Literal(s) => expand_part_literal(s, fields, in_double_quote),
+        WordPart::EscapedLiteral(s)
+        | WordPart::SingleQuoted(s)
+        | WordPart::DollarSingleQuoted(s) => expand_part_quoted_literal(s, fields),
+        WordPart::DoubleQuoted(parts) => expand_part_double_quoted(env, parts, fields)?,
+        WordPart::Tilde(user) => expand_part_tilde(env, user.as_deref(), fields),
+        WordPart::Parameter(p) => expand_part_parameter(env, p, fields, in_double_quote)?,
         WordPart::CommandSub(program) => {
-            let output = command_sub::execute(env, program);
-            if in_double_quote {
-                fields.last_mut().unwrap().push_quoted(&output);
-            } else {
-                fields.last_mut().unwrap().push_unquoted(&output);
-            }
+            expand_part_command_sub(env, program, fields, in_double_quote)
         }
-
-        // ── Arithmetic expansion ──────────────────────────────────────────
-        WordPart::ArithSub(expr) => match arith::evaluate(env, expr) {
-            Ok(result) => {
-                if in_double_quote {
-                    fields.last_mut().unwrap().push_quoted(&result);
-                } else {
-                    fields.last_mut().unwrap().push_unquoted(&result);
-                }
-            }
-            Err(msg) => {
-                return Err(crate::error::ShellError::expansion(
-                    crate::error::ExpansionErrorKind::InvalidArithmetic,
-                    msg,
-                ));
-            }
-        },
+        WordPart::ArithSub(expr) => expand_part_arith_sub(env, expr, fields, in_double_quote)?,
     }
     Ok(())
+}
+
+fn expand_part_literal(s: &str, fields: &mut [ExpandedField], in_double_quote: bool) {
+    if in_double_quote {
+        fields.last_mut().unwrap().push_quoted(s);
+    } else {
+        fields.last_mut().unwrap().push_unquoted(s);
+    }
+}
+
+/// `EscapedLiteral`, `SingleQuoted`, and `DollarSingleQuoted` all push their
+/// text as quoted (protected from field splitting and pathname expansion).
+/// They differ only in their parser-level meaning, not their expansion behavior.
+fn expand_part_quoted_literal(s: &str, fields: &mut [ExpandedField]) {
+    fields.last_mut().unwrap().push_quoted(s);
+}
+
+fn expand_part_double_quoted(
+    env: &mut ShellEnv,
+    parts: &[WordPart],
+    fields: &mut Vec<ExpandedField>,
+) -> crate::error::Result<()> {
+    fields.last_mut().unwrap().was_quoted = true;
+    for inner in parts {
+        expand_part_to_fields(env, inner, fields, true)?;
+    }
+    Ok(())
+}
+
+fn expand_part_tilde(env: &mut ShellEnv, user: Option<&str>, fields: &mut [ExpandedField]) {
+    let result = match user {
+        None => env
+            .vars
+            .get("HOME")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "~".to_string()),
+        Some(name) => super::tilde::expand_tilde_user(name),
+    };
+    fields.last_mut().unwrap().push_quoted(&result);
+}
+
+fn expand_part_parameter(
+    env: &mut ShellEnv,
+    param: &ParamExpr,
+    fields: &mut Vec<ExpandedField>,
+    in_double_quote: bool,
+) -> crate::error::Result<()> {
+    expand_param_to_fields(env, param, fields, in_double_quote)
+}
+
+fn expand_part_command_sub(
+    env: &mut ShellEnv,
+    program: &crate::parser::ast::Program,
+    fields: &mut [ExpandedField],
+    in_double_quote: bool,
+) {
+    let output = command_sub::execute(env, program);
+    if in_double_quote {
+        fields.last_mut().unwrap().push_quoted(&output);
+    } else {
+        fields.last_mut().unwrap().push_unquoted(&output);
+    }
+}
+
+fn expand_part_arith_sub(
+    env: &mut ShellEnv,
+    expr: &str,
+    fields: &mut [ExpandedField],
+    in_double_quote: bool,
+) -> crate::error::Result<()> {
+    match arith::evaluate(env, expr) {
+        Ok(result) => {
+            if in_double_quote {
+                fields.last_mut().unwrap().push_quoted(&result);
+            } else {
+                fields.last_mut().unwrap().push_unquoted(&result);
+            }
+            Ok(())
+        }
+        Err(msg) => Err(crate::error::ShellError::expansion(
+            crate::error::ExpansionErrorKind::InvalidArithmetic,
+            msg,
+        )),
+    }
 }
 
 /// Expand a `ParamExpr` into `fields`.
