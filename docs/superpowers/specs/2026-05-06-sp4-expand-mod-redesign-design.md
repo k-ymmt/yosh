@@ -69,36 +69,43 @@ pub use heredoc::expand_body as expand_heredoc_body;
 
 ### Pipeline Module — Per-Variant Helpers
 
-`expand_part_to_fields` is an 88-line `match` on `WordPart` variants. Extract each arm into a short private helper in `pipeline.rs`:
+`expand_part_to_fields` is an ~85-line `match` on 10 `WordPart` arms. Three of those arms (`EscapedLiteral`, `SingleQuoted`, `DollarSingleQuoted`) all funnel into `push_quoted` with no other behavior — collapse them into one helper. The remaining variants get their own helper. Result: 7 helpers in `pipeline.rs`:
 
 ```rust
-fn expand_part_literal(...)        // WordPart::Literal
-fn expand_part_double_quoted(...)  // WordPart::DoubleQuoted
-fn expand_part_parameter(...)      // WordPart::Parameter
-fn expand_part_arith(...)          // WordPart::Arith
-fn expand_part_command_sub(...)    // WordPart::CommandSub
-fn expand_part_tilde(...)          // WordPart::Tilde
+fn expand_part_literal(...)         // WordPart::Literal — quoted-vs-unquoted split on in_double_quote
+fn expand_part_quoted_literal(...)  // WordPart::EscapedLiteral / SingleQuoted / DollarSingleQuoted — always push_quoted
+fn expand_part_double_quoted(...)   // WordPart::DoubleQuoted — recurses with in_double_quote=true
+fn expand_part_tilde(...)           // WordPart::Tilde(Option<String>)
+fn expand_part_parameter(...)       // WordPart::Parameter
+fn expand_part_command_sub(...)     // WordPart::CommandSub
+fn expand_part_arith_sub(...)       // WordPart::ArithSub
 ```
 
-Each helper is 15–25 lines and writes into a shared `&mut Vec<ExpandedField>` accumulator. `expand_part_to_fields` becomes a ~30-line dispatch:
+Each helper is 10–25 lines and writes into a shared `&mut Vec<ExpandedField>` accumulator. The `in_double_quote: bool` flag is threaded through every helper that has quoted/unquoted behavior, exactly as it is today. `expand_part_to_fields` becomes a ~25-line dispatch:
 
 ```rust
-pub(super) fn expand_part_to_fields(
+fn expand_part_to_fields(
     env: &mut ShellEnv,
     part: &WordPart,
-    out: &mut Vec<ExpandedField>,
+    fields: &mut Vec<ExpandedField>,
+    in_double_quote: bool,
 ) -> crate::error::Result<()> {
     match part {
-        WordPart::Literal(s)        => expand_part_literal(s, out),
-        WordPart::DoubleQuoted(ps)  => expand_part_double_quoted(env, ps, out)?,
-        WordPart::Parameter(p)      => expand_part_parameter(env, p, out)?,
-        WordPart::Arith(a)          => expand_part_arith(env, a, out)?,
-        WordPart::CommandSub(c)     => expand_part_command_sub(env, c, out)?,
-        WordPart::Tilde(t)          => expand_part_tilde(env, t, out),
+        WordPart::Literal(s)             => expand_part_literal(s, fields, in_double_quote),
+        WordPart::EscapedLiteral(s)
+        | WordPart::SingleQuoted(s)
+        | WordPart::DollarSingleQuoted(s) => expand_part_quoted_literal(s, fields),
+        WordPart::DoubleQuoted(parts)    => expand_part_double_quoted(env, parts, fields)?,
+        WordPart::Tilde(user)            => expand_part_tilde(env, user.as_deref(), fields),
+        WordPart::Parameter(p)           => expand_part_parameter(env, p, fields, in_double_quote)?,
+        WordPart::CommandSub(p)          => expand_part_command_sub(env, p, fields, in_double_quote),
+        WordPart::ArithSub(e)            => expand_part_arith_sub(env, e, fields, in_double_quote)?,
     }
     Ok(())
 }
 ```
+
+`expand_part_to_fields` itself stays **private** (`fn`, not `pub(super)`): only `expand_word_to_fields` is called from `mod.rs` (via `expand_word` and `expand_word_to_string`), so only `expand_word_to_fields` needs `pub(super)` visibility.
 
 The composition stages (Tilde / Parameter / Arithmetic / Command → Field-split → Pathname → Quote-removal) remain as today, called from the public `expand_word`. The structural change is keeping orchestration in `pipeline.rs` and leaving `mod.rs` as a thin caller.
 
