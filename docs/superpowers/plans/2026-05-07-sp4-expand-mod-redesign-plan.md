@@ -139,7 +139,7 @@ Move the three byte-level balanced-bracket scanners into a dedicated module. The
 
 - [ ] **Step 1: Create `src/expand/scan.rs` with the three functions**
 
-Cut these functions verbatim from `src/expand/mod.rs:445-612` (the entire `skip_balanced_parens`, `skip_balanced_braces`, `skip_balanced_double_parens` block, including their doc comments). Paste into `src/expand/scan.rs`. Change `pub(crate)` to `pub(super)` on each function — they are visible only within `expand/`, and re-exported by `mod.rs` for cross-crate use. Add this header:
+Cut these functions verbatim from `src/expand/mod.rs:445-612` (the entire `skip_balanced_parens`, `skip_balanced_braces`, `skip_balanced_double_parens` block, including their doc comments). Paste into `src/expand/scan.rs`. Change `pub(crate)` to `pub` on each function — `mod scan;` is private, so `pub` here only exposes them to the parent (`expand`). Cross-crate access goes through `mod.rs`'s `pub(crate) use scan::{...}` re-export. (Note: `pub(super)` would NOT work here — Rust rejects re-exporting a `pub(super)` item with wider `pub(crate)` visibility, error E0364.) Add this header:
 
 ```rust
 //! Lexical balanced-bracket scanners with quote/escape awareness.
@@ -365,7 +365,7 @@ Move the two tilde resolution functions into their own module. Both are `pub(cra
 
 - [ ] **Step 1: Create `src/expand/tilde.rs` with the two functions**
 
-Cut `expand_tilde_prefix` (currently `mod.rs:617-641`) and `expand_tilde_user` (currently `mod.rs:644-657`) verbatim, including doc comments. Paste into `src/expand/tilde.rs`. Change visibility from `pub(crate)` to `pub(super)`. Add this header:
+Cut `expand_tilde_prefix` (currently `mod.rs:617-641`) and `expand_tilde_user` (currently `mod.rs:644-657`) verbatim, including doc comments. Paste into `src/expand/tilde.rs`. Change visibility from `pub(crate)` to `pub` (same rationale as Task A1: `mod tilde;` is private, so `pub` only exposes to the parent; the `pub(crate) use tilde::{...}` re-export in `mod.rs` lifts visibility to crate-level). Add this header:
 
 ```rust
 //! POSIX tilde expansion: `~` (HOME) and `~user` (getpwnam).
@@ -548,7 +548,7 @@ use super::tilde::expand_tilde_user;
 ```
 
 Set the function visibility:
-- `pub(super) fn expand_body(...)` — called from the `pub use` re-export in `mod.rs`
+- `pub fn expand_body(...)` — `mod heredoc;` is private, so `pub` here only exposes to the parent. The `pub use heredoc::expand_body as expand_heredoc_body;` re-export in `mod.rs` lifts the public name. (`pub(super)` would NOT work because `pub use` requires `pub`-visibility on the item; see Task A1's note for the same constraint.)
 - `fn expand_string(...)` — private
 - `fn expand_part(...)` — private
 
@@ -715,7 +715,7 @@ Move `expand_word_to_fields`, `expand_part_to_fields`, `expand_param_to_fields`,
 - [ ] **Step 1: Create `src/expand/pipeline.rs` with all four functions**
 
 Cut these regions verbatim from `src/expand/mod.rs`:
-- `expand_word_to_fields` (currently `mod.rs:346-355`) — change `fn` to `pub(super) fn` (called from `mod.rs::expand_word` and `mod.rs::expand_word_to_string`).
+- `expand_word_to_fields` (currently `mod.rs:346-355`) — change `fn` to `pub(super) fn` (called from `mod.rs::expand_word` and `mod.rs::expand_word_to_string`). This case is fine: `mod.rs` accesses it directly via `use pipeline::expand_word_to_fields;` without re-export, so the visibility-vs-re-export conflict from Task A1 does not apply.
 - `expand_part_to_fields` (currently `mod.rs:359-443`) — keep `fn` (private).
 - `expand_param_to_fields` (currently `mod.rs:660-723`) — keep `fn` (private).
 - `ifs_first_char` (currently `mod.rs:726-731`) — keep `fn` (private).
