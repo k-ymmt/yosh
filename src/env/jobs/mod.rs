@@ -176,7 +176,6 @@ impl JobTable {
         let sorted: Vec<&Job> = ids.iter().map(|id| &self.jobs[id]).collect();
         sorted.into_iter()
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -391,5 +390,4 @@ mod tests {
         let ids: Vec<JobId> = table.all_jobs().map(|j| j.id).collect();
         assert_eq!(ids, vec![1, 2, 3]);
     }
-
 }

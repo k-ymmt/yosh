@@ -174,7 +174,10 @@ mod tests {
 
     #[test]
     fn test_display_terminated_unknown_signal() {
-        assert_eq!(JobStatus::Terminated(99).to_string(), "Terminated(SIGUNKNOWN)");
+        assert_eq!(
+            JobStatus::Terminated(99).to_string(),
+            "Terminated(SIGUNKNOWN)"
+        );
     }
 
     // -----------------------------------------------------------------------
