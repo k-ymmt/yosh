@@ -158,7 +158,12 @@ PR-A is mechanical. PR-B is the redesign body. PR-C is unrelated cleanup that be
 
 - Free-function calls do not introduce vtable indirection. Rust's inlining decisions are based on body size and inlining hints, not on whether a function is a method or a free function.
 - `ScanCtx` is a small struct of references; passing `&mut ScanCtx` is equivalent in cost to passing `&mut self` plus access through extra field indirection.
-- Verify with `cargo bench --bench interactive_smoke` before and after PR-B. Threshold: scan throughput within ±5% of the PR-A baseline. A regression beyond 5% triggers redesign review.
+
+There is no criterion benchmark that targets `HighlightScanner::scan` directly (the existing `benches/interactive_smoke.rs` is a `samply`-friendly PTY scenario binary with `harness = false`, not a throughput benchmark). Quantitative ±5% verification is therefore impractical with the current bench infrastructure. Performance is instead validated qualitatively:
+
+- `tests/pty_interactive.rs` exercises the full interactive REPL with syntax-highlighting active and must pass 3 consecutive runs without flake (DoD #9). PTY tests are sensitive to large slowdowns: a regression that doubled scan time would push timing-sensitive completion tests into flake.
+- `./e2e/run_tests.sh` (DoD #2) covers a few hundred shell scripts and exercises lexer/parser/expander; if highlight_scanner's redesign somehow leaked into hot paths via shared types (e.g., ScanMode), regressions would surface as e2e timeouts.
+- Adding a dedicated `cargo bench` target for `HighlightScanner::scan` is filed as future work outside SP3 — it requires designing a representative input corpus and is not a refactor concern.
 
 ## Risks
 
@@ -170,8 +175,8 @@ PR-A is mechanical. PR-B is the redesign body. PR-C is unrelated cleanup that be
 ## Definition of Done
 
 - `cargo test` PASS.
-- `cargo bench --no-run` PASS, and `interactive_smoke` shows scan throughput within ±5% of PR-A baseline.
-- `tests/pty_interactive.rs` syntax-highlighting tests PASS.
+- `cargo bench --no-run` PASS — bench targets compile after the refactor.
+- `tests/pty_interactive.rs` syntax-highlighting tests PASS — 3 consecutive runs without flake (the qualitative perf gate; see §Performance).
 - Each production file ≤ 270 lines.
 - All TODO entries about syntax highlighting are preserved (out of scope here).
 - `command_checker.rs` gains the 6 relocated tests; `highlight_scanner/mod.rs` `tests` module no longer references `CommandChecker` / `CheckerEnv` for testing.
