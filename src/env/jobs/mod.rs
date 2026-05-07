@@ -6,6 +6,10 @@ mod spec;
 mod terminal;
 
 pub use model::{Job, JobId, JobStatus};
+// JobSpec and parse_job_spec have no internal callers yet — only
+// JobSpecError is used inside the crate (via exec/job_control.rs).
+// rustc emits "unused imports" warnings on the pub use re-export;
+// visibility tightening is out of scope per SP2 spec §Visibility.
 pub use spec::{JobSpec, JobSpecError, parse_job_spec};
 pub use terminal::{give_terminal, take_terminal};
 
