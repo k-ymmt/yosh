@@ -39,11 +39,7 @@ pub(super) fn scan_parameter(
 // scan_dollar – handle $... in Normal mode
 // -----------------------------------------------------------------------
 
-pub(super) fn scan_dollar(
-    ctx: &mut ScanCtx<'_>,
-    _env: &CheckerEnv<'_>,
-    pos: usize,
-) -> usize {
+pub(super) fn scan_dollar(ctx: &mut ScanCtx<'_>, _env: &CheckerEnv<'_>, pos: usize) -> usize {
     let next = if pos + 1 < ctx.input.len() {
         Some(ctx.input[pos + 1])
     } else {
@@ -53,7 +49,8 @@ pub(super) fn scan_dollar(
     match next {
         Some('\'') => {
             // $'...' — ANSI-C quoting
-            ctx.state.push_mode(ScanMode::DollarSingleQuote { start: pos });
+            ctx.state
+                .push_mode(ScanMode::DollarSingleQuote { start: pos });
             ctx.state.word_start = false;
             ctx.state.command_position = false;
             pos + 2 // skip $'
@@ -101,9 +98,7 @@ pub(super) fn scan_dollar(
             ctx.state.command_position = false;
             end
         }
-        Some(c)
-            if c.is_ascii_digit() || matches!(c, '@' | '*' | '#' | '?' | '-' | '$' | '!') =>
-        {
+        Some(c) if c.is_ascii_digit() || matches!(c, '@' | '*' | '#' | '?' | '-' | '$' | '!') => {
             // $0 .. $9, $@, $*, $#, $?, $-, $$, $!
             ctx.spans.push(ColorSpan {
                 start: pos,

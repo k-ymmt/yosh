@@ -11,11 +11,7 @@ use super::helpers::{
 };
 use crate::interactive::command_checker::CommandExistence;
 
-pub(super) fn scan_word(
-    ctx: &mut ScanCtx<'_>,
-    env: &CheckerEnv<'_>,
-    pos: usize,
-) -> usize {
+pub(super) fn scan_word(ctx: &mut ScanCtx<'_>, env: &CheckerEnv<'_>, pos: usize) -> usize {
     let start = pos;
     let mut end = pos;
     while end < ctx.input.len() && !is_word_break(ctx.input[end]) {

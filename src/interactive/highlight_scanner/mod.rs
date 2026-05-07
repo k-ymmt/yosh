@@ -189,7 +189,6 @@ impl HighlightScanner {
 
         spans
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +200,6 @@ mod tests {
     use super::*;
     use crate::env::aliases::AliasStore;
     use crate::interactive::highlight::HighlightStyle;
-
 
     // ===================================================================
     // Scanner tests

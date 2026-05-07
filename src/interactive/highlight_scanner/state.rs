@@ -56,7 +56,11 @@ impl ScannerState {
 /// Called from `scan_from` after the main scan loop completes; if any
 /// non-Normal mode is still on the stack, the corresponding `start`
 /// position gets an Error span.
-pub(super) fn mark_unclosed_errors(state: &ScannerState, input_len: usize, spans: &mut Vec<ColorSpan>) {
+pub(super) fn mark_unclosed_errors(
+    state: &ScannerState,
+    input_len: usize,
+    spans: &mut Vec<ColorSpan>,
+) {
     for mode in &state.mode_stack {
         match mode {
             ScanMode::SingleQuote { start }

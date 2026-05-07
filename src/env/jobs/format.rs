@@ -51,7 +51,6 @@ impl super::JobTable {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::env::jobs::{JobStatus, JobTable};
     use nix::unistd::Pid;
 

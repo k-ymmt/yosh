@@ -6,19 +6,15 @@
 //! scan_word for unquoted words and scan_dollar for `$` expansions.
 
 use super::super::command_checker::CheckerEnv;
+use super::super::highlight::{ColorSpan, HighlightStyle};
 use super::ctx::ScanCtx;
 use super::expansion;
 use super::helpers::is_operator_char;
 use super::helpers::is_redirect_start;
-use super::super::highlight::{ColorSpan, HighlightStyle};
 use super::state::ScanMode;
 use super::word;
 
-pub(super) fn scan_normal(
-    ctx: &mut ScanCtx<'_>,
-    env: &CheckerEnv<'_>,
-    pos: usize,
-) -> usize {
+pub(super) fn scan_normal(ctx: &mut ScanCtx<'_>, env: &CheckerEnv<'_>, pos: usize) -> usize {
     if pos >= ctx.input.len() {
         return pos;
     }
