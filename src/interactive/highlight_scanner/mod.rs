@@ -1,58 +1,13 @@
 use super::command_checker::{CheckerEnv, CommandChecker, CommandExistence};
 use super::highlight::{ColorSpan, HighlightStyle};
 
+mod cache;
 mod helpers;
 mod state;
 
+use cache::HighlightCache;
 use helpers::*;
 use state::{ScanMode, ScannerState};
-
-// ---------------------------------------------------------------------------
-// HighlightCache
-// ---------------------------------------------------------------------------
-
-/// Cache for incremental rescanning.
-struct HighlightCache {
-    prev_input: Vec<char>,
-    prev_spans: Vec<ColorSpan>,
-    checkpoints: Vec<(usize, ScannerState)>,
-    checkpoint_interval: usize,
-}
-
-impl HighlightCache {
-    fn new() -> Self {
-        Self {
-            prev_input: Vec::new(),
-            prev_spans: Vec::new(),
-            checkpoints: Vec::new(),
-            checkpoint_interval: 32,
-        }
-    }
-
-    /// Find the first position where `input` differs from the cached input.
-    fn diff_pos(&self, input: &[char]) -> usize {
-        self.prev_input
-            .iter()
-            .zip(input.iter())
-            .position(|(a, b)| a != b)
-            .unwrap_or(self.prev_input.len().min(input.len()))
-    }
-
-    /// Return the nearest checkpoint at or before `pos`.
-    fn nearest_checkpoint(&self, pos: usize) -> Option<(usize, ScannerState)> {
-        self.checkpoints
-            .iter()
-            .rev()
-            .find(|(cp, _)| *cp <= pos)
-            .cloned()
-    }
-
-    fn clear(&mut self) {
-        self.prev_input.clear();
-        self.prev_spans.clear();
-        self.checkpoints.clear();
-    }
-}
 
 // ---------------------------------------------------------------------------
 // HighlightScanner
