@@ -31,6 +31,16 @@ impl std::fmt::Display for JobStatus {
     }
 }
 
+impl JobStatus {
+    /// Done or Terminated — the job has finished and can be reaped.
+    ///
+    /// `Running` and `Stopped` (paused) are not terminal: a stopped job
+    /// can resume via SIGCONT.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, JobStatus::Done(_) | JobStatus::Terminated(_))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Job {
     pub id: JobId,
@@ -165,5 +175,32 @@ mod tests {
     #[test]
     fn test_display_terminated_unknown_signal() {
         assert_eq!(JobStatus::Terminated(99).to_string(), "Terminated(SIGUNKNOWN)");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_terminal
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_terminal_running_false() {
+        assert!(!JobStatus::Running.is_terminal());
+    }
+
+    #[test]
+    fn test_is_terminal_stopped_false() {
+        // Stopped is paused, not finished — not terminal
+        assert!(!JobStatus::Stopped(20).is_terminal());
+    }
+
+    #[test]
+    fn test_is_terminal_done_true() {
+        assert!(JobStatus::Done(0).is_terminal());
+        assert!(JobStatus::Done(127).is_terminal());
+    }
+
+    #[test]
+    fn test_is_terminal_terminated_true() {
+        assert!(JobStatus::Terminated(9).is_terminal());
+        assert!(JobStatus::Terminated(15).is_terminal());
     }
 }
