@@ -212,10 +212,9 @@ impl JobTable {
     pub fn format_job(&self, id: JobId) -> Option<String> {
         let job = self.jobs.get(&id)?;
         let indicator = self.indicator(id);
-        let status_str = self.format_status(job.status);
         Some(format!(
             "[{}]{}  {}  {}",
-            job.id, indicator, status_str, job.command
+            job.id, indicator, job.status, job.command
         ))
     }
 
@@ -223,13 +222,12 @@ impl JobTable {
     pub fn format_job_long(&self, id: JobId) -> Option<String> {
         let job = self.jobs.get(&id)?;
         let indicator = self.indicator(id);
-        let status_str = self.format_status(job.status);
         Some(format!(
             "[{}]{} {}  {}  {}",
             job.id,
             indicator,
             job.pgid.as_raw(),
-            status_str,
+            job.status,
             job.command
         ))
     }
@@ -261,22 +259,6 @@ impl JobTable {
             '-'
         } else {
             ' '
-        }
-    }
-
-    fn format_status(&self, status: JobStatus) -> String {
-        match status {
-            JobStatus::Running => "Running".to_string(),
-            JobStatus::Stopped(sig) => {
-                let name = crate::signal::signal_number_to_name(sig).unwrap_or("UNKNOWN");
-                format!("Stopped(SIG{})", name)
-            }
-            JobStatus::Done(0) => "Done".to_string(),
-            JobStatus::Done(code) => format!("Done({})", code),
-            JobStatus::Terminated(sig) => {
-                let name = crate::signal::signal_number_to_name(sig).unwrap_or("UNKNOWN");
-                format!("Terminated(SIG{})", name)
-            }
         }
     }
 }
