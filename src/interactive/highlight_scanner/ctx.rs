@@ -13,7 +13,6 @@ use super::super::command_checker::CommandChecker;
 use super::super::highlight::ColorSpan;
 use super::state::ScannerState;
 
-#[allow(dead_code)] // PR-B converts scanners to consume this; unused until then.
 pub(super) struct ScanCtx<'a> {
     pub input: &'a [char],
     pub state: &'a mut ScannerState,

@@ -1,33 +1,32 @@
 //! Dollar-expansion scanners: $variable, ${braced}, $((arith)).
 //!
-//! Each scanner is a free function. scan_dollar (top-level $-detector
-//! that branches into the others) lands here in Task B3.
+//! Each scanner is a free function taking (ctx, env, pos, [payload]).
 
 use super::super::command_checker::CheckerEnv;
 use super::super::highlight::{ColorSpan, HighlightStyle};
-use super::state::{ScanMode, ScannerState};
+use super::ctx::ScanCtx;
+use super::state::ScanMode;
 
 // -----------------------------------------------------------------------
 // scan_parameter (braced)
 // -----------------------------------------------------------------------
 
 pub(super) fn scan_parameter(
-    chars: &[char],
+    ctx: &mut ScanCtx<'_>,
+    _env: &CheckerEnv<'_>,
     pos: usize,
     start: usize,
     _braced: bool,
-    state: &mut ScannerState,
-    spans: &mut Vec<ColorSpan>,
 ) -> usize {
     let mut p = pos;
-    while p < chars.len() {
-        if chars[p] == '}' {
-            spans.push(ColorSpan {
+    while p < ctx.input.len() {
+        if ctx.input[p] == '}' {
+            ctx.spans.push(ColorSpan {
                 start,
                 end: p + 1,
                 style: HighlightStyle::Variable,
             });
-            state.pop_mode();
+            ctx.state.pop_mode();
             return p + 1;
         }
         p += 1;
@@ -41,14 +40,12 @@ pub(super) fn scan_parameter(
 // -----------------------------------------------------------------------
 
 pub(super) fn scan_dollar(
-    chars: &[char],
+    ctx: &mut ScanCtx<'_>,
+    _env: &CheckerEnv<'_>,
     pos: usize,
-    state: &mut ScannerState,
-    spans: &mut Vec<ColorSpan>,
-    _checker_env: &CheckerEnv,
 ) -> usize {
-    let next = if pos + 1 < chars.len() {
-        Some(chars[pos + 1])
+    let next = if pos + 1 < ctx.input.len() {
+        Some(ctx.input[pos + 1])
     } else {
         None
     };
@@ -56,70 +53,71 @@ pub(super) fn scan_dollar(
     match next {
         Some('\'') => {
             // $'...' — ANSI-C quoting
-            state.push_mode(ScanMode::DollarSingleQuote { start: pos });
-            state.word_start = false;
-            state.command_position = false;
+            ctx.state.push_mode(ScanMode::DollarSingleQuote { start: pos });
+            ctx.state.word_start = false;
+            ctx.state.command_position = false;
             pos + 2 // skip $'
         }
         Some('(') => {
             // Check for $(( — arithmetic
-            if pos + 2 < chars.len() && chars[pos + 2] == '(' {
-                state.push_mode(ScanMode::ArithSub { start: pos });
-                state.word_start = false;
-                state.command_position = false;
+            if pos + 2 < ctx.input.len() && ctx.input[pos + 2] == '(' {
+                ctx.state.push_mode(ScanMode::ArithSub { start: pos });
+                ctx.state.word_start = false;
+                ctx.state.command_position = false;
                 pos + 3 // skip $((
             } else {
                 // $( — command substitution
-                state.push_mode(ScanMode::CommandSub { start: pos });
-                state.push_mode(ScanMode::Normal);
-                state.word_start = true;
-                state.command_position = true;
+                ctx.state.push_mode(ScanMode::CommandSub { start: pos });
+                ctx.state.push_mode(ScanMode::Normal);
+                ctx.state.word_start = true;
+                ctx.state.command_position = true;
                 pos + 2 // skip $(
             }
         }
         Some('{') => {
-            state.push_mode(ScanMode::Parameter {
+            ctx.state.push_mode(ScanMode::Parameter {
                 start: pos,
                 braced: true,
             });
-            state.word_start = false;
-            state.command_position = false;
+            ctx.state.word_start = false;
+            ctx.state.command_position = false;
             pos + 2 // skip ${
         }
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {
             // $NAME
             let var_start = pos;
             let mut end = pos + 1;
-            while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_')
+            while end < ctx.input.len()
+                && (ctx.input[end].is_ascii_alphanumeric() || ctx.input[end] == '_')
             {
                 end += 1;
             }
-            spans.push(ColorSpan {
+            ctx.spans.push(ColorSpan {
                 start: var_start,
                 end,
                 style: HighlightStyle::Variable,
             });
-            state.word_start = false;
-            state.command_position = false;
+            ctx.state.word_start = false;
+            ctx.state.command_position = false;
             end
         }
         Some(c)
             if c.is_ascii_digit() || matches!(c, '@' | '*' | '#' | '?' | '-' | '$' | '!') =>
         {
             // $0 .. $9, $@, $*, $#, $?, $-, $$, $!
-            spans.push(ColorSpan {
+            ctx.spans.push(ColorSpan {
                 start: pos,
                 end: pos + 2,
                 style: HighlightStyle::Variable,
             });
-            state.word_start = false;
-            state.command_position = false;
+            ctx.state.word_start = false;
+            ctx.state.command_position = false;
             pos + 2
         }
         _ => {
             // Bare $ at end of input or before something unexpected – treat as
             // default text.
-            state.word_start = false;
+            ctx.state.word_start = false;
             pos + 1
         }
     }
@@ -130,25 +128,24 @@ pub(super) fn scan_dollar(
 // -----------------------------------------------------------------------
 
 pub(super) fn scan_arith_sub(
-    chars: &[char],
+    ctx: &mut ScanCtx<'_>,
+    _env: &CheckerEnv<'_>,
     pos: usize,
     start: usize,
-    state: &mut ScannerState,
-    spans: &mut Vec<ColorSpan>,
 ) -> usize {
     let mut p = pos;
-    while p + 1 < chars.len() {
-        if chars[p] == ')' && chars[p + 1] == ')' {
-            spans.push(ColorSpan {
+    while p + 1 < ctx.input.len() {
+        if ctx.input[p] == ')' && ctx.input[p + 1] == ')' {
+            ctx.spans.push(ColorSpan {
                 start,
                 end: p + 2,
                 style: HighlightStyle::ArithSub,
             });
-            state.pop_mode();
+            ctx.state.pop_mode();
             return p + 2;
         }
         p += 1;
     }
     // Advance to end if unclosed
-    chars.len()
+    ctx.input.len()
 }

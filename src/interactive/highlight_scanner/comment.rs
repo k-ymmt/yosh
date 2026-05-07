@@ -1,23 +1,22 @@
 //! Comment scanner — handles a `#`-comment that starts at the beginning
 //! of a word and runs to the end of the input.
 
-use super::super::highlight::ColorSpan;
-use super::super::highlight::HighlightStyle;
-use super::state::ScannerState;
+use super::super::command_checker::CheckerEnv;
+use super::super::highlight::{ColorSpan, HighlightStyle};
+use super::ctx::ScanCtx;
 
 pub(super) fn scan_comment(
-    chars: &[char],
+    ctx: &mut ScanCtx<'_>,
+    _env: &CheckerEnv<'_>,
     _pos: usize,
     start: usize,
-    state: &mut ScannerState,
-    spans: &mut Vec<ColorSpan>,
 ) -> usize {
     // Comment spans to the end of the input.
-    spans.push(ColorSpan {
+    ctx.spans.push(ColorSpan {
         start,
-        end: chars.len(),
+        end: ctx.input.len(),
         style: HighlightStyle::Comment,
     });
-    state.pop_mode();
-    chars.len()
+    ctx.state.pop_mode();
+    ctx.input.len()
 }

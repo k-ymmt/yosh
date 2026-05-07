@@ -1,5 +1,5 @@
-use super::command_checker::{CheckerEnv, CommandChecker, CommandExistence};
-use super::highlight::{ColorSpan, HighlightStyle};
+use super::command_checker::{CheckerEnv, CommandChecker};
+use super::highlight::ColorSpan;
 
 mod cache;
 mod comment;
@@ -12,6 +12,7 @@ mod state;
 mod word;
 
 use cache::HighlightCache;
+use ctx::ScanCtx;
 use state::{ScanMode, ScannerState};
 
 // ---------------------------------------------------------------------------
@@ -144,40 +145,46 @@ impl HighlightScanner {
                 self.cache.checkpoints.push((pos, state.clone()));
             }
 
-            match state.current_mode().clone() {
-                ScanMode::Normal => {
-                    pos = normal::scan_normal(chars, pos, state, &mut spans, &mut self.checker, checker_env);
-                }
+            let mut ctx = ScanCtx {
+                input: chars,
+                state,
+                spans: &mut spans,
+                checker: &mut self.checker,
+            };
+            pos = match ctx.state.current_mode().clone() {
+                ScanMode::Normal => normal::scan_normal(&mut ctx, checker_env, pos),
                 ScanMode::SingleQuote { start } => {
-                    pos = quotes::scan_single_quote(chars, pos, start, state, &mut spans);
+                    quotes::scan_single_quote(&mut ctx, checker_env, pos, start)
                 }
                 ScanMode::DoubleQuote { start } => {
-                    pos = quotes::scan_double_quote(chars, pos, start, state, &mut spans, checker_env);
+                    quotes::scan_double_quote(&mut ctx, checker_env, pos, start)
                 }
                 ScanMode::DollarSingleQuote { start } => {
-                    pos = quotes::scan_dollar_single_quote(chars, pos, start, state, &mut spans);
+                    quotes::scan_dollar_single_quote(&mut ctx, checker_env, pos, start)
                 }
                 ScanMode::Parameter { start, braced } => {
-                    pos = expansion::scan_parameter(chars, pos, start, braced, state, &mut spans);
+                    expansion::scan_parameter(&mut ctx, checker_env, pos, start, braced)
+                }
+                ScanMode::ArithSub { start } => {
+                    expansion::scan_arith_sub(&mut ctx, checker_env, pos, start)
+                }
+                ScanMode::Comment { start } => {
+                    comment::scan_comment(&mut ctx, checker_env, pos, start)
                 }
                 ScanMode::CommandSub { .. } => {
                     // CommandSub itself doesn't scan — it pushes Normal which does the
                     // real scanning. When Normal pops, we detect the CommandSub below
                     // and pop it too. This is already handled in scan_normal (`)` case).
                     // If we somehow end up here, just pop.
-                    state.pop_mode();
+                    ctx.state.pop_mode();
+                    pos
                 }
                 ScanMode::Backtick { .. } => {
                     // Similar to CommandSub — handled by scan_normal.
-                    state.pop_mode();
+                    ctx.state.pop_mode();
+                    pos
                 }
-                ScanMode::ArithSub { start } => {
-                    pos = expansion::scan_arith_sub(chars, pos, start, state, &mut spans);
-                }
-                ScanMode::Comment { start } => {
-                    pos = comment::scan_comment(chars, pos, start, state, &mut spans);
-                }
-            }
+            };
         }
 
         spans
@@ -193,6 +200,8 @@ impl HighlightScanner {
 mod tests {
     use super::*;
     use crate::env::aliases::AliasStore;
+    use crate::interactive::command_checker::CommandExistence;
+    use crate::interactive::highlight::HighlightStyle;
 
     fn make_aliases() -> AliasStore {
         AliasStore::default()
