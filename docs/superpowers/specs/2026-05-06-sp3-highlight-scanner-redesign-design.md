@@ -47,9 +47,12 @@ Ten files, all under 270 lines.
 
 ## Responsibility Redesign — `ScanCtx` + Free-Function Scanners
 
-Each scan-mode function currently takes `&mut self` (i.e., `&mut HighlightScanner`) but only touches `self.state` and `self.spans`. The cache and the public-API plumbing in `HighlightScanner` are not relevant to the scanner bodies. Forcing scanners to be `impl HighlightScanner` methods couples them to the wrapper struct unnecessarily.
+Each scan-mode function currently takes `&mut self` (i.e., `&mut HighlightScanner`). Most touch only state and spans (passed as parameters); two pieces of `HighlightScanner`'s internals leak in:
 
-Introduce a small context struct that exposes only the mutable state scanners actually need:
+- **`self.checker` (CommandChecker)** — `scan_word` calls `self.checker.check(&word, checker_env)` to determine if a word names an existing command. This is the only real `self.*` access in the scanner bodies.
+- **`self.cache`** — used by `scan_from` itself for checkpoint bookkeeping. Not used inside any per-mode scanner.
+
+Forcing scanners to be `impl HighlightScanner` methods couples them to the wrapper struct unnecessarily. Introduce a small context struct that bundles the mutable state every scanner needs (state, spans) plus the one auxiliary the word scanner needs (checker):
 
 ```rust
 // ctx.rs
@@ -57,8 +60,13 @@ pub(super) struct ScanCtx<'a> {
     pub input: &'a [char],
     pub state: &'a mut ScannerState,
     pub spans: &'a mut Vec<ColorSpan>,
+    pub checker: &'a mut CommandChecker,
 }
 ```
+
+`checker` is included even though only `scan_word` reads it. The alternative — threading `&mut CommandChecker` as a separate parameter through the dispatcher and through `scan_normal` (which calls `scan_word`) — would clutter every callsite. Keeping `checker` in `ScanCtx` makes the per-scanner signature uniform: `(ctx: &mut ScanCtx, env: &CheckerEnv, pos: usize, [payload...])`.
+
+`HighlightScanner.cache` and `HighlightScanner.accumulated_state` stay private to `mod.rs` — `scan_from` is the only consumer, and it remains an `impl HighlightScanner` method.
 
 Each scan-mode function becomes a free function taking `&mut ScanCtx<'_>` plus the read-only `CheckerEnv` and the current position:
 
