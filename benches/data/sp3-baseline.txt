@@ -1,0 +1,18 @@
+Benchmark: interactive_smoke (SP3 Task A5)
+Date: 2026-05-07
+
+Note: interactive_smoke is a non-Criterion benchmark harness (harness = false).
+It runs a PTY-based interactive scenario that completes successfully.
+
+To obtain actual timing measurements for PR-B baseline verification, run:
+  cargo bench --bench interactive_smoke 2>&1 | tee benches/data/sp3-baseline.txt
+
+Scenario (see benches/interactive_smoke.rs):
+  1. Spawn yosh on PTY
+  2. Wait for prompt
+  3. Send "echo hello\n", expect output
+  4. Send Tab (completion attempt)
+  5. Send Up (history recall)
+  6. Send "exit\n"
+
+The baseline measurements will inform PR-B verification (B6 ±5% performance hold).

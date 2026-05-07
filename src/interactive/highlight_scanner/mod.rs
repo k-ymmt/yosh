@@ -2,6 +2,7 @@ use super::command_checker::{CheckerEnv, CommandChecker, CommandExistence};
 use super::highlight::{ColorSpan, HighlightStyle};
 
 mod cache;
+mod ctx;
 mod helpers;
 mod state;
 
