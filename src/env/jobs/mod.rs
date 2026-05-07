@@ -15,6 +15,27 @@ pub use spec::{JobSpec, JobSpecError, parse_job_spec};
 pub use terminal::{give_terminal, take_terminal};
 
 // ---------------------------------------------------------------------------
+// Notification state-machine predicates
+// ---------------------------------------------------------------------------
+
+/// True if the job has finished but the user has not yet been told.
+fn is_notifiable(job: &Job) -> bool {
+    !job.notified && job.status.is_terminal()
+}
+
+/// True if the job has finished AND the user has been told — safe to remove.
+fn is_cleanable(job: &Job) -> bool {
+    job.notified && job.status.is_terminal()
+}
+
+/// Reset notification state after a status change. Called from
+/// `JobTable::update_status` whenever the status mutates so the
+/// new state will be reported.
+fn reset_after_status_change(job: &mut Job) {
+    job.notified = false;
+}
+
+// ---------------------------------------------------------------------------
 // JobTable
 // ---------------------------------------------------------------------------
 
@@ -141,7 +162,7 @@ impl JobTable {
     pub fn update_status(&mut self, pid: Pid, status: JobStatus) {
         if let Some(job) = self.jobs.values_mut().find(|j| j.pids.contains(&pid)) {
             job.status = status;
-            job.notified = false;
+            reset_after_status_change(job);
         }
     }
 
@@ -189,9 +210,7 @@ impl JobTable {
         let mut ids: Vec<JobId> = self
             .jobs
             .values()
-            .filter(|j| {
-                !j.notified && matches!(j.status, JobStatus::Done(_) | JobStatus::Terminated(_))
-            })
+            .filter(|j| is_notifiable(j))
             .map(|j| j.id)
             .collect();
         ids.sort();
@@ -212,9 +231,7 @@ impl JobTable {
         let to_remove: Vec<JobId> = self
             .jobs
             .values()
-            .filter(|j| {
-                j.notified && matches!(j.status, JobStatus::Done(_) | JobStatus::Terminated(_))
-            })
+            .filter(|j| is_cleanable(j))
             .map(|j| j.id)
             .collect();
         for id in to_remove {
@@ -483,6 +500,101 @@ mod tests {
 
         table.mark_notified(id);
         assert!(table.pending_notifications().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Notification predicates
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_notifiable_done_unnotified() {
+        let job = Job {
+            id: 1,
+            pgid: pid(1),
+            pids: vec![pid(1)],
+            command: "x".to_string(),
+            status: JobStatus::Done(0),
+            notified: false,
+            foreground: false,
+            saved_tmodes: None,
+        };
+        assert!(is_notifiable(&job));
+    }
+
+    #[test]
+    fn test_is_notifiable_done_already_notified() {
+        let job = Job {
+            id: 1,
+            pgid: pid(1),
+            pids: vec![pid(1)],
+            command: "x".to_string(),
+            status: JobStatus::Done(0),
+            notified: true,
+            foreground: false,
+            saved_tmodes: None,
+        };
+        assert!(!is_notifiable(&job));
+    }
+
+    #[test]
+    fn test_is_notifiable_running_is_false() {
+        let job = Job {
+            id: 1,
+            pgid: pid(1),
+            pids: vec![pid(1)],
+            command: "x".to_string(),
+            status: JobStatus::Running,
+            notified: false,
+            foreground: false,
+            saved_tmodes: None,
+        };
+        assert!(!is_notifiable(&job));
+    }
+
+    #[test]
+    fn test_is_cleanable_done_notified() {
+        let job = Job {
+            id: 1,
+            pgid: pid(1),
+            pids: vec![pid(1)],
+            command: "x".to_string(),
+            status: JobStatus::Terminated(9),
+            notified: true,
+            foreground: false,
+            saved_tmodes: None,
+        };
+        assert!(is_cleanable(&job));
+    }
+
+    #[test]
+    fn test_is_cleanable_unnotified_is_false() {
+        let job = Job {
+            id: 1,
+            pgid: pid(1),
+            pids: vec![pid(1)],
+            command: "x".to_string(),
+            status: JobStatus::Done(0),
+            notified: false,
+            foreground: false,
+            saved_tmodes: None,
+        };
+        assert!(!is_cleanable(&job));
+    }
+
+    #[test]
+    fn test_reset_after_status_change_clears_notified() {
+        let mut job = Job {
+            id: 1,
+            pgid: pid(1),
+            pids: vec![pid(1)],
+            command: "x".to_string(),
+            status: JobStatus::Running,
+            notified: true,
+            foreground: false,
+            saved_tmodes: None,
+        };
+        reset_after_status_change(&mut job);
+        assert!(!job.notified);
     }
 
 }
