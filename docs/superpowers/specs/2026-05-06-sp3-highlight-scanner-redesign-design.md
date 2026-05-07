@@ -73,7 +73,7 @@ pub(super) fn scan_normal(
 }
 ```
 
-`HighlightScanner::scan_from` becomes the dispatcher that builds `ScanCtx` once and loops:
+`HighlightScanner::scan_from` becomes the dispatcher that builds `ScanCtx` once and loops. The actual `ScanMode` enum has nine variants (`Normal`, `SingleQuote { start }`, `DoubleQuote { start }`, `DollarSingleQuote { start }`, `Parameter { start, braced }`, `CommandSub { start }`, `Backtick { start }`, `ArithSub { start }`, `Comment { start }`); struct-variant payloads must be destructured and passed to scanners that need them. `CommandSub` and `Backtick` are degenerate: they have no scanner of their own — `scan_normal` handles entry/exit when it sees `$( ... )` or `` ` ... ` ``, so the dispatcher just pops the mode if it ever lands there:
 
 ```rust
 fn scan_from(&mut self, /* ... */, env: &CheckerEnv<'_>) {
@@ -84,18 +84,26 @@ fn scan_from(&mut self, /* ... */, env: &CheckerEnv<'_>) {
     };
     let mut pos = /* ... */;
     while pos < ctx.input.len() {
-        pos = match ctx.state.current_mode() {
-            ScanMode::Normal           => normal::scan_normal(&mut ctx, env, pos),
-            ScanMode::DoubleQuote      => quotes::scan_double_quote(&mut ctx, env, pos),
-            ScanMode::SingleQuote      => quotes::scan_single_quote(&mut ctx, env, pos),
-            ScanMode::DollarSingleQuote => quotes::scan_dollar_single_quote(&mut ctx, env, pos),
-            ScanMode::Parameter        => expansion::scan_parameter(&mut ctx, env, pos),
-            ScanMode::ArithSub         => expansion::scan_arith_sub(&mut ctx, env, pos),
-            ScanMode::Comment          => comment::scan_comment(&mut ctx, env, pos),
+        pos = match ctx.state.current_mode().clone() {
+            ScanMode::Normal              => normal::scan_normal(&mut ctx, env, pos),
+            ScanMode::SingleQuote { start }
+                                          => quotes::scan_single_quote(&mut ctx, env, pos, start),
+            ScanMode::DoubleQuote { start }
+                                          => quotes::scan_double_quote(&mut ctx, env, pos, start),
+            ScanMode::DollarSingleQuote { start }
+                                          => quotes::scan_dollar_single_quote(&mut ctx, env, pos, start),
+            ScanMode::Parameter { start, braced }
+                                          => expansion::scan_parameter(&mut ctx, env, pos, start, braced),
+            ScanMode::ArithSub { start }  => expansion::scan_arith_sub(&mut ctx, env, pos, start),
+            ScanMode::Comment { start }   => comment::scan_comment(&mut ctx, env, pos, start),
+            ScanMode::CommandSub { .. }   => { ctx.state.pop_mode(); pos }
+            ScanMode::Backtick { .. }     => { ctx.state.pop_mode(); pos }
         };
     }
 }
 ```
+
+`scan_dollar` and `scan_word` are **not** dispatcher entries — they are helpers called from `scan_normal` (and `scan_double_quote`, which calls `scan_dollar` for inline `$` expansion). After the split they live in `expansion.rs` and `word.rs` as `pub(super) fn`s, called directly across sibling submodules.
 
 ### Effect
 
