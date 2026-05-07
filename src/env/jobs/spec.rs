@@ -143,9 +143,7 @@ mod tests {
         Pid::from_raw(n)
     }
 
-    // -----------------------------------------------------------------------
-    // resolve_job_spec
-    // -----------------------------------------------------------------------
+    // resolve_job_spec tests
 
     #[test]
     fn test_resolve_job_spec_numeric() {
@@ -198,9 +196,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // parse_job_spec
-    // -----------------------------------------------------------------------
+    // parse_job_spec tests
 
     #[test]
     fn test_parse_current_percent() {
@@ -276,9 +272,7 @@ mod tests {
         assert_eq!(parse_job_spec("1"), Err(JobSpecError::Malformed));
     }
 
-    // -----------------------------------------------------------------------
-    // JobTable::resolve
-    // -----------------------------------------------------------------------
+    // JobTable::resolve tests
 
     #[test]
     fn test_resolve_current() {
