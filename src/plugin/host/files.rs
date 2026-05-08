@@ -16,12 +16,12 @@ use super::super::generated::yosh::plugin::files::{DirEntry, FileStat};
 use super::super::generated::yosh::plugin::types::ErrorCode;
 use super::HostContext;
 
-pub fn host_files_read_file(ctx: &mut HostContext, path: String) -> Result<Vec<u8>, ErrorCode> {
+pub fn host_files_read_file(ctx: &HostContext, path: &str) -> Result<Vec<u8>, ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
-    match std::fs::read(&path) {
+    match std::fs::read(path) {
         Ok(bytes) => Ok(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ErrorCode::NotFound),
         Err(_) => Err(ErrorCode::IoFailed),
@@ -29,14 +29,14 @@ pub fn host_files_read_file(ctx: &mut HostContext, path: String) -> Result<Vec<u
 }
 
 pub fn host_files_read_dir(
-    ctx: &mut HostContext,
-    path: String,
+    ctx: &HostContext,
+    path: &str,
 ) -> Result<Vec<DirEntry>, ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
-    let iter = match std::fs::read_dir(&path) {
+    let iter = match std::fs::read_dir(path) {
         Ok(i) => i,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ErrorCode::NotFound),
         Err(_) => return Err(ErrorCode::IoFailed),
@@ -55,12 +55,12 @@ pub fn host_files_read_dir(
     Ok(out)
 }
 
-pub fn host_files_metadata(ctx: &mut HostContext, path: String) -> Result<FileStat, ErrorCode> {
+pub fn host_files_metadata(ctx: &HostContext, path: &str) -> Result<FileStat, ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
-    let md = match std::fs::metadata(&path) {
+    let md = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ErrorCode::NotFound),
         Err(_) => return Err(ErrorCode::IoFailed),
@@ -160,18 +160,18 @@ pub fn host_files_remove_dir(
     }
 }
 
-pub fn deny_files_read_file(_ctx: &mut HostContext, _path: String) -> Result<Vec<u8>, ErrorCode> {
+pub fn deny_files_read_file(_ctx: &HostContext, _path: &str) -> Result<Vec<u8>, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
 pub fn deny_files_read_dir(
-    _ctx: &mut HostContext,
-    _path: String,
+    _ctx: &HostContext,
+    _path: &str,
 ) -> Result<Vec<DirEntry>, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
-pub fn deny_files_metadata(_ctx: &mut HostContext, _path: String) -> Result<FileStat, ErrorCode> {
+pub fn deny_files_metadata(_ctx: &HostContext, _path: &str) -> Result<FileStat, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
@@ -224,8 +224,8 @@ mod tests {
 
     #[test]
     fn files_read_file_denied_when_env_null() {
-        let mut ctx = null_env_ctx();
-        let result = host_files_read_file(&mut ctx, "/tmp/anything".into());
+        let ctx = null_env_ctx();
+        let result = host_files_read_file(&ctx, "/tmp/anything");
         assert_eq!(result, Err(ErrorCode::Denied));
     }
 
@@ -239,8 +239,8 @@ mod tests {
         std::fs::write(&path, &payload).unwrap();
 
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
-        let result = host_files_read_file(&mut ctx, path.to_string_lossy().into_owned());
+        let ctx = bound_env_ctx(&mut env);
+        let result = host_files_read_file(&ctx, &path.to_string_lossy());
         assert_eq!(result, Ok(payload));
     }
 
@@ -251,9 +251,8 @@ mod tests {
         std::fs::create_dir(dir.path().join("sub")).unwrap();
 
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
-        let entries =
-            host_files_read_dir(&mut ctx, dir.path().to_string_lossy().into_owned()).unwrap();
+        let ctx = bound_env_ctx(&mut env);
+        let entries = host_files_read_dir(&ctx, &dir.path().to_string_lossy()).unwrap();
 
         assert_eq!(entries.len(), 2);
         let a = entries.iter().find(|e| e.name == "a.txt").expect("a.txt");
@@ -271,14 +270,14 @@ mod tests {
         std::fs::write(&file_path, b"abc").unwrap();
 
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
+        let ctx = bound_env_ctx(&mut env);
 
-        let f = host_files_metadata(&mut ctx, file_path.to_string_lossy().into_owned()).unwrap();
+        let f = host_files_metadata(&ctx, &file_path.to_string_lossy()).unwrap();
         assert!(f.is_file);
         assert!(!f.is_dir);
         assert_eq!(f.size, 3);
 
-        let d = host_files_metadata(&mut ctx, dir.path().to_string_lossy().into_owned()).unwrap();
+        let d = host_files_metadata(&ctx, &dir.path().to_string_lossy()).unwrap();
         assert!(!d.is_file);
         assert!(d.is_dir);
     }
@@ -289,16 +288,16 @@ mod tests {
         let missing = dir.path().join("does-not-exist.txt");
 
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
-        let result = host_files_read_file(&mut ctx, missing.to_string_lossy().into_owned());
+        let ctx = bound_env_ctx(&mut env);
+        let result = host_files_read_file(&ctx, &missing.to_string_lossy());
         assert_eq!(result, Err(ErrorCode::NotFound));
     }
 
     #[test]
     fn host_files_read_file_invalid_argument_on_empty_path() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
-        let result = host_files_read_file(&mut ctx, String::new());
+        let ctx = bound_env_ctx(&mut env);
+        let result = host_files_read_file(&ctx, "");
         assert_eq!(result, Err(ErrorCode::InvalidArgument));
     }
 

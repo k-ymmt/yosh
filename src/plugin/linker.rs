@@ -158,24 +158,30 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
 
     // Read group — gated by CAP_FILES_READ
     if has(allowed, CAP_FILES_READ) {
-        files.func_wrap("read-file", |mut store, (path,): (String,)| {
-            Ok((host_files_read_file(store.data_mut(), path),))
+        files.func_wrap("read-file", |store, (path,): (wasmtime::component::WasmStr,)| {
+            let path_str = path.to_str(&store)?;
+            Ok((host_files_read_file(store.data(), &path_str),))
         })?;
-        files.func_wrap("read-dir", |mut store, (path,): (String,)| {
-            Ok((host_files_read_dir(store.data_mut(), path),))
+        files.func_wrap("read-dir", |store, (path,): (wasmtime::component::WasmStr,)| {
+            let path_str = path.to_str(&store)?;
+            Ok((host_files_read_dir(store.data(), &path_str),))
         })?;
-        files.func_wrap("metadata", |mut store, (path,): (String,)| {
-            Ok((host_files_metadata(store.data_mut(), path),))
+        files.func_wrap("metadata", |store, (path,): (wasmtime::component::WasmStr,)| {
+            let path_str = path.to_str(&store)?;
+            Ok((host_files_metadata(store.data(), &path_str),))
         })?;
     } else {
-        files.func_wrap("read-file", |mut store, (path,): (String,)| {
-            Ok((deny_files_read_file(store.data_mut(), path),))
+        files.func_wrap("read-file", |store, (path,): (wasmtime::component::WasmStr,)| {
+            let path_str = path.to_str(&store)?;
+            Ok((deny_files_read_file(store.data(), &path_str),))
         })?;
-        files.func_wrap("read-dir", |mut store, (path,): (String,)| {
-            Ok((deny_files_read_dir(store.data_mut(), path),))
+        files.func_wrap("read-dir", |store, (path,): (wasmtime::component::WasmStr,)| {
+            let path_str = path.to_str(&store)?;
+            Ok((deny_files_read_dir(store.data(), &path_str),))
         })?;
-        files.func_wrap("metadata", |mut store, (path,): (String,)| {
-            Ok((deny_files_metadata(store.data_mut(), path),))
+        files.func_wrap("metadata", |store, (path,): (wasmtime::component::WasmStr,)| {
+            let path_str = path.to_str(&store)?;
+            Ok((deny_files_metadata(store.data(), &path_str),))
         })?;
     }
 
