@@ -1,0 +1,20 @@
+[package]
+name = "perf_plugin"
+version = "0.2.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+yosh-plugin-sdk = { path = "../../../crates/yosh-plugin-sdk" }
+
+[package.metadata.component]
+package = "yosh:perf-plugin"
+
+[package.metadata.component.target]
+path  = "../../../crates/yosh-plugin-api/wit"
+world = "plugin-world"
+
+[package.metadata.component.dependencies]
+# wasi adapter is auto-resolved by cargo-component for the wasm32-wasip2 target.
