@@ -4,19 +4,31 @@
 //! stdout side-effects (unlike `test_plugin`'s `print()` calls), so Criterion
 //! measurements are not polluted.
 
-use yosh_plugin_sdk::{Capability, HookName, Plugin, export, get_var};
+use yosh_plugin_sdk::{
+    Capability, HookName, Plugin, export, get_var, read_file, remove_file, set_var,
+};
 
 #[derive(Default)]
 struct PerfPlugin;
 
 impl Plugin for PerfPlugin {
     fn commands(&self) -> &[&'static str] {
-        &["noop_cmd", "noop_var", "burst_var"]
+        &[
+            "noop_cmd",
+            "noop_var",
+            "burst_var",
+            "noop_var_set",
+            "noop_files_read",
+            "noop_files_remove",
+        ]
     }
 
     fn required_capabilities(&self) -> &[Capability] {
         &[
             Capability::VariablesRead,
+            Capability::VariablesWrite,
+            Capability::FilesRead,
+            Capability::FilesWrite,
             Capability::HookPrePrompt,
             Capability::HookPreExec,
             Capability::HookPostExec,
@@ -38,6 +50,18 @@ impl Plugin for PerfPlugin {
                 for _ in 0..10 {
                     let _ = get_var("PERF_VAR");
                 }
+                0
+            }
+            "noop_var_set" => {
+                let _ = set_var("PERF_VAR", "v");
+                0
+            }
+            "noop_files_read" => {
+                let _ = read_file("/dev/null");
+                0
+            }
+            "noop_files_remove" => {
+                let _ = remove_file("/tmp/yosh-perf-rollout-nonexistent");
                 0
             }
             _ => 127,
