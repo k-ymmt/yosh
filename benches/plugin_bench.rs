@@ -127,11 +127,41 @@ fn bench_pre_prompt_three_noop(c: &mut Criterion) {
     });
 }
 
+fn bench_exec_burst_var(c: &mut Criterion) {
+    // `burst_var` exercises 10 host imports per command (linearity check on
+    // host-import boundary cost). Calls variables.get 10 times inside the guest.
+    // Measures: exec boundary + 10x variables.get boundary crossings + command body overhead.
+    let (mut mgr, mut env) = make_loaded_manager();
+    env.vars
+        .set("PERF_VAR", "perf_value")
+        .expect("set PERF_VAR");
+    let args: Vec<String> = vec![];
+    c.bench_function("plugin_exec_burst_var", |b| {
+        b.iter(|| {
+            let r = mgr.exec_command(&mut env, "burst_var", black_box(&args));
+            black_box(r);
+        });
+    });
+}
+
+fn bench_pre_exec_zero_plugins(c: &mut Criterion) {
+    // Baseline: `call_pre_exec` with no plugins loaded.
+    // Measures: dispatch mechanism overhead with zero pre_exec hooks.
+    let (mut mgr, mut env) = make_manager_with_n_plugins(0);
+    c.bench_function("plugin_pre_exec_zero_plugins", |b| {
+        b.iter(|| {
+            mgr.call_pre_exec(black_box(&mut env), "noop");
+        });
+    });
+}
+
 criterion_group!(
     plugin_benches,
     bench_exec_noop_cmd,
     bench_exec_noop_var,
+    bench_exec_burst_var,
     bench_hook_pre_exec,
+    bench_pre_exec_zero_plugins,
     bench_pre_prompt_zero_plugins,
     bench_pre_prompt_one_noop,
     bench_pre_prompt_three_noop,
