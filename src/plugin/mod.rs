@@ -28,7 +28,7 @@ pub mod pattern;
 
 use std::path::Path;
 
-use wasmtime::component::Component;
+use wasmtime::component::{Component, Linker};
 use wasmtime::{Engine, Store};
 
 use yosh_plugin_api::{
@@ -158,6 +158,15 @@ pub struct PluginManager {
     /// Resolved pre-prompt timeout in milliseconds, captured once at
     /// construction from `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS`.
     pre_prompt_timeout_ms: u64,
+    /// Permissive (`CAP_ALL`) linker reused for the metadata probe step
+    /// of every `load_one`. Built lazily on the first plugin load and
+    /// then shared across subsequent loads — the metadata-contract
+    /// (host imports return `Err(Denied)` on null env) makes the
+    /// permissive linker safe to reuse regardless of the negotiated
+    /// capability mask. Eliminates one full `Linker<HostContext>`
+    /// rebuild per plugin after the first. See report §4.2 in
+    /// `docs/superpowers/specs/2026-05-08-plugin-perf-report.md`.
+    scratch_linker: Option<Linker<HostContext>>,
     /// Background epoch-tick thread. `Some` while the manager is alive;
     /// joined on `Drop`.
     tick_thread: Option<TickThread>,
@@ -263,6 +272,7 @@ impl PluginManager {
             engine_fingerprint,
             plugins: Vec::new(),
             pre_prompt_timeout_ms,
+            scratch_linker: None,
             tick_thread,
         }
     }
@@ -414,9 +424,18 @@ impl PluginManager {
         //    learn the plugin's requested capabilities. The metadata
         //    contract (host imports return `Err(Denied)` on null env) makes
         //    this safe — even a permissive linker rejects host calls during
-        //    `metadata`.
-        let scratch_linker = linker::build_linker(&self.engine, CAP_ALL)
-            .map_err(|e| format!("{}: linker init failed: {}", path.display(), e))?;
+        //    `metadata`. The scratch linker is cached on `self` because it
+        //    is plugin-independent (always `CAP_ALL`); subsequent loads
+        //    reuse it, eliminating one full `Linker` rebuild per plugin.
+        if self.scratch_linker.is_none() {
+            let l = linker::build_linker(&self.engine, CAP_ALL)
+                .map_err(|e| format!("{}: linker init failed: {}", path.display(), e))?;
+            self.scratch_linker = Some(l);
+        }
+        let scratch_linker = self
+            .scratch_linker
+            .as_ref()
+            .expect("scratch_linker initialized just above");
         let scratch_pre = PluginWorldPre::new(
             scratch_linker
                 .instantiate_pre(&component)
