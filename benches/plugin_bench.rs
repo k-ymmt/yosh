@@ -36,6 +36,26 @@ fn make_loaded_manager() -> (yosh::plugin::PluginManager, yosh::env::ShellEnv) {
     (mgr, env)
 }
 
+/// Set up a manager with n independent perf_plugin instances loaded
+/// and full capabilities granted. Returns the manager and a long-lived
+/// ShellEnv. Both must outlive the bench iter loop.
+fn make_manager_with_n_plugins(n: usize) -> (yosh::plugin::PluginManager, yosh::env::ShellEnv) {
+    let mut env = yosh::env::ShellEnv::new("yosh", Vec::new());
+    let mut mgr = yosh::plugin::PluginManager::new();
+    let wasm = plugin_bench_helpers::perf_plugin_wasm();
+    for _ in 0..n {
+        yosh::plugin::test_helpers::load_plugin_with_caps(
+            &mut mgr,
+            &wasm,
+            &mut env,
+            yosh_plugin_api::CAP_ALL,
+            &[],
+        )
+        .expect("load perf_plugin");
+    }
+    (mgr, env)
+}
+
 fn bench_exec_noop_cmd(c: &mut Criterion) {
     // `noop_cmd` performs minimal work and returns 0 with no output.
     // Measures: exec boundary + command body overhead (baseline).
@@ -74,10 +94,46 @@ fn bench_hook_pre_exec(c: &mut Criterion) {
     });
 }
 
+fn bench_pre_prompt_zero_plugins(c: &mut Criterion) {
+    // Baseline: `call_pre_prompt` with no plugins loaded.
+    // Measures: dispatch mechanism overhead with zero hooks.
+    let (mut mgr, mut env) = make_manager_with_n_plugins(0);
+    c.bench_function("plugin_pre_prompt_zero_plugins", |b| {
+        b.iter(|| {
+            mgr.call_pre_prompt(black_box(&mut env));
+        });
+    });
+}
+
+fn bench_pre_prompt_one_noop(c: &mut Criterion) {
+    // One perf_plugin loaded with empty pre_prompt hook.
+    // Measures: dispatch + one noop hook boundary crossing.
+    let (mut mgr, mut env) = make_manager_with_n_plugins(1);
+    c.bench_function("plugin_pre_prompt_one_noop", |b| {
+        b.iter(|| {
+            mgr.call_pre_prompt(black_box(&mut env));
+        });
+    });
+}
+
+fn bench_pre_prompt_three_noop(c: &mut Criterion) {
+    // Three independent perf_plugin instances with empty pre_prompt hooks.
+    // Measures: dispatch + three noop hook boundary crossings.
+    let (mut mgr, mut env) = make_manager_with_n_plugins(3);
+    c.bench_function("plugin_pre_prompt_three_noop", |b| {
+        b.iter(|| {
+            mgr.call_pre_prompt(black_box(&mut env));
+        });
+    });
+}
+
 criterion_group!(
     plugin_benches,
     bench_exec_noop_cmd,
     bench_exec_noop_var,
     bench_hook_pre_exec,
+    bench_pre_prompt_zero_plugins,
+    bench_pre_prompt_one_noop,
+    bench_pre_prompt_three_noop,
 );
 criterion_main!(plugin_benches);
