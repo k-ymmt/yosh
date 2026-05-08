@@ -9,9 +9,14 @@ pub mod sync;
 pub mod update;
 pub mod verify;
 
-/// wasmtime bindgen for the `plugin-world` WIT contract. The path is
-/// relative to this crate's `Cargo.toml` (the macro resolves against
-/// `CARGO_MANIFEST_DIR`).
+/// wasmtime bindgen for the `plugin-world` WIT contract.
+///
+/// Path is `wit/` inside this crate. The canonical source lives in
+/// `yosh-plugin-api/wit/`; `build.rs` verifies the bundled copy matches
+/// when built inside the workspace. The copy is required because
+/// `cargo install yosh-plugin-manager` extracts each crate standalone,
+/// so a sibling-relative path (`../yosh-plugin-api/wit`) is unresolvable
+/// from `~/.cargo/registry/src/.../yosh-plugin-manager-<ver>/`.
 ///
 /// This is independent from the host's bindgen invocation in
 /// `src/plugin/mod.rs` — the two crates produce separate generated
@@ -20,7 +25,7 @@ pub mod verify;
 /// deny-only imports.
 pub mod generated {
     wasmtime::component::bindgen!({
-        path: "../yosh-plugin-api/wit",
+        path: "wit",
         world: "plugin-world",
         async: false,
     });

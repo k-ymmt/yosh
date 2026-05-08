@@ -39,9 +39,15 @@ pub use wit_bindgen;
 
 // Generate the wit-bindgen guest bindings for the yosh:plugin/plugin-world.
 // export_macro_name avoids a collision with our own user-facing `export!` macro.
+//
+// Path is `wit/` inside this crate — the canonical source lives in
+// `yosh-plugin-api/wit/` and `build.rs` verifies the bundled copy matches
+// when built inside the workspace. The bundled copy is required because
+// `cargo install yosh-plugin-sdk` extracts the crate standalone, with no
+// `../yosh-plugin-api/` directory available.
 wit_bindgen::generate!({
     world: "plugin-world",
-    path: "../yosh-plugin-api/wit",
+    path: "wit",
     pub_export_macro: true,
     export_macro_name: "export_wit_bindings",
     generate_all,

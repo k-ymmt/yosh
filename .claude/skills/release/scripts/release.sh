@@ -218,6 +218,24 @@ phase_test() {
   echo "yosh-release: output is buffered (shown only on failure); this can take 15-30 min" >&2
   _run_all_tests_parallel
 
+  # Catch packaging-time bugs that workspace builds miss — e.g. bindgen!
+  # macros with workspace-relative paths that resolve in the workspace
+  # but not after `cargo install` extracts the crate standalone.
+  # `cargo publish --dry-run` packages, then compiles the packaged tarball
+  # in isolation, which is exactly what crates.io users hit.
+  #
+  # yosh (root) is skipped here: its dry-run resolves transitive deps
+  # against the registry, so during a release where we are about to bump
+  # and republish those deps, verify cannot find the not-yet-published
+  # versions. The leaf crates below are sufficient to catch the class of
+  # bug this guards against.
+  echo "yosh-release: dry-run packaging api/sdk/manager to catch standalone-build bugs..." >&2
+  local check
+  for check in yosh-plugin-api yosh-plugin-sdk yosh-plugin-manager; do
+    cargo publish --dry-run --allow-dirty -p "$check" >/dev/null 2>&1 \
+      || fail "cargo publish --dry-run failed for $check — rerun manually for full output: cargo publish --dry-run --allow-dirty -p $check"
+  done
+
   echo "yosh-release: all tests passed" >&2
 }
 

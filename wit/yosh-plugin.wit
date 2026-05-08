@@ -1,0 +1,144 @@
+package yosh:plugin@0.2.1;
+
+interface types {
+    enum error-code {
+        denied,
+        invalid-argument,
+        io-failed,
+        not-found,
+        other,
+        timeout,
+        pattern-not-allowed,
+    }
+
+    /// Identifies a standard I/O stream (stdout or stderr).
+    /// Named `io-stream` rather than `stream` because `stream` is a reserved
+    /// WIT keyword in the component model 0.3 draft.
+    enum io-stream {
+        stdout,
+        stderr,
+    }
+
+    enum hook-name {
+        pre-exec,
+        post-exec,
+        on-cd,
+        pre-prompt,
+    }
+
+    /// Static plugin metadata.
+    ///
+    /// IMPORTANT: `metadata` is the only export that the host calls
+    /// without an active `ShellEnv` binding. Implementations MUST NOT
+    /// invoke any `yosh:plugin/*` host import (variables, filesystem,
+    /// io) from inside `metadata`. Doing so will receive
+    /// `error-code::denied` from a synthetic deny-stub regardless of
+    /// the granted capabilities.
+    record plugin-info {
+        name: string,
+        version: string,
+        commands: list<string>,
+        required-capabilities: list<string>,
+        implemented-hooks: list<hook-name>,
+    }
+}
+
+interface variables {
+    use types.{error-code};
+    /// Outer `result` carries denial; inner `option` distinguishes
+    /// "variable not set" from "variable set to empty string".
+    get:        func(name: string) -> result<option<string>, error-code>;
+    set:        func(name: string, value: string) -> result<_, error-code>;
+    /// Export a variable to the environment (like `export VAR=val` in the shell).
+    /// Named `export-env` rather than `export` because `export` is a reserved
+    /// WIT keyword.
+    export-env: func(name: string, value: string) -> result<_, error-code>;
+}
+
+interface filesystem {
+    use types.{error-code};
+    cwd:     func() -> result<string, error-code>;
+    set-cwd: func(path: string) -> result<_, error-code>;
+}
+
+interface io {
+    use types.{io-stream, error-code};
+    write: func(target: io-stream, data: list<u8>) -> result<_, error-code>;
+}
+
+interface files {
+    use types.{error-code};
+
+    record file-stat {
+        is-file: bool,
+        is-dir: bool,
+        is-symlink: bool,
+        size: u64,
+        mtime-secs: s64,
+    }
+
+    record dir-entry {
+        name: string,
+        is-file: bool,
+        is-dir: bool,
+        is-symlink: bool,
+    }
+
+    read-file: func(path: string) -> result<list<u8>, error-code>;
+    read-dir:  func(path: string) -> result<list<dir-entry>, error-code>;
+    metadata:  func(path: string) -> result<file-stat, error-code>;
+
+    write-file:  func(path: string, data: list<u8>) -> result<_, error-code>;
+    append-file: func(path: string, data: list<u8>) -> result<_, error-code>;
+    create-dir:  func(path: string, recursive: bool) -> result<_, error-code>;
+    remove-file: func(path: string) -> result<_, error-code>;
+    remove-dir:  func(path: string, recursive: bool) -> result<_, error-code>;
+}
+
+interface commands {
+    use types.{error-code};
+
+    /// Result of a successful (or process-exit) command run. Extended
+    /// in the future by adding new functions, never by changing this
+    /// record's shape.
+    record exec-output {
+        exit-code: s32,
+        stdout: list<u8>,
+        stderr: list<u8>,
+    }
+
+    /// Run an external program with the given argv, capturing
+    /// stdout/stderr and returning the exit code.
+    ///
+    /// Subject to a 1000ms hard timeout enforced by the host.
+    /// Subject to the per-plugin `allowed-commands` pattern allowlist.
+    /// CWD is the shell's current directory; environment is the
+    /// shell's full environment; stdin is `/dev/null`.
+    exec: func(program: string, args: list<string>) -> result<exec-output, error-code>;
+}
+
+interface plugin {
+    use types.{plugin-info};
+    metadata:  func() -> plugin-info;
+    on-load:   func() -> result<_, string>;
+    exec:      func(command: string, args: list<string>) -> s32;
+    on-unload: func();
+}
+
+interface hooks {
+    pre-exec:   func(command: string);
+    post-exec:  func(command: string, exit-code: s32);
+    on-cd:      func(old-dir: string, new-dir: string);
+    pre-prompt: func();
+}
+
+world plugin-world {
+    import variables;
+    import filesystem;
+    import files;
+    import io;
+    import commands;
+
+    export plugin;
+    export hooks;
+}

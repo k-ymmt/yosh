@@ -44,12 +44,14 @@ use self::host::HostContext;
 
 // ── wasmtime bindgen for our WIT contract ───────────────────────────────
 //
-// The path is relative to the root yosh crate's `Cargo.toml`. Macros
-// resolve paths from `CARGO_MANIFEST_DIR`, which for this crate is the
-// repo root.
+// The path is `wit/` inside the yosh crate. The canonical source is
+// `crates/yosh-plugin-api/wit/yosh-plugin.wit`; `build.rs` verifies the
+// bundled copy matches when built inside the workspace. The copy is
+// required because `cargo install yosh` extracts the yosh crate
+// standalone, with no `crates/` subtree alongside it.
 mod generated {
     wasmtime::component::bindgen!({
-        path: "crates/yosh-plugin-api/wit",
+        path: "wit",
         world: "plugin-world",
     });
 }
