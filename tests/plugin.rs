@@ -31,6 +31,7 @@ fn lock_test() -> std::sync::MutexGuard<'static, ()> {
 static TEST_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
 static TRAP_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
 static SLOW_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
+static PERF_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).into()
@@ -66,6 +67,10 @@ fn trap_plugin_wasm() -> PathBuf {
 
 fn slow_plugin_wasm() -> PathBuf {
     ensure_built("slow_plugin", &SLOW_PLUGIN_WASM)
+}
+
+fn perf_plugin_wasm() -> PathBuf {
+    ensure_built("perf_plugin", &PERF_PLUGIN_WASM)
 }
 
 fn fresh_env() -> ShellEnv {
@@ -896,3 +901,38 @@ fn t25_pre_prompt_timeout_invalidates_slow_plugin() {
 // pre_prompt. A direct regression test would need a "fast pre_prompt
 // + pre_exec" fixture (slow_plugin's pre_prompt busy-loops, so it
 // can't model a successful return). Defer until that fixture exists.
+
+/// perf_plugin commands exit with code 0.
+///
+/// `perf_plugin` provides lightweight test fixtures (noop_cmd, noop_var,
+/// burst_var) used by performance benches. Verify that all three commands
+/// are properly wired to return 0.
+#[test]
+fn perf_plugin_commands_exit_zero() {
+    let _g = lock_test();
+    let wasm = perf_plugin_wasm();
+    let mut env = fresh_env();
+    env.vars
+        .set("PERF_VAR", "perf_value")
+        .expect("set PERF_VAR");
+    let mut mgr = PluginManager::new();
+
+    test_helpers::load_plugin_with_caps(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        yosh_plugin_api::CAP_ALL,
+        &[],
+    )
+    .expect("load perf_plugin");
+
+    for cmd in ["noop_cmd", "noop_var", "burst_var"] {
+        let result = mgr.exec_command(&mut env, cmd, &[]);
+        assert!(
+            matches!(result, PluginExec::Handled(0)),
+            "{} should be Handled(0), got {:?}",
+            cmd,
+            result
+        );
+    }
+}

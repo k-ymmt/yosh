@@ -27,9 +27,21 @@ impl Plugin for PerfPlugin {
         &[HookName::PrePrompt, HookName::PreExec, HookName::PostExec]
     }
 
-    fn exec(&mut self, _command: &str, _args: &[String]) -> i32 {
-        // Filled in by Task 2.
-        127
+    fn exec(&mut self, command: &str, _args: &[String]) -> i32 {
+        match command {
+            "noop_cmd" => 0,
+            "noop_var" => {
+                let _ = get_var("PERF_VAR");
+                0
+            }
+            "burst_var" => {
+                for _ in 0..10 {
+                    let _ = get_var("PERF_VAR");
+                }
+                0
+            }
+            _ => 127,
+        }
     }
 }
 
