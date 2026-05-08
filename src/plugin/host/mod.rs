@@ -8,7 +8,8 @@
 //! Layout (per SP1 redesign,
 //! docs/superpowers/specs/2026-05-06-sp1-plugin-host-redesign-design.md):
 //! - this `mod.rs` owns `HostContext`, its `WasiView` impl, the
-//!   `ensure_bound` / `bound_env` helpers, and helper tests.
+//!   `ensure_bound` / `bound_env_ref` / `bound_env_with` helpers, and
+//!   helper tests.
 //! - Per-capability submodules (`variables.rs`, `filesystem.rs`, `io.rs`,
 //!   `files.rs`, `commands.rs`) own every `host_*` and `deny_*` function.
 
@@ -44,9 +45,9 @@ pub(super) use variables::{
 
 /// Per-plugin store data. See module docstring for invariants.
 pub struct HostContext {
-    /// Raw pointer to the live `ShellEnv`. Confined to a single `unsafe`
-    /// helper (`env_mut`); this is the only `unsafe` site in the new host
-    /// binding layer.
+    /// Raw pointer to the live `ShellEnv`. Dereferenced only inside the
+    /// `bound_env_ref` / `bound_env_with` helpers — these are the only
+    /// `unsafe` sites in the host binding layer.
     pub(super) env: *mut ShellEnv,
     #[allow(dead_code)]
     pub(super) plugin_name: String,
@@ -59,8 +60,9 @@ pub struct HostContext {
 }
 
 // SAFETY: `*mut ShellEnv` is `!Send` by default, but the pointer is only
-// ever dereferenced via `env_mut` / `bound_env`, both of which require
-// `&mut HostContext`. The shell is single-threaded for plugin dispatch
+// ever dereferenced inside `bound_env_ref` / `bound_env_with`, which gate
+// access on a non-null check and rely on `EnvGuard` to bound the
+// pointer's lifetime. The shell is single-threaded for plugin dispatch
 // (matches dlopen), and the pointer is null when no call is in progress.
 unsafe impl Send for HostContext {}
 // SAFETY: same rationale; we never share a `&HostContext` across threads
@@ -83,25 +85,6 @@ impl HostContext {
         }
     }
 
-    /// Borrow the live `ShellEnv` if currently bound. Returns `None` when
-    /// `env` is null (during `metadata()` calls or between `with_env`
-    /// invocations).
-    ///
-    /// SAFETY: callers must hold exclusive access to the `Store<HostContext>`,
-    /// which is implied by `&mut self` here. The pointer's lifetime is
-    /// managed by `EnvGuard` in `mod.rs` and is guaranteed to be valid
-    /// for the duration of any `with_env` callback.
-    pub(super) fn env_mut(&mut self) -> Option<&mut ShellEnv> {
-        if self.env.is_null() {
-            None
-        } else {
-            // SAFETY: `EnvGuard::bind` set this pointer from a live
-            // `&mut ShellEnv`; it is reset to null on guard drop. The
-            // shell is single-threaded for plugin dispatch.
-            Some(unsafe { &mut *self.env })
-        }
-    }
-
     /// Metadata-contract guard: returns `Err(Denied)` if env is null
     /// (during `metadata()` or between `with_env` invocations), `Ok(())`
     /// otherwise. Used by host functions that do not need to read or
@@ -115,22 +98,15 @@ impl HostContext {
         }
     }
 
-    /// Metadata-contract guard that also returns the bound `&mut ShellEnv`.
-    /// Returns `Err(Denied)` if env is null. Used by host functions that
-    /// need to read or write shell state.
-    pub(super) fn bound_env(&mut self) -> Result<&mut ShellEnv, ErrorCode> {
-        self.env_mut().ok_or(ErrorCode::Denied)
-    }
-
-    /// Read-only variant of `bound_env`. Returns `Err(Denied)` if env is
-    /// null, otherwise an immutable borrow of the bound `ShellEnv`. Used
-    /// by host functions that only need to read shell state and want to
-    /// keep the underlying `Store` borrow shared (e.g. so a `WasmStr`
-    /// borrowed from the same store can coexist with the env borrow).
+    /// Read-only borrow of the bound `ShellEnv`. Returns `Err(Denied)` if
+    /// env is null. Used by host functions that only need to read shell
+    /// state and want to keep the underlying `Store` borrow shared (e.g.
+    /// so a `WasmStr` borrowed from the same store can coexist with the
+    /// env borrow).
     ///
-    /// SAFETY: same invariants as `env_mut` — the pointer is non-null
-    /// only while `EnvGuard` keeps the bound `&mut ShellEnv` alive, and
-    /// plugin dispatch is single-threaded.
+    /// SAFETY: the pointer is non-null only while `EnvGuard` keeps the
+    /// bound `&mut ShellEnv` alive, and plugin dispatch is
+    /// single-threaded.
     pub(super) fn bound_env_ref(&self) -> Result<&ShellEnv, ErrorCode> {
         if self.env.is_null() {
             Err(ErrorCode::Denied)
@@ -148,8 +124,8 @@ impl HostContext {
     /// through the raw `*mut ShellEnv` so the wasmtime store's borrow
     /// state is unaffected.
     ///
-    /// SAFETY: same invariants as `env_mut` — pointer is non-null only
-    /// while `EnvGuard` keeps the bound `&mut ShellEnv` alive, and
+    /// SAFETY: same invariants as `bound_env_ref` — pointer is non-null
+    /// only while `EnvGuard` keeps the bound `&mut ShellEnv` alive, and
     /// plugin dispatch is single-threaded.
     pub(super) fn bound_env_with<R, F>(&self, f: F) -> Result<R, ErrorCode>
     where
@@ -216,11 +192,12 @@ pub(super) mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    //! Unit tests for the metadata-contract helpers (`ensure_bound` and
-    //! `bound_env`). These are the canonical enforcement point for the §5
-    //! metadata-cannot-reach-host-APIs invariant. Per-capability submodules
-    //! also keep one spot test confirming the deny path is reachable through
-    //! the host function, but the structural guarantee is verified here.
+    //! Unit tests for the metadata-contract guard (`ensure_bound`). This
+    //! is the canonical enforcement point for the §5
+    //! metadata-cannot-reach-host-APIs invariant. Per-capability
+    //! submodules also keep one spot test confirming the deny path is
+    //! reachable through the host function, but the structural guarantee
+    //! is verified here.
 
     use super::super::generated::yosh::plugin::types::ErrorCode;
     use super::test_helpers::{bound_env_ctx, null_env_ctx};
@@ -237,20 +214,5 @@ mod tests {
         let mut env = ShellEnv::new("yosh", vec![]);
         let ctx = bound_env_ctx(&mut env);
         assert_eq!(ctx.ensure_bound(), Ok(()));
-    }
-
-    #[test]
-    fn bound_env_returns_denied_when_env_null() {
-        let mut ctx = null_env_ctx();
-        let result = ctx.bound_env();
-        assert!(matches!(result, Err(ErrorCode::Denied)));
-    }
-
-    #[test]
-    fn bound_env_returns_env_when_bound() {
-        let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
-        let result = ctx.bound_env();
-        assert!(result.is_ok());
     }
 }

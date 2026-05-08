@@ -66,10 +66,10 @@ pub fn deny_variables_export_env(
 mod tests {
     //! One spot test confirms the metadata-contract is reachable through
     //! the variables capability. The full structural guarantee is
-    //! verified by the `ensure_bound` / `bound_env` tests in
-    //! `host/mod.rs`. Behavioral tests for set/get/export-env round-trip
-    //! belong in this module too — add them as the need arises (the
-    //! existing legacy tests covered only the deny path).
+    //! verified by the `ensure_bound` tests in `host/mod.rs`. Behavioral
+    //! tests for set/get/export-env round-trip belong in this module too
+    //! — add them as the need arises (the existing legacy tests covered
+    //! only the deny path).
 
     use super::super::test_helpers::null_env_ctx;
     use super::*;
