@@ -109,7 +109,22 @@ fn run_exec_loop(args: &[String]) -> i32 {
     last_status
 }
 
-fn run_pre_prompt_loop(_args: &[String]) -> i32 {
-    eprintln!("yosh-dhat: --pre-prompt-loop: not yet implemented");
-    2
+fn run_pre_prompt_loop(args: &[String]) -> i32 {
+    let n: u32 = match args.first().and_then(|s| s.parse().ok()) {
+        Some(n) if n > 0 => n,
+        _ => {
+            eprintln!("yosh-dhat: --pre-prompt-loop: missing or invalid N (positive integer)");
+            return 2;
+        }
+    };
+
+    yosh::signal::init_signal_handling();
+    let mut executor = yosh::exec::Executor::new("yosh-dhat", vec![]);
+    yosh::env::default_path::ensure_default_path(&mut executor.env);
+    executor.load_plugins();
+
+    for _ in 0..n {
+        executor.plugins.call_pre_prompt(&mut executor.env);
+    }
+    0
 }
