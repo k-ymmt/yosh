@@ -22,18 +22,17 @@ pub fn deny_variables_get(
 }
 
 pub fn host_variables_set(
-    ctx: &mut HostContext,
-    name: String,
-    value: String,
+    ctx: &HostContext,
+    name: &str,
+    value: &str,
 ) -> Result<(), ErrorCode> {
-    let env = ctx.bound_env()?;
-    env.vars.set(&name, &value).map_err(|_| ErrorCode::IoFailed)
+    ctx.bound_env_with(|env| env.vars.set(name, value).map_err(|_| ErrorCode::IoFailed))?
 }
 
 pub fn deny_variables_set(
-    _ctx: &mut HostContext,
-    _name: String,
-    _value: String,
+    _ctx: &HostContext,
+    _name: &str,
+    _value: &str,
 ) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
@@ -42,22 +41,23 @@ pub fn deny_variables_set(
 /// `export` is a reserved WIT keyword); the wit-bindgen-generated
 /// Rust function is `export_env`.
 pub fn host_variables_export_env(
-    ctx: &mut HostContext,
-    name: String,
-    value: String,
+    ctx: &HostContext,
+    name: &str,
+    value: &str,
 ) -> Result<(), ErrorCode> {
-    let env = ctx.bound_env()?;
-    env.vars
-        .set(&name, &value)
-        .map_err(|_| ErrorCode::IoFailed)?;
-    env.vars.export(&name);
-    Ok(())
+    ctx.bound_env_with(|env| {
+        env.vars
+            .set(name, value)
+            .map_err(|_| ErrorCode::IoFailed)?;
+        env.vars.export(name);
+        Ok(())
+    })?
 }
 
 pub fn deny_variables_export_env(
-    _ctx: &mut HostContext,
-    _name: String,
-    _value: String,
+    _ctx: &HostContext,
+    _name: &str,
+    _value: &str,
 ) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }

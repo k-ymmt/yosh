@@ -85,23 +85,37 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
         })?;
     }
     if has(allowed, CAP_VARIABLES_WRITE) {
-        vars.func_wrap("set", |mut store, (name, value): (String, String)| {
-            Ok((host_variables_set(store.data_mut(), name, value),))
-        })?;
+        vars.func_wrap(
+            "set",
+            |store, (name, value): (wasmtime::component::WasmStr, wasmtime::component::WasmStr)| {
+                let name_str = name.to_str(&store)?;
+                let value_str = value.to_str(&store)?;
+                Ok((host_variables_set(store.data(), &name_str, &value_str),))
+            },
+        )?;
         vars.func_wrap(
             "export-env",
-            |mut store, (name, value): (String, String)| {
-                Ok((host_variables_export_env(store.data_mut(), name, value),))
+            |store, (name, value): (wasmtime::component::WasmStr, wasmtime::component::WasmStr)| {
+                let name_str = name.to_str(&store)?;
+                let value_str = value.to_str(&store)?;
+                Ok((host_variables_export_env(store.data(), &name_str, &value_str),))
             },
         )?;
     } else {
-        vars.func_wrap("set", |mut store, (name, value): (String, String)| {
-            Ok((deny_variables_set(store.data_mut(), name, value),))
-        })?;
+        vars.func_wrap(
+            "set",
+            |store, (name, value): (wasmtime::component::WasmStr, wasmtime::component::WasmStr)| {
+                let name_str = name.to_str(&store)?;
+                let value_str = value.to_str(&store)?;
+                Ok((deny_variables_set(store.data(), &name_str, &value_str),))
+            },
+        )?;
         vars.func_wrap(
             "export-env",
-            |mut store, (name, value): (String, String)| {
-                Ok((deny_variables_export_env(store.data_mut(), name, value),))
+            |store, (name, value): (wasmtime::component::WasmStr, wasmtime::component::WasmStr)| {
+                let name_str = name.to_str(&store)?;
+                let value_str = value.to_str(&store)?;
+                Ok((deny_variables_export_env(store.data(), &name_str, &value_str),))
             },
         )?;
     }
