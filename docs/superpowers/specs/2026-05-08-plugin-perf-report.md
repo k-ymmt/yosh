@@ -479,3 +479,57 @@ This is at the plan's regression threshold but within the §4.1 PoC's own histor
 - `Vec<u8>` data parameters (`io::write` data, `files::write-file` data, `files::append-file` data) — separate `list<u8>` lift codepath. Worth a dedicated spike to determine whether wasmtime 27 exposes a `WasmList<u8>` borrow type.
 - `commands::exec` argv (`Vec<String>` → `list<string>`) — separate `list<string>` lift codepath. Each argv element is a String allocation; the savings could be substantial for command-heavy workloads. Needs its own spike.
 - Pre-existing `dead_code` warnings for `HostContext::env_mut` and `bound_env` — production callers all migrated; only test-internal references remain. Defer cleanup to a separate small commit (out of scope for this rollout).
+
+## Appendix C: §4.2 Scratch Linker Cache Verification — Target Missed
+
+**Date:** 2026-05-08
+**Implementation commit:** `70d78ec` (`perf(plugin): cache the metadata-probe scratch linker on PluginManager`)
+**Verdict:** Scratch caching delivers a clean **−33.3%** drop on `LinkerInstance::insert` blocks at N=3, matching the algorithmic prediction (`2N → N+1`). The §5.1 success criterion (`≥50% drop`) is **not met by scratch caching alone**; pursue fix candidate #2 (real linker cache by capability mask) to close the gap.
+
+### Method
+
+Two-pass dhat run on a **3-plugin** W-P5 startup (the prior §3.3 measurement was 1-plugin). HOME staged with three `[[plugin]]` entries pointing at the same `perf_plugin.wasm` (`name = perf_a/_b/_c`, identical caps). For each pass: build → 3-warm-up runs → keep the steady-state dhat output. The first run after a fresh `cargo build` includes one-shot dyld / engine-init overhead that inflates the run total by ~70 MB; this is unrelated to linker work and is excluded by using the second/third run.
+
+```sh
+# Pre-fix: rebuild with the scratch_linker cache disabled (replace the `if .is_none()` block with an unconditional `build_linker` call), then run W-P5
+HOME=/tmp/yosh-perf-home ./target/profiling/yosh-dhat target/perf/echo-hi.sh
+mv dhat-heap.json target/perf/dhat-plugin-w5-3p-prefix.json
+
+# Post-fix: restore HEAD, rebuild, run W-P5 (steady state — discard run-1)
+HOME=/tmp/yosh-perf-home ./target/profiling/yosh-dhat target/perf/echo-hi.sh
+mv dhat-heap.json target/perf/dhat-plugin-w5-3p-postfix.json
+
+python3 scripts/perf/dhat_filter_frame.py target/perf/dhat-plugin-w5-3p-prefix.json "LinkerInstance<T>::insert"
+python3 scripts/perf/dhat_filter_frame.py target/perf/dhat-plugin-w5-3p-postfix.json "LinkerInstance<T>::insert"
+```
+
+`scripts/perf/dhat_filter_frame.py` (new helper) sums every `pps` entry whose call stack contains the substring, since the per-site work is spread across hundreds of contexts and Top-N alone undercounts.
+
+### Numbers
+
+| Metric | Pre-fix (3-plugin) | Post-fix (3-plugin) | Δ | % drop |
+|--------|---------|----------|---|--------|
+| `LinkerInstance<T>::insert` bytes | 801,432 (783 KB) | 534,288 (522 KB) | −267,144 | **−33.3%** |
+| `LinkerInstance<T>::insert` blocks | 2,094 | 1,396 | −698 | **−33.3%** |
+| `LinkerInstance<T>::insert` matched sites | 632 | 632 | 0 | 0% |
+| Total run bytes (steady) | 5,409,189 | 5,105,806 | −303,383 | −5.6% |
+| Total run blocks (steady) | 6,569 | 5,343 | −1,226 | −18.7% |
+
+The bytes and blocks both drop by exactly 33.3% — matching the algorithmic prediction:
+- Pre-fix: `2N = 6` linker builds for N=3 plugins
+- Post-fix: `N+1 = 4` linker builds (1 cached scratch + 3 reals)
+- Saved: 2 of 6 builds = 33.3%
+
+### Why Not 50%
+
+The §5.1 ≥50% target was set against the combined fix candidates #1 + #2 (scratch-only + per-mask real linker cache). Fix #1 alone caps at:
+- N=1: `2 → 2` builds (lazy init pays full cost on first load) → 0% drop
+- N=2: `4 → 3` → 25% drop
+- N=3: `6 → 4` → 33% drop
+- N=∞: `2N → N+1` → asymptotic 50% drop
+
+A multi-plugin session needs fix #2 to land in the ≥50% regime. Fix #2 caches the real linker keyed on the negotiated `effective_capabilities` mask; most plugins share the same caps mask in practice, so a `HashMap<u32, Linker<HostContext>>` would skip the per-plugin real-build step for the second-and-later plugin in each mask group.
+
+### Recommendation
+
+Pursue fix candidate #2 (real linker per-capability-mask cache) as a follow-up. The TODO.md entry under "Future: Plugin System Enhancements" already records this; this Appendix promotes it from "deferred pending measurement" to "indicated by measurement".
