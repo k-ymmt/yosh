@@ -141,6 +141,29 @@ impl HostContext {
             Ok(unsafe { &*self.env })
         }
     }
+
+    /// Closure-style mutable env access. Used by host functions that
+    /// must mutate `ShellEnv` while a wasmtime store borrow (e.g. from
+    /// a `WasmStr::to_str` `Cow`) is held immutably. The mutation goes
+    /// through the raw `*mut ShellEnv` so the wasmtime store's borrow
+    /// state is unaffected.
+    ///
+    /// SAFETY: same invariants as `env_mut` — pointer is non-null only
+    /// while `EnvGuard` keeps the bound `&mut ShellEnv` alive, and
+    /// plugin dispatch is single-threaded.
+    pub(super) fn bound_env_with<R, F>(&self, f: F) -> Result<R, ErrorCode>
+    where
+        F: FnOnce(&mut ShellEnv) -> R,
+    {
+        if self.env.is_null() {
+            Err(ErrorCode::Denied)
+        } else {
+            // SAFETY: `EnvGuard::bind` set this pointer from a live
+            // `&mut ShellEnv`; it is reset to null on guard drop.
+            // Plugin dispatch is single-threaded.
+            Ok(f(unsafe { &mut *self.env }))
+        }
+    }
 }
 
 impl WasiView for HostContext {
