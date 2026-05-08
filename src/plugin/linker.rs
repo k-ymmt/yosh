@@ -189,57 +189,67 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
     if has(allowed, CAP_FILES_WRITE) {
         files.func_wrap(
             "write-file",
-            |mut store, (path, data): (String, Vec<u8>)| {
-                Ok((host_files_write_file(store.data_mut(), path, data),))
+            |store, (path, data): (wasmtime::component::WasmStr, Vec<u8>)| {
+                let path_str = path.to_str(&store)?;
+                Ok((host_files_write_file(store.data(), &path_str, data),))
             },
         )?;
         files.func_wrap(
             "append-file",
-            |mut store, (path, data): (String, Vec<u8>)| {
-                Ok((host_files_append_file(store.data_mut(), path, data),))
+            |store, (path, data): (wasmtime::component::WasmStr, Vec<u8>)| {
+                let path_str = path.to_str(&store)?;
+                Ok((host_files_append_file(store.data(), &path_str, data),))
             },
         )?;
         files.func_wrap(
             "create-dir",
-            |mut store, (path, recursive): (String, bool)| {
-                Ok((host_files_create_dir(store.data_mut(), path, recursive),))
+            |store, (path, recursive): (wasmtime::component::WasmStr, bool)| {
+                let path_str = path.to_str(&store)?;
+                Ok((host_files_create_dir(store.data(), &path_str, recursive),))
             },
         )?;
-        files.func_wrap("remove-file", |mut store, (path,): (String,)| {
-            Ok((host_files_remove_file(store.data_mut(), path),))
+        files.func_wrap("remove-file", |store, (path,): (wasmtime::component::WasmStr,)| {
+            let path_str = path.to_str(&store)?;
+            Ok((host_files_remove_file(store.data(), &path_str),))
         })?;
         files.func_wrap(
             "remove-dir",
-            |mut store, (path, recursive): (String, bool)| {
-                Ok((host_files_remove_dir(store.data_mut(), path, recursive),))
+            |store, (path, recursive): (wasmtime::component::WasmStr, bool)| {
+                let path_str = path.to_str(&store)?;
+                Ok((host_files_remove_dir(store.data(), &path_str, recursive),))
             },
         )?;
     } else {
         files.func_wrap(
             "write-file",
-            |mut store, (path, data): (String, Vec<u8>)| {
-                Ok((deny_files_write_file(store.data_mut(), path, data),))
+            |store, (path, data): (wasmtime::component::WasmStr, Vec<u8>)| {
+                let path_str = path.to_str(&store)?;
+                Ok((deny_files_write_file(store.data(), &path_str, data),))
             },
         )?;
         files.func_wrap(
             "append-file",
-            |mut store, (path, data): (String, Vec<u8>)| {
-                Ok((deny_files_append_file(store.data_mut(), path, data),))
+            |store, (path, data): (wasmtime::component::WasmStr, Vec<u8>)| {
+                let path_str = path.to_str(&store)?;
+                Ok((deny_files_append_file(store.data(), &path_str, data),))
             },
         )?;
         files.func_wrap(
             "create-dir",
-            |mut store, (path, recursive): (String, bool)| {
-                Ok((deny_files_create_dir(store.data_mut(), path, recursive),))
+            |store, (path, recursive): (wasmtime::component::WasmStr, bool)| {
+                let path_str = path.to_str(&store)?;
+                Ok((deny_files_create_dir(store.data(), &path_str, recursive),))
             },
         )?;
-        files.func_wrap("remove-file", |mut store, (path,): (String,)| {
-            Ok((deny_files_remove_file(store.data_mut(), path),))
+        files.func_wrap("remove-file", |store, (path,): (wasmtime::component::WasmStr,)| {
+            let path_str = path.to_str(&store)?;
+            Ok((deny_files_remove_file(store.data(), &path_str),))
         })?;
         files.func_wrap(
             "remove-dir",
-            |mut store, (path, recursive): (String, bool)| {
-                Ok((deny_files_remove_dir(store.data_mut(), path, recursive),))
+            |store, (path, recursive): (wasmtime::component::WasmStr, bool)| {
+                let path_str = path.to_str(&store)?;
+                Ok((deny_files_remove_dir(store.data(), &path_str, recursive),))
             },
         )?;
     }

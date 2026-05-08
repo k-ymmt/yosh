@@ -81,20 +81,20 @@ pub fn host_files_metadata(ctx: &HostContext, path: &str) -> Result<FileStat, Er
 }
 
 pub fn host_files_write_file(
-    ctx: &mut HostContext,
-    path: String,
+    ctx: &HostContext,
+    path: &str,
     data: Vec<u8>,
 ) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
-    std::fs::write(&path, &data).map_err(|_| ErrorCode::IoFailed)
+    std::fs::write(path, &data).map_err(|_| ErrorCode::IoFailed)
 }
 
 pub fn host_files_append_file(
-    ctx: &mut HostContext,
-    path: String,
+    ctx: &HostContext,
+    path: &str,
     data: Vec<u8>,
 ) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
@@ -105,14 +105,14 @@ pub fn host_files_append_file(
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)
+        .open(path)
         .map_err(|_| ErrorCode::IoFailed)?;
     f.write_all(&data).map_err(|_| ErrorCode::IoFailed)
 }
 
 pub fn host_files_create_dir(
-    ctx: &mut HostContext,
-    path: String,
+    ctx: &HostContext,
+    path: &str,
     recursive: bool,
 ) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
@@ -120,19 +120,19 @@ pub fn host_files_create_dir(
         return Err(ErrorCode::InvalidArgument);
     }
     let result = if recursive {
-        std::fs::create_dir_all(&path)
+        std::fs::create_dir_all(path)
     } else {
-        std::fs::create_dir(&path)
+        std::fs::create_dir(path)
     };
     result.map_err(|_| ErrorCode::IoFailed)
 }
 
-pub fn host_files_remove_file(ctx: &mut HostContext, path: String) -> Result<(), ErrorCode> {
+pub fn host_files_remove_file(ctx: &HostContext, path: &str) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
-    match std::fs::remove_file(&path) {
+    match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ErrorCode::NotFound),
         Err(_) => Err(ErrorCode::IoFailed),
@@ -140,8 +140,8 @@ pub fn host_files_remove_file(ctx: &mut HostContext, path: String) -> Result<(),
 }
 
 pub fn host_files_remove_dir(
-    ctx: &mut HostContext,
-    path: String,
+    ctx: &HostContext,
+    path: &str,
     recursive: bool,
 ) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
@@ -149,9 +149,9 @@ pub fn host_files_remove_dir(
         return Err(ErrorCode::InvalidArgument);
     }
     let result = if recursive {
-        std::fs::remove_dir_all(&path)
+        std::fs::remove_dir_all(path)
     } else {
-        std::fs::remove_dir(&path)
+        std::fs::remove_dir(path)
     };
     match result {
         Ok(()) => Ok(()),
@@ -176,36 +176,36 @@ pub fn deny_files_metadata(_ctx: &HostContext, _path: &str) -> Result<FileStat, 
 }
 
 pub fn deny_files_write_file(
-    _ctx: &mut HostContext,
-    _path: String,
+    _ctx: &HostContext,
+    _path: &str,
     _data: Vec<u8>,
 ) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
 pub fn deny_files_append_file(
-    _ctx: &mut HostContext,
-    _path: String,
+    _ctx: &HostContext,
+    _path: &str,
     _data: Vec<u8>,
 ) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
 pub fn deny_files_create_dir(
-    _ctx: &mut HostContext,
-    _path: String,
+    _ctx: &HostContext,
+    _path: &str,
     _recursive: bool,
 ) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
-pub fn deny_files_remove_file(_ctx: &mut HostContext, _path: String) -> Result<(), ErrorCode> {
+pub fn deny_files_remove_file(_ctx: &HostContext, _path: &str) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
 pub fn deny_files_remove_dir(
-    _ctx: &mut HostContext,
-    _path: String,
+    _ctx: &HostContext,
+    _path: &str,
     _recursive: bool,
 ) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
@@ -309,8 +309,8 @@ mod tests {
         std::fs::write(inner.join("f"), b"x").unwrap();
 
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
-        let result = host_files_remove_dir(&mut ctx, inner.to_string_lossy().into_owned(), false);
+        let ctx = bound_env_ctx(&mut env);
+        let result = host_files_remove_dir(&ctx, &inner.to_string_lossy(), false);
         assert_eq!(result, Err(ErrorCode::IoFailed));
         assert!(inner.exists());
     }
@@ -321,11 +321,11 @@ mod tests {
         let path = dir.path().join("log");
 
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
-        let p = path.to_string_lossy().into_owned();
+        let ctx = bound_env_ctx(&mut env);
+        let p = path.to_string_lossy();
 
-        host_files_write_file(&mut ctx, p.clone(), b"hello".to_vec()).unwrap();
-        host_files_append_file(&mut ctx, p, b" world".to_vec()).unwrap();
+        host_files_write_file(&ctx, &p, b"hello".to_vec()).unwrap();
+        host_files_append_file(&ctx, &p, b" world".to_vec()).unwrap();
 
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(bytes, b"hello world");
@@ -337,8 +337,8 @@ mod tests {
         let nested = dir.path().join("a/b/c");
 
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
-        host_files_create_dir(&mut ctx, nested.to_string_lossy().into_owned(), true).unwrap();
+        let ctx = bound_env_ctx(&mut env);
+        host_files_create_dir(&ctx, &nested.to_string_lossy(), true).unwrap();
 
         assert!(nested.is_dir());
         assert!(dir.path().join("a").is_dir());
@@ -354,8 +354,8 @@ mod tests {
         std::fs::write(root.join("inner/g"), b"y").unwrap();
 
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
-        host_files_remove_dir(&mut ctx, root.to_string_lossy().into_owned(), true).unwrap();
+        let ctx = bound_env_ctx(&mut env);
+        host_files_remove_dir(&ctx, &root.to_string_lossy(), true).unwrap();
 
         assert!(!root.exists());
     }
