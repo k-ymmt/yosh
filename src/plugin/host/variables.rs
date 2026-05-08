@@ -7,16 +7,16 @@ use super::super::generated::yosh::plugin::types::ErrorCode;
 use super::HostContext;
 
 pub fn host_variables_get(
-    ctx: &mut HostContext,
-    name: String,
+    ctx: &HostContext,
+    name: &str,
 ) -> Result<Option<String>, ErrorCode> {
-    let env = ctx.bound_env()?;
-    Ok(env.vars.get(&name).map(|s| s.to_string()))
+    let env = ctx.bound_env_ref()?;
+    Ok(env.vars.get(name).map(|s| s.to_string()))
 }
 
 pub fn deny_variables_get(
-    _ctx: &mut HostContext,
-    _name: String,
+    _ctx: &HostContext,
+    _name: &str,
 ) -> Result<Option<String>, ErrorCode> {
     Err(ErrorCode::Denied)
 }
@@ -76,8 +76,8 @@ mod tests {
 
     #[test]
     fn variables_get_denied_when_env_null() {
-        let mut ctx = null_env_ctx();
-        let result = host_variables_get(&mut ctx, "PATH".into());
+        let ctx = null_env_ctx();
+        let result = host_variables_get(&ctx, "PATH");
         assert_eq!(result, Err(ErrorCode::Denied));
     }
 }

@@ -74,12 +74,14 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
     // in the WIT and the bindgen-generated import expectations).
     let mut vars = linker.instance("yosh:plugin/variables@0.2.1")?;
     if has(allowed, CAP_VARIABLES_READ) {
-        vars.func_wrap("get", |mut store, (name,): (String,)| {
-            Ok((host_variables_get(store.data_mut(), name),))
+        vars.func_wrap("get", |store, (name,): (wasmtime::component::WasmStr,)| {
+            let name_str = name.to_str(&store)?;
+            Ok((host_variables_get(store.data(), &name_str),))
         })?;
     } else {
-        vars.func_wrap("get", |mut store, (name,): (String,)| {
-            Ok((deny_variables_get(store.data_mut(), name),))
+        vars.func_wrap("get", |store, (name,): (wasmtime::component::WasmStr,)| {
+            let name_str = name.to_str(&store)?;
+            Ok((deny_variables_get(store.data(), &name_str),))
         })?;
     }
     if has(allowed, CAP_VARIABLES_WRITE) {

@@ -121,6 +121,26 @@ impl HostContext {
     pub(super) fn bound_env(&mut self) -> Result<&mut ShellEnv, ErrorCode> {
         self.env_mut().ok_or(ErrorCode::Denied)
     }
+
+    /// Read-only variant of `bound_env`. Returns `Err(Denied)` if env is
+    /// null, otherwise an immutable borrow of the bound `ShellEnv`. Used
+    /// by host functions that only need to read shell state and want to
+    /// keep the underlying `Store` borrow shared (e.g. so a `WasmStr`
+    /// borrowed from the same store can coexist with the env borrow).
+    ///
+    /// SAFETY: same invariants as `env_mut` — the pointer is non-null
+    /// only while `EnvGuard` keeps the bound `&mut ShellEnv` alive, and
+    /// plugin dispatch is single-threaded.
+    pub(super) fn bound_env_ref(&self) -> Result<&ShellEnv, ErrorCode> {
+        if self.env.is_null() {
+            Err(ErrorCode::Denied)
+        } else {
+            // SAFETY: `EnvGuard::bind` set this pointer from a live
+            // `&mut ShellEnv`; it is reset to null on guard drop. The
+            // shell is single-threaded for plugin dispatch.
+            Ok(unsafe { &*self.env })
+        }
+    }
 }
 
 impl WasiView for HostContext {
