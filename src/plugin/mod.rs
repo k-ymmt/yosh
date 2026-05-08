@@ -383,8 +383,15 @@ impl PluginManager {
                     }
                 }
             }
-            _ => Component::new(&self.engine, &wasm_bytes)
-                .map_err(|e| format!("{}: component compile failed: {}", path.display(), e))?,
+            _ => {
+                eprintln!(
+                    "yosh: plugin '{}': no cwasm cache; \
+                     precompiling in memory (one-time; run 'yosh-plugin sync' to cache)",
+                    path.display(),
+                );
+                Component::new(&self.engine, &wasm_bytes)
+                    .map_err(|e| format!("{}: component compile failed: {}", path.display(), e))?
+            }
         };
 
         // 4. Parse the allowed_commands patterns up front so we can fail
