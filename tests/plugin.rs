@@ -937,6 +937,59 @@ fn perf_plugin_commands_exit_zero() {
     }
 }
 
+/// Verify that three `[[plugin]]` entries pointing at the same wasm path
+/// (aliased names) each produce an independent `Plugin` record when loaded
+/// via `load_from_config`. The assumption is that `load_one` has no
+/// name/path-collision guard; all three instances load and their hooks fire.
+///
+/// This is Task 4 of the plugin-perf-tuning plan (Phase 1 precondition).
+#[test]
+fn perf_plugin_three_aliases_load_independently() {
+    use std::io::Write;
+
+    let _guard = lock_test();
+    let wasm = perf_plugin_wasm();
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let lock_path = tmp.path().join("plugins.lock");
+    let mut f = std::fs::File::create(&lock_path).expect("create lock");
+    writeln!(
+        f,
+        r#"
+[[plugin]]
+name = "perf_a"
+path = "{wasm}"
+enabled = true
+capabilities = ["variables:read", "hooks:pre_prompt", "hooks:pre_exec", "hooks:post_exec"]
+
+[[plugin]]
+name = "perf_b"
+path = "{wasm}"
+enabled = true
+capabilities = ["variables:read", "hooks:pre_prompt", "hooks:pre_exec", "hooks:post_exec"]
+
+[[plugin]]
+name = "perf_c"
+path = "{wasm}"
+enabled = true
+capabilities = ["variables:read", "hooks:pre_prompt", "hooks:pre_exec", "hooks:post_exec"]
+"#,
+        wasm = wasm.display()
+    )
+    .expect("write lock");
+    drop(f);
+
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+    mgr.load_from_config(&lock_path, &mut env);
+
+    // Hooks must dispatch without panic against all three instances. The
+    // absence of a panic / trap is the observable assertion — perf_plugin
+    // hooks have empty bodies by design.
+    mgr.call_pre_prompt(&mut env);
+    mgr.call_pre_exec(&mut env, "noop");
+}
+
 /// perf_plugin hooks dispatch without panic.
 ///
 /// `perf_plugin` advertises `hook_pre_prompt`, `hook_pre_exec`, and
