@@ -936,3 +936,33 @@ fn perf_plugin_commands_exit_zero() {
         );
     }
 }
+
+/// perf_plugin hooks dispatch without panic.
+///
+/// `perf_plugin` advertises `hook_pre_prompt`, `hook_pre_exec`, and
+/// `hook_post_exec` as implemented. All three hooks have empty bodies
+/// (they measure dispatch overhead only, not user work). This test
+/// verifies that the hooks dispatch without trapping.
+#[test]
+fn perf_plugin_hooks_dispatch_without_panic() {
+    let _g = lock_test();
+    let wasm = perf_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    test_helpers::load_plugin_with_caps(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        yosh_plugin_api::CAP_ALL,
+        &[],
+    )
+    .expect("load perf_plugin");
+
+    // Hooks must dispatch without trapping. They have no observable
+    // side effect by design (this is a perf fixture, not a behavior test);
+    // the assertion is the absence of panic / trap.
+    mgr.call_pre_prompt(&mut env);
+    mgr.call_pre_exec(&mut env, "noop");
+    mgr.call_post_exec(&mut env, "noop", 0);
+}

@@ -43,6 +43,18 @@ impl Plugin for PerfPlugin {
             _ => 127,
         }
     }
+
+    fn hook_pre_prompt(&mut self) {
+        // Empty body — measures dispatch overhead, not user work.
+    }
+
+    fn hook_pre_exec(&mut self, _command: &str) {
+        // Empty body — measures dispatch overhead.
+    }
+
+    fn hook_post_exec(&mut self, _command: &str, _exit_code: i32) {
+        // Empty body — measures dispatch overhead.
+    }
 }
 
 export!(PerfPlugin);
