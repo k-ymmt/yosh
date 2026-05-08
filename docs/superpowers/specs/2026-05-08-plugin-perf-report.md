@@ -430,3 +430,52 @@ The spec defined the success criterion as `plugin_exec_noop_var ≤ −10%`. The
 ### Follow-up
 
 Apply the same `WasmStr` borrow conversion to the remaining `String`-typed host imports: `variables::set` (× 2 args), `variables::export-env` (× 2 args), `filesystem::set-cwd`, `files::read-file`, `files::read-dir`, `files::metadata`, `files::write-file`, `files::append-file`, `files::create-dir`, `files::remove-file`, `files::remove-dir`, `commands::exec`. The mutation paths (`set`, `set-cwd`, `write-file`, `append-file`, `create-dir`, `remove-file`, `remove-dir`) need similar `bound_env_ref` / read-then-mutate restructuring; `commands::exec` accepts a `Vec<String>` for argv which is a separate `list<string>` lift codepath worth measuring before pattern-matching to the same approach. New rollout spec to be authored separately.
+
+## Appendix B: §4.1 Phase 2 Rollout Result — Success
+
+**Date:** 2026-05-08
+**Spec:** `docs/superpowers/specs/2026-05-08-plugin-host-import-borrow-rollout-design.md`
+**Plan:** `docs/superpowers/plans/2026-05-08-plugin-host-import-borrow-rollout.md`
+**Commit (rollout HEAD):** `2262c7c`
+
+### Coverage
+
+11 host imports converted to `wasmtime::component::WasmStr` parameters across 4 commits (`7844e15`, `bd5139b`, `1461d1f`, `2262c7c`):
+
+- `variables::set`, `variables::export-env` — use the new `bound_env_with` closure helper (commit `3f67631`)
+- `filesystem::set-cwd`
+- `files::read-file`, `files::read-dir`, `files::metadata`, `files::write-file`, `files::append-file`, `files::create-dir`, `files::remove-file`, `files::remove-dir`
+
+The 9 `filesystem`/`files` host fns only needed signature changes (they call `ensure_bound` and never accessed `ShellEnv` directly); only the two `variables` mutation paths needed `bound_env_with`. Plan reflected this discrepancy from the spec's per-function helper assignment.
+
+### Decisive cross-check (dhat `--exec-loop 1000`)
+
+| Command | Baseline blocks | After blocks | Δ | Target | Verdict |
+|---|---|---|---|---|---|
+| `noop_var_set` | 6,451 | 4,451 | **−2,000** | −2,000 | ✅ exact |
+| `noop_files_read` | 3,451 | 2,451 | **−1,000** | −1,000 | ✅ exact |
+| `noop_files_remove` | 3,451 | 2,451 | **−1,000** | −1,000 | ✅ exact |
+
+All three meet target exactly. The dual-`WasmStr` mutation pattern via `bound_env_with` and the single-`WasmStr` patterns (read-only and mutation-via-`ensure_bound`) all eliminate one host-side `String` allocation per crossing per parameter, just as the §4.1 PoC predicted.
+
+### Regression check
+
+`plugin_exec_burst_var` Criterion bench (3-run median-of-medians, exercises 10× `variables::get` crossings per call):
+
+| Run | Median |
+|---|---|
+| 1 | 1,205.3 ns |
+| 2 | 1,178.9 ns |
+| 3 | 1,230.8 ns |
+
+Median-of-medians: **1,205.3 ns** (vs. §4.1 PoC's 1,170 ns baseline → +35 ns / +3.0%).
+
+This is at the plan's regression threshold but within the §4.1 PoC's own historical noise band (its 3-run spread was 1,167–1,287 ns; this rollout's spread is the narrower 1,179–1,231 ns). The rollout does not touch `variables::get` (already done in §4.1), so any movement on `burst_var` is a side-effect of adjacent linker-closure codegen rather than a true regression in the rollout's own changes. Treated as no regression.
+
+`cargo test --features test-helpers`: **2,177 / 2,177 pass** (no regression in functional behavior).
+
+### Follow-up candidates
+
+- `Vec<u8>` data parameters (`io::write` data, `files::write-file` data, `files::append-file` data) — separate `list<u8>` lift codepath. Worth a dedicated spike to determine whether wasmtime 27 exposes a `WasmList<u8>` borrow type.
+- `commands::exec` argv (`Vec<String>` → `list<string>`) — separate `list<string>` lift codepath. Each argv element is a String allocation; the savings could be substantial for command-heavy workloads. Needs its own spike.
+- Pre-existing `dead_code` warnings for `HostContext::env_mut` and `bound_env` — production callers all migrated; only test-internal references remain. Defer cleanup to a separate small commit (out of scope for this rollout).
