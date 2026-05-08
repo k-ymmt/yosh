@@ -17,12 +17,12 @@ pub fn deny_filesystem_cwd(_ctx: &mut HostContext) -> Result<String, ErrorCode> 
     Err(ErrorCode::Denied)
 }
 
-pub fn host_filesystem_set_cwd(ctx: &mut HostContext, path: String) -> Result<(), ErrorCode> {
+pub fn host_filesystem_set_cwd(ctx: &HostContext, path: &str) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
-    std::env::set_current_dir(&path).map_err(|_| ErrorCode::IoFailed)
+    std::env::set_current_dir(path).map_err(|_| ErrorCode::IoFailed)
 }
 
-pub fn deny_filesystem_set_cwd(_ctx: &mut HostContext, _path: String) -> Result<(), ErrorCode> {
+pub fn deny_filesystem_set_cwd(_ctx: &HostContext, _path: &str) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
 

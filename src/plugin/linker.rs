@@ -126,15 +126,17 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
         fs.func_wrap("cwd", |mut store, (): ()| {
             Ok((host_filesystem_cwd(store.data_mut()),))
         })?;
-        fs.func_wrap("set-cwd", |mut store, (path,): (String,)| {
-            Ok((host_filesystem_set_cwd(store.data_mut(), path),))
+        fs.func_wrap("set-cwd", |store, (path,): (wasmtime::component::WasmStr,)| {
+            let path_str = path.to_str(&store)?;
+            Ok((host_filesystem_set_cwd(store.data(), &path_str),))
         })?;
     } else {
         fs.func_wrap("cwd", |mut store, (): ()| {
             Ok((deny_filesystem_cwd(store.data_mut()),))
         })?;
-        fs.func_wrap("set-cwd", |mut store, (path,): (String,)| {
-            Ok((deny_filesystem_set_cwd(store.data_mut(), path),))
+        fs.func_wrap("set-cwd", |store, (path,): (wasmtime::component::WasmStr,)| {
+            let path_str = path.to_str(&store)?;
+            Ok((deny_filesystem_set_cwd(store.data(), &path_str),))
         })?;
     }
 
