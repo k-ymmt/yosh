@@ -147,7 +147,7 @@ Sampling dominated by `dhat::Globals::finish` (80% of 175 total samples) due to 
 | At t-gmax (peak live) | 859,913 bytes in 277 blocks |
 | At t-end | 977 bytes in 8 blocks |
 
-#### dhat Top-10 by blocks (W-P3)
+#### dhat Top-10 by call count (W-P3)
 
 | Rank | Site | Blocks | KB | Nearest yosh frame |
 |------|------|--------|----|--------------------|
@@ -162,7 +162,7 @@ Sampling dominated by `dhat::Globals::finish` (80% of 175 total samples) due to 
 | 9 | `Vec::grow_amortized` | 2,002 | 430 | `yosh::expand::pathname::expand` |
 | 10 | `Vec::grow_amortized` | 2,001 | 63 | `yosh::expand::ExpandedField::set_range` |
 
-The W-P3 top allocators are all shell-core expander functions. These are driven by `$(seq 1 1000)` command substitution in the script (8,008 `expand_word_to_fields` calls for 1000 `noop_cmd` invocations + loop variables). The plugin dispatch itself is not visible in the top-10, confirming that the `noop_cmd` exec path contributes negligible allocations.
+The W-P3 top allocators (ranked by call count rather than total bytes) are all shell-core expander functions. These are driven by `$(seq 1 1000)` command substitution in the script (8,008 `expand_word_to_fields` calls for 1000 `noop_cmd` invocations + loop variables). The plugin dispatch itself is not visible in the top-10, confirming that the `noop_cmd` exec path contributes negligible allocations.
 
 #### samply Top-10 total time (W-P3)
 
@@ -229,7 +229,7 @@ Only 10 samples collected from a single `yosh -c 'echo hi'` invocation; insuffic
 - `plugin_exec_burst_var` (10 host imports): 1,307 ns median → **+127–133 ns per import** (linear)
 - Raw host-import overhead: ~127 ns / crossing at steady state on Apple M3.
 
-**Suspected cause:** wasmtime's WIT bindgen lowering allocates a `String` on the host heap for each `string`-typed parameter lifted from wasm linear memory. The guest writes the string into its own heap, the canonical ABI lifts it via `memory.grow`/memcpy into a host `String`, and the closure then moves the owned `String` into the host function body. This is two copies (wasm→linear, linear→host heap) per `string` argument.
+**Suspected cause:** wasmtime's WIT bindgen lowering allocates a `String` on the host heap for each `string`-typed parameter lifted from wasm linear memory. The guest writes the string into its own heap, the canonical ABI lifts it via `memory.grow`/memcpy into a host `String`, and the closure then moves the owned `String` into the host function body. This is presumed to be two copies (wasm→linear, linear→host heap) per `string` argument, based on wasmtime's canonical ABI design; the 127 ns/import figure is directly measured.
 
 In wasmtime's component model, `func_wrap` closures that accept `String` force the canonical ABI lift to allocate regardless of what the function body does with the value. Switching the closure signature to accept `&str` (where the WIT signature allows it) can let the runtime avoid the allocation if the backing memory is directly accessible.
 
