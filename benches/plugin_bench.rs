@@ -14,6 +14,8 @@
 //! than invoking cargo from inside the bench (which would dominate the
 //! measurement on cold runs).
 
+mod plugin_bench_helpers;
+
 use std::path::{Path, PathBuf};
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
@@ -47,6 +49,7 @@ fn make_loaded_manager() -> (yosh::plugin::PluginManager, yosh::env::ShellEnv) {
         &test_plugin_wasm(),
         &mut env,
         yosh_plugin_api::CAP_ALL,
+        &[],
     )
     .expect("load test_plugin");
     (mgr, env)
