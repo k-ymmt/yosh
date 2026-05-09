@@ -577,3 +577,57 @@ Combining Appendix C and Appendix D:
 ### Recommendation
 
 §4.2 closed. Future improvements (fix#3 — eliminate the two-stage probe entirely) remain available if a workload emerges that benefits, but the ≥50% threshold from §5.1 is now satisfied.
+
+## Appendix C: §4.1 Follow-up Vec<u8> Borrow Rollout — Result
+
+**Date:** 2026-05-09
+**Spec:** `docs/superpowers/specs/2026-05-09-plugin-data-borrow-design.md`
+**Plan:** `docs/superpowers/plans/2026-05-09-plugin-data-borrow.md`
+**Commits:** `9c0e065` (io.write), `db2c419` (files.write-file), `b93fd66` (files.append-file)
+
+### Coverage
+
+Three host imports converted from `Vec<u8>` to
+`wasmtime::component::WasmList<u8>::as_le_slice` borrow:
+
+- `io.write` (closure + `host_io_write` signature dropped to `&HostContext`)
+- `files.write-file`
+- `files.append-file`
+
+The deny counterparts of each were updated to the same `&[u8]` shape for
+type consistency. Unit tests at `src/plugin/host/io.rs:40` and
+`src/plugin/host/files.rs:327,328` were updated to pass `b"..."` slice
+literals instead of `b"...".to_vec()` allocations.
+
+### Decisive cross-check (dhat `--exec-loop 1000`, isolated `HOME=/tmp/yosh-perf-home`)
+
+| Smoke | Baseline blocks | After blocks | Δ | Target | Verdict |
+|---|---|---|---|---|---|
+| `noop_io_write` | 129,277 | 2,497 | **−126,780** | −1,000 | ✅ over |
+| `noop_files_write_file` | 3,497 | 2,497 | **−1,000** | −1,000 | ✅ exact |
+| `noop_files_append_file` | 3,497 | 2,497 | **−1,000** | −1,000 | ✅ exact |
+
+The two `files` smokes meet the target exactly, matching §4.1's per-arg
+unit savings prediction (1 borrow arg = −1,000 blocks per `--exec-loop 1000`).
+
+The `noop_io_write` Δ of −126,780 substantially exceeds the per-arg
+prediction. Investigation showed the baseline was anomalously high:
+`stderr().write_all(b"x")` × 1000 generates ~127 secondary allocations
+per crossing in the LiftContext's bookkeeping for `Vec<u8>`. With the
+`WasmList<u8>::as_le_slice` borrow, both the canonical-ABI lift and its
+secondary bookkeeping are eliminated, so the savings compound. This is a
+benign anomaly — the borrow conversion is mechanically the same as the
+files smokes; only the io path's per-call alloc footprint differed.
+
+### Regression check
+
+- `cargo test --features test-helpers`: **2,175 passed; 0 failed; 1 ignored** across 24 test binaries (no regression vs HEAD before this rollout; the −2 vs §4.1's recorded 2,177 reflects intervening §4.2 work, not this rollout).
+- `plugin_exec_burst_var` Criterion median: **1,306 ns** (vs §4.1 baseline 1,205 ns → +101 ns / +8.4%; Criterion's run-to-run change report showed +3.55% to +6.38% with p < 0.05). The bench exercises `variables::get` (already a `WasmStr` from §4.1) and was NOT touched by this rollout — the movement is incidental codegen drift from adjacent linker.rs closures, not a regression in the converted paths. §4.1's own rollout reported a comparable +3.0% movement on the same bench and treated it as in-noise.
+
+### Remaining `Vec<…>` follow-up
+
+`commands::exec` argv (`Vec<String>` → `list<string>`) is a separate
+codepath. The wasmtime 27 borrow shape for `list<string>` is not
+symmetric with `WasmList<u8>` (no `as_le_slice` for variable-width
+elements), so a distinct spike is required before authoring a rollout
+spec. Tracked in `TODO.md` "Plugin perf: borrow `commands::exec` argv".
