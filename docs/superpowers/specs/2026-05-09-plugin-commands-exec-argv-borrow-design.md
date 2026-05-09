@@ -227,14 +227,14 @@ this isolates the canonical-ABI lift allocation from process-creation noise.
 
 | Smoke | Crossing measured | Gate (vs HEAD baseline before this rollout) |
 |---|---|---|
-| `noop_commands_exec_borrow` | `commands::exec("/bin/echo", &["a", "b"])` × 1000, deny path | **≤ −3,000 blocks** |
+| `noop_commands_exec_borrow` | `commands::exec("/bin/echo", &["a", "b"])` × 1000, deny path | **≤ −4,000 blocks** |
 
-The −3,000 prediction comes from:
-- Per crossing baseline: 1 outer `Vec<String>` + 2 inner `String` = 3 blocks
-- Per crossing after: 0 (the `Vec<Cow<'_, str>>` is collected only on the granted path; deny path skips it entirely)
-- 1,000 crossings × 3 blocks = 3,000
+The −4,000 prediction comes from:
+- Per crossing baseline: 1 `String` (program) + 1 outer `Vec<String>` (args) + 2 inner `String` (args elements) = 4 blocks
+- Per crossing after: 0 (`WasmStr` and `WasmList<WasmStr>` are zero-alloc lifts; the granted-path `Vec<Cow<'_, str>>` collection is not exercised on the deny path)
+- 1,000 crossings × 4 blocks = 4,000
 
-If the smoke misses by more than 10% (observed savings &lt; 2,700 blocks),
+If the smoke misses by more than 10% (observed savings &lt; 3,600 blocks),
 pause and investigate before merging. Likely causes: hidden `String`
 construction in lift error path, accidental `to_str` call in deny path, or
 linker codegen retaining a `Vec<String>` shape.
@@ -315,7 +315,7 @@ smoke is the per-crossing measurement.
 
 ## 10. Success criteria
 
-1. `noop_commands_exec_borrow` meets `≤ −3,000 blocks vs baseline` per `--exec-loop 1000`.
+1. `noop_commands_exec_borrow` meets `≤ −4,000 blocks vs baseline` per `--exec-loop 1000`.
 2. `cargo test --features test-helpers` passes with no count regression.
 3. `plugin_exec_*` Criterion benches within ±5% of HEAD baseline.
 4. No new `unsafe`, no new `to_vec()` / `to_owned()` / `into_owned()` in
