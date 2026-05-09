@@ -136,12 +136,15 @@ workspace-internal and not exported via the plugin SDK.
 ```rust
 fn spawn_with_timeout(
     program: &str,
-    args: &[Cow<'_, str>],
+    args: &[&str],
     timeout: std::time::Duration,
 ) -> Result<ExecOutput, ErrorCode>;
 ```
 
-`Command::args(args)` works unchanged because `Cow<str>: AsRef<OsStr>`.
+`Command::args(args)` works directly because `&str: AsRef<OsStr>`. Using
+`&[&str]` rather than `&[Cow<'_, str>]` sidesteps any reliance on
+transitive `AsRef` chains and lets us reuse the same `Vec<&str>` we
+already build for the matcher (see §3.5).
 
 ### 3.5 Internal argv construction
 
@@ -151,17 +154,20 @@ let mut argv = Vec::with_capacity(1 + args.len());
 argv.push(program.clone());
 argv.extend(args.iter().cloned());
 if !ctx.allowed_commands.iter().any(|p| p.matches(&argv)) { ... }
+spawn_with_timeout(&program, &args, …)
 
-// After (zero-copy chain into the generalized matcher)
-let argv_iter = std::iter::once(program).chain(args.iter().map(|c| c.as_ref()));
-let argv_vec: Vec<&str> = argv_iter.collect();  // 1 small Vec<&str>, no String alloc
-if !ctx.allowed_commands.iter().any(|p| p.matches(&argv_vec)) { ... }
+// After (1 small Vec<&str>, reused for matcher and spawn)
+let argv: Vec<&str> = std::iter::once(program)
+    .chain(args.iter().map(|c| c.as_ref()))
+    .collect();
+if !ctx.allowed_commands.iter().any(|p| p.matches(&argv)) { ... }
+spawn_with_timeout(program, &argv[1..], …)
 ```
 
-The `Vec<&str>` collection is needed because `matches` takes `&[S]`, not an
-iterator. This is one small allocation — `(1 + N) * sizeof(&str)` bytes — and
-is dwarfed by what we eliminated. (A future enhancement could change `matches`
-to take an iterator, but that is out of scope here.)
+One small allocation per granted call — `(1 + N) * sizeof(&str)` bytes
+— shared between the matcher and `spawn`. The previous code path
+allocated `1 + N + 1 = 2 + N` `String`s plus 1 outer `Vec<String>`
+(roughly 4–8× the bytes for a typical short argv).
 
 ## 4. Data flow
 
