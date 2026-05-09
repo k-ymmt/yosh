@@ -24,6 +24,7 @@ impl Plugin for PerfPlugin {
             "noop_io_write",
             "noop_files_write_file",
             "noop_files_append_file",
+            "noop_commands_exec",
         ]
     }
 
@@ -79,6 +80,15 @@ impl Plugin for PerfPlugin {
             }
             "noop_files_append_file" => {
                 let _ = append_file("/dev/null", b"x");
+                0
+            }
+            "noop_commands_exec" => {
+                // Deny path measurement: perf_plugin does not declare
+                // Capability::CommandsExec, so the linker wires the deny closure
+                // for commands::exec. The call still crosses the boundary (lift
+                // happens), but the host body short-circuits to Err(Denied)
+                // without spawning a subprocess. We discard the result.
+                let _ = yosh_plugin_sdk::exec("/bin/echo", &["a", "b"]);
                 0
             }
             _ => 127,
