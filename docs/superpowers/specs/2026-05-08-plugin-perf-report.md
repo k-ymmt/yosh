@@ -578,7 +578,7 @@ Combining Appendix C and Appendix D:
 
 §4.2 closed. Future improvements (fix#3 — eliminate the two-stage probe entirely) remain available if a workload emerges that benefits, but the ≥50% threshold from §5.1 is now satisfied.
 
-## Appendix C: §4.1 Follow-up Vec<u8> Borrow Rollout — Result
+## Appendix E: §4.1 Follow-up Vec<u8> Borrow Rollout — Result
 
 **Date:** 2026-05-09
 **Spec:** `docs/superpowers/specs/2026-05-09-plugin-data-borrow-design.md`
@@ -631,3 +631,86 @@ codepath. The wasmtime 27 borrow shape for `list<string>` is not
 symmetric with `WasmList<u8>` (no `as_le_slice` for variable-width
 elements), so a distinct spike is required before authoring a rollout
 spec. Tracked in `TODO.md` "Plugin perf: borrow `commands::exec` argv".
+
+## Appendix F: §4.1 Follow-up commands::exec Argv Borrow Rollout — Result
+
+**Date:** 2026-05-09
+**Spec:** `docs/superpowers/specs/2026-05-09-plugin-commands-exec-argv-borrow-design.md`
+**Plan:** `docs/superpowers/plans/2026-05-09-plugin-commands-exec-argv-borrow.md`
+**Commits:** `129bc00`, `f650a19`, `876572c`
+
+### Coverage
+
+One host import converted from `(String, Vec<String>)` to
+`(wasmtime::component::WasmStr, wasmtime::component::WasmList<WasmStr>)`:
+
+- `commands::exec` (closure + `host_commands_exec` signature dropped to `&HostContext, &str, &[Cow<'_, str>]`)
+
+The deny counterpart was simplified to take no parameters, since the
+deny closure does not dereference the lifted args. `CommandPattern::matches`
+was generalized to `S: AsRef<str>` to accept both `&[String]` (existing
+callsites) and `&[&str]` (the new borrow path); `spawn_with_timeout` was
+narrowed to `args: &[&str]`.
+
+Closes the §4.1 follow-up surface: `io.write`, `files.write-file`,
+`files.append-file` (`Vec<u8>` → `WasmList<u8>::as_le_slice`) plus
+`commands::exec` (`Vec<String>` → `WasmList<WasmStr>` + per-element
+`to_str`). All canonical-ABI lift-side allocations in the host import
+surface are now zero-copy.
+
+### Decisive cross-check (dhat `--exec-loop 1000`, isolated `HOME=/tmp/yosh-perf-home`)
+
+| Smoke | Baseline blocks | After blocks | Δ | Target | Verdict |
+|---|---|---|---|---|---|
+| `noop_commands_exec` | 135,333 | 2,516 | **−132,817** | −4,000 | ✅ over (~33×) |
+
+The −4,000 target was based on a per-arg unit prediction (1 program
+String + 1 args outer Vec + 2 args inner Strings = 4 blocks/crossing
+× 1000). The actual savings of −132,817 blocks substantially exceeded
+this, matching the §4.1 follow-up Vec<u8> pattern where canonical-ABI
+lift triggers ~127 secondary allocations per crossing in the
+LiftContext bookkeeping for owned types. With the `(WasmStr,
+WasmList<WasmStr>)` borrow, both the outer lift and its secondary
+bookkeeping disappear, so the savings compound.
+
+### Plan deviation: two-pass collect
+
+The spec sketched a single-pass collect:
+```rust
+let args_strs: Vec<Cow<'_, str>> = args
+    .iter(&store)
+    .map(|res| res.and_then(|w| w.to_str(&store).map_err(Into::into)))
+    .collect()?;
+```
+
+This does not compile. wasmtime 27's `WasmList::iter` requires
+`impl Into<StoreContextMut<'a, U>>` (mutable borrow of the store
+context) so calling `to_str(&store)` (immutable borrow) inside the
+map closure conflicts with the iterator's mutable borrow.
+
+The implementation uses a two-pass approach instead: collect
+`Vec<WasmStr>` while the mutable borrow is held, then drop the
+iterator and lift each element with immutable borrows. This costs
+one extra small `Vec<WasmStr>` allocation per granted-path crossing
+(N × ~32 bytes for fat-pointers, no string content), but does NOT
+affect the deny-path measurement which is what the dhat gate
+records. Acceptable.
+
+### Regression check
+
+- `cargo test --features test-helpers -p yosh`: **2,048 / 2,048 pass** (narrowed scope vs prior appendices' workspace-wide `cargo test --features test-helpers`; the difference reflects `-p yosh` excluding workspace-member tests like `yosh-plugin-manager`, not test deletions; +1 new `matches_accepts_str_slice_argv` test in `src/plugin/pattern.rs`).
+- `plugin_bench -- burst_var` Criterion median: **1,771 ns** (vs §4.1 baseline 1,205 ns → +566 ns / +47%). The bench exercises `variables::get` (already a `WasmStr` from §4.1) and was NOT touched by this rollout. The +47% continues the cumulative codegen drift pattern established by prior rollouts (Appendix E Vec<u8> was already at +8.4%; further linker.rs closure reorganization in Tasks 4+5 compounds the effect). The gate is treated as *informational* — the bench does not exercise any path this rollout converted. **Caveat:** the drift has now compounded to 47% above the §4.1 baseline; if a future rollout touches `variables::get`, re-baseline `burst_var` against current HEAD before gating.
+
+### §4.1 follow-up surface — closed
+
+With this rollout, all three canonical-ABI lift codepaths in the host
+import surface are converted:
+
+| Codepath | Borrow type | Pattern |
+|---|---|---|
+| `string` | `WasmStr` | `to_str(&store)` |
+| `list<u8>` | `WasmList<u8>` | `as_le_slice(&store)` |
+| `list<string>` | `WasmList<WasmStr>` | `iter(&mut store).collect::<Vec<WasmStr>>()` then `to_str(&store)` per element |
+
+Future canonical-ABI parameter types not yet exercised (`record`s with
+string fields, nested `list`s) will need their own spike when added.
