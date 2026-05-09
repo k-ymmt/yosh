@@ -537,8 +537,8 @@ Pursue fix candidate #2 (real linker per-capability-mask cache) as a follow-up. 
 ## Appendix D: §4.2 Real Linker Cache Verification — Target Met
 
 **Date:** 2026-05-09
-**Implementation commit:** 0f49eb8 (with red-phase tests in 5278689 / 56c2b5b)
-**Verdict:** Real-linker caching by capability mask delivers **−50.00%** drop on `LinkerInstance<T>::insert` blocks at N=3 same-mask, meeting the §5.1 ≥50% target. The distinct-mask sanity reproduces the fix#1 33% ceiling, confirming the cache key correctly differentiates cap masks.
+**Implementation commit:** `0f49eb8` (with red-phase tests in `5278689` / `56c2b5b`)
+**Verdict:** Real-linker caching by capability mask delivers **−50.00%** drop on `LinkerInstance<T>::insert` blocks at N=3 same-mask versus fix#1, and **−66.67%** cumulative versus the original pre-fix baseline — comfortably exceeding the §5.1 ≥50% target. The distinct-mask sanity reproduces the fix#1 33.33% ceiling, confirming the cache key correctly differentiates cap masks.
 
 ### Method
 
@@ -569,10 +569,10 @@ Combining Appendix C and Appendix D:
 | Stage | `LinkerInstance<T>::insert` blocks (3-plugin same-mask) | Δ vs original |
 |-------|---------------------------------------------------------|---------------|
 | Pre-fix baseline (Appendix C pre-fix) | 2,094 | — |
-| Post fix#1 (Appendix C post-fix) | 1,396 | −33.33% |
-| Post fix#2 (this appendix) | 698 | −66.66% |
+| Post fix#1 (Appendix C post-fix) | 1,396 | −33.3% |
+| Post fix#2 (this appendix) | 698 | −66.67% |
 
-≥50% target met at −66.66% drop vs original baseline.
+≥50% target met at −66.67% drop vs original baseline.
 
 ### Recommendation
 
