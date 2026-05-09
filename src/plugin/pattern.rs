@@ -2,7 +2,8 @@
 //!
 //! See `docs/superpowers/specs/2026-04-29-plugin-commands-exec-capability-design.md` §4.
 
-/// A parsed allowlist pattern. Matches against an argv `&[String]` slice.
+/// A parsed allowlist pattern. Matches against an argv slice of any
+/// `AsRef<str>` type (e.g. `&[String]`, `&[&str]`, `&[Cow<'_, str>]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandPattern {
     pub tokens: Vec<String>,
@@ -48,11 +49,25 @@ impl CommandPattern {
     }
 
     /// Match this pattern against an argv slice (`[program, arg1, arg2, ...]`).
-    pub fn matches(&self, argv: &[String]) -> bool {
+    ///
+    /// Generic over `S: AsRef<str>` so callers can pass `&[String]`
+    /// (existing) or `&[&str]` / `&[Cow<'_, str>]` (the canonical-ABI
+    /// borrow path in `host_commands_exec`).
+    pub fn matches<S: AsRef<str>>(&self, argv: &[S]) -> bool {
         if self.has_glob_suffix {
-            argv.len() >= self.tokens.len() && self.tokens.iter().zip(argv).all(|(p, a)| p == a)
+            argv.len() >= self.tokens.len()
+                && self
+                    .tokens
+                    .iter()
+                    .zip(argv)
+                    .all(|(p, a)| p.as_str() == a.as_ref())
         } else {
-            argv.len() == self.tokens.len() && self.tokens.iter().zip(argv).all(|(p, a)| p == a)
+            argv.len() == self.tokens.len()
+                && self
+                    .tokens
+                    .iter()
+                    .zip(argv)
+                    .all(|(p, a)| p.as_str() == a.as_ref())
         }
     }
 }
@@ -134,5 +149,15 @@ mod tests {
             "--porcelain".to_string()
         ]));
         assert!(!p.matches(&["git".to_string(), "log".to_string()]));
+    }
+
+    #[test]
+    fn matches_accepts_str_slice_argv() {
+        // Locks down the §4.1 follow-up generalization: matcher must
+        // accept &[&str] (used by host_commands_exec after the borrow
+        // rollout) as well as &[String] (existing callsites).
+        let p = CommandPattern::parse("/bin/echo:*").unwrap();
+        let argv: &[&str] = &["/bin/echo", "a", "b"];
+        assert!(p.matches(argv));
     }
 }
