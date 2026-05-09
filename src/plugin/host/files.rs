@@ -83,13 +83,13 @@ pub fn host_files_metadata(ctx: &HostContext, path: &str) -> Result<FileStat, Er
 pub fn host_files_write_file(
     ctx: &HostContext,
     path: &str,
-    data: Vec<u8>,
+    data: &[u8],
 ) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
-    std::fs::write(path, &data).map_err(|_| ErrorCode::IoFailed)
+    std::fs::write(path, data).map_err(|_| ErrorCode::IoFailed)
 }
 
 pub fn host_files_append_file(
@@ -178,7 +178,7 @@ pub fn deny_files_metadata(_ctx: &HostContext, _path: &str) -> Result<FileStat, 
 pub fn deny_files_write_file(
     _ctx: &HostContext,
     _path: &str,
-    _data: Vec<u8>,
+    _data: &[u8],
 ) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
@@ -324,7 +324,7 @@ mod tests {
         let ctx = bound_env_ctx(&mut env);
         let p = path.to_string_lossy();
 
-        host_files_write_file(&ctx, &p, b"hello".to_vec()).unwrap();
+        host_files_write_file(&ctx, &p, b"hello").unwrap();
         host_files_append_file(&ctx, &p, b" world".to_vec()).unwrap();
 
         let bytes = std::fs::read(&path).unwrap();
