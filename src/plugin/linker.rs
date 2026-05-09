@@ -199,9 +199,10 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
         )?;
         files.func_wrap(
             "append-file",
-            |store, (path, data): (wasmtime::component::WasmStr, Vec<u8>)| {
+            |store, (path, data): (wasmtime::component::WasmStr, wasmtime::component::WasmList<u8>)| {
                 let path_str = path.to_str(&store)?;
-                Ok((host_files_append_file(store.data(), &path_str, data),))
+                let bytes = data.as_le_slice(&store);
+                Ok((host_files_append_file(store.data(), &path_str, bytes),))
             },
         )?;
         files.func_wrap(
@@ -233,9 +234,10 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
         )?;
         files.func_wrap(
             "append-file",
-            |store, (path, data): (wasmtime::component::WasmStr, Vec<u8>)| {
+            |store, (path, data): (wasmtime::component::WasmStr, wasmtime::component::WasmList<u8>)| {
                 let path_str = path.to_str(&store)?;
-                Ok((deny_files_append_file(store.data(), &path_str, data),))
+                let bytes = data.as_le_slice(&store);
+                Ok((deny_files_append_file(store.data(), &path_str, bytes),))
             },
         )?;
         files.func_wrap(
