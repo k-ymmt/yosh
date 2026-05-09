@@ -533,3 +533,47 @@ A multi-plugin session needs fix #2 to land in the ≥50% regime. Fix #2 caches 
 ### Recommendation
 
 Pursue fix candidate #2 (real linker per-capability-mask cache) as a follow-up. The TODO.md entry under "Future: Plugin System Enhancements" already records this; this Appendix promotes it from "deferred pending measurement" to "indicated by measurement".
+
+## Appendix D: §4.2 Real Linker Cache Verification — Target Met
+
+**Date:** 2026-05-09
+**Implementation commit:** 0f49eb8 (with red-phase tests in 5278689 / 56c2b5b)
+**Verdict:** Real-linker caching by capability mask delivers **−50.00%** drop on `LinkerInstance<T>::insert` blocks at N=3 same-mask, meeting the §5.1 ≥50% target. The distinct-mask sanity reproduces the fix#1 33% ceiling, confirming the cache key correctly differentiates cap masks.
+
+### Method
+
+Same `/tmp/yosh-perf-home` 3-plugin staging as Appendix C. Two scenarios:
+- **Same-mask:** all three plugins.lock entries grant `["variables:read", "hooks:pre_prompt", "hooks:pre_exec", "hooks:post_exec"]` (identical mask).
+- **Distinct-mask:** three different cap subsets to verify the key correctly separates entries.
+
+For each scenario: 3 warm-up runs, keep the steady-state dhat output, extract `LinkerInstance<T>::insert` matches via `scripts/perf/dhat_filter_frame.py`.
+
+### Numbers (same-mask, 3 plugins)
+
+| Metric | fix#1 only (Appendix C) | fix#1 + fix#2 | Δ vs fix#1 | % drop |
+|--------|-------------------------|---------------|------------|--------|
+| `LinkerInstance<T>::insert` bytes | 534,288 | 267,144 | −267,144 | −50.00% |
+| `LinkerInstance<T>::insert` blocks | 1,396 | 698 | −698 | −50.00% |
+| `LinkerInstance<T>::insert` matched sites | 632 | 587 | −45 | −7.12% |
+
+### Numbers (distinct-mask, 3 plugins)
+
+| Metric | fix#1 only (extrapolated) | fix#1 + fix#2 | Verdict |
+|--------|---------------------------|---------------|---------|
+| `LinkerInstance<T>::insert` blocks | ≈ 1,396 | 1,396 | within ±50 → key separates correctly |
+
+### Cumulative drop vs original baseline
+
+Combining Appendix C and Appendix D:
+
+| Stage | `LinkerInstance<T>::insert` blocks (3-plugin same-mask) | Δ vs original |
+|-------|---------------------------------------------------------|---------------|
+| Pre-fix baseline (Appendix C pre-fix) | 2,094 | — |
+| Post fix#1 (Appendix C post-fix) | 1,396 | −33.33% |
+| Post fix#2 (this appendix) | 698 | −66.66% |
+
+≥50% target met at −66.66% drop vs original baseline.
+
+### Recommendation
+
+§4.2 closed. Future improvements (fix#3 — eliminate the two-stage probe entirely) remain available if a workload emerges that benefits, but the ≥50% threshold from §5.1 is now satisfied.
