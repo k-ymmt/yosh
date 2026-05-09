@@ -1019,3 +1019,51 @@ fn perf_plugin_hooks_dispatch_without_panic() {
     mgr.call_pre_exec(&mut env, "noop");
     mgr.call_post_exec(&mut env, "noop", 0);
 }
+
+#[test]
+fn linker_cache_reuses_entry_for_same_mask() {
+    // Two loads with identical caps must share one real-linker cache
+    // entry. With the metadata-probe scratch entry (CAP_ALL) plus one
+    // shared real-mask entry, the total is 2.
+    let _g = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+    let caps = yosh_plugin_api::CAP_ALL;
+
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps, &[])
+        .expect("first load");
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps, &[])
+        .expect("second load");
+
+    assert_eq!(
+        test_helpers::linker_cache_len(&mgr),
+        2,
+        "expected 2 entries (CAP_ALL scratch + shared real mask), got {}",
+        test_helpers::linker_cache_len(&mgr)
+    );
+}
+
+#[test]
+fn linker_cache_separates_entries_for_distinct_masks() {
+    // Two loads with different cap subsets must produce two real-linker
+    // cache entries (plus one CAP_ALL scratch entry) for a total of 3.
+    let _g = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+    let caps_a = yosh_plugin_api::CAP_VARIABLES_READ;
+    let caps_b = yosh_plugin_api::CAP_VARIABLES_READ | yosh_plugin_api::CAP_FILESYSTEM;
+
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps_a, &[])
+        .expect("load a");
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps_b, &[])
+        .expect("load b");
+
+    assert_eq!(
+        test_helpers::linker_cache_len(&mgr),
+        3,
+        "expected 3 entries (CAP_ALL scratch + 2 distinct real masks), got {}",
+        test_helpers::linker_cache_len(&mgr)
+    );
+}

@@ -904,6 +904,12 @@ pub mod test_helpers {
         Some(plugin.store.data().env.is_null())
     }
 
+    /// Number of `Linker<HostContext>` entries currently cached on the
+    /// manager. Used by §4.2 fix#2 cache-reuse / cache-separation tests.
+    pub fn linker_cache_len(_manager: &PluginManager) -> usize {
+        0 // STUB — replaced in Task 2
+    }
+
     /// Override the resolved pre-prompt timeout for this manager. Tests
     /// use this instead of mutating `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS`
     /// in the process environment, which is `unsafe` in Rust 2024 and
