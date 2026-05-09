@@ -1036,11 +1036,11 @@ fn linker_cache_reuses_entry_for_same_mask() {
     test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps, &[])
         .expect("second load");
 
+    let len = test_helpers::linker_cache_len(&mgr);
     assert_eq!(
-        test_helpers::linker_cache_len(&mgr),
+        len,
         2,
-        "expected 2 entries (CAP_ALL scratch + shared real mask), got {}",
-        test_helpers::linker_cache_len(&mgr)
+        "expected 2 entries (CAP_ALL scratch + shared real mask), got {len}",
     );
 }
 
@@ -1060,10 +1060,10 @@ fn linker_cache_separates_entries_for_distinct_masks() {
     test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps_b, &[])
         .expect("load b");
 
+    let len = test_helpers::linker_cache_len(&mgr);
     assert_eq!(
-        test_helpers::linker_cache_len(&mgr),
+        len,
         3,
-        "expected 3 entries (CAP_ALL scratch + 2 distinct real masks), got {}",
-        test_helpers::linker_cache_len(&mgr)
+        "expected 3 entries (CAP_ALL scratch + 2 distinct real masks), got {len}",
     );
 }
