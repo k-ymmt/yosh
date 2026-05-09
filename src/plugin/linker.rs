@@ -144,12 +144,14 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
     use super::generated::yosh::plugin::types::IoStream;
     let mut io = linker.instance("yosh:plugin/io@0.2.1")?;
     if has(allowed, CAP_IO) {
-        io.func_wrap("write", |mut store, (target, data): (IoStream, Vec<u8>)| {
-            Ok((host_io_write(store.data_mut(), target, data),))
+        io.func_wrap("write", |store, (target, data): (IoStream, wasmtime::component::WasmList<u8>)| {
+            let bytes = data.as_le_slice(&store);
+            Ok((host_io_write(store.data(), target, bytes),))
         })?;
     } else {
-        io.func_wrap("write", |mut store, (target, data): (IoStream, Vec<u8>)| {
-            Ok((deny_io_write(store.data_mut(), target, data),))
+        io.func_wrap("write", |store, (target, data): (IoStream, wasmtime::component::WasmList<u8>)| {
+            let bytes = data.as_le_slice(&store);
+            Ok((deny_io_write(store.data(), target, bytes),))
         })?;
     }
 

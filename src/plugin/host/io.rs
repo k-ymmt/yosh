@@ -7,22 +7,22 @@ use super::super::generated::yosh::plugin::types::{ErrorCode, IoStream};
 use super::HostContext;
 
 pub fn host_io_write(
-    ctx: &mut HostContext,
+    ctx: &HostContext,
     target: IoStream,
-    data: Vec<u8>,
+    data: &[u8],
 ) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
     let result = match target {
-        IoStream::Stdout => std::io::stdout().write_all(&data),
-        IoStream::Stderr => std::io::stderr().write_all(&data),
+        IoStream::Stdout => std::io::stdout().write_all(data),
+        IoStream::Stderr => std::io::stderr().write_all(data),
     };
     result.map_err(|_| ErrorCode::IoFailed)
 }
 
 pub fn deny_io_write(
-    _ctx: &mut HostContext,
+    _ctx: &HostContext,
     _target: IoStream,
-    _data: Vec<u8>,
+    _data: &[u8],
 ) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
@@ -36,8 +36,8 @@ mod tests {
 
     #[test]
     fn io_write_denied_when_env_null() {
-        let mut ctx = null_env_ctx();
-        let result = host_io_write(&mut ctx, IoStream::Stdout, b"hi".to_vec());
+        let ctx = null_env_ctx();
+        let result = host_io_write(&ctx, IoStream::Stdout, b"hi");
         assert_eq!(result, Err(ErrorCode::Denied));
     }
 }
