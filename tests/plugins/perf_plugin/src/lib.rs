@@ -5,7 +5,8 @@
 //! measurements are not polluted.
 
 use yosh_plugin_sdk::{
-    Capability, HookName, Plugin, export, get_var, read_file, remove_file, set_var,
+    Capability, HookName, IoStream, Plugin, append_file, export, get_var, read_file,
+    remove_file, set_var, write_bytes, write_file,
 };
 
 #[derive(Default)]
@@ -20,6 +21,9 @@ impl Plugin for PerfPlugin {
             "noop_var_set",
             "noop_files_read",
             "noop_files_remove",
+            "noop_io_write",
+            "noop_files_write_file",
+            "noop_files_append_file",
         ]
     }
 
@@ -29,6 +33,7 @@ impl Plugin for PerfPlugin {
             Capability::VariablesWrite,
             Capability::FilesRead,
             Capability::FilesWrite,
+            Capability::Io,
             Capability::HookPrePrompt,
             Capability::HookPreExec,
             Capability::HookPostExec,
@@ -62,6 +67,18 @@ impl Plugin for PerfPlugin {
             }
             "noop_files_remove" => {
                 let _ = remove_file("/tmp/yosh-perf-rollout-nonexistent");
+                0
+            }
+            "noop_io_write" => {
+                let _ = write_bytes(IoStream::Stderr, b"x");
+                0
+            }
+            "noop_files_write_file" => {
+                let _ = write_file("/dev/null", b"x");
+                0
+            }
+            "noop_files_append_file" => {
+                let _ = append_file("/dev/null", b"x");
                 0
             }
             _ => 127,
