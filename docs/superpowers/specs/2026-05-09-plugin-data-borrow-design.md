@@ -120,15 +120,19 @@ Bodies change mechanically: `result.write_all(&data)` →
 
 ### 3.3 Unit tests
 
-Four call sites in unit tests pass owned `Vec<u8>` and become slice
+Three call sites in unit tests pass owned `Vec<u8>` and become slice
 literals (line numbers as of HEAD `2b02437`):
 
 | File | Line | Current | New |
 |---|---|---|---|
 | `src/plugin/host/io.rs` | 40 | `b"hi".to_vec()` | `b"hi"` |
-| `src/plugin/host/files.rs` | 238 | `b"hello world".to_vec()` | `b"hello world"` |
 | `src/plugin/host/files.rs` | 327 | `b"hello".to_vec()` | `b"hello"` |
 | `src/plugin/host/files.rs` | 328 | `b" world".to_vec()` | `b" world"` |
+
+`src/plugin/host/files.rs:238` (`let payload = b"hello world".to_vec();`)
+is in `host_files_read_file_roundtrip` and remains a `Vec<u8>` because
+`host_files_read_file` *returns* `Result<Vec<u8>, ErrorCode>` (return-side
+allocation, out of scope here).
 
 Example:
 
