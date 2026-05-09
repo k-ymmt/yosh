@@ -246,78 +246,129 @@ diffstat.
 
 ## Task 2: Capture baseline dhat block counts
 
-**Files:** (none — measurement only)
+**Files:** none modified (`target/perf/` and `/tmp/yosh-perf-home/` are gitignored / out-of-tree)
 
 **Rationale:** §4.1 established `−1,000 blocks per --exec-loop 1000` as the
 per-borrow-arg unit savings. Before any host-side change, capture the
 current "blocks" total for each of the three new smokes so the rollout
 delta is unambiguous.
 
+**Methodology (matches §4.1 task 3 exactly):**
+- Use `HOME=/tmp/yosh-perf-home` to isolate the dhat run from the user's
+  real `~/.config/yosh/plugins.lock`. **Never modify the user's actual
+  config.** The isolated home is set up once in Step 2 below.
+- Extract the metric from the **stderr `dhat: Total: <N> bytes in <M> blocks`**
+  summary line that `dhat::Profiler` prints on Drop. Do NOT parse
+  `dhat-heap.json`'s `"tb"` field — that field is per-allocation-site and
+  summing it gives a different number than the canonical "blocks" total.
+- Save the per-run `dhat-heap.json` artifacts to `target/perf/` for later
+  cross-checking; baseline summary goes to `target/perf/rollout-baseline.txt`.
+
 - [ ] **Step 1: Build the dhat-instrumented binary**
 
-Run:
-
 ```bash
-cargo build --profile profiling --features dhat-heap --bin yosh-dhat 2>&1 | tail -5
+cargo build --profile profiling --features dhat-heap --bin yosh-dhat 2>&1 | tail -3
 ```
 
-Expected: `Finished profiling [optimized + debuginfo] target(s) in <N>s` and
-`./target/profiling/yosh-dhat` exists. If the `dhat-heap` feature is missing
-from the manifest, see `Cargo.toml` `[features]`; §4.1's perf work added it.
+Expected: `Finished profiling profile [optimized + debuginfo]` and
+`./target/profiling/yosh-dhat` exists. May take 1–2 minutes — use
+`timeout: 300000` (5 minutes) on the bash call.
 
-- [ ] **Step 2: Run baseline for `noop_io_write`**
+If the build fails because the `dhat-heap` feature is missing from
+`Cargo.toml` `[features]`, BLOCKED — report back. (§4.1 introduced this
+feature; it should be present at HEAD `f1c9b52`.)
 
-Run:
-
-```bash
-./target/profiling/yosh-dhat --exec-loop 1000 noop_io_write 2>/dev/null
-grep -E '"tb"' dhat-heap.json | head -1
-mv dhat-heap.json /tmp/dhat-baseline-noop_io_write.json
-```
-
-`tb` is the total-blocks field in dhat output. Record the printed integer in
-your scratchpad (call it `B_io`). The `2>/dev/null` suppresses the `b"x"`
-that gets written to stderr 1000 times.
-
-- [ ] **Step 3: Run baseline for `noop_files_write_file`**
-
-Run:
+- [ ] **Step 2: Set up isolated `HOME` with a `plugins.lock` for `perf_plugin`**
 
 ```bash
-./target/profiling/yosh-dhat --exec-loop 1000 noop_files_write_file
-grep -E '"tb"' dhat-heap.json | head -1
-mv dhat-heap.json /tmp/dhat-baseline-noop_files_write_file.json
-```
-
-Record the integer as `B_wf`.
-
-- [ ] **Step 4: Run baseline for `noop_files_append_file`**
-
-Run:
-
-```bash
-./target/profiling/yosh-dhat --exec-loop 1000 noop_files_append_file
-grep -E '"tb"' dhat-heap.json | head -1
-mv dhat-heap.json /tmp/dhat-baseline-noop_files_append_file.json
-```
-
-Record the integer as `B_af`.
-
-- [ ] **Step 5: Save the baselines for later comparison**
-
-Append the three numbers to `/tmp/dhat-baselines.txt`:
-
-```bash
-cat <<EOF > /tmp/dhat-baselines.txt
-noop_io_write           B_io = <fill in>
-noop_files_write_file   B_wf = <fill in>
-noop_files_append_file  B_af = <fill in>
+mkdir -p /tmp/yosh-perf-home/.config/yosh
+cat > /tmp/yosh-perf-home/.config/yosh/plugins.lock <<EOF
+[[plugin]]
+name = "perf"
+path = "$(pwd)/target/wasm32-wasip2/release/perf_plugin.wasm"
+enabled = true
+capabilities = [
+    "variables:read",
+    "variables:write",
+    "files:read",
+    "files:write",
+    "io",
+    "hooks:pre_prompt",
+    "hooks:pre_exec",
+    "hooks:post_exec",
+]
 EOF
+cat /tmp/yosh-perf-home/.config/yosh/plugins.lock
 ```
 
-Replace `<fill in>` with the integers from Steps 2–4. This file is the
-ground truth that Tasks 3–5 compare against. (No commit — this is local
-scratch.)
+Expected: file written with all 8 capabilities (notice `io` was added vs.
+§4.1's set, because Task 1 added `Capability::Io` for `noop_io_write`).
+The `name = "perf"` matches §4.1's convention; `path` resolves to the wasm
+that Task 1 just rebuilt.
+
+**DO NOT modify the user's `~/.config/yosh/plugins.lock`.** That file is
+shared state; any change is a bug. The isolated `HOME=/tmp/yosh-perf-home`
+is the only place we write plugin config.
+
+- [ ] **Step 3: Run baseline for `noop_io_write`**
+
+```bash
+mkdir -p target/perf
+HOME=/tmp/yosh-perf-home ./target/profiling/yosh-dhat --exec-loop 1000 noop_io_write 2>&1 | tail -5
+mv dhat-heap.json target/perf/dhat-rollout-noop_io_write-baseline.json
+```
+
+Expected: the last 5 lines include
+`dhat: Total: <bytes> bytes in <blocks> blocks` and
+`dhat: The data has been saved to dhat-heap.json`. Record `<bytes>` and
+`<blocks>` — the `<blocks>` integer is `B_io`. Plausible range: low to
+mid thousands (§4.1's similar smokes were 3,451–6,451). If it's millions,
+something is wrong (likely a non-isolated HOME picking up the user's
+plugins.lock).
+
+If the dhat run prints a plugin-loading error (`failed to load plugin
+"perf"` etc.) instead of the dhat summary, the wasm path or capability
+list is wrong — investigate before proceeding.
+
+- [ ] **Step 4: Run baseline for `noop_files_write_file`**
+
+```bash
+HOME=/tmp/yosh-perf-home ./target/profiling/yosh-dhat --exec-loop 1000 noop_files_write_file 2>&1 | tail -5
+mv dhat-heap.json target/perf/dhat-rollout-noop_files_write_file-baseline.json
+```
+
+Record the `<blocks>` integer as `B_wf`.
+
+- [ ] **Step 5: Run baseline for `noop_files_append_file`**
+
+```bash
+HOME=/tmp/yosh-perf-home ./target/profiling/yosh-dhat --exec-loop 1000 noop_files_append_file 2>&1 | tail -5
+mv dhat-heap.json target/perf/dhat-rollout-noop_files_append_file-baseline.json
+```
+
+Record as `B_af`.
+
+- [ ] **Step 6: Save the baseline summary**
+
+```bash
+cat > target/perf/rollout-baseline.txt <<EOF
+=== §4.1 follow-up Vec<u8> rollout dhat baselines (commit f1c9b52, before Tasks 3–5) ===
+noop_io_write           bytes=<bytes_io>  blocks=<B_io>
+noop_files_write_file   bytes=<bytes_wf>  blocks=<B_wf>
+noop_files_append_file  bytes=<bytes_af>  blocks=<B_af>
+
+Expected post-rollout deltas (per --exec-loop 1000):
+  noop_io_write:           −1,000 blocks (single Vec<u8> arg → WasmList<u8>::as_le_slice borrow)
+  noop_files_write_file:   −1,000 blocks (data Vec<u8>; path is already WasmStr from §4.1)
+  noop_files_append_file:  −1,000 blocks (same as write_file)
+
+Methodology: HOME=/tmp/yosh-perf-home isolation; metric = "dhat: Total: ... blocks" summary line.
+EOF
+cat target/perf/rollout-baseline.txt
+```
+
+Replace the `<…>` placeholders with the integers from Steps 3–5. (No
+commit — `target/perf/` is gitignored scratch.)
 
 ---
 
@@ -438,20 +489,25 @@ Expected: `test plugin::host::io::tests::io_write_denied_when_env_null ... ok`.
 
 - [ ] **Step 5: Build the dhat binary and re-measure**
 
-Run:
+Run (use `timeout: 300000` for the cargo build):
 
 ```bash
-cargo build --profile profiling --features dhat-heap --bin yosh-dhat 2>&1 | tail -5
-./target/profiling/yosh-dhat --exec-loop 1000 noop_io_write 2>/dev/null
-grep -E '"tb"' dhat-heap.json | head -1
+cargo build --profile profiling --features dhat-heap --bin yosh-dhat 2>&1 | tail -3
+HOME=/tmp/yosh-perf-home ./target/profiling/yosh-dhat --exec-loop 1000 noop_io_write 2>&1 | tail -5
+mv dhat-heap.json target/perf/dhat-rollout-noop_io_write-after.json
 ```
 
-Record the new total-blocks number as `A_io`. The acceptance gate is
-`B_io - A_io ≥ 1000` (≥ −1,000 blocks vs baseline). If the delta is less
-than 900 (more than 10% miss), pause and investigate before continuing —
-common causes:
+Read the `dhat: Total: <bytes> bytes in <blocks> blocks` line; the
+`<blocks>` integer is `A_io`. The isolated `HOME=/tmp/yosh-perf-home` and
+its `plugins.lock` from Task 2 Step 2 are still in place; do not modify
+the user's real `~/.config/yosh/plugins.lock`.
+
+The acceptance gate is `B_io − A_io ≥ 1000` (≥ −1,000 blocks vs the
+baseline you recorded in `target/perf/rollout-baseline.txt`). If the
+delta is less than 900 (more than 10% miss), pause and investigate before
+continuing — common causes:
 - Forgot to drop `mut` from `store.data_mut()` in one branch (the lift still
-  copies for the unconverted branch).
+  allocates a `Vec<u8>` for the unconverted branch).
 - `data.as_le_slice(&store)` not actually called (e.g., if you accidentally
   kept `Vec<u8>` and added a `let bytes = data.as_slice();` adapter).
 - The wasm fixture wasn't rebuilt — re-run Task 1 Step 4.
@@ -629,15 +685,17 @@ state.
 
 - [ ] **Step 6: Re-measure dhat for write-file**
 
-Run:
+Run (use `timeout: 300000` for the cargo build):
 
 ```bash
-cargo build --profile profiling --features dhat-heap --bin yosh-dhat 2>&1 | tail -5
-./target/profiling/yosh-dhat --exec-loop 1000 noop_files_write_file
-grep -E '"tb"' dhat-heap.json | head -1
+cargo build --profile profiling --features dhat-heap --bin yosh-dhat 2>&1 | tail -3
+HOME=/tmp/yosh-perf-home ./target/profiling/yosh-dhat --exec-loop 1000 noop_files_write_file 2>&1 | tail -5
+mv dhat-heap.json target/perf/dhat-rollout-noop_files_write_file-after.json
 ```
 
-Record `A_wf`. Acceptance gate: `B_wf - A_wf ≥ 1000`.
+Read the `dhat: Total: <bytes> bytes in <blocks> blocks` line; the
+`<blocks>` integer is `A_wf`. Acceptance gate: `B_wf − A_wf ≥ 1000` (vs
+the baseline in `target/perf/rollout-baseline.txt`).
 
 - [ ] **Step 7: Run the full plugin integration test**
 
@@ -767,13 +825,16 @@ Expected: clean build, all `plugin::host::files` tests pass.
 
 - [ ] **Step 5: Re-measure dhat for append-file**
 
+Run (use `timeout: 300000` for the cargo build):
+
 ```bash
-cargo build --profile profiling --features dhat-heap --bin yosh-dhat 2>&1 | tail -5
-./target/profiling/yosh-dhat --exec-loop 1000 noop_files_append_file
-grep -E '"tb"' dhat-heap.json | head -1
+cargo build --profile profiling --features dhat-heap --bin yosh-dhat 2>&1 | tail -3
+HOME=/tmp/yosh-perf-home ./target/profiling/yosh-dhat --exec-loop 1000 noop_files_append_file 2>&1 | tail -5
+mv dhat-heap.json target/perf/dhat-rollout-noop_files_append_file-after.json
 ```
 
-Record `A_af`. Acceptance gate: `B_af - A_af ≥ 1000`.
+Read the `dhat: Total: <bytes> bytes in <blocks> blocks` line; the
+`<blocks>` integer is `A_af`. Acceptance gate: `B_af − A_af ≥ 1000`.
 
 - [ ] **Step 6: Full plugin integration test**
 
