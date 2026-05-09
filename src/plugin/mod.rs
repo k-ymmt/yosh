@@ -160,15 +160,14 @@ pub struct PluginManager {
     /// Resolved pre-prompt timeout in milliseconds, captured once at
     /// construction from `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS`.
     pre_prompt_timeout_ms: u64,
-    /// Permissive (`CAP_ALL`) linker reused for the metadata probe step
-    /// of every `load_one`. Built lazily on the first plugin load and
-    /// then shared across subsequent loads — the metadata-contract
-    /// (host imports return `Err(Denied)` on null env) makes the
-    /// permissive linker safe to reuse regardless of the negotiated
-    /// capability mask. Eliminates one full `Linker<HostContext>`
-    /// rebuild per plugin after the first. See report §4.2 in
-    /// `docs/superpowers/specs/2026-05-08-plugin-perf-report.md`.
-    scratch_linker: Option<Linker<HostContext>>,
+    /// Linkers keyed by negotiated `effective_capabilities`. Both the
+    /// metadata-probe scratch linker (always `CAP_ALL`) and per-plugin
+    /// real linkers share this cache; an entry is built lazily on first
+    /// load that needs it. The Linker is plugin-independent: it depends
+    /// only on the engine and the cap bitfield, so two plugins granted
+    /// the same caps share one cached linker. See report §4.2 fix#2 and
+    /// `docs/superpowers/specs/2026-05-09-plugin-real-linker-cache-design.md`.
+    pub(super) linker_cache: std::collections::HashMap<u32, Linker<HostContext>>,
     /// Background epoch-tick thread. `Some` while the manager is alive;
     /// joined on `Drop`.
     tick_thread: Option<TickThread>,
@@ -274,7 +273,7 @@ impl PluginManager {
             engine_fingerprint,
             plugins: Vec::new(),
             pre_prompt_timeout_ms,
-            scratch_linker: None,
+            linker_cache: std::collections::HashMap::new(),
             tick_thread,
         }
     }
@@ -316,6 +315,27 @@ impl PluginManager {
     #[allow(dead_code)] // public manager API; production loads go through load_from_config
     pub fn load_plugin(&mut self, path: &Path, env: &mut ShellEnv) -> Result<(), String> {
         self.load_one(path, env, None, None, None, &[])
+    }
+
+    /// Look up a cached `Linker<HostContext>` for the given capability
+    /// bitfield, or build and cache one. Returns a borrowed reference
+    /// suitable for `Linker::instantiate_pre(&self, &Component)`. On
+    /// `build_linker` failure the cache is not modified, so a
+    /// subsequent load for the same caps retries from scratch.
+    fn get_or_build_linker(
+        &mut self,
+        caps: u32,
+        path: &Path,
+    ) -> Result<&Linker<HostContext>, String> {
+        if !self.linker_cache.contains_key(&caps) {
+            let l = linker::build_linker(&self.engine, caps)
+                .map_err(|e| format!("{}: linker build failed: {}", path.display(), e))?;
+            self.linker_cache.insert(caps, l);
+        }
+        Ok(self
+            .linker_cache
+            .get(&caps)
+            .expect("inserted on the line above if missing"))
     }
 
     /// Load one plugin.
@@ -426,18 +446,11 @@ impl PluginManager {
         //    learn the plugin's requested capabilities. The metadata
         //    contract (host imports return `Err(Denied)` on null env) makes
         //    this safe — even a permissive linker rejects host calls during
-        //    `metadata`. The scratch linker is cached on `self` because it
-        //    is plugin-independent (always `CAP_ALL`); subsequent loads
-        //    reuse it, eliminating one full `Linker` rebuild per plugin.
-        if self.scratch_linker.is_none() {
-            let l = linker::build_linker(&self.engine, CAP_ALL)
-                .map_err(|e| format!("{}: linker init failed: {}", path.display(), e))?;
-            self.scratch_linker = Some(l);
-        }
-        let scratch_linker = self
-            .scratch_linker
-            .as_ref()
-            .expect("scratch_linker initialized just above");
+        //    `metadata`. The linker is fetched from `linker_cache`
+        //    (per-cap-mask cache); the `CAP_ALL` entry is shared across
+        //    all metadata probes, and any plugin granted `CAP_ALL` shares
+        //    this same cached linker for its real-instantiation step.
+        let scratch_linker = self.get_or_build_linker(CAP_ALL, path)?;
         let scratch_pre = PluginWorldPre::new(
             scratch_linker
                 .instantiate_pre(&component)
@@ -479,11 +492,12 @@ impl PluginManager {
             }
         };
 
-        // 7. Build the real linker with the negotiated capability mask,
-        //    create a fresh store, instantiate, and call on_load under
-        //    with_env so the plugin can use its granted host imports.
-        let real_linker = linker::build_linker(&self.engine, effective_capabilities)
-            .map_err(|e| format!("{}: linker build failed: {}", path.display(), e))?;
+        // 7. Fetch the real linker from `linker_cache` (built lazily on
+        //    first use of this cap mask), create a fresh store,
+        //    instantiate, and call on_load under with_env so the plugin
+        //    can use its granted host imports. Plugins sharing a cap
+        //    mask reuse the same cached linker.
+        let real_linker = self.get_or_build_linker(effective_capabilities, path)?;
         let real_pre = PluginWorldPre::new(
             real_linker
                 .instantiate_pre(&component)
@@ -906,8 +920,8 @@ pub mod test_helpers {
 
     /// Number of `Linker<HostContext>` entries currently cached on the
     /// manager. Used by §4.2 fix#2 cache-reuse / cache-separation tests.
-    pub fn linker_cache_len(_manager: &PluginManager) -> usize {
-        0 // STUB — replaced in Task 2
+    pub fn linker_cache_len(manager: &PluginManager) -> usize {
+        manager.linker_cache.len()
     }
 
     /// Override the resolved pre-prompt timeout for this manager. Tests

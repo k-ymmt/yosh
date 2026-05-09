@@ -34,6 +34,7 @@ impl Plugin for TestPlugin {
         &[
             Capability::VariablesRead,
             Capability::VariablesWrite,
+            Capability::Filesystem,
             Capability::Io,
             Capability::HookPreExec,
             Capability::HookOnCd,
