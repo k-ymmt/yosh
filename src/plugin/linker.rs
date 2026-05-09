@@ -265,16 +265,33 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
     if has(allowed, CAP_COMMANDS_EXEC) {
         commands.func_wrap(
             "exec",
-            |mut store, (program, args): (String, Vec<String>)| {
-                Ok((host_commands_exec(store.data_mut(), program, args),))
+            |mut store,
+             (program, args): (
+                wasmtime::component::WasmStr,
+                wasmtime::component::WasmList<wasmtime::component::WasmStr>,
+            )| {
+                // Collect WasmStr items first (they are owned fat-pointers into
+                // linear memory with no lifetime param), then drop the mutable
+                // borrow of `store` held by the iterator before calling to_str.
+                let arg_wstrs: Vec<wasmtime::component::WasmStr> =
+                    args.iter(&mut store).collect::<wasmtime::Result<_>>()?;
+                // Now store is no longer borrowed mutably; to_str only needs &store.
+                let program_str = program.to_str(&store)?;
+                let args_strs: Vec<std::borrow::Cow<'_, str>> = arg_wstrs
+                    .iter()
+                    .map(|w| w.to_str(&store))
+                    .collect::<wasmtime::Result<_>>()?;
+                Ok((host_commands_exec(store.data(), &program_str, &args_strs),))
             },
         )?;
     } else {
         commands.func_wrap(
             "exec",
-            |mut store, (program, args): (String, Vec<String>)| {
-                Ok((deny_commands_exec(store.data_mut(), program, args),))
-            },
+            |_store,
+             (_program, _args): (
+                wasmtime::component::WasmStr,
+                wasmtime::component::WasmList<wasmtime::component::WasmStr>,
+            )| { Ok((deny_commands_exec(),)) },
         )?;
     }
 

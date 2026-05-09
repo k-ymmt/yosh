@@ -7,9 +7,9 @@ use super::super::generated::yosh::plugin::types::ErrorCode;
 use super::HostContext;
 
 pub fn host_commands_exec(
-    ctx: &mut HostContext,
-    program: String,
-    args: Vec<String>,
+    ctx: &HostContext,
+    program: &str,
+    args: &[std::borrow::Cow<'_, str>],
 ) -> Result<ExecOutput, ErrorCode> {
     // The metadata-contract guard runs first. CWD and environment
     // inheritance happen implicitly via std::process::Command::new
@@ -21,31 +21,27 @@ pub fn host_commands_exec(
         return Err(ErrorCode::InvalidArgument);
     }
 
-    // argv = [program, args...]; pattern matcher consumes the literal
-    // strings (no PATH resolution, no basename normalization — see
-    // spec §5).
-    let mut argv = Vec::with_capacity(1 + args.len());
-    argv.push(program.clone());
-    argv.extend(args.iter().cloned());
+    // argv = [program, args...]; pattern matcher consumes &str slices
+    // (no PATH resolution, no basename normalization — see spec §5).
+    // One Vec<&str> allocation, reused for both the matcher and spawn.
+    let argv: Vec<&str> = std::iter::once(program)
+        .chain(args.iter().map(|c| c.as_ref()))
+        .collect();
 
     if !ctx.allowed_commands.iter().any(|p| p.matches(&argv)) {
         return Err(ErrorCode::PatternNotAllowed);
     }
 
-    spawn_with_timeout(&program, &args, std::time::Duration::from_millis(1000))
+    spawn_with_timeout(program, &argv[1..], std::time::Duration::from_millis(1000))
 }
 
-pub fn deny_commands_exec(
-    _ctx: &mut HostContext,
-    _program: String,
-    _args: Vec<String>,
-) -> Result<ExecOutput, ErrorCode> {
+pub fn deny_commands_exec() -> Result<ExecOutput, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
 fn spawn_with_timeout(
     program: &str,
-    args: &[String],
+    args: &[&str],
     timeout: std::time::Duration,
 ) -> Result<ExecOutput, ErrorCode> {
     use std::io::Read;
@@ -138,35 +134,36 @@ mod tests {
     use super::super::test_helpers::{bound_env_ctx, ctx_with_allowed, null_env_ctx};
     use super::*;
     use crate::env::ShellEnv;
+    use std::borrow::Cow;
 
     #[test]
     fn commands_exec_denied_when_env_null() {
-        let mut ctx = null_env_ctx();
-        let result = host_commands_exec(&mut ctx, "/bin/echo".into(), vec!["hi".into()]);
+        let ctx = null_env_ctx();
+        let result = host_commands_exec(&ctx, "/bin/echo", &[Cow::Borrowed("hi")]);
         assert!(matches!(result, Err(ErrorCode::Denied)));
     }
 
     #[test]
     fn host_commands_exec_invalid_argument_on_empty_program() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = bound_env_ctx(&mut env);
-        let result = host_commands_exec(&mut ctx, String::new(), vec![]);
+        let ctx = bound_env_ctx(&mut env);
+        let result = host_commands_exec(&ctx, "", &[]);
         assert!(matches!(result, Err(ErrorCode::InvalidArgument)));
     }
 
     #[test]
     fn host_commands_exec_pattern_not_allowed_when_no_match() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = ctx_with_allowed(&mut env, &["ls:*"]);
-        let result = host_commands_exec(&mut ctx, "echo".into(), vec!["hi".into()]);
+        let ctx = ctx_with_allowed(&mut env, &["ls:*"]);
+        let result = host_commands_exec(&ctx, "echo", &[Cow::Borrowed("hi")]);
         assert!(matches!(result, Err(ErrorCode::PatternNotAllowed)));
     }
 
     #[test]
     fn host_commands_exec_runs_when_pattern_matches() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = ctx_with_allowed(&mut env, &["/bin/echo:*"]);
-        let result = host_commands_exec(&mut ctx, "/bin/echo".into(), vec!["hello".into()])
+        let ctx = ctx_with_allowed(&mut env, &["/bin/echo:*"]);
+        let result = host_commands_exec(&ctx, "/bin/echo", &[Cow::Borrowed("hello")])
             .expect("echo should succeed");
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, b"hello\n");
@@ -176,11 +173,14 @@ mod tests {
     #[test]
     fn host_commands_exec_captures_stderr_separately() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = ctx_with_allowed(&mut env, &["/bin/sh:*"]);
+        let ctx = ctx_with_allowed(&mut env, &["/bin/sh:*"]);
         let result = host_commands_exec(
-            &mut ctx,
-            "/bin/sh".into(),
-            vec!["-c".into(), "echo out; echo err 1>&2".into()],
+            &ctx,
+            "/bin/sh",
+            &[
+                Cow::Borrowed("-c"),
+                Cow::Borrowed("echo out; echo err 1>&2"),
+            ],
         )
         .expect("sh should succeed");
         assert_eq!(result.exit_code, 0);
@@ -204,11 +204,11 @@ mod tests {
     #[test]
     fn host_commands_exec_propagates_nonzero_exit() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = ctx_with_allowed(&mut env, &["/bin/sh:*"]);
+        let ctx = ctx_with_allowed(&mut env, &["/bin/sh:*"]);
         let result = host_commands_exec(
-            &mut ctx,
-            "/bin/sh".into(),
-            vec!["-c".into(), "exit 42".into()],
+            &ctx,
+            "/bin/sh",
+            &[Cow::Borrowed("-c"), Cow::Borrowed("exit 42")],
         )
         .expect("sh should run to exit");
         assert_eq!(result.exit_code, 42);
@@ -217,17 +217,17 @@ mod tests {
     #[test]
     fn host_commands_exec_returns_not_found_for_missing_binary() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = ctx_with_allowed(&mut env, &["/no/such/binary-xyz:*"]);
-        let result = host_commands_exec(&mut ctx, "/no/such/binary-xyz".into(), vec![]);
+        let ctx = ctx_with_allowed(&mut env, &["/no/such/binary-xyz:*"]);
+        let result = host_commands_exec(&ctx, "/no/such/binary-xyz", &[]);
         assert!(matches!(result, Err(ErrorCode::NotFound)));
     }
 
     #[test]
     fn host_commands_exec_timeout_after_1000ms() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = ctx_with_allowed(&mut env, &["/bin/sleep:*"]);
+        let ctx = ctx_with_allowed(&mut env, &["/bin/sleep:*"]);
         let start = std::time::Instant::now();
-        let result = host_commands_exec(&mut ctx, "/bin/sleep".into(), vec!["5".into()]);
+        let result = host_commands_exec(&ctx, "/bin/sleep", &[Cow::Borrowed("5")]);
         let elapsed = start.elapsed();
         assert!(matches!(result, Err(ErrorCode::Timeout)));
         // Hard cap is 1000ms + 100ms grace + a generous slack for thread
@@ -252,9 +252,9 @@ mod tests {
         // were broken, this assertion would fail with either a hang or
         // a too-fast / too-slow elapsed time.
         let mut env = ShellEnv::new("yosh", vec![]);
-        let mut ctx = ctx_with_allowed(&mut env, &["/bin/sleep:*"]);
+        let ctx = ctx_with_allowed(&mut env, &["/bin/sleep:*"]);
         let start = std::time::Instant::now();
-        let result = host_commands_exec(&mut ctx, "/bin/sleep".into(), vec!["5".into()]);
+        let result = host_commands_exec(&ctx, "/bin/sleep", &[Cow::Borrowed("5")]);
         let elapsed = start.elapsed();
         assert!(matches!(result, Err(ErrorCode::Timeout)));
         // Lower bound: SIGTERM only fires after the 1000ms deadline.
