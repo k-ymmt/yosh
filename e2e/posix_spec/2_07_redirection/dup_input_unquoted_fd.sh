@@ -1,11 +1,12 @@
 #!/bin/sh
 # POSIX_REF: 2.7.5 Duplicating an Input File Descriptor
-# DESCRIPTION: <&N duplicates input fd N to fd 0 for the command
+# DESCRIPTION: <&N where N is unquoted parameter expansion still duplicates
 # EXPECT_OUTPUT: hello
 # EXPECT_EXIT: 0
 : "${TEST_TMPDIR:?TEST_TMPDIR not set}"
-f="$TEST_TMPDIR/dup_in"
+f="$TEST_TMPDIR/dup_in_unquoted"
 echo hello > "$f"
 exec 3< "$f"
-cat <&3
+fd=3
+cat <&$fd
 exec 3<&-

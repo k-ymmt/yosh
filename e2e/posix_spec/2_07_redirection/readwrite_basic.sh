@@ -3,6 +3,7 @@
 # DESCRIPTION: N<>file opens file for read+write on fd N; written data is readable afterwards
 # EXPECT_OUTPUT: hi
 # EXPECT_EXIT: 0
+: "${TEST_TMPDIR:?TEST_TMPDIR not set}"
 f="$TEST_TMPDIR/rw_basic"
 echo hi 1<>"$f"
 cat "$f"

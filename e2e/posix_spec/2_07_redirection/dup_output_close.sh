@@ -3,6 +3,7 @@
 # DESCRIPTION: >&- closes an output fd; subsequent >&N on the same fd fails
 # EXPECT_EXIT: 1
 # EXPECT_STDERR: yosh:
+: "${TEST_TMPDIR:?TEST_TMPDIR not set}"
 f="$TEST_TMPDIR/dup_out_close"
 exec 3> "$f"
 exec 3>&-

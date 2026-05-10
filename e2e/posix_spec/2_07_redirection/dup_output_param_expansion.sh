@@ -3,6 +3,7 @@
 # DESCRIPTION: >&"$fd" accepts an fd number via parameter expansion
 # EXPECT_OUTPUT: file:hi
 # EXPECT_EXIT: 0
+: "${TEST_TMPDIR:?TEST_TMPDIR not set}"
 f="$TEST_TMPDIR/dup_out_pe"
 exec 3> "$f"
 fd=3

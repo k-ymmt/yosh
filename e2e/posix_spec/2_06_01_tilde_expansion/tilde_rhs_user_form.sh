@@ -1,6 +1,7 @@
 #!/bin/sh
 # POSIX_REF: 2.6.1 Tilde Expansion
 # DESCRIPTION: Tilde with username resolves via getpwnam when user exists
+# EXPECT_OUTPUT omitted: ~root resolution is platform-dependent; correctness is verified in-script via case.
 # EXPECT_EXIT: 0
 x=~root/suffix
 case "$x" in

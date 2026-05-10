@@ -5,7 +5,9 @@
 # $HOME
 # "quoted"
 # back\slash
+# tick`mark
 # END
 echo "\$HOME"
 echo "\"quoted\""
 echo "back\\slash"
+echo "tick\`mark"

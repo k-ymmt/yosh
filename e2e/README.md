@@ -85,3 +85,33 @@ Tests are organized by functional category:
 - **FAIL** — Unexpected failure
 - **XFAIL** — Expected failure (known limitation)
 - **XPASS** — XFAIL test unexpectedly passed (possible fix)
+
+## POSIX_REF Format Contract
+
+Test files declare which POSIX clause they pin via the `POSIX_REF`
+metadata line. The accepted shapes are:
+
+- `2.X.Y <Section Name>` — for ordinary section references.
+  Example: `POSIX_REF: 2.6.1 Tilde Expansion`
+- `2.10.2 Rule N - <Name>` — for tests that pin a specific grammar rule.
+  Example: `POSIX_REF: 2.10.2 Rule 1 - First Word`
+- `2.10.2 Rule N - <Name> (<discriminator>)` — for multi-case rules.
+  Example: `POSIX_REF: 2.10.2 Rule 10 - Keyword (after pipe)`
+- `2.10 Shell Grammar - <Topic>` — for cross-rule grammar topics.
+  Example: `POSIX_REF: 2.10 Shell Grammar - Terminator Equality`
+
+A naive grep for one shape misses the others. To enumerate all
+§2.10.2-related tests, use:
+
+```sh
+grep -RE 'POSIX_REF: 2\.10' e2e/posix_spec/
+```
+
+### Rule 9 Taxonomy
+
+The label "Rule 9" in test names covers literal POSIX Rule 9 (function
+body) plus its grammar-level generalizations: compound_command body and
+compound_list body. Generalized cases carry a parenthetical
+`<ctx>` discriminator (e.g., `Rule 9 - Body of compound_list (if-then)`)
+to disambiguate them from the literal Rule 9 (`Rule 9 - Body of
+function`).

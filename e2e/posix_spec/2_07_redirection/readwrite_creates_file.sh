@@ -3,6 +3,7 @@
 # DESCRIPTION: N<>file creates the file if it does not exist
 # EXPECT_OUTPUT: created
 # EXPECT_EXIT: 0
+: "${TEST_TMPDIR:?TEST_TMPDIR not set}"
 f="$TEST_TMPDIR/rw_creates"
 [ ! -e "$f" ] || { echo "precondition: $f already exists" >&2; exit 1; }
 : 1<>"$f"

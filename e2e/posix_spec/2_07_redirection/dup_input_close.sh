@@ -3,6 +3,7 @@
 # DESCRIPTION: <&- closes an input fd; subsequent <&N on the same fd fails
 # EXPECT_EXIT: 1
 # EXPECT_STDERR: yosh:
+: "${TEST_TMPDIR:?TEST_TMPDIR not set}"
 f="$TEST_TMPDIR/dup_in_close"
 echo gone > "$f"
 exec 3< "$f"
