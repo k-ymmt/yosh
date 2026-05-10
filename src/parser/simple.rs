@@ -325,9 +325,17 @@ mod tests {
         // (or similar). The walker treats EscapedLiteral as a non-Literal
         // segment-boundary closer, so the following Literal does not re-open
         // tilde recognition.
-        let (_, parts) = parse_first_assignment("x=$var:\\~/bin\n").unwrap();
-        let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
-        assert!(!has_tilde, "parts = {:?}", parts);
+        let (name, parts) = parse_first_assignment("x=$var:\\~/bin\n").unwrap();
+        assert_eq!(name, "x");
+        assert_eq!(
+            parts,
+            vec![
+                WordPart::Parameter(ParamExpr::Simple("var".to_string())),
+                lit(":"),
+                WordPart::EscapedLiteral("~".to_string()),
+                lit("/bin"),
+            ]
+        );
     }
 
     #[test]
