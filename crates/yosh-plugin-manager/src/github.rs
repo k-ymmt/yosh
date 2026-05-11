@@ -2,6 +2,9 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
 
+use ureq::Agent;
+use ureq::tls::{RootCerts, TlsConfig};
+
 /// Error type for GitHub API requests made through `get_json`.
 #[derive(Debug)]
 enum GitHubApiError {
@@ -31,10 +34,27 @@ impl std::fmt::Display for GitHubApiError {
 const RATE_LIMIT_HINT: &str =
     "hint: set YOSH_GITHUB_TOKEN or GITHUB_TOKEN to raise the rate limit (60 -> 5000 req/hour)";
 
+/// Build a ureq `Agent` that delegates certificate verification to the
+/// platform's trust store. The platform verifier (`rustls-platform-verifier`)
+/// performs AIA fetching on macOS/Windows, which is required to complete
+/// the chain for GitHub release assets that redirect to Azure Blob
+/// endpoints. See https://github.com/k-ymmt/yosh/issues/2.
+fn build_agent() -> Agent {
+    ureq::Agent::config_builder()
+        .tls_config(
+            TlsConfig::builder()
+                .root_certs(RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent()
+}
+
 /// GitHub API client for fetching release information and downloading assets.
 pub struct GitHubClient {
     base_url: String,
     token: Option<String>,
+    agent: Agent,
 }
 
 impl GitHubClient {
@@ -49,11 +69,14 @@ impl GitHubClient {
         Self {
             base_url: "https://api.github.com".to_string(),
             token,
+            agent: build_agent(),
         }
     }
 
     fn get_json(&self, url: &str) -> Result<serde_json::Value, GitHubApiError> {
-        let mut req = ureq::get(url)
+        let mut req = self
+            .agent
+            .get(url)
             .header("User-Agent", "yosh-plugin-manager")
             .header("Accept", "application/vnd.github.v3+json");
         if let Some(token) = &self.token {
@@ -142,7 +165,9 @@ impl GitHubClient {
             return Err(format!("refusing non-HTTPS URL: {}", url));
         }
 
-        let mut req = ureq::get(url)
+        let mut req = self
+            .agent
+            .get(url)
             .header("User-Agent", "yosh-plugin-manager")
             .header("Accept", "application/vnd.github.v3+json");
         if let Some(token) = &self.token {
@@ -216,6 +241,7 @@ impl GitHubClientWithBase {
             inner: GitHubClient {
                 base_url: base_url.to_string(),
                 token: None,
+                agent: build_agent(),
             },
         }
     }
@@ -225,6 +251,7 @@ impl GitHubClientWithBase {
             inner: GitHubClient {
                 base_url: base_url.to_string(),
                 token: Some(token.to_string()),
+                agent: build_agent(),
             },
         }
     }
