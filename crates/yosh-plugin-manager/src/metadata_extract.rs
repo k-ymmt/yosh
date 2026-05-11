@@ -46,9 +46,9 @@ use crate::generated::yosh::plugin::types::{ErrorCode, HookName, IoStream};
 use crate::generated::{PluginWorld, PluginWorldPre};
 
 /// Per-store data for the metadata extraction sandbox. Carries a
-/// fully-empty `WasiCtx` (no preopens, no env, no stdio mapping) so the
-/// limited WASI surface still works but yields nothing useful — exactly
-/// what we want for a metadata read.
+/// fully-empty `WasiCtx` (no preopens, no env, no stdio mapping) so
+/// every WASI probe returns empty data — the empty context, not
+/// import-time link failure, is what isolates the plugin.
 pub struct MetadataCtx {
     table: ResourceTable,
     wasi: WasiCtx,
@@ -56,10 +56,13 @@ pub struct MetadataCtx {
 
 impl Default for MetadataCtx {
     fn default() -> Self {
-        // Defaults: no preopens, no env vars, no stdin/stdout/stderr.
-        // Plugins that try to read clocks/random get real values; anything
-        // else from `wasi:cli`, `wasi:filesystem`, `wasi:sockets`, etc.
-        // hits an unsatisfied import at link time.
+        // Defaults: no preopens, no env vars, no stdin/stdout/stderr, no
+        // args. The full WASI Preview 2 surface is linked (see
+        // `register_wasi`), but `wasi:cli/environment` returns an empty
+        // list, `wasi:filesystem/preopens` is empty, `wasi:io` reads/
+        // writes operate on no streams, etc. Only `wasi:clocks` and
+        // `wasi:random` yield real values, which is harmless for a
+        // metadata read.
         let wasi = WasiCtxBuilder::new().build();
         MetadataCtx {
             table: ResourceTable::new(),
