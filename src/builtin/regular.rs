@@ -781,18 +781,23 @@ mod tests {
 
     #[test]
     fn resolve_cdpath_empty_entry_is_dot() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sub = tmp.path().join("sub");
-        std::fs::create_dir(&sub).unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
+        // Create the probe dir inside the existing cwd rather than
+        // `set_current_dir`-ing into a tempdir. Mutating the process-wide
+        // cwd races with any parallel test that spawns a subprocess
+        // (e.g. `plugin::host::commands` invoking `/bin/sh`): the child
+        // inherits the dangling cwd once the tempdir drops, and sh stalls
+        // trying to recover.
+        let tmp = tempfile::tempdir_in(".").unwrap();
+        let name = tmp
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
 
         let env = make_env(&[("CDPATH", ":/nonexistent")]);
-        let (target, from_cdpath) = resolve_target(Some("sub"), &env).unwrap();
-        assert!(
-            target.ends_with("sub") || target == "./sub",
-            "got: {}",
-            target
-        );
+        let (target, from_cdpath) = resolve_target(Some(&name), &env).unwrap();
+        assert_eq!(target, format!("./{}", name));
         assert!(from_cdpath);
     }
 
