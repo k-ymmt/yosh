@@ -3658,7 +3658,7 @@ dependencies = [
 
 [[package]]
 name = "yosh"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "criterion",
  "crossterm",
@@ -3681,11 +3681,11 @@ dependencies = [
 
 [[package]]
 name = "yosh-plugin-api"
-version = "0.2.4"
+version = "0.2.5"
 
 [[package]]
 name = "yosh-plugin-manager"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "clap",
  "hex",
@@ -3704,7 +3704,7 @@ dependencies = [
 
 [[package]]
 name = "yosh-plugin-sdk"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "wit-bindgen",
  "yosh-plugin-api",
