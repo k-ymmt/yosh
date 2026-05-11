@@ -15,8 +15,17 @@
 //! The host enforces this with the same deny-stub pattern when its
 //! `with_env` guard is not active (null env pointer). We enforce it here
 //! by registering EVERY `yosh:plugin/*` import as a deny-stub returning
-//! `Err(Denied)` regardless of input. WASI is restricted to clocks +
-//! random (matching the host's permanent allowlist).
+//! `Err(Denied)` regardless of input.
+//!
+//! For WASI we register the full Preview 2 sync surface (matching the
+//! host's `build_linker`). Cargo-component-built plugins pull in
+//! `wasi:io/*` and `wasi:cli/*` transitively through the Preview 1
+//! adapter, regardless of whether their Rust source uses stdio. The
+//! sandbox boundary is the empty `WasiCtx` (no preopens, no stdio, no
+//! env, no args) — every WASI probe returns empty rather than failing
+//! at link time. Selectively linking only clocks + random caused
+//! issue #3: real plugins failed `instantiate_pre` and were silently
+//! dropped from `plugins.lock`.
 //!
 //! ## Watchdog
 //!
@@ -31,6 +40,8 @@ use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 
+use crate::generated::yosh::plugin::commands::ExecOutput;
+use crate::generated::yosh::plugin::files::{DirEntry, FileStat};
 use crate::generated::yosh::plugin::types::{ErrorCode, HookName, IoStream};
 use crate::generated::{PluginWorld, PluginWorldPre};
 
@@ -87,7 +98,7 @@ pub fn extract(engine: &Engine, wasm_bytes: &[u8]) -> Result<ExtractedMetadata, 
         .map_err(|e| format!("metadata: compile component: {}", e))?;
 
     let mut linker = Linker::<MetadataCtx>::new(engine);
-    register_limited_wasi(&mut linker).map_err(|e| format!("metadata: register WASI: {}", e))?;
+    register_wasi(&mut linker).map_err(|e| format!("metadata: register WASI: {}", e))?;
     register_all_deny_imports(&mut linker)
         .map_err(|e| format!("metadata: register deny stubs: {}", e))?;
 
@@ -146,28 +157,14 @@ fn hook_name_to_string(h: HookName) -> String {
     }
 }
 
-/// Register the same limited WASI surface the host allows: clocks +
-/// random. NO `wasi:cli`, `wasi:filesystem`, `wasi:sockets` — a plugin
-/// importing them will fail to link, which is the desired sandbox
-/// behaviour.
-fn register_limited_wasi(linker: &mut Linker<MetadataCtx>) -> wasmtime::Result<()> {
-    use wasmtime_wasi::WasiImpl;
-    use wasmtime_wasi::bindings::{clocks, random};
-
-    let closure = type_annotate::<MetadataCtx, _>(|t| WasiImpl(t));
-    clocks::wall_clock::add_to_linker_get_host(linker, closure)?;
-    clocks::monotonic_clock::add_to_linker_get_host(linker, closure)?;
-    random::random::add_to_linker_get_host(linker, closure)?;
-    Ok(())
-}
-
-/// Pin the closure type for `add_to_linker_get_host`'s generic argument.
-/// Same pattern as `src/plugin/linker.rs::type_annotate` in the host.
-fn type_annotate<T, F>(val: F) -> F
-where
-    F: Fn(&mut T) -> wasmtime_wasi::WasiImpl<&mut T>,
-{
-    val
+/// Register the full WASI Preview 2 sync surface, matching the host's
+/// `build_linker`. Cargo-component-built plugins transitively import
+/// `wasi:io/*` and `wasi:cli/*` through the Preview 1 adapter, so a
+/// narrower allowlist breaks `instantiate_pre`. Isolation is provided
+/// by the empty `WasiCtx` constructed in `MetadataCtx::default`: every
+/// probe returns empty data instead of failing at link time.
+fn register_wasi(linker: &mut Linker<MetadataCtx>) -> wasmtime::Result<()> {
+    wasmtime_wasi::add_to_linker_sync(linker)
 }
 
 /// Register every `yosh:plugin/*` import as a stub returning
@@ -216,6 +213,64 @@ fn register_all_deny_imports(linker: &mut Linker<MetadataCtx>) -> wasmtime::Resu
             Ok::<_, wasmtime::Error>((Err::<(), ErrorCode>(ErrorCode::Denied),))
         },
     )?;
+
+    let mut files = linker.instance("yosh:plugin/files@0.2.1")?;
+    files.func_wrap(
+        "read-file",
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_,): (String,)| {
+            Ok::<_, wasmtime::Error>((Err::<Vec<u8>, ErrorCode>(ErrorCode::Denied),))
+        },
+    )?;
+    files.func_wrap(
+        "read-dir",
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_,): (String,)| {
+            Ok::<_, wasmtime::Error>((Err::<Vec<DirEntry>, ErrorCode>(ErrorCode::Denied),))
+        },
+    )?;
+    files.func_wrap(
+        "metadata",
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_,): (String,)| {
+            Ok::<_, wasmtime::Error>((Err::<FileStat, ErrorCode>(ErrorCode::Denied),))
+        },
+    )?;
+    files.func_wrap(
+        "write-file",
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_, _): (String, Vec<u8>)| {
+            Ok::<_, wasmtime::Error>((Err::<(), ErrorCode>(ErrorCode::Denied),))
+        },
+    )?;
+    files.func_wrap(
+        "append-file",
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_, _): (String, Vec<u8>)| {
+            Ok::<_, wasmtime::Error>((Err::<(), ErrorCode>(ErrorCode::Denied),))
+        },
+    )?;
+    files.func_wrap(
+        "create-dir",
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_, _): (String, bool)| {
+            Ok::<_, wasmtime::Error>((Err::<(), ErrorCode>(ErrorCode::Denied),))
+        },
+    )?;
+    files.func_wrap(
+        "remove-file",
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_,): (String,)| {
+            Ok::<_, wasmtime::Error>((Err::<(), ErrorCode>(ErrorCode::Denied),))
+        },
+    )?;
+    files.func_wrap(
+        "remove-dir",
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_, _): (String, bool)| {
+            Ok::<_, wasmtime::Error>((Err::<(), ErrorCode>(ErrorCode::Denied),))
+        },
+    )?;
+
+    let mut commands = linker.instance("yosh:plugin/commands@0.2.1")?;
+    commands.func_wrap(
+        "exec",
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (_, _): (String, Vec<String>)| {
+            Ok::<_, wasmtime::Error>((Err::<ExecOutput, ErrorCode>(ErrorCode::Denied),))
+        },
+    )?;
     Ok(())
 }
 
@@ -232,7 +287,7 @@ mod tests {
     fn linker_registration_smoke() {
         let engine = crate::precompile::make_engine().unwrap();
         let mut linker = Linker::<MetadataCtx>::new(&engine);
-        register_limited_wasi(&mut linker).expect("limited wasi");
+        register_wasi(&mut linker).expect("wasi");
         register_all_deny_imports(&mut linker).expect("deny stubs");
     }
 }
