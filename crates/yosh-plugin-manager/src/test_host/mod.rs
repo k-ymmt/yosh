@@ -138,6 +138,130 @@ fn register_wasi(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     wasmtime_wasi::add_to_linker_sync(linker)
 }
 
+use crate::generated::yosh::plugin::commands::ExecOutput;
+use crate::generated::yosh::plugin::files::{DirEntry, FileStat};
+use crate::generated::yosh::plugin::types::{ErrorCode, IoStream};
+
+/// Register every `yosh:plugin/*` import. The per-capability host
+/// functions enforce their own capability checks; the linker
+/// unconditionally points each WIT name at its real implementation.
+pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
+    // variables
+    let mut vars = linker.instance("yosh:plugin/variables@0.2.1")?;
+    vars.func_wrap(
+        "get",
+        |store: wasmtime::StoreContextMut<'_, TestCtx>, (name,): (String,)| {
+            Ok::<_, wasmtime::Error>((variables::host_get(&store.data().state, &name),))
+        },
+    )?;
+    vars.func_wrap(
+        "set",
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (name, value): (String, String)| {
+            Ok::<_, wasmtime::Error>((variables::host_set(&mut store.data_mut().state, &name, &value),))
+        },
+    )?;
+    vars.func_wrap(
+        "export-env",
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (name, value): (String, String)| {
+            Ok::<_, wasmtime::Error>((variables::host_export_env(&mut store.data_mut().state, &name, &value),))
+        },
+    )?;
+
+    // filesystem
+    let mut fs = linker.instance("yosh:plugin/filesystem@0.2.1")?;
+    fs.func_wrap(
+        "cwd",
+        |store: wasmtime::StoreContextMut<'_, TestCtx>, (): ()| {
+            Ok::<_, wasmtime::Error>((filesystem::host_cwd(&store.data().state),))
+        },
+    )?;
+    fs.func_wrap(
+        "set-cwd",
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
+            Ok::<_, wasmtime::Error>((filesystem::host_set_cwd(&mut store.data_mut().state, &path),))
+        },
+    )?;
+
+    // io
+    let mut io_inst = linker.instance("yosh:plugin/io@0.2.1")?;
+    io_inst.func_wrap(
+        "write",
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (target, data): (IoStream, Vec<u8>)| {
+            Ok::<_, wasmtime::Error>((io::host_write(&mut store.data_mut().state, target, &data),))
+        },
+    )?;
+
+    // files
+    let mut f = linker.instance("yosh:plugin/files@0.2.1")?;
+    f.func_wrap(
+        "read-file",
+        |store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
+            Ok::<_, wasmtime::Error>((files::host_read_file(&store.data().state, &path),))
+        },
+    )?;
+    f.func_wrap(
+        "read-dir",
+        |store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
+            Ok::<_, wasmtime::Error>((files::host_read_dir(&store.data().state, &path),))
+        },
+    )?;
+    f.func_wrap(
+        "metadata",
+        |store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
+            Ok::<_, wasmtime::Error>((files::host_metadata(&store.data().state, &path),))
+        },
+    )?;
+    f.func_wrap(
+        "write-file",
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, data): (String, Vec<u8>)| {
+            Ok::<_, wasmtime::Error>((files::host_write_file(&mut store.data_mut().state, &path, &data),))
+        },
+    )?;
+    f.func_wrap(
+        "append-file",
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, data): (String, Vec<u8>)| {
+            Ok::<_, wasmtime::Error>((files::host_append_file(&mut store.data_mut().state, &path, &data),))
+        },
+    )?;
+    f.func_wrap(
+        "create-dir",
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, recursive): (String, bool)| {
+            Ok::<_, wasmtime::Error>((files::host_create_dir(&mut store.data_mut().state, &path, recursive),))
+        },
+    )?;
+    f.func_wrap(
+        "remove-file",
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
+            Ok::<_, wasmtime::Error>((files::host_remove_file(&mut store.data_mut().state, &path),))
+        },
+    )?;
+    f.func_wrap(
+        "remove-dir",
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, recursive): (String, bool)| {
+            Ok::<_, wasmtime::Error>((files::host_remove_dir(&mut store.data_mut().state, &path, recursive),))
+        },
+    )?;
+
+    // commands
+    let mut cmds = linker.instance("yosh:plugin/commands@0.2.1")?;
+    cmds.func_wrap(
+        "exec",
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (program, args): (String, Vec<String>)| {
+            Ok::<_, wasmtime::Error>((commands::host_exec(&mut store.data_mut().state, &program, &args),))
+        },
+    )?;
+
+    // Silence unused-import warnings if a future WIT addition removes
+    // any of these constructor calls.
+    let _ = (
+        std::marker::PhantomData::<ExecOutput>,
+        std::marker::PhantomData::<DirEntry>,
+        std::marker::PhantomData::<FileStat>,
+        std::marker::PhantomData::<ErrorCode>,
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +286,12 @@ mod tests {
     fn linker_construction_smoke() {
         let engine = crate::precompile::make_engine().expect("engine");
         let _linker = build_linker(&engine).expect("linker");
+    }
+
+    #[test]
+    fn linker_with_yosh_imports_constructs() {
+        let engine = crate::precompile::make_engine().unwrap();
+        let mut linker = build_linker(&engine).unwrap();
+        register_imports(&mut linker).expect("yosh imports");
     }
 }
