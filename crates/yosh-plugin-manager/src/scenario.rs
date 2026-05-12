@@ -111,6 +111,264 @@ pub fn parse(path: &std::path::Path) -> Result<Scenario, String> {
     Ok(parsed)
 }
 
+use crate::runner::{HookCall, RunOutcome, invoke_exec, invoke_hook, load_plugin};
+use crate::test_host::TestState;
+use yosh_plugin_api::pattern::CommandPattern;
+use yosh_plugin_api::{capabilities_to_bitflags, parse_capability};
+
+#[derive(Debug)]
+pub enum StepResult {
+    Pass,
+    Fail(String),
+}
+
+pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
+    let scenario = match parse(path) {
+        Ok(s) => s,
+        Err(e) => return vec![StepResult::Fail(format!("parse error: {}", e))],
+    };
+
+    let wasm_path = path.parent().map(|p| p.join(&scenario.plugin)).unwrap_or(scenario.plugin.clone());
+    let mut results = Vec::new();
+
+    for (idx, step) in scenario.steps.iter().enumerate() {
+        let state = build_state(&scenario);
+        let timeout = std::time::Duration::from_millis(scenario.env.timeout_ms);
+        let loaded = match load_plugin(&wasm_path, state, timeout) {
+            Ok(l) => l,
+            Err(e) => {
+                results.push(StepResult::Fail(format!("step {}: load: {}", idx + 1, e)));
+                continue;
+            }
+        };
+
+        let (outcome, expect) = match step {
+            Step::Exec { args, expect } => {
+                if args.is_empty() {
+                    results.push(StepResult::Fail(format!("step {}: exec needs at least 1 arg", idx + 1)));
+                    continue;
+                }
+                let (cmd, rest) = (&args[0], &args[1..]);
+                (invoke_exec(loaded, cmd, rest), expect)
+            }
+            Step::Hook { name, args, expect } => {
+                let call = match build_hook_call(*name, args) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        results.push(StepResult::Fail(format!("step {}: hook args: {}", idx + 1, e)));
+                        continue;
+                    }
+                };
+                (invoke_hook(loaded, call), expect)
+            }
+        };
+
+        results.push(evaluate(idx + 1, &outcome, expect));
+    }
+
+    if results.is_empty() {
+        results.push(StepResult::Pass);
+    }
+    results
+}
+
+fn build_state(scenario: &Scenario) -> TestState {
+    let mut state = TestState::default();
+    let parsed_caps: Vec<_> = scenario.env.caps.iter().filter_map(|s| parse_capability(s)).collect();
+    state.caps = capabilities_to_bitflags(&parsed_caps);
+    for (k, v) in &scenario.env.vars { state.vars.insert(k.clone(), v.clone()); }
+    for k in &scenario.env.exported { state.exported.insert(k.clone()); }
+    if !scenario.env.cwd.is_empty() { state.cwd = scenario.env.cwd.clone().into(); }
+    state.allow_exec = scenario.env.allow_exec.iter()
+        .filter_map(|p| CommandPattern::parse(p).ok())
+        .collect();
+    if !scenario.env.sandbox_root.is_empty() {
+        state.sandbox_root = Some(std::path::PathBuf::from(&scenario.env.sandbox_root));
+    } else {
+        for (k, v) in &scenario.files {
+            state.files.insert(std::path::PathBuf::from(k), v.as_bytes().to_vec());
+        }
+    }
+    state
+}
+
+fn build_hook_call(name: HookName, args: &[toml::Value]) -> Result<HookCall, String> {
+    fn s(v: &toml::Value) -> Result<String, String> {
+        v.as_str().map(|s| s.to_string()).ok_or_else(|| "expected string".into())
+    }
+    fn i(v: &toml::Value) -> Result<i32, String> {
+        v.as_integer().map(|i| i as i32).ok_or_else(|| "expected integer".into())
+    }
+    match name {
+        HookName::PreExec => Ok(HookCall::PreExec { command_line: s(args.first().ok_or("missing arg")?)? }),
+        HookName::PostExec => {
+            let cl = s(args.first().ok_or("missing command_line")?)?;
+            let ec = i(args.get(1).ok_or("missing exit_code")?)?;
+            Ok(HookCall::PostExec { command_line: cl, exit_code: ec })
+        }
+        HookName::OnCd => {
+            let old = s(args.first().ok_or("missing old")?)?;
+            let new = s(args.get(1).ok_or("missing new")?)?;
+            Ok(HookCall::OnCd { old, new })
+        }
+        HookName::PrePrompt => Ok(HookCall::PrePrompt),
+    }
+}
+
+fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
+    macro_rules! fail {
+        ($($t:tt)*) => {{ return StepResult::Fail(format!("step {}: {}", step_idx, format_args!($($t)*))) }};
+    }
+
+    if let Some(want) = e.exit {
+        match o.exit_code {
+            Some(got) if got == want => {}
+            Some(got) => fail!("exit: want {}, got {}", want, got),
+            None => fail!("exit: want {}, got (no exit code — hook?)", want),
+        }
+    }
+
+    let stdout_str = String::from_utf8_lossy(&o.stdout);
+    let stderr_str = String::from_utf8_lossy(&o.stderr);
+
+    if let Some(want) = &e.stdout {
+        if stdout_str != *want { fail!("stdout mismatch: want {:?}, got {:?}", want, stdout_str); }
+    }
+    if let Some(want) = &e.stderr {
+        if stderr_str != *want { fail!("stderr mismatch: want {:?}, got {:?}", want, stderr_str); }
+    }
+    if let Some(sub) = &e.stdout_contains {
+        if !stdout_str.contains(sub.as_str()) { fail!("stdout_contains {:?} not found in {:?}", sub, stdout_str); }
+    }
+    if let Some(sub) = &e.stderr_contains {
+        if !stderr_str.contains(sub.as_str()) { fail!("stderr_contains {:?} not found in {:?}", sub, stderr_str); }
+    }
+    if let Some(re) = &e.stdout_regex {
+        let rx = regex::Regex::new(re).map_err(|err| err.to_string());
+        match rx {
+            Ok(rx) if !rx.is_match(&stdout_str) => fail!("stdout_regex {:?} did not match {:?}", re, stdout_str),
+            Err(err) => fail!("stdout_regex invalid: {}", err),
+            _ => {}
+        }
+    }
+    if let Some(re) = &e.stderr_regex {
+        let rx = regex::Regex::new(re).map_err(|err| err.to_string());
+        match rx {
+            Ok(rx) if !rx.is_match(&stderr_str) => fail!("stderr_regex {:?} did not match {:?}", re, stderr_str),
+            Err(err) => fail!("stderr_regex invalid: {}", err),
+            _ => {}
+        }
+    }
+
+    if let Some(want) = &e.vars_set {
+        let got: BTreeMap<String, String> = o.set_log.iter().cloned().collect();
+        if got != *want { fail!("vars_set: want {:?}, got {:?}", want, got); }
+    }
+    if let Some(want) = &e.vars_export {
+        let got: BTreeMap<String, String> = o.export_log.iter().cloned().collect();
+        if got != *want { fail!("vars_export: want {:?}, got {:?}", want, got); }
+    }
+
+    if let Some(want) = &e.files_write {
+        let got: BTreeMap<String, usize> = o.write_log.iter()
+            .map(|(p, n)| (p.display().to_string(), *n))
+            .collect();
+        for (path, expectation) in want {
+            match expectation {
+                FileExpect::Bytes(b) => {
+                    let want_len = b.as_bytes().len();
+                    match got.get(path) {
+                        Some(actual) if *actual == want_len => {},
+                        Some(actual) => fail!("files_write[{}] len: want {}, got {}", path, want_len, actual),
+                        None => fail!("files_write[{}] not written", path),
+                    }
+                }
+                FileExpect::Struct { len, bytes_eq } => {
+                    if let Some(l) = len {
+                        match got.get(path) {
+                            Some(actual) if *actual == *l => {},
+                            Some(actual) => fail!("files_write[{}] len: want {}, got {}", path, l, actual),
+                            None => fail!("files_write[{}] not written", path),
+                        }
+                    }
+                    if let Some(b) = bytes_eq {
+                        let want_len = b.as_bytes().len();
+                        match got.get(path) {
+                            Some(actual) if *actual == want_len => {},
+                            Some(actual) => fail!("files_write[{}] bytes_eq len: want {}, got {}", path, want_len, actual),
+                            None => fail!("files_write[{}] not written", path),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(want_seq) = &e.exec_called {
+        if want_seq.len() != o.exec_log.len() {
+            fail!("exec_called: want {} calls, got {}", want_seq.len(), o.exec_log.len());
+        }
+        for (i, (w, g)) in want_seq.iter().zip(o.exec_log.iter()).enumerate() {
+            if w.program != g.program { fail!("exec_called[{}].program: want {}, got {}", i, w.program, g.program); }
+            if w.args != g.args { fail!("exec_called[{}].args: want {:?}, got {:?}", i, w.args, g.args); }
+            if let Some(exit) = w.exit {
+                if exit != g.exit_code { fail!("exec_called[{}].exit: want {}, got {}", i, exit, g.exit_code); }
+            }
+        }
+    }
+
+    if let Some(want) = e.trap {
+        let got = o.error_kind == Some("trap");
+        if got != want { fail!("trap: want {}, got {}", want, got); }
+    }
+
+    StepResult::Pass
+}
+
+#[cfg(test)]
+mod evaluator_tests {
+    use super::*;
+    use crate::runner::RunOutcome;
+
+    fn outcome_with(exit: Option<i32>, stdout: &[u8]) -> RunOutcome {
+        RunOutcome {
+            exit_code: exit,
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+            set_log: Vec::new(),
+            export_log: Vec::new(),
+            write_log: Vec::new(),
+            exec_log: Vec::new(),
+            error: None,
+            error_kind: None,
+        }
+    }
+
+    #[test]
+    fn expect_exit_match_passes() {
+        let o = outcome_with(Some(0), b"");
+        let e = Expect { exit: Some(0), ..Default::default() };
+        assert!(matches!(evaluate(1, &o, &e), StepResult::Pass));
+    }
+
+    #[test]
+    fn expect_exit_mismatch_fails() {
+        let o = outcome_with(Some(2), b"");
+        let e = Expect { exit: Some(0), ..Default::default() };
+        match evaluate(1, &o, &e) {
+            StepResult::Fail(s) => assert!(s.contains("exit")),
+            _ => panic!("expected fail"),
+        }
+    }
+
+    #[test]
+    fn expect_stdout_contains_works() {
+        let o = outcome_with(Some(0), b"hello world\n");
+        let e = Expect { stdout_contains: Some("world".into()), ..Default::default() };
+        assert!(matches!(evaluate(1, &o, &e), StepResult::Pass));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
