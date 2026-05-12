@@ -1,0 +1,15 @@
+plugin = "../../../../target/wasm32-wasip2/release/test_plugin.wasm"
+description = "run-echo executes /bin/echo via commands:exec"
+
+[env]
+caps = ["io", "commands:exec"]
+allow_exec = ["echo:*"]
+timeout_ms = 5000
+
+[[step]]
+call = "exec"
+args = ["run-echo", "hi"]
+
+  [step.expect]
+  exit = 0
+  stdout = "hi\n"

@@ -1,0 +1,14 @@
+plugin = "../../../../target/wasm32-wasip2/release/test_plugin.wasm"
+description = "dump_events sets YOSH_TEST_EVENT_LOG; this scenario expects a different value to demonstrate fail mode"
+
+[env]
+caps = ["variables:read", "variables:write", "io"]
+timeout_ms = 5000
+
+[[step]]
+call = "exec"
+args = ["dump_events"]
+
+  [step.expect]
+  exit = 0
+  vars_set = { YOSH_TEST_EVENT_LOG = "ON_LOAD_BUT_NO_HOOKS_FIRED" }

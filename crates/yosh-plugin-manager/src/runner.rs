@@ -125,15 +125,25 @@ pub fn invoke_exec(
     match res {
         Ok(code) => RunOutcome::from_state(state, Some(code), None),
         Err(e) => {
-            let msg = e.to_string();
-            let kind = classify_trap(&msg);
-            RunOutcome::from_state(state, None, Some((kind, msg)))
+            let kind = classify_trap(&e);
+            RunOutcome::from_state(state, None, Some((kind, e.to_string())))
         }
     }
 }
 
-fn classify_trap(msg: &str) -> &'static str {
-    if msg.contains("epoch") || msg.contains("deadline") {
+/// Bucket a wasmtime call failure into `"timeout"` (epoch deadline
+/// interrupt) vs `"trap"` (everything else). Epoch traps are detected
+/// structurally by downcasting to `wasmtime::Trap::Interrupt`; the
+/// substring fallback covers other wasmtime versions / future error
+/// shapes where the trap is nested inside an anyhow chain.
+fn classify_trap(err: &wasmtime::Error) -> &'static str {
+    if let Some(trap) = err.downcast_ref::<wasmtime::Trap>() {
+        if matches!(trap, wasmtime::Trap::Interrupt) {
+            return "timeout";
+        }
+    }
+    let msg = err.to_string();
+    if msg.contains("epoch") || msg.contains("deadline") || msg.contains("interrupt") {
         "timeout"
     } else {
         "trap"
@@ -161,9 +171,8 @@ pub fn invoke_hook(mut loaded: LoadedPlugin, hook: HookCall) -> RunOutcome {
     match res {
         Ok(()) => RunOutcome::from_state(state, None, None),
         Err(e) => {
-            let msg = e.to_string();
-            let kind = classify_trap(&msg);
-            RunOutcome::from_state(state, None, Some((kind, msg)))
+            let kind = classify_trap(&e);
+            RunOutcome::from_state(state, None, Some((kind, e.to_string())))
         }
     }
 }

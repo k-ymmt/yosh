@@ -1,0 +1,15 @@
+plugin = "../../../../target/wasm32-wasip2/release/test_plugin.wasm"
+description = "echo_var prints GREETING"
+
+[env]
+caps = ["variables:read", "io"]
+vars = { GREETING = "hello" }
+timeout_ms = 5000
+
+[[step]]
+call = "exec"
+args = ["echo_var", "GREETING"]
+
+  [step.expect]
+  exit = 0
+  stdout = "hello\n"
