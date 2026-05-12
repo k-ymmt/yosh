@@ -77,6 +77,69 @@ pub fn load_plugin(
     })
 }
 
+use crate::test_host::ExecRecord;
+
+/// Outcome of one guest invocation. Includes everything the formatters
+/// and scenario evaluator need.
+#[derive(Debug, Clone)]
+pub struct RunOutcome {
+    pub exit_code: Option<i32>,        // Some for exec, None for hooks
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub set_log: Vec<(String, String)>,
+    pub export_log: Vec<(String, String)>,
+    pub write_log: Vec<(std::path::PathBuf, usize)>,
+    pub exec_log: Vec<ExecRecord>,
+    pub error: Option<String>,         // populated on trap/denied/timeout
+    pub error_kind: Option<&'static str>,
+}
+
+impl RunOutcome {
+    fn from_state(state: TestState, exit_code: Option<i32>, error: Option<(&'static str, String)>) -> Self {
+        let (kind, msg) = match error {
+            Some((k, m)) => (Some(k), Some(m)),
+            None => (None, None),
+        };
+        RunOutcome {
+            exit_code,
+            stdout: state.stdout,
+            stderr: state.stderr,
+            set_log: state.set_log,
+            export_log: state.export_log,
+            write_log: state.write_log,
+            exec_log: state.exec_log,
+            error: msg,
+            error_kind: kind,
+        }
+    }
+}
+
+pub fn invoke_exec(
+    mut loaded: LoadedPlugin,
+    command: &str,
+    args: &[String],
+) -> RunOutcome {
+    let plugin = loaded.world.yosh_plugin_plugin();
+    let res = plugin.call_exec(&mut loaded.store, command, args);
+    let state = loaded.store.into_data().state;
+    match res {
+        Ok(code) => RunOutcome::from_state(state, Some(code), None),
+        Err(e) => {
+            let msg = e.to_string();
+            let kind = classify_trap(&msg);
+            RunOutcome::from_state(state, None, Some((kind, msg)))
+        }
+    }
+}
+
+fn classify_trap(msg: &str) -> &'static str {
+    if msg.contains("epoch") || msg.contains("deadline") {
+        "timeout"
+    } else {
+        "trap"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +168,26 @@ mod tests {
             Err(other) => panic!("expected Load error, got {:?}", other),
             Ok(_) => panic!("expected Load error, got Ok"),
         }
+    }
+
+    #[test]
+    fn invoke_exec_runs_test_plugin_test_cmd() {
+        let wasm = match plugin_artifact() {
+            Some(p) => p,
+            None => return, // wasm not built; skip silently
+        };
+        let mut state = TestState::default();
+        state.caps = yosh_plugin_api::CAP_IO;
+        let loaded = load_plugin(&wasm, state, Duration::from_secs(5)).expect("load");
+        let outcome = invoke_exec(loaded, "test_cmd", &["arg1".to_string()]);
+        assert_eq!(outcome.exit_code, Some(0));
+        assert!(outcome.stdout.starts_with(b"test_cmd args=["));
+        assert!(outcome.error.is_none());
+    }
+
+    fn plugin_artifact() -> Option<std::path::PathBuf> {
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/wasm32-wasip2/release/test_plugin.wasm");
+        if p.exists() { Some(p) } else { None }
     }
 }
