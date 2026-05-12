@@ -367,6 +367,130 @@ mod evaluator_tests {
         let e = Expect { stdout_contains: Some("world".into()), ..Default::default() };
         assert!(matches!(evaluate(1, &o, &e), StepResult::Pass));
     }
+
+    #[test]
+    fn run_dir_collects_toml_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.toml");
+        std::fs::write(&a, r#"
+            plugin = "missing.wasm"
+            [[step]]
+            call = "exec"
+            args = ["x"]
+        "#).unwrap();
+        let reports = run_dir(tmp.path(), None);
+        assert_eq!(reports.len(), 1);
+        assert!(!reports[0].passed()); // wasm missing
+    }
+
+    #[test]
+    fn format_summary_json_has_summary_line() {
+        let reports = vec![];
+        let s = format_summary_json(&reports);
+        assert!(s.contains("\"summary\""));
+    }
+}
+
+#[derive(Debug)]
+pub struct ScenarioReport {
+    pub file: std::path::PathBuf,
+    pub steps: Vec<StepResult>,
+}
+
+impl ScenarioReport {
+    pub fn passed(&self) -> bool {
+        self.steps.iter().all(|r| matches!(r, StepResult::Pass))
+    }
+}
+
+pub fn run_dir(path: &std::path::Path, filter: Option<&str>) -> Vec<ScenarioReport> {
+    let mut reports = Vec::new();
+    let filter_rx = filter.and_then(|f| regex::Regex::new(f).ok());
+
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().and_then(|s| s.to_str()) == Some("toml") {
+                out.push(p);
+            }
+        }
+    }
+
+    let mut paths = Vec::new();
+    if path.is_dir() {
+        walk(path, &mut paths);
+    } else if path.exists() {
+        paths.push(path.to_path_buf());
+    }
+    paths.sort();
+
+    for p in paths {
+        if let Some(rx) = &filter_rx {
+            if !rx.is_match(&p.to_string_lossy()) { continue; }
+        }
+        let results = run_scenario(&p);
+        reports.push(ScenarioReport { file: p, steps: results });
+    }
+    reports
+}
+
+pub fn format_summary_human(reports: &[ScenarioReport]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "running {} scenarios", reports.len());
+    let mut passed = 0;
+    let mut failed = 0;
+    for r in reports {
+        if r.passed() {
+            passed += 1;
+            let _ = writeln!(out, "  \u{2713} {}", r.file.display());
+        } else {
+            failed += 1;
+            let _ = writeln!(out, "  \u{2717} {}", r.file.display());
+            for s in &r.steps {
+                if let StepResult::Fail(msg) = s {
+                    let _ = writeln!(out, "      {}", msg);
+                }
+            }
+        }
+    }
+    let _ = writeln!(out, "{} passed, {} failed", passed, failed);
+    out
+}
+
+pub fn format_summary_json(reports: &[ScenarioReport]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let mut passed = 0;
+    let mut failed = 0;
+    for r in reports {
+        if r.passed() {
+            passed += 1;
+            let _ = writeln!(out, "{}", serde_json::json!({
+                "file": r.file.display().to_string(),
+                "status": "pass",
+                "steps": r.steps.len()
+            }));
+        } else {
+            failed += 1;
+            let reason = r.steps.iter().find_map(|s| match s {
+                StepResult::Fail(m) => Some(m.clone()),
+                _ => None,
+            }).unwrap_or_default();
+            let _ = writeln!(out, "{}", serde_json::json!({
+                "file": r.file.display().to_string(),
+                "status": "fail",
+                "reason": reason
+            }));
+        }
+    }
+    let _ = writeln!(out, "{}", serde_json::json!({
+        "summary": { "passed": passed, "failed": failed, "total": reports.len() }
+    }));
+    out
 }
 
 #[cfg(test)]
