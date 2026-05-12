@@ -53,6 +53,38 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+pub enum RunAction {
+    /// Call `plugin/exec` with the given command and argv.
+    Exec { command: String, args: Vec<String> },
+    /// Call one hook.
+    Hook {
+        #[command(subcommand)]
+        which: HookKind,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HookKind {
+    PreExec { command_line: String },
+    PostExec { command_line: String, exit_code: i32 },
+    OnCd { old: String, new: String },
+    PrePrompt,
+}
+
+#[derive(Copy, Clone, clap::ValueEnum, Debug)]
+pub enum OutputFormat {
+    Human,
+    Json,
+}
+
+fn parse_kv(s: &str) -> Result<(String, String), String> {
+    let (k, v) = s
+        .split_once('=')
+        .ok_or_else(|| format!("expected KEY=VALUE, got `{}`", s))?;
+    Ok((k.to_string(), v.to_string()))
+}
+
+#[derive(Subcommand)]
 enum Commands {
     /// Install plugins from plugins.toml
     Sync {
@@ -77,6 +109,38 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Run a single exec / hook against a plugin wasm with an in-memory host.
+    Run {
+        /// Path to the wasm component.
+        wasm: std::path::PathBuf,
+        #[command(subcommand)]
+        action: RunAction,
+        /// Capabilities to grant (comma-separated, e.g. `io,variables:read`).
+        /// Defaults to the plugin's declared `required_capabilities`.
+        #[arg(long, value_delimiter = ',')]
+        cap: Vec<String>,
+        /// Seed a shell variable: `--var KEY=VALUE` (repeatable).
+        #[arg(long = "var", value_parser = parse_kv)]
+        vars: Vec<(String, String)>,
+        /// Seed an exported variable.
+        #[arg(long = "export", value_parser = parse_kv)]
+        exports: Vec<(String, String)>,
+        /// Virtual cwd.
+        #[arg(long, default_value = ".")]
+        cwd: std::path::PathBuf,
+        /// Allowlist pattern for `commands:exec` (repeatable).
+        #[arg(long = "allow-exec")]
+        allow_exec: Vec<String>,
+        /// If set, files:* operate on the real FS scoped here.
+        #[arg(long = "sandbox-root")]
+        sandbox_root: Option<std::path::PathBuf>,
+        /// Watchdog deadline in milliseconds.
+        #[arg(long, default_value_t = 5000)]
+        timeout: u64,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+        format: OutputFormat,
+    },
 }
 
 pub fn run() -> i32 {
@@ -87,6 +151,138 @@ pub fn run() -> i32 {
         Commands::List => cmd_list(),
         Commands::Verify => cmd_verify(),
         Commands::Install { source, force } => cmd_install(&source, force),
+        Commands::Run {
+            wasm,
+            action,
+            cap,
+            vars,
+            exports,
+            cwd,
+            allow_exec,
+            sandbox_root,
+            timeout,
+            format,
+        } => cmd_run(
+            wasm,
+            action,
+            cap,
+            vars,
+            exports,
+            cwd,
+            allow_exec,
+            sandbox_root,
+            timeout,
+            format,
+        ),
+    }
+}
+
+fn cmd_run(
+    wasm: std::path::PathBuf,
+    action: RunAction,
+    cap: Vec<String>,
+    vars: Vec<(String, String)>,
+    exports: Vec<(String, String)>,
+    cwd: std::path::PathBuf,
+    allow_exec: Vec<String>,
+    sandbox_root: Option<std::path::PathBuf>,
+    timeout: u64,
+    format: OutputFormat,
+) -> i32 {
+    use crate::runner::{HookCall, format_human, format_json, invoke_exec, invoke_hook, load_plugin};
+    use crate::test_host::TestState;
+    use yosh_plugin_api::pattern::CommandPattern;
+    use yosh_plugin_api::{capabilities_to_bitflags, parse_capability};
+
+    // Build TestState.
+    let mut state = TestState::default();
+    let parsed_caps: Vec<_> = cap.iter().filter_map(|s| parse_capability(s)).collect();
+    state.caps = if cap.is_empty() {
+        // Fall back to plugin-declared capabilities. We need them from
+        // the cached metadata, which requires reading plugins.lock OR
+        // running metadata_extract. For local-run UX, run metadata_extract
+        // inline on the same wasm bytes.
+        let bytes = match std::fs::read(&wasm) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("yosh-plugin: read {}: {}", wasm.display(), e);
+                return 99;
+            }
+        };
+        let engine = match crate::precompile::make_engine() {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("yosh-plugin: engine: {}", e);
+                return 99;
+            }
+        };
+        match crate::metadata_extract::extract(&engine, &bytes) {
+            Ok(m) => {
+                let caps: Vec<_> = m
+                    .required_capabilities
+                    .iter()
+                    .filter_map(|s| parse_capability(s))
+                    .collect();
+                capabilities_to_bitflags(&caps)
+            }
+            Err(e) => {
+                eprintln!("yosh-plugin: metadata: {}", e);
+                return 99;
+            }
+        }
+    } else {
+        capabilities_to_bitflags(&parsed_caps)
+    };
+
+    for (k, v) in vars {
+        state.vars.insert(k, v);
+    }
+    for (k, v) in exports {
+        state.vars.insert(k.clone(), v);
+        state.exported.insert(k);
+    }
+    state.cwd = cwd;
+    state.allow_exec = allow_exec
+        .iter()
+        .filter_map(|p| CommandPattern::parse(p).ok())
+        .collect();
+    state.sandbox_root = sandbox_root.map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+
+    let loaded = match load_plugin(&wasm, state, std::time::Duration::from_millis(timeout)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("yosh-plugin: {}", e);
+            return 99;
+        }
+    };
+
+    let outcome = match action {
+        RunAction::Exec { command, args } => invoke_exec(loaded, &command, &args),
+        RunAction::Hook { which } => {
+            let call = match which {
+                HookKind::PreExec { command_line } => HookCall::PreExec { command_line },
+                HookKind::PostExec {
+                    command_line,
+                    exit_code,
+                } => HookCall::PostExec {
+                    command_line,
+                    exit_code,
+                },
+                HookKind::OnCd { old, new } => HookCall::OnCd { old, new },
+                HookKind::PrePrompt => HookCall::PrePrompt,
+            };
+            invoke_hook(loaded, call)
+        }
+    };
+
+    match format {
+        OutputFormat::Human => print!("{}", format_human(&outcome)),
+        OutputFormat::Json => println!("{}", format_json(&outcome)),
+    }
+
+    match outcome.error_kind {
+        Some(_) => 99,
+        None => outcome.exit_code.unwrap_or(0),
     }
 }
 
