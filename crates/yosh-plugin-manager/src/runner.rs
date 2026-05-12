@@ -168,6 +168,53 @@ pub fn invoke_hook(mut loaded: LoadedPlugin, hook: HookCall) -> RunOutcome {
     }
 }
 
+use std::fmt::Write as _;
+
+pub fn format_human(o: &RunOutcome) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "[stdout]\n{}", String::from_utf8_lossy(&o.stdout));
+    let _ = writeln!(out, "[stderr]\n{}", String::from_utf8_lossy(&o.stderr));
+    match o.exit_code {
+        Some(c) => { let _ = writeln!(out, "[exit] {}", c); }
+        None => { let _ = writeln!(out, "[exit] (hook — no exit code)"); }
+    }
+    for (k, v) in &o.set_log {
+        let _ = writeln!(out, "[vars set]    {}={}", k, v);
+    }
+    for (k, v) in &o.export_log {
+        let _ = writeln!(out, "[vars export] {}={}", k, v);
+    }
+    for (p, n) in &o.write_log {
+        let _ = writeln!(out, "[files write] {} ({} bytes)", p.display(), n);
+    }
+    for r in &o.exec_log {
+        let _ = writeln!(
+            out,
+            "[exec]        {} {} → exit {} ({} bytes stdout)",
+            r.program, r.args.join(" "), r.exit_code, r.stdout_len
+        );
+    }
+    if let (Some(kind), Some(msg)) = (o.error_kind, &o.error) {
+        let _ = writeln!(out, "[error] {}: {}", kind, msg);
+    }
+    out
+}
+
+pub fn format_json(o: &RunOutcome) -> serde_json::Value {
+    serde_json::json!({
+        "exit": o.exit_code,
+        "stdout": String::from_utf8_lossy(&o.stdout),
+        "stderr": String::from_utf8_lossy(&o.stderr),
+        "vars_set":    o.set_log.iter().map(|(k,v)| serde_json::json!({"key":k,"value":v})).collect::<Vec<_>>(),
+        "vars_export": o.export_log.iter().map(|(k,v)| serde_json::json!({"key":k,"value":v})).collect::<Vec<_>>(),
+        "files_write": o.write_log.iter().map(|(p,n)| serde_json::json!({"path": p.display().to_string(),"bytes": n})).collect::<Vec<_>>(),
+        "exec":        o.exec_log.iter().map(|r| serde_json::json!({
+            "program": r.program, "args": r.args, "exit": r.exit_code, "stdout_bytes": r.stdout_len
+        })).collect::<Vec<_>>(),
+        "error":       o.error.as_ref().map(|m| serde_json::json!({"kind": o.error_kind, "message": m})),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +283,47 @@ mod tests {
         let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/wasm32-wasip2/release/test_plugin.wasm");
         if p.exists() { Some(p) } else { None }
+    }
+
+    #[test]
+    fn format_json_round_trip_fields() {
+        let mut o = RunOutcome {
+            exit_code: Some(0),
+            stdout: b"hi\n".to_vec(),
+            stderr: Vec::new(),
+            set_log: vec![("X".into(), "y".into())],
+            export_log: Vec::new(),
+            write_log: Vec::new(),
+            exec_log: Vec::new(),
+            error: None,
+            error_kind: None,
+        };
+        let j = format_json(&o);
+        assert_eq!(j["exit"], serde_json::json!(0));
+        assert_eq!(j["stdout"], serde_json::json!("hi\n"));
+        assert_eq!(j["vars_set"][0]["key"], serde_json::json!("X"));
+        o.error = Some("boom".into());
+        o.error_kind = Some("trap");
+        let j2 = format_json(&o);
+        assert_eq!(j2["error"]["kind"], serde_json::json!("trap"));
+    }
+
+    #[test]
+    fn format_human_includes_sections() {
+        let o = RunOutcome {
+            exit_code: Some(0),
+            stdout: b"hi\n".to_vec(),
+            stderr: Vec::new(),
+            set_log: vec![("X".into(), "y".into())],
+            export_log: Vec::new(),
+            write_log: Vec::new(),
+            exec_log: Vec::new(),
+            error: None,
+            error_kind: None,
+        };
+        let s = format_human(&o);
+        assert!(s.contains("[stdout]"));
+        assert!(s.contains("[exit] 0"));
+        assert!(s.contains("[vars set]    X=y"));
     }
 }
