@@ -111,7 +111,6 @@
 
 - [ ] Extend chapter-by-chapter POSIX coverage beyond XCU Chapter 2 — once the Chapter 2 coverage matrix stabilizes, add systematic E2E coverage for Chapter 4 Utilities (all shell-relevant builtins: special + regular, with option/edge-case matrices) and Chapter 8 Environment Variables. Reuse the `POSIX_REF`/`XFAIL` harness established for Chapter 2.
 - [ ] Deepen Chapter 2 POSIX coverage to normative-requirement granularity — after the hybrid (representative + thin-section) coverage lands, enumerate every shall/must/should clause in XCU Chapter 2 and add one E2E test per normative requirement (est. +100–200 tests). Use `XFAIL` liberally to register gaps; the goal is to make each normative clause individually traceable to a test ID.
-- [ ] `e2e/run_tests.sh` `# EXPECT_OUTPUT:` empty-form silently skips stdout check — the case pattern at L223 is `"# EXPECT_OUTPUT: "*` (trailing space required), so 8 existing test files using the no-trailing-space `# EXPECT_OUTPUT:` form (`heredoc_empty.sh`, `dev_null.sh`, `for_empty.sh`, `if_false.sh`, `while_false_no_exec.sh`, `prefix_assignment_external.sh`, `echo_no_args.sh`, `unset_variable.sh`) silently disable the stdout assertion rather than asserting empty stdout. Fix: relax the case pattern to also match the no-trailing-space form, then re-verify those 8 files. Discovered 2026-05-12 during fd_close.sh strengthening.
 
 ## Future: Release Skill Enhancements
 

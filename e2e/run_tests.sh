@@ -220,8 +220,9 @@ ${_stripped}"
                 _heredoc_buf=""
                 _heredoc_first=1
                 ;;
-            "# EXPECT_OUTPUT: "*)
-                meta_expect_output="${_line#"# EXPECT_OUTPUT: "}"
+            "# EXPECT_OUTPUT:"|"# EXPECT_OUTPUT: "*)
+                meta_expect_output="${_line#"# EXPECT_OUTPUT:"}"
+                meta_expect_output="${meta_expect_output# }"
                 meta_has_expect_output=1
                 ;;
             "# EXPECT_EXIT: "*)
