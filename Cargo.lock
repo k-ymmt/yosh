@@ -3691,6 +3691,7 @@ dependencies = [
  "hex",
  "mockito",
  "nix 0.31.2",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

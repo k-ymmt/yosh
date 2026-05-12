@@ -10,6 +10,7 @@ pub mod update;
 pub mod verify;
 pub mod test_host;
 pub mod runner;
+pub mod scenario;
 
 /// wasmtime bindgen for the `plugin-world` WIT contract.
 ///
