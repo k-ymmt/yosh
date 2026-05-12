@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 Special Built-In Utilities
+# POSIX_REF: 4 Utilities - echo
 # DESCRIPTION: echo with no arguments outputs only a newline
 # EXPECT_OUTPUT:
 echo
