@@ -113,7 +113,8 @@ usage() {
     printf "  --verbose        Show detailed output for each test\n"
     printf "  --help           Show this help\n"
     printf "\nEnvironment:\n"
-    printf "  YOSH_E2E_NO_TIMEOUT=1  Skip per-test timeout (local use only)\n"
+    printf "  YOSH_E2E_NO_TIMEOUT=1  Skip per-test timeout; never set in CI or\n"
+    printf "                         release.sh (individual runaway tests will hang forever)\n"
     exit 0
 }
 
@@ -287,6 +288,12 @@ for test_file in $test_files; do
     if [ "${YOSH_E2E_NO_TIMEOUT:-0}" = "1" ]; then
         _timer_pid=""
     else
+        # Single-shot watchdog: SIGKILL the test if it outlives $TIMEOUT.
+        # Benign race — if the test exits just as the timer fires, kill -9
+        # returns ESRCH and we skip writing the "timeout" marker. The exit
+        # code from `wait $_pid` below is the authoritative result; the
+        # marker branch is diagnostic only, so the race cannot corrupt
+        # pass/fail accounting.
         (
             sleep "$TIMEOUT"
             kill -9 "$_pid" 2>/dev/null && echo "timeout" >"$_exit_file"
