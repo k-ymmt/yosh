@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 Special Built-In Utilities
+# POSIX_REF: 2.14.1 break
 # DESCRIPTION: break N exits N levels of nested loops
 # EXPECT_OUTPUT: 1a
 for i in 1 2; do

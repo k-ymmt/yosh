@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 Special Built-In Utilities
+# POSIX_REF: 2.14.14 trap
 # DESCRIPTION: trap with no arguments displays current traps
 # EXPECT_EXIT: 0
 trap 'echo bye' EXIT

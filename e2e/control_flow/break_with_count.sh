@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.4 break
+# POSIX_REF: 2.14.1 break
 # DESCRIPTION: break N exits N enclosing loops
 # EXPECT_OUTPUT: 1-a
 set -- a b c

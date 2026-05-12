@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 Special Built-In Utilities
+# POSIX_REF: 2.14.14 trap
 # DESCRIPTION: trap '' SIGNAL ignores the signal
 # EXPECT_EXIT: 0
 trap '' USR1

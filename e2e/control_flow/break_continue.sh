@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 Special Built-In Utilities
+# POSIX_REF: 2.14.1 break
 # DESCRIPTION: break exits loop, continue skips to next iteration
 # EXPECT_OUTPUT<<END
 # 1
