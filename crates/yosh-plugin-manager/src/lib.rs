@@ -244,7 +244,16 @@ fn cmd_run(
     state.cwd = cwd;
     state.allow_exec = allow_exec
         .iter()
-        .filter_map(|p| CommandPattern::parse(p).ok())
+        .filter_map(|p| match CommandPattern::parse(p) {
+            Ok(pat) => Some(pat),
+            Err(e) => {
+                eprintln!(
+                    "yosh-plugin: ignoring invalid --allow-exec pattern {:?}: {}",
+                    p, e
+                );
+                None
+            }
+        })
         .collect();
     state.sandbox_root = sandbox_root.map(|p| std::fs::canonicalize(&p).unwrap_or(p));
 
