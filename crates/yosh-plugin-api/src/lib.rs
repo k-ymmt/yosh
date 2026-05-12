@@ -204,3 +204,5 @@ mod tests {
         assert_eq!(CAP_ALL & CAP_COMMANDS_EXEC, CAP_COMMANDS_EXEC);
     }
 }
+
+pub mod pattern;
