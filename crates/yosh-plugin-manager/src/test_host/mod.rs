@@ -102,6 +102,24 @@ impl WasiView for TestCtx {
     }
 }
 
+use wasmtime::Engine;
+use wasmtime::component::Linker;
+
+/// Construct a `Linker<TestCtx>` with WASI registered. Per-capability
+/// `yosh:plugin/*` imports are added by `register_imports` (Task 9).
+pub fn build_linker(engine: &Engine) -> wasmtime::Result<Linker<TestCtx>> {
+    let mut linker = Linker::<TestCtx>::new(engine);
+    register_wasi(&mut linker)?;
+    Ok(linker)
+}
+
+/// Same rationale as `metadata_extract::register_wasi`: cargo-component
+/// plugins pull in `wasi:io` / `wasi:cli` transitively. Isolation is
+/// provided by the empty `WasiCtx` in `TestCtx::default`.
+fn register_wasi(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
+    wasmtime_wasi::add_to_linker_sync(linker)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +138,11 @@ mod tests {
     #[test]
     fn test_ctx_default_constructs() {
         let _ctx = TestCtx::default();
+    }
+
+    #[test]
+    fn linker_construction_smoke() {
+        let engine = crate::precompile::make_engine().expect("engine");
+        let _linker = build_linker(&engine).expect("linker");
     }
 }
