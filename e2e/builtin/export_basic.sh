@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 Special Built-In Utilities
+# POSIX_REF: 2.14.8 export
 # DESCRIPTION: export makes variable available to child processes
 # EXPECT_EXIT: 0
 export MY_EXPORT_TEST=hello

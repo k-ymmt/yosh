@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 Special Built-In Utilities
+# POSIX_REF: 2.14.15 unset
 # DESCRIPTION: Unsetting a readonly variable produces error
 # EXPECT_EXIT: 1
 # EXPECT_STDERR: readonly

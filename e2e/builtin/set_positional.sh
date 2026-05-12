@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 Special Built-In Utilities
+# POSIX_REF: 2.14.11 set
 # DESCRIPTION: set -- replaces positional parameters
 # EXPECT_OUTPUT: x y z
 set -- x y z

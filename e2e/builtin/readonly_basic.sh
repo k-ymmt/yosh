@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 Special Built-In Utilities
+# POSIX_REF: 2.14.9 readonly
 # DESCRIPTION: readonly variable cannot be modified
 # EXPECT_EXIT: 1
 # EXPECT_STDERR: readonly
