@@ -55,4 +55,11 @@ mod tests {
         let mut s = TestState::with_caps(CAP_FILESYSTEM);
         assert_eq!(host_set_cwd(&mut s, ""), Err(ErrorCode::InvalidArgument));
     }
+
+    #[test]
+    fn set_cwd_denied_without_cap() {
+        let mut s = TestState::default();
+        assert_eq!(host_set_cwd(&mut s, "/home"), Err(ErrorCode::Denied));
+        assert_eq!(s.cwd, PathBuf::new());
+    }
 }
