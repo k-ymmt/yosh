@@ -364,6 +364,84 @@ This generates all required WIT guest exports automatically, including `metadata
 
 The plugin name and version are read from your `Cargo.toml` at compile time via `env!("CARGO_PKG_NAME")` and `env!("CARGO_PKG_VERSION")`.
 
+### Testing Locally
+
+yosh ships two subcommands to exercise a plugin without starting a
+shell session. Both run the plugin through the same `wasmtime` host
+that yosh uses at runtime, but with an in-memory test backend instead
+of a live `ShellEnv`. This works for plugins written in any language
+that targets the WebAssembly Component Model.
+
+#### One-shot: `yosh plugin run`
+
+```sh
+yosh plugin run target/wasm32-wasip2/release/yosh_plugin_hello.wasm \
+    exec hello world
+```
+
+Flags scope what the plugin can see:
+
+| Flag | Effect |
+|------|--------|
+| `--cap` | Capabilities to grant (defaults to the plugin's `required_capabilities`) |
+| `--var KEY=VAL` | Seed a shell variable |
+| `--export KEY=VAL` | Seed an exported variable |
+| `--cwd <path>` | Virtual cwd |
+| `--allow-exec <pat>` | Allowlist a `commands:exec` argv pattern (e.g. `--allow-exec 'git status:*'`) |
+| `--sandbox-root <path>` | Real-FS scope for `files:read`/`files:write` (otherwise virtual) |
+| `--timeout <ms>` | Watchdog deadline (default 5000) |
+| `--format <human\|json>` | Output format |
+
+Hooks are invoked similarly:
+
+```sh
+yosh plugin run my-plugin.wasm hook pre-exec "ls -l"
+yosh plugin run my-plugin.wasm hook on-cd /old /new
+yosh plugin run my-plugin.wasm hook pre-prompt
+```
+
+#### Declarative: `yosh plugin test`
+
+Drop scenario files under `tests/` next to your plugin source. Each
+`*.toml` is one scenario:
+
+```toml
+plugin = "../target/wasm32-wasip2/release/my_plugin.wasm"
+description = "hello prints a greeting"
+
+[env]
+caps = ["io"]
+timeout_ms = 5000
+
+[[step]]
+call = "exec"
+args = ["hello", "world"]
+
+  [step.expect]
+  exit = 0
+  stdout = "Hello, world!\n"
+```
+
+Run them:
+
+```sh
+yosh plugin test                  # walks tests/
+yosh plugin test --format json    # JSON-lines for CI
+```
+
+Supported `[step.expect]` keys: `exit`, `stdout`, `stderr`,
+`stdout_contains`, `stderr_contains`, `stdout_regex`, `stderr_regex`,
+`vars_set`, `vars_export`, `files_write`, `exec_called`, `trap`.
+
+#### Example: CI integration
+
+```yaml
+- run: cargo install cargo-component --locked --version 0.18.0
+- run: rustup target add wasm32-wasip2
+- run: cargo component build --target wasm32-wasip2 --release
+- run: yosh plugin test --format json | tee result.jsonl
+```
+
 ### Distributing via GitHub Releases
 
 WebAssembly Components are platform-independent — build once, ship once:
