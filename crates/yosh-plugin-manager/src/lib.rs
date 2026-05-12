@@ -142,6 +142,17 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
         format: OutputFormat,
     },
+    /// Run declarative scenarios (TOML) from a directory.
+    Test {
+        /// Directory or single file. Default: `tests/`.
+        #[arg(default_value = "tests")]
+        path: std::path::PathBuf,
+        /// Regex filter over the scenario file path.
+        #[arg(long)]
+        filter: Option<String>,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+        format: OutputFormat,
+    },
 }
 
 pub fn run() -> i32 {
@@ -175,7 +186,18 @@ pub fn run() -> i32 {
             timeout,
             format,
         ),
+        Commands::Test { path, filter, format } => cmd_test(path, filter, format),
     }
+}
+
+fn cmd_test(path: std::path::PathBuf, filter: Option<String>, format: OutputFormat) -> i32 {
+    let reports = crate::scenario::run_dir(&path, filter.as_deref());
+    let all_passed = reports.iter().all(|r| r.passed());
+    match format {
+        OutputFormat::Human => print!("{}", crate::scenario::format_summary_human(&reports)),
+        OutputFormat::Json => print!("{}", crate::scenario::format_summary_json(&reports)),
+    }
+    if all_passed { 0 } else { 1 }
 }
 
 fn cmd_run(
