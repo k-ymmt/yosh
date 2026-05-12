@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 test
+# POSIX_REF: 4 Utilities - test
 # DESCRIPTION: -f is true for a regular file, false for a directory
 # EXPECT_OUTPUT: regular notdir
 # EXPECT_EXIT: 0

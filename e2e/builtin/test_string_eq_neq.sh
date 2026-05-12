@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 test
+# POSIX_REF: 4 Utilities - test
 # DESCRIPTION: string = and != comparisons
 # EXPECT_OUTPUT: eq neq
 # EXPECT_EXIT: 0

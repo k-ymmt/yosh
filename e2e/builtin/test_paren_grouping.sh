@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 test
+# POSIX_REF: 4 Utilities - test
 # DESCRIPTION: ( E ) grouping around 1- and 2-operand forms
 # EXPECT_OUTPUT: one two
 # EXPECT_EXIT: 0

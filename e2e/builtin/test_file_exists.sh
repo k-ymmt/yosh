@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 test
+# POSIX_REF: 4 Utilities - test
 # DESCRIPTION: -e is true for an existing file
 # EXPECT_OUTPUT: yes
 # EXPECT_EXIT: 0

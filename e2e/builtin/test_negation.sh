@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 test
+# POSIX_REF: 4 Utilities - test
 # DESCRIPTION: ! negates 1-, 2-, and 3-operand forms
 # EXPECT_OUTPUT: empty nempty neq
 # EXPECT_EXIT: 0

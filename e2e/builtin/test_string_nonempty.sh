@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 test
+# POSIX_REF: 4 Utilities - test
 # DESCRIPTION: 1-operand form: nonempty string is true
 # EXPECT_OUTPUT: ok
 # EXPECT_EXIT: 0
