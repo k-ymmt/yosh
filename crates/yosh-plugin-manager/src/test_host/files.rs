@@ -81,7 +81,7 @@ pub fn host_write_file(
 ) -> Result<(), ErrorCode> {
     require_write(state)?;
     let resolved = resolve(state, path)?;
-    match state.sandbox_root.clone() {
+    match &state.sandbox_root {
         None => {
             state.files.insert(resolved.clone(), data.to_vec());
         }
@@ -100,7 +100,7 @@ pub fn host_append_file(
 ) -> Result<(), ErrorCode> {
     require_write(state)?;
     let resolved = resolve(state, path)?;
-    match state.sandbox_root.clone() {
+    match &state.sandbox_root {
         None => {
             state.files.entry(resolved.clone()).or_default().extend_from_slice(data);
         }
@@ -166,6 +166,9 @@ pub fn host_remove_dir(state: &mut TestState, path: &str, recursive: bool) -> Re
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
         None => {
+            // Virtual mode: directories don't exist as entries; remove-dir
+            // is a no-op success. Mirrors `host_create_dir`'s virtual-mode
+            // behaviour — use sandbox mode for filesystem-structure tests.
             let _ = (resolved, recursive);
             Ok(())
         }
