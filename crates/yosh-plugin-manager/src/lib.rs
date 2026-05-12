@@ -8,6 +8,7 @@ pub mod resolve;
 pub mod sync;
 pub mod update;
 pub mod verify;
+pub mod test_host;
 
 /// wasmtime bindgen for the `plugin-world` WIT contract.
 ///
