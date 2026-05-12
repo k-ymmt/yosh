@@ -37,6 +37,12 @@ pub struct ExecRecord {
 /// In-memory state behind every TestCtx host import. The runner
 /// constructs this from CLI flags or a scenario file, then reads it
 /// back after the guest call to format results / evaluate expectations.
+///
+/// Note: the in-memory write paths intentionally skip the validation
+/// that the production host's `VarTable::set` (and similar) performs
+/// (readonly-var rejection, integer-attribute checks, etc.). Test
+/// scenarios verifying those guard paths must run against the real
+/// shell, not this harness.
 #[derive(Debug, Default, Clone)]
 pub struct TestState {
     /// Granted capability bitmask. Same shape as `HostContext.capabilities`.
@@ -60,6 +66,16 @@ pub struct TestState {
     pub export_log: Vec<(String, String)>,
     /// (path, bytes-written) for each files::{write,append}-file call.
     pub write_log: Vec<(PathBuf, usize)>,
+}
+
+impl TestState {
+    /// Construct a `TestState` with the given capability bitmask and
+    /// every other field at its `Default` value. Used by per-module
+    /// unit tests so each module doesn't have to repeat a local
+    /// `state_with` helper.
+    pub fn with_caps(caps: u32) -> Self {
+        TestState { caps, ..TestState::default() }
+    }
 }
 
 /// Per-store wrapper. `state` is the shared in-memory backend; `wasi`
@@ -87,9 +103,11 @@ impl Default for TestCtx {
 impl TestCtx {
     /// Build from an existing TestState (set up by the CLI / scenario).
     pub fn new(state: TestState) -> Self {
-        let mut ctx = TestCtx::default();
-        ctx.state = state;
-        ctx
+        TestCtx {
+            state,
+            table: ResourceTable::new(),
+            wasi: WasiCtxBuilder::new().build(),
+        }
     }
 }
 

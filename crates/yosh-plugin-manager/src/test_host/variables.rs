@@ -36,41 +36,35 @@ pub fn host_export_env(state: &mut TestState, name: &str, value: &str) -> Result
 mod tests {
     use super::*;
 
-    fn state_with(caps: u32) -> TestState {
-        let mut s = TestState::default();
-        s.caps = caps;
-        s
-    }
-
     #[test]
     fn get_denied_without_cap() {
-        let s = state_with(0);
+        let s = TestState::with_caps(0);
         assert_eq!(host_get(&s, "FOO"), Err(ErrorCode::Denied));
     }
 
     #[test]
     fn get_returns_none_for_unset() {
-        let s = state_with(CAP_VARIABLES_READ);
+        let s = TestState::with_caps(CAP_VARIABLES_READ);
         assert_eq!(host_get(&s, "FOO"), Ok(None));
     }
 
     #[test]
     fn get_returns_value_when_set() {
-        let mut s = state_with(CAP_VARIABLES_READ);
+        let mut s = TestState::with_caps(CAP_VARIABLES_READ);
         s.vars.insert("FOO".into(), "bar".into());
         assert_eq!(host_get(&s, "FOO"), Ok(Some("bar".into())));
     }
 
     #[test]
     fn set_denied_without_cap() {
-        let mut s = state_with(CAP_VARIABLES_READ);
+        let mut s = TestState::with_caps(CAP_VARIABLES_READ);
         assert_eq!(host_set(&mut s, "FOO", "bar"), Err(ErrorCode::Denied));
         assert!(s.set_log.is_empty());
     }
 
     #[test]
     fn set_records_log() {
-        let mut s = state_with(CAP_VARIABLES_WRITE);
+        let mut s = TestState::with_caps(CAP_VARIABLES_WRITE);
         host_set(&mut s, "FOO", "bar").unwrap();
         assert_eq!(s.vars.get("FOO").map(|s| s.as_str()), Some("bar"));
         assert_eq!(s.set_log, vec![("FOO".into(), "bar".into())]);
@@ -78,7 +72,7 @@ mod tests {
 
     #[test]
     fn export_env_records_export_set() {
-        let mut s = state_with(CAP_VARIABLES_WRITE);
+        let mut s = TestState::with_caps(CAP_VARIABLES_WRITE);
         host_export_env(&mut s, "PATH", "/bin").unwrap();
         assert!(s.exported.contains("PATH"));
         assert_eq!(s.export_log, vec![("PATH".into(), "/bin".into())]);
