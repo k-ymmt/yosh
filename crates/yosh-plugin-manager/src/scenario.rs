@@ -405,7 +405,16 @@ impl ScenarioReport {
 
 pub fn run_dir(path: &std::path::Path, filter: Option<&str>) -> Vec<ScenarioReport> {
     let mut reports = Vec::new();
-    let filter_rx = filter.and_then(|f| regex::Regex::new(f).ok());
+    let filter_rx = filter.and_then(|f| match regex::Regex::new(f) {
+        Ok(rx) => Some(rx),
+        Err(e) => {
+            eprintln!(
+                "yosh-plugin: ignoring invalid --filter regex {:?}: {}",
+                f, e
+            );
+            None
+        }
+    });
 
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
