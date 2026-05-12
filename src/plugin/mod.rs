@@ -96,9 +96,9 @@ const METADATA_SCRATCH_DEADLINE_TICKS: u64 = 100;
 /// * `Ok(n)` — caller should use `n` directly. `None` → default,
 ///   `Some(valid integer in [1, 60000])` → that integer.
 /// * `Err(raw)` — input was present but invalid (non-numeric, 0, or
-///   > 60000). The raw input is returned so the caller can phrase a
-///   warning that quotes what the user typed. The caller decides
-///   whether to fall back to the default.
+///   greater than 60000). The raw input is returned so the caller can
+///   phrase a warning that quotes what the user typed. The caller
+///   decides whether to fall back to the default.
 fn parse_pre_prompt_timeout(input: Option<&str>) -> Result<u64, String> {
     let Some(s) = input else {
         return Ok(DEFAULT_PRE_PROMPT_TIMEOUT_MS);

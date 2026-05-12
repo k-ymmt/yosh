@@ -39,7 +39,7 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
         "trap" => builtin_trap(args, &mut executor.env),
         "." => builtin_source(args, executor),
         "shift" => builtin_shift(args, &mut executor.env),
-        "times" => builtin_times(),
+        "times" => builtin_times(args),
         "fc" => builtin_fc(args, executor),
         _ => Err(ShellError::runtime(
             RuntimeErrorKind::InvalidArgument,
@@ -462,7 +462,13 @@ fn builtin_shift(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError>
     Ok(0)
 }
 
-fn builtin_times() -> Result<i32, ShellError> {
+fn builtin_times(args: &[String]) -> Result<i32, ShellError> {
+    if !args.is_empty() {
+        return Err(ShellError::runtime(
+            RuntimeErrorKind::InvalidArgument,
+            format!("times: unexpected operand: {}", args[0]),
+        ));
+    }
     let mut tms: libc::tms = unsafe { std::mem::zeroed() };
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
     if unsafe { libc::times(&mut tms) } == u64::MAX {
