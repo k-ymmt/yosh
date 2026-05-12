@@ -45,6 +45,53 @@ FILTER=""
 VERBOSE=0
 TIMEOUT=15
 
+# ── Auto failure log ─────────────────────────────────────────────────
+# When any test FAILS or TIMES OUT, append details (path, kind, captured
+# stdout/stderr) to this file. The file is created lazily on first failure,
+# so clean runs don't litter /tmp with empty logs. Override with
+# YOSH_E2E_FAILURE_LOG=/path/to/log if you want a stable filename.
+FAILURES_LOG="${YOSH_E2E_FAILURE_LOG:-${TMPDIR:-/tmp}/e2e-failures-$(date +%Y%m%d-%H%M%S).log}"
+_failures_log_created=0
+
+# Append one failure record to $FAILURES_LOG.
+# Args: $1=rel_path  $2=kind (FAIL|TIMEOUT)  $3=reason  $4=stdout_file  $5=stderr_file
+append_failure_log() {
+    _fl_path="$1"
+    _fl_kind="$2"
+    _fl_reason="$3"
+    _fl_stdout="$4"
+    _fl_stderr="$5"
+
+    if [ "$_failures_log_created" = 0 ]; then
+        : > "$FAILURES_LOG" || return 0
+        {
+            printf "# yosh e2e failure log\n"
+            printf "# Started: %s\n" "$(date '+%Y-%m-%d %H:%M:%S')"
+            printf "# Shell:   %s\n" "$SHELL_UNDER_TEST"
+            printf "# Filter:  %s\n" "${FILTER:-<none>}"
+            printf "\n"
+        } >> "$FAILURES_LOG"
+        _failures_log_created=1
+    fi
+
+    {
+        printf "==== [%s] %s ====\n" "$_fl_kind" "$_fl_path"
+        printf "Reason: %s\n" "$_fl_reason"
+        printf "%s\n" "-- stdout --"
+        if [ -f "$_fl_stdout" ]; then
+            cat "$_fl_stdout"
+            # Ensure trailing newline for readability
+            [ -s "$_fl_stdout" ] && printf "\n"
+        fi
+        printf "%s\n" "-- stderr --"
+        if [ -f "$_fl_stderr" ]; then
+            cat "$_fl_stderr"
+            [ -s "$_fl_stderr" ] && printf "\n"
+        fi
+        printf "\n"
+    } >> "$FAILURES_LOG"
+}
+
 # ── Color codes ───────────────────────────────────────────────────────
 if [ -t 1 ]; then
     RED='\033[0;31m'
@@ -316,6 +363,8 @@ for test_file in $test_files; do
         timedout=$((timedout + 1))
         printf "${YELLOW}[TIME]${RESET}  %s\n" "$rel_path"
         printf "        Timed out after ${TIMEOUT}s\n"
+        append_failure_log "$rel_path" "TIMEOUT" "$_failure_reason" \
+            "$_stdout_file" "$_stderr_file"
     elif [ -n "$meta_xfail" ]; then
         # Expected failure
         if [ "$_test_ok" = 1 ]; then
@@ -333,6 +382,8 @@ for test_file in $test_files; do
             failed=$((failed + 1))
             printf "${RED}[FAIL]${RESET}  %s\n" "$rel_path"
             printf "        %s\n" "$_failure_reason"
+            append_failure_log "$rel_path" "FAIL" "$_failure_reason" \
+                "$_stdout_file" "$_stderr_file"
         fi
     fi
 
@@ -368,6 +419,11 @@ printf "${RED}Failed: %d${RESET}  " "$failed"
 printf "${YELLOW}Timedout: %d${RESET}  " "$timedout"
 printf "${CYAN}XFail: %d${RESET}  " "$xfailed"
 printf "${YELLOW}XPass: %d${RESET}\n" "$xpassed"
+
+# Point users at the auto-captured failure log if one was written.
+if [ "$_failures_log_created" = 1 ]; then
+    printf "\n${YELLOW}Failure details captured in:${RESET} %s\n" "$FAILURES_LOG"
+fi
 
 # Exit code: 0 if no failures (XPASS and timedout count as failures too)
 if [ "$failed" -gt 0 ] || [ "$xpassed" -gt 0 ] || [ "$timedout" -gt 0 ]; then

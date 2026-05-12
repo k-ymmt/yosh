@@ -4,7 +4,7 @@
 # EXPECT_OUTPUT omitted: this is an open-then-close smoke, not a roundtrip.
 # EXPECT_EXIT: 0
 : "${TEST_TMPDIR:?TEST_TMPDIR not set}"
-f="$TEST_TMPDIR/rw_bidir"
+f="$TEST_TMPDIR/rw_opens_fd"
 echo seed > "$f"
 exec 3<>"$f"
 exec 3<&-
