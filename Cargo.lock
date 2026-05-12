@@ -3690,6 +3690,7 @@ dependencies = [
  "clap",
  "hex",
  "mockito",
+ "nix 0.31.2",
  "serde",
  "serde_json",
  "sha2",
