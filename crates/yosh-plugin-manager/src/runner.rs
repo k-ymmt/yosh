@@ -140,6 +140,34 @@ fn classify_trap(msg: &str) -> &'static str {
     }
 }
 
+pub enum HookCall {
+    PreExec { command_line: String },
+    PostExec { command_line: String, exit_code: i32 },
+    OnCd { old: String, new: String },
+    PrePrompt,
+}
+
+pub fn invoke_hook(mut loaded: LoadedPlugin, hook: HookCall) -> RunOutcome {
+    let hooks = loaded.world.yosh_plugin_hooks();
+    let res = match &hook {
+        HookCall::PreExec { command_line } => hooks.call_pre_exec(&mut loaded.store, command_line),
+        HookCall::PostExec { command_line, exit_code } => {
+            hooks.call_post_exec(&mut loaded.store, command_line, *exit_code)
+        }
+        HookCall::OnCd { old, new } => hooks.call_on_cd(&mut loaded.store, old, new),
+        HookCall::PrePrompt => hooks.call_pre_prompt(&mut loaded.store),
+    };
+    let state = loaded.store.into_data().state;
+    match res {
+        Ok(()) => RunOutcome::from_state(state, None, None),
+        Err(e) => {
+            let msg = e.to_string();
+            let kind = classify_trap(&msg);
+            RunOutcome::from_state(state, None, Some((kind, msg)))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +211,25 @@ mod tests {
         assert_eq!(outcome.exit_code, Some(0));
         assert!(outcome.stdout.starts_with(b"test_cmd args=["));
         assert!(outcome.error.is_none());
+    }
+
+    #[test]
+    fn invoke_hook_pre_exec_records_event() {
+        let wasm = match plugin_artifact() {
+            Some(p) => p,
+            None => return,
+        };
+        let mut state = TestState::default();
+        state.caps = yosh_plugin_api::CAP_HOOK_PRE_EXEC
+            | yosh_plugin_api::CAP_VARIABLES_WRITE
+            | yosh_plugin_api::CAP_IO;
+        let loaded = load_plugin(&wasm, state, Duration::from_secs(5)).expect("load");
+        let outcome = invoke_hook(loaded, HookCall::PreExec { command_line: "ls -l".into() });
+        assert!(outcome.error.is_none());
+        // test_plugin records pre_exec:ls -l in its internal log; the
+        // dump-events command flushes that log to a shell var, but we
+        // don't drive it from here — we only need to confirm the hook
+        // dispatched without trap.
     }
 
     fn plugin_artifact() -> Option<std::path::PathBuf> {
