@@ -99,12 +99,14 @@ metadata line. The accepted shapes are:
   Example: `POSIX_REF: 2.10.2 Rule 10 - Keyword (after pipe)`
 - `2.10 Shell Grammar - <Topic>` — for cross-rule grammar topics.
   Example: `POSIX_REF: 2.10 Shell Grammar - Terminator Equality`
+- `4 Utilities - <name>` — for Chapter 4 utility tests (XCU Chapter 4).
+  Example: `POSIX_REF: 4 Utilities - test`
 
 A naive grep for one shape misses the others. To enumerate all
 §2.10.2-related tests, use:
 
 ```sh
-grep -RE 'POSIX_REF: 2\.10' e2e/posix_spec/
+grep -RE 'POSIX_REF: 2\.10' e2e/
 ```
 
 ### Rule 9 Taxonomy

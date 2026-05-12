@@ -109,11 +109,8 @@
 
 ## Future: E2E Test Expansion
 
-- [ ] `fd_close.sh` test only checks exit code, not actual fd close effect
 - [ ] Extend chapter-by-chapter POSIX coverage beyond XCU Chapter 2 — once the Chapter 2 coverage matrix stabilizes, add systematic E2E coverage for Chapter 4 Utilities (all shell-relevant builtins: special + regular, with option/edge-case matrices) and Chapter 8 Environment Variables. Reuse the `POSIX_REF`/`XFAIL` harness established for Chapter 2.
 - [ ] Deepen Chapter 2 POSIX coverage to normative-requirement granularity — after the hybrid (representative + thin-section) coverage lands, enumerate every shall/must/should clause in XCU Chapter 2 and add one E2E test per normative requirement (est. +100–200 tests). Use `XFAIL` liberally to register gaps; the goal is to make each normative clause individually traceable to a test ID.
-- [ ] yosh `$0` divergence from bash/sh/dash — when yosh runs a script (e.g., `yosh /path/to/script.sh`), `$0` resolves to the shell binary path (`./target/debug/yosh`), whereas bash/sh/dash return the script path. POSIX §2.5.2 allows both ("name of the shell or shell script"), so yosh is spec-compliant, but the divergence may surprise script authors. `e2e/posix_spec/2_06_01_tilde_expansion/tilde_rhs_command_prefix.sh` currently relies on the yosh-specific behavior to re-invoke yosh via `"$0" -c '...'`. If yosh is ever changed to match bash semantics, that test must switch to a different re-invocation mechanism (e.g., an exported `$SHELL_UNDER_TEST` from the e2e harness). Discovered 2026-05-12 during POSIX TODO cleanup batch.
-- [ ] `e2e/README.md` POSIX_REF Format Contract is missing `4 Utilities - <name>` — the section (L89–118) lists four §2.X shapes only, but Chapter 4 utilities now have 20+ tests (`cd_*.sh`, `echo_*.sh`, `test_*.sh`, `true_false.sh`) using the form `POSIX_REF: 4 Utilities - <name>`. Add a fifth bullet documenting this form so new Chapter 4 test authors don't have to grep precedent. Reading example: `POSIX_REF: 4 Utilities - test`. Also update the sample grep at L106 (`grep -RE 'POSIX_REF: 2\.10' e2e/posix_spec/`) — the search root excludes `e2e/builtin/` where the Chapter 4 tests live. Surfaced during the 2026-05-12 E2E quick-wins final review.
 
 ## Future: Release Skill Enhancements
 
