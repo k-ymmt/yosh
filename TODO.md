@@ -22,6 +22,7 @@
 - [ ] Multiline editing — visual multiline editing with cursor movement across lines
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
+- [ ] `set -x` PS4 prefix — `set -x` trace output always uses the hardcoded `+ ` prefix; the `PS4` variable is not consulted. POSIX requires trace lines to be prefixed with the value of `PS4` (default `+ `). XFAIL test: `e2e/posix_spec/8_env_vars/PS4_assigned.sh` (`src/exec/simple.rs`)
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
 - [ ] Right-aligned prompt (`PS1_RIGHT`) — starship-style right-side prompt display based on terminal width (`src/interactive/line_editor.rs`)
