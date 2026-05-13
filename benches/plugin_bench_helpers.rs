@@ -10,8 +10,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub fn perf_plugin_wasm() -> PathBuf {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/wasm32-wasip2/release/perf_plugin.wasm");
+    let p =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("target/wasm32-wasip2/release/perf_plugin.wasm");
     assert!(
         p.exists(),
         "perf_plugin.wasm not found at {}; build it first with \

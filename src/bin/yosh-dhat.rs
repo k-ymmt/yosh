@@ -99,7 +99,9 @@ fn run_exec_loop(args: &[String]) -> i32 {
 
     let mut last_status = 0;
     for _ in 0..n {
-        let r = executor.plugins.exec_command(&mut executor.env, &cmd, &cmd_args);
+        let r = executor
+            .plugins
+            .exec_command(&mut executor.env, &cmd, &cmd_args);
         last_status = match r {
             yosh::plugin::PluginExec::Handled(code) => code,
             yosh::plugin::PluginExec::NotHandled => 127,

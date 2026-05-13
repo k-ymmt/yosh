@@ -38,7 +38,9 @@ pub struct EnvConfig {
     pub timeout_ms: u64,
 }
 
-fn default_timeout_ms() -> u64 { 5000 }
+fn default_timeout_ms() -> u64 {
+    5000
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "call", rename_all = "lowercase")]
@@ -94,7 +96,12 @@ pub struct Expect {
 #[serde(untagged)]
 pub enum FileExpect {
     Bytes(String),
-    Struct { #[serde(default)] len: Option<usize>, #[serde(default)] bytes_eq: Option<String> },
+    Struct {
+        #[serde(default)]
+        len: Option<usize>,
+        #[serde(default)]
+        bytes_eq: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,7 +114,8 @@ pub struct ExecCallExpect {
 
 pub fn parse(path: &std::path::Path) -> Result<Scenario, String> {
     let s = std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-    let parsed: Scenario = toml::from_str(&s).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+    let parsed: Scenario =
+        toml::from_str(&s).map_err(|e| format!("parse {}: {}", path.display(), e))?;
     Ok(parsed)
 }
 
@@ -128,7 +136,10 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
         Err(e) => return vec![StepResult::Fail(format!("parse error: {}", e))],
     };
 
-    let wasm_path = path.parent().map(|p| p.join(&scenario.plugin)).unwrap_or(scenario.plugin.clone());
+    let wasm_path = path
+        .parent()
+        .map(|p| p.join(&scenario.plugin))
+        .unwrap_or(scenario.plugin.clone());
     let mut results = Vec::new();
 
     for (idx, step) in scenario.steps.iter().enumerate() {
@@ -145,7 +156,10 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
         let (outcome, expect) = match step {
             Step::Exec { args, expect } => {
                 if args.is_empty() {
-                    results.push(StepResult::Fail(format!("step {}: exec needs at least 1 arg", idx + 1)));
+                    results.push(StepResult::Fail(format!(
+                        "step {}: exec needs at least 1 arg",
+                        idx + 1
+                    )));
                     continue;
                 }
                 let (cmd, rest) = (&args[0], &args[1..]);
@@ -155,7 +169,11 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
                 let call = match build_hook_call(*name, args) {
                     Ok(c) => c,
                     Err(e) => {
-                        results.push(StepResult::Fail(format!("step {}: hook args: {}", idx + 1, e)));
+                        results.push(StepResult::Fail(format!(
+                            "step {}: hook args: {}",
+                            idx + 1,
+                            e
+                        )));
                         continue;
                     }
                 };
@@ -174,19 +192,35 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
 
 fn build_state(scenario: &Scenario) -> TestState {
     let mut state = TestState::default();
-    let parsed_caps: Vec<_> = scenario.env.caps.iter().filter_map(|s| parse_capability(s)).collect();
+    let parsed_caps: Vec<_> = scenario
+        .env
+        .caps
+        .iter()
+        .filter_map(|s| parse_capability(s))
+        .collect();
     state.caps = capabilities_to_bitflags(&parsed_caps);
-    for (k, v) in &scenario.env.vars { state.vars.insert(k.clone(), v.clone()); }
-    for k in &scenario.env.exported { state.exported.insert(k.clone()); }
-    if !scenario.env.cwd.is_empty() { state.cwd = scenario.env.cwd.clone().into(); }
-    state.allow_exec = scenario.env.allow_exec.iter()
+    for (k, v) in &scenario.env.vars {
+        state.vars.insert(k.clone(), v.clone());
+    }
+    for k in &scenario.env.exported {
+        state.exported.insert(k.clone());
+    }
+    if !scenario.env.cwd.is_empty() {
+        state.cwd = scenario.env.cwd.clone().into();
+    }
+    state.allow_exec = scenario
+        .env
+        .allow_exec
+        .iter()
         .filter_map(|p| CommandPattern::parse(p).ok())
         .collect();
     if !scenario.env.sandbox_root.is_empty() {
         state.sandbox_root = Some(std::path::PathBuf::from(&scenario.env.sandbox_root));
     } else {
         for (k, v) in &scenario.files {
-            state.files.insert(std::path::PathBuf::from(k), v.as_bytes().to_vec());
+            state
+                .files
+                .insert(std::path::PathBuf::from(k), v.as_bytes().to_vec());
         }
     }
     state
@@ -194,17 +228,26 @@ fn build_state(scenario: &Scenario) -> TestState {
 
 fn build_hook_call(name: HookName, args: &[toml::Value]) -> Result<HookCall, String> {
     fn s(v: &toml::Value) -> Result<String, String> {
-        v.as_str().map(|s| s.to_string()).ok_or_else(|| "expected string".into())
+        v.as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "expected string".into())
     }
     fn i(v: &toml::Value) -> Result<i32, String> {
-        v.as_integer().map(|i| i as i32).ok_or_else(|| "expected integer".into())
+        v.as_integer()
+            .map(|i| i as i32)
+            .ok_or_else(|| "expected integer".into())
     }
     match name {
-        HookName::PreExec => Ok(HookCall::PreExec { command_line: s(args.first().ok_or("missing arg")?)? }),
+        HookName::PreExec => Ok(HookCall::PreExec {
+            command_line: s(args.first().ok_or("missing arg")?)?,
+        }),
         HookName::PostExec => {
             let cl = s(args.first().ok_or("missing command_line")?)?;
             let ec = i(args.get(1).ok_or("missing exit_code")?)?;
-            Ok(HookCall::PostExec { command_line: cl, exit_code: ec })
+            Ok(HookCall::PostExec {
+                command_line: cl,
+                exit_code: ec,
+            })
         }
         HookName::OnCd => {
             let old = s(args.first().ok_or("missing old")?)?;
@@ -232,21 +275,31 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
     let stderr_str = String::from_utf8_lossy(&o.stderr);
 
     if let Some(want) = &e.stdout {
-        if stdout_str != *want { fail!("stdout mismatch: want {:?}, got {:?}", want, stdout_str); }
+        if stdout_str != *want {
+            fail!("stdout mismatch: want {:?}, got {:?}", want, stdout_str);
+        }
     }
     if let Some(want) = &e.stderr {
-        if stderr_str != *want { fail!("stderr mismatch: want {:?}, got {:?}", want, stderr_str); }
+        if stderr_str != *want {
+            fail!("stderr mismatch: want {:?}, got {:?}", want, stderr_str);
+        }
     }
     if let Some(sub) = &e.stdout_contains {
-        if !stdout_str.contains(sub.as_str()) { fail!("stdout_contains {:?} not found in {:?}", sub, stdout_str); }
+        if !stdout_str.contains(sub.as_str()) {
+            fail!("stdout_contains {:?} not found in {:?}", sub, stdout_str);
+        }
     }
     if let Some(sub) = &e.stderr_contains {
-        if !stderr_str.contains(sub.as_str()) { fail!("stderr_contains {:?} not found in {:?}", sub, stderr_str); }
+        if !stderr_str.contains(sub.as_str()) {
+            fail!("stderr_contains {:?} not found in {:?}", sub, stderr_str);
+        }
     }
     if let Some(re) = &e.stdout_regex {
         let rx = regex::Regex::new(re).map_err(|err| err.to_string());
         match rx {
-            Ok(rx) if !rx.is_match(&stdout_str) => fail!("stdout_regex {:?} did not match {:?}", re, stdout_str),
+            Ok(rx) if !rx.is_match(&stdout_str) => {
+                fail!("stdout_regex {:?} did not match {:?}", re, stdout_str)
+            }
             Err(err) => fail!("stdout_regex invalid: {}", err),
             _ => {}
         }
@@ -254,7 +307,9 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
     if let Some(re) = &e.stderr_regex {
         let rx = regex::Regex::new(re).map_err(|err| err.to_string());
         match rx {
-            Ok(rx) if !rx.is_match(&stderr_str) => fail!("stderr_regex {:?} did not match {:?}", re, stderr_str),
+            Ok(rx) if !rx.is_match(&stderr_str) => {
+                fail!("stderr_regex {:?} did not match {:?}", re, stderr_str)
+            }
             Err(err) => fail!("stderr_regex invalid: {}", err),
             _ => {}
         }
@@ -262,15 +317,21 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
 
     if let Some(want) = &e.vars_set {
         let got: BTreeMap<String, String> = o.set_log.iter().cloned().collect();
-        if got != *want { fail!("vars_set: want {:?}, got {:?}", want, got); }
+        if got != *want {
+            fail!("vars_set: want {:?}, got {:?}", want, got);
+        }
     }
     if let Some(want) = &e.vars_export {
         let got: BTreeMap<String, String> = o.export_log.iter().cloned().collect();
-        if got != *want { fail!("vars_export: want {:?}, got {:?}", want, got); }
+        if got != *want {
+            fail!("vars_export: want {:?}, got {:?}", want, got);
+        }
     }
 
     if let Some(want) = &e.files_write {
-        let got: BTreeMap<String, usize> = o.write_log.iter()
+        let got: BTreeMap<String, usize> = o
+            .write_log
+            .iter()
             .map(|(p, n)| (p.display().to_string(), *n))
             .collect();
         for (path, expectation) in want {
@@ -278,24 +339,36 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
                 FileExpect::Bytes(b) => {
                     let want_len = b.as_bytes().len();
                     match got.get(path) {
-                        Some(actual) if *actual == want_len => {},
-                        Some(actual) => fail!("files_write[{}] len: want {}, got {}", path, want_len, actual),
+                        Some(actual) if *actual == want_len => {}
+                        Some(actual) => fail!(
+                            "files_write[{}] len: want {}, got {}",
+                            path,
+                            want_len,
+                            actual
+                        ),
                         None => fail!("files_write[{}] not written", path),
                     }
                 }
                 FileExpect::Struct { len, bytes_eq } => {
                     if let Some(l) = len {
                         match got.get(path) {
-                            Some(actual) if *actual == *l => {},
-                            Some(actual) => fail!("files_write[{}] len: want {}, got {}", path, l, actual),
+                            Some(actual) if *actual == *l => {}
+                            Some(actual) => {
+                                fail!("files_write[{}] len: want {}, got {}", path, l, actual)
+                            }
                             None => fail!("files_write[{}] not written", path),
                         }
                     }
                     if let Some(b) = bytes_eq {
                         let want_len = b.as_bytes().len();
                         match got.get(path) {
-                            Some(actual) if *actual == want_len => {},
-                            Some(actual) => fail!("files_write[{}] bytes_eq len: want {}, got {}", path, want_len, actual),
+                            Some(actual) if *actual == want_len => {}
+                            Some(actual) => fail!(
+                                "files_write[{}] bytes_eq len: want {}, got {}",
+                                path,
+                                want_len,
+                                actual
+                            ),
                             None => fail!("files_write[{}] not written", path),
                         }
                     }
@@ -306,20 +379,47 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
 
     if let Some(want_seq) = &e.exec_called {
         if want_seq.len() != o.exec_log.len() {
-            fail!("exec_called: want {} calls, got {}", want_seq.len(), o.exec_log.len());
+            fail!(
+                "exec_called: want {} calls, got {}",
+                want_seq.len(),
+                o.exec_log.len()
+            );
         }
         for (i, (w, g)) in want_seq.iter().zip(o.exec_log.iter()).enumerate() {
-            if w.program != g.program { fail!("exec_called[{}].program: want {}, got {}", i, w.program, g.program); }
-            if w.args != g.args { fail!("exec_called[{}].args: want {:?}, got {:?}", i, w.args, g.args); }
+            if w.program != g.program {
+                fail!(
+                    "exec_called[{}].program: want {}, got {}",
+                    i,
+                    w.program,
+                    g.program
+                );
+            }
+            if w.args != g.args {
+                fail!(
+                    "exec_called[{}].args: want {:?}, got {:?}",
+                    i,
+                    w.args,
+                    g.args
+                );
+            }
             if let Some(exit) = w.exit {
-                if exit != g.exit_code { fail!("exec_called[{}].exit: want {}, got {}", i, exit, g.exit_code); }
+                if exit != g.exit_code {
+                    fail!(
+                        "exec_called[{}].exit: want {}, got {}",
+                        i,
+                        exit,
+                        g.exit_code
+                    );
+                }
             }
         }
     }
 
     if let Some(want) = e.trap {
         let got = o.error_kind == Some("trap");
-        if got != want { fail!("trap: want {}, got {}", want, got); }
+        if got != want {
+            fail!("trap: want {}, got {}", want, got);
+        }
     }
 
     StepResult::Pass
@@ -347,14 +447,20 @@ mod evaluator_tests {
     #[test]
     fn expect_exit_match_passes() {
         let o = outcome_with(Some(0), b"");
-        let e = Expect { exit: Some(0), ..Default::default() };
+        let e = Expect {
+            exit: Some(0),
+            ..Default::default()
+        };
         assert!(matches!(evaluate(1, &o, &e), StepResult::Pass));
     }
 
     #[test]
     fn expect_exit_mismatch_fails() {
         let o = outcome_with(Some(2), b"");
-        let e = Expect { exit: Some(0), ..Default::default() };
+        let e = Expect {
+            exit: Some(0),
+            ..Default::default()
+        };
         match evaluate(1, &o, &e) {
             StepResult::Fail(s) => assert!(s.contains("exit")),
             _ => panic!("expected fail"),
@@ -364,7 +470,10 @@ mod evaluator_tests {
     #[test]
     fn expect_stdout_contains_works() {
         let o = outcome_with(Some(0), b"hello world\n");
-        let e = Expect { stdout_contains: Some("world".into()), ..Default::default() };
+        let e = Expect {
+            stdout_contains: Some("world".into()),
+            ..Default::default()
+        };
         assert!(matches!(evaluate(1, &o, &e), StepResult::Pass));
     }
 
@@ -372,12 +481,16 @@ mod evaluator_tests {
     fn run_dir_collects_toml_files() {
         let tmp = tempfile::tempdir().unwrap();
         let a = tmp.path().join("a.toml");
-        std::fs::write(&a, r#"
+        std::fs::write(
+            &a,
+            r#"
             plugin = "missing.wasm"
             [[step]]
             call = "exec"
             args = ["x"]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let reports = run_dir(tmp.path(), None);
         assert_eq!(reports.len(), 1);
         assert!(!reports[0].passed()); // wasm missing
@@ -417,7 +530,9 @@ pub fn run_dir(path: &std::path::Path, filter: Option<&str>) -> Vec<ScenarioRepo
     });
 
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in rd.flatten() {
             let p = entry.path();
             if p.is_dir() {
@@ -438,10 +553,15 @@ pub fn run_dir(path: &std::path::Path, filter: Option<&str>) -> Vec<ScenarioRepo
 
     for p in paths {
         if let Some(rx) = &filter_rx {
-            if !rx.is_match(&p.to_string_lossy()) { continue; }
+            if !rx.is_match(&p.to_string_lossy()) {
+                continue;
+            }
         }
         let results = run_scenario(&p);
-        reports.push(ScenarioReport { file: p, steps: results });
+        reports.push(ScenarioReport {
+            file: p,
+            steps: results,
+        });
     }
     reports
 }
@@ -478,27 +598,43 @@ pub fn format_summary_json(reports: &[ScenarioReport]) -> String {
     for r in reports {
         if r.passed() {
             passed += 1;
-            let _ = writeln!(out, "{}", serde_json::json!({
-                "file": r.file.display().to_string(),
-                "status": "pass",
-                "steps": r.steps.len()
-            }));
+            let _ = writeln!(
+                out,
+                "{}",
+                serde_json::json!({
+                    "file": r.file.display().to_string(),
+                    "status": "pass",
+                    "steps": r.steps.len()
+                })
+            );
         } else {
             failed += 1;
-            let reason = r.steps.iter().find_map(|s| match s {
-                StepResult::Fail(m) => Some(m.clone()),
-                _ => None,
-            }).unwrap_or_default();
-            let _ = writeln!(out, "{}", serde_json::json!({
-                "file": r.file.display().to_string(),
-                "status": "fail",
-                "reason": reason
-            }));
+            let reason = r
+                .steps
+                .iter()
+                .find_map(|s| match s {
+                    StepResult::Fail(m) => Some(m.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "{}",
+                serde_json::json!({
+                    "file": r.file.display().to_string(),
+                    "status": "fail",
+                    "reason": reason
+                })
+            );
         }
     }
-    let _ = writeln!(out, "{}", serde_json::json!({
-        "summary": { "passed": passed, "failed": failed, "total": reports.len() }
-    }));
+    let _ = writeln!(
+        out,
+        "{}",
+        serde_json::json!({
+            "summary": { "passed": passed, "failed": failed, "total": reports.len() }
+        })
+    );
     out
 }
 
@@ -512,42 +648,53 @@ mod tests {
 
     #[test]
     fn minimal_scenario_parses() {
-        let sc = parse_str(r#"
+        let sc = parse_str(
+            r#"
             plugin = "a.wasm"
             [[step]]
             call = "exec"
             args = ["echo", "hi"]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(sc.plugin.to_str().unwrap(), "a.wasm");
         assert_eq!(sc.steps.len(), 1);
         match &sc.steps[0] {
-            Step::Exec { args, .. } => assert_eq!(args, &vec!["echo".to_string(), "hi".to_string()]),
+            Step::Exec { args, .. } => {
+                assert_eq!(args, &vec!["echo".to_string(), "hi".to_string()])
+            }
             _ => panic!("expected exec step"),
         }
     }
 
     #[test]
     fn unknown_expect_key_rejected() {
-        let err = parse_str(r#"
+        let err = parse_str(
+            r#"
             plugin = "a.wasm"
             [[step]]
             call = "exec"
             args = ["x"]
             [step.expect]
             mystery = "boom"
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(err.contains("mystery") || err.contains("unknown field"));
     }
 
     #[test]
     fn hook_step_parses() {
-        let sc = parse_str(r#"
+        let sc = parse_str(
+            r#"
             plugin = "a.wasm"
             [[step]]
             call = "hook"
             name = "on-cd"
             args = ["/old", "/new"]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         match &sc.steps[0] {
             Step::Hook { name, args, .. } => {
                 assert_eq!(*name, HookName::OnCd);

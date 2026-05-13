@@ -5,8 +5,8 @@
 //! measurements are not polluted.
 
 use yosh_plugin_sdk::{
-    Capability, HookName, IoStream, Plugin, append_file, export, get_var, read_file,
-    remove_file, set_var, write_bytes, write_file,
+    Capability, HookName, IoStream, Plugin, append_file, export, get_var, read_file, remove_file,
+    set_var, write_bytes, write_file,
 };
 
 #[derive(Default)]

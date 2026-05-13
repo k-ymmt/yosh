@@ -1,7 +1,10 @@
 use std::path::Path;
 
 fn main() {
-    verify_bundled_wit("../yosh-plugin-api/wit/yosh-plugin.wit", "wit/yosh-plugin.wit");
+    verify_bundled_wit(
+        "../yosh-plugin-api/wit/yosh-plugin.wit",
+        "wit/yosh-plugin.wit",
+    );
 }
 
 /// Verify the bundled WIT copy stays in sync with the canonical source

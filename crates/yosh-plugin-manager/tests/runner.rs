@@ -4,12 +4,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use yosh_plugin_api::pattern::CommandPattern;
+use yosh_plugin_api::{CAP_COMMANDS_EXEC, CAP_HOOK_ON_CD, CAP_IO, CAP_VARIABLES_WRITE};
 use yosh_plugin_manager::runner::{HookCall, invoke_exec, invoke_hook, load_plugin};
 use yosh_plugin_manager::test_host::TestState;
-use yosh_plugin_api::{
-    CAP_COMMANDS_EXEC, CAP_HOOK_ON_CD, CAP_IO, CAP_VARIABLES_WRITE,
-};
-use yosh_plugin_api::pattern::CommandPattern;
 
 fn wasm() -> Option<PathBuf> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,7 +32,13 @@ fn case_2_hook_on_cd_records_var() {
     let mut s = TestState::default();
     s.caps = CAP_HOOK_ON_CD | CAP_VARIABLES_WRITE | CAP_IO;
     let loaded = load_plugin(&w, s, Duration::from_secs(5)).expect("load");
-    let outcome = invoke_hook(loaded, HookCall::OnCd { old: "/tmp".into(), new: "/home".into() });
+    let outcome = invoke_hook(
+        loaded,
+        HookCall::OnCd {
+            old: "/tmp".into(),
+            new: "/home".into(),
+        },
+    );
     assert!(outcome.error.is_none());
 }
 
@@ -68,7 +72,9 @@ fn case_4_allowed_exec_pattern_runs_echo() {
 fn case_5_timeout_on_slow_plugin_pre_prompt() {
     let slow = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/wasm32-wasip2/release/slow_plugin.wasm");
-    if !slow.exists() { return; }
+    if !slow.exists() {
+        return;
+    }
     let mut s = TestState::default();
     s.caps = yosh_plugin_api::CAP_HOOK_PRE_PROMPT;
     let start = std::time::Instant::now();
@@ -82,13 +88,18 @@ fn case_5_timeout_on_slow_plugin_pre_prompt() {
     // ranges several seconds even for a 200ms deadline. The point of
     // this assertion is "bounded", not "fast" — we just want to catch
     // an outright hang.
-    assert!(elapsed < Duration::from_secs(15), "timeout interrupt did not fire: {:?}", elapsed);
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "timeout interrupt did not fire: {:?}",
+        elapsed
+    );
 }
 
 #[test]
 fn case_6_test_runner_parses_passing_scenario() {
     let Some(_w) = wasm() else { return };
-    let scenario = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios/echo_var_pass.toml");
+    let scenario =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios/echo_var_pass.toml");
     let reports = yosh_plugin_manager::scenario::run_dir(&scenario, None);
     assert_eq!(reports.len(), 1);
     assert!(reports[0].passed(), "report: {:?}", reports[0]);
@@ -97,7 +108,8 @@ fn case_6_test_runner_parses_passing_scenario() {
 #[test]
 fn case_7_test_runner_reports_failure_with_step_index() {
     let Some(_w) = wasm() else { return };
-    let scenario = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios/vars_set_fail.toml");
+    let scenario =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios/vars_set_fail.toml");
     let reports = yosh_plugin_manager::scenario::run_dir(&scenario, None);
     assert_eq!(reports.len(), 1);
     assert!(!reports[0].passed());
@@ -107,14 +119,18 @@ fn case_7_test_runner_reports_failure_with_step_index() {
 fn case_8_unknown_expect_key_rejected_at_parse() {
     use yosh_plugin_manager::scenario;
     let tmp = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(tmp.path(), r#"
+    std::fs::write(
+        tmp.path(),
+        r#"
         plugin = "x.wasm"
         [[step]]
         call = "exec"
         args = ["y"]
         [step.expect]
         unknown_key = "boom"
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     let err = scenario::parse(tmp.path()).unwrap_err();
     assert!(err.contains("unknown") || err.contains("unknown_key"));
 }

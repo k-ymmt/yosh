@@ -73,7 +73,9 @@ fn extract_succeeds_for_real_cargo_component_plugin() {
         md.required_capabilities
     );
     assert!(
-        md.required_capabilities.iter().any(|c| c == "commands:exec"),
+        md.required_capabilities
+            .iter()
+            .any(|c| c == "commands:exec"),
         "expected commands:exec in capabilities, got {:?}",
         md.required_capabilities
     );

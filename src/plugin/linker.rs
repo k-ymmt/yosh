@@ -98,7 +98,11 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
             |store, (name, value): (wasmtime::component::WasmStr, wasmtime::component::WasmStr)| {
                 let name_str = name.to_str(&store)?;
                 let value_str = value.to_str(&store)?;
-                Ok((host_variables_export_env(store.data(), &name_str, &value_str),))
+                Ok((host_variables_export_env(
+                    store.data(),
+                    &name_str,
+                    &value_str,
+                ),))
             },
         )?;
     } else {
@@ -115,7 +119,11 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
             |store, (name, value): (wasmtime::component::WasmStr, wasmtime::component::WasmStr)| {
                 let name_str = name.to_str(&store)?;
                 let value_str = value.to_str(&store)?;
-                Ok((deny_variables_export_env(store.data(), &name_str, &value_str),))
+                Ok((deny_variables_export_env(
+                    store.data(),
+                    &name_str,
+                    &value_str,
+                ),))
             },
         )?;
     }
@@ -126,33 +134,45 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
         fs.func_wrap("cwd", |mut store, (): ()| {
             Ok((host_filesystem_cwd(store.data_mut()),))
         })?;
-        fs.func_wrap("set-cwd", |store, (path,): (wasmtime::component::WasmStr,)| {
-            let path_str = path.to_str(&store)?;
-            Ok((host_filesystem_set_cwd(store.data(), &path_str),))
-        })?;
+        fs.func_wrap(
+            "set-cwd",
+            |store, (path,): (wasmtime::component::WasmStr,)| {
+                let path_str = path.to_str(&store)?;
+                Ok((host_filesystem_set_cwd(store.data(), &path_str),))
+            },
+        )?;
     } else {
         fs.func_wrap("cwd", |mut store, (): ()| {
             Ok((deny_filesystem_cwd(store.data_mut()),))
         })?;
-        fs.func_wrap("set-cwd", |store, (path,): (wasmtime::component::WasmStr,)| {
-            let path_str = path.to_str(&store)?;
-            Ok((deny_filesystem_set_cwd(store.data(), &path_str),))
-        })?;
+        fs.func_wrap(
+            "set-cwd",
+            |store, (path,): (wasmtime::component::WasmStr,)| {
+                let path_str = path.to_str(&store)?;
+                Ok((deny_filesystem_set_cwd(store.data(), &path_str),))
+            },
+        )?;
     }
 
     // ── yosh:plugin/io ──────────────────────────────────────────────────
     use super::generated::yosh::plugin::types::IoStream;
     let mut io = linker.instance("yosh:plugin/io@0.2.1")?;
     if has(allowed, CAP_IO) {
-        io.func_wrap("write", |store, (target, data): (IoStream, wasmtime::component::WasmList<u8>)| {
-            let bytes = data.as_le_slice(&store);
-            Ok((host_io_write(store.data(), target, bytes),))
-        })?;
+        io.func_wrap(
+            "write",
+            |store, (target, data): (IoStream, wasmtime::component::WasmList<u8>)| {
+                let bytes = data.as_le_slice(&store);
+                Ok((host_io_write(store.data(), target, bytes),))
+            },
+        )?;
     } else {
-        io.func_wrap("write", |store, (target, data): (IoStream, wasmtime::component::WasmList<u8>)| {
-            let bytes = data.as_le_slice(&store);
-            Ok((deny_io_write(store.data(), target, bytes),))
-        })?;
+        io.func_wrap(
+            "write",
+            |store, (target, data): (IoStream, wasmtime::component::WasmList<u8>)| {
+                let bytes = data.as_le_slice(&store);
+                Ok((deny_io_write(store.data(), target, bytes),))
+            },
+        )?;
     }
 
     // ── yosh:plugin/files ───────────────────────────────────────────────
@@ -160,38 +180,60 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
 
     // Read group — gated by CAP_FILES_READ
     if has(allowed, CAP_FILES_READ) {
-        files.func_wrap("read-file", |store, (path,): (wasmtime::component::WasmStr,)| {
-            let path_str = path.to_str(&store)?;
-            Ok((host_files_read_file(store.data(), &path_str),))
-        })?;
-        files.func_wrap("read-dir", |store, (path,): (wasmtime::component::WasmStr,)| {
-            let path_str = path.to_str(&store)?;
-            Ok((host_files_read_dir(store.data(), &path_str),))
-        })?;
-        files.func_wrap("metadata", |store, (path,): (wasmtime::component::WasmStr,)| {
-            let path_str = path.to_str(&store)?;
-            Ok((host_files_metadata(store.data(), &path_str),))
-        })?;
+        files.func_wrap(
+            "read-file",
+            |store, (path,): (wasmtime::component::WasmStr,)| {
+                let path_str = path.to_str(&store)?;
+                Ok((host_files_read_file(store.data(), &path_str),))
+            },
+        )?;
+        files.func_wrap(
+            "read-dir",
+            |store, (path,): (wasmtime::component::WasmStr,)| {
+                let path_str = path.to_str(&store)?;
+                Ok((host_files_read_dir(store.data(), &path_str),))
+            },
+        )?;
+        files.func_wrap(
+            "metadata",
+            |store, (path,): (wasmtime::component::WasmStr,)| {
+                let path_str = path.to_str(&store)?;
+                Ok((host_files_metadata(store.data(), &path_str),))
+            },
+        )?;
     } else {
-        files.func_wrap("read-file", |store, (path,): (wasmtime::component::WasmStr,)| {
-            let path_str = path.to_str(&store)?;
-            Ok((deny_files_read_file(store.data(), &path_str),))
-        })?;
-        files.func_wrap("read-dir", |store, (path,): (wasmtime::component::WasmStr,)| {
-            let path_str = path.to_str(&store)?;
-            Ok((deny_files_read_dir(store.data(), &path_str),))
-        })?;
-        files.func_wrap("metadata", |store, (path,): (wasmtime::component::WasmStr,)| {
-            let path_str = path.to_str(&store)?;
-            Ok((deny_files_metadata(store.data(), &path_str),))
-        })?;
+        files.func_wrap(
+            "read-file",
+            |store, (path,): (wasmtime::component::WasmStr,)| {
+                let path_str = path.to_str(&store)?;
+                Ok((deny_files_read_file(store.data(), &path_str),))
+            },
+        )?;
+        files.func_wrap(
+            "read-dir",
+            |store, (path,): (wasmtime::component::WasmStr,)| {
+                let path_str = path.to_str(&store)?;
+                Ok((deny_files_read_dir(store.data(), &path_str),))
+            },
+        )?;
+        files.func_wrap(
+            "metadata",
+            |store, (path,): (wasmtime::component::WasmStr,)| {
+                let path_str = path.to_str(&store)?;
+                Ok((deny_files_metadata(store.data(), &path_str),))
+            },
+        )?;
     }
 
     // Write group — gated by CAP_FILES_WRITE
     if has(allowed, CAP_FILES_WRITE) {
         files.func_wrap(
             "write-file",
-            |store, (path, data): (wasmtime::component::WasmStr, wasmtime::component::WasmList<u8>)| {
+            |store,
+             (path, data): (
+                wasmtime::component::WasmStr,
+                wasmtime::component::WasmList<u8>,
+            )| {
                 let path_str = path.to_str(&store)?;
                 let bytes = data.as_le_slice(&store);
                 Ok((host_files_write_file(store.data(), &path_str, bytes),))
@@ -199,7 +241,11 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
         )?;
         files.func_wrap(
             "append-file",
-            |store, (path, data): (wasmtime::component::WasmStr, wasmtime::component::WasmList<u8>)| {
+            |store,
+             (path, data): (
+                wasmtime::component::WasmStr,
+                wasmtime::component::WasmList<u8>,
+            )| {
                 let path_str = path.to_str(&store)?;
                 let bytes = data.as_le_slice(&store);
                 Ok((host_files_append_file(store.data(), &path_str, bytes),))
@@ -212,10 +258,13 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
                 Ok((host_files_create_dir(store.data(), &path_str, recursive),))
             },
         )?;
-        files.func_wrap("remove-file", |store, (path,): (wasmtime::component::WasmStr,)| {
-            let path_str = path.to_str(&store)?;
-            Ok((host_files_remove_file(store.data(), &path_str),))
-        })?;
+        files.func_wrap(
+            "remove-file",
+            |store, (path,): (wasmtime::component::WasmStr,)| {
+                let path_str = path.to_str(&store)?;
+                Ok((host_files_remove_file(store.data(), &path_str),))
+            },
+        )?;
         files.func_wrap(
             "remove-dir",
             |store, (path, recursive): (wasmtime::component::WasmStr, bool)| {
@@ -226,7 +275,11 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
     } else {
         files.func_wrap(
             "write-file",
-            |store, (path, data): (wasmtime::component::WasmStr, wasmtime::component::WasmList<u8>)| {
+            |store,
+             (path, data): (
+                wasmtime::component::WasmStr,
+                wasmtime::component::WasmList<u8>,
+            )| {
                 let path_str = path.to_str(&store)?;
                 let bytes = data.as_le_slice(&store);
                 Ok((deny_files_write_file(store.data(), &path_str, bytes),))
@@ -234,7 +287,11 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
         )?;
         files.func_wrap(
             "append-file",
-            |store, (path, data): (wasmtime::component::WasmStr, wasmtime::component::WasmList<u8>)| {
+            |store,
+             (path, data): (
+                wasmtime::component::WasmStr,
+                wasmtime::component::WasmList<u8>,
+            )| {
                 let path_str = path.to_str(&store)?;
                 let bytes = data.as_le_slice(&store);
                 Ok((deny_files_append_file(store.data(), &path_str, bytes),))
@@ -247,10 +304,13 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
                 Ok((deny_files_create_dir(store.data(), &path_str, recursive),))
             },
         )?;
-        files.func_wrap("remove-file", |store, (path,): (wasmtime::component::WasmStr,)| {
-            let path_str = path.to_str(&store)?;
-            Ok((deny_files_remove_file(store.data(), &path_str),))
-        })?;
+        files.func_wrap(
+            "remove-file",
+            |store, (path,): (wasmtime::component::WasmStr,)| {
+                let path_str = path.to_str(&store)?;
+                Ok((deny_files_remove_file(store.data(), &path_str),))
+            },
+        )?;
         files.func_wrap(
             "remove-dir",
             |store, (path, recursive): (wasmtime::component::WasmStr, bool)| {

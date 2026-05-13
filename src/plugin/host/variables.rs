@@ -6,34 +6,20 @@
 use super::super::generated::yosh::plugin::types::ErrorCode;
 use super::HostContext;
 
-pub fn host_variables_get(
-    ctx: &HostContext,
-    name: &str,
-) -> Result<Option<String>, ErrorCode> {
+pub fn host_variables_get(ctx: &HostContext, name: &str) -> Result<Option<String>, ErrorCode> {
     let env = ctx.bound_env_ref()?;
     Ok(env.vars.get(name).map(|s| s.to_string()))
 }
 
-pub fn deny_variables_get(
-    _ctx: &HostContext,
-    _name: &str,
-) -> Result<Option<String>, ErrorCode> {
+pub fn deny_variables_get(_ctx: &HostContext, _name: &str) -> Result<Option<String>, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
-pub fn host_variables_set(
-    ctx: &HostContext,
-    name: &str,
-    value: &str,
-) -> Result<(), ErrorCode> {
+pub fn host_variables_set(ctx: &HostContext, name: &str, value: &str) -> Result<(), ErrorCode> {
     ctx.bound_env_with(|env| env.vars.set(name, value).map_err(|_| ErrorCode::IoFailed))?
 }
 
-pub fn deny_variables_set(
-    _ctx: &HostContext,
-    _name: &str,
-    _value: &str,
-) -> Result<(), ErrorCode> {
+pub fn deny_variables_set(_ctx: &HostContext, _name: &str, _value: &str) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
 
@@ -46,9 +32,7 @@ pub fn host_variables_export_env(
     value: &str,
 ) -> Result<(), ErrorCode> {
     ctx.bound_env_with(|env| {
-        env.vars
-            .set(name, value)
-            .map_err(|_| ErrorCode::IoFailed)?;
+        env.vars.set(name, value).map_err(|_| ErrorCode::IoFailed)?;
         env.vars.export(name);
         Ok(())
     })?

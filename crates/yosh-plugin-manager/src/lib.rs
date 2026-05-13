@@ -5,12 +5,12 @@ pub mod lockfile;
 pub mod metadata_extract;
 pub mod precompile;
 pub mod resolve;
-pub mod sync;
-pub mod update;
-pub mod verify;
-pub mod test_host;
 pub mod runner;
 pub mod scenario;
+pub mod sync;
+pub mod test_host;
+pub mod update;
+pub mod verify;
 
 /// wasmtime bindgen for the `plugin-world` WIT contract.
 ///
@@ -66,9 +66,17 @@ pub enum RunAction {
 
 #[derive(Subcommand)]
 pub enum HookKind {
-    PreExec { command_line: String },
-    PostExec { command_line: String, exit_code: i32 },
-    OnCd { old: String, new: String },
+    PreExec {
+        command_line: String,
+    },
+    PostExec {
+        command_line: String,
+        exit_code: i32,
+    },
+    OnCd {
+        old: String,
+        new: String,
+    },
     PrePrompt,
 }
 
@@ -186,7 +194,11 @@ pub fn run() -> i32 {
             timeout,
             format,
         ),
-        Commands::Test { path, filter, format } => cmd_test(path, filter, format),
+        Commands::Test {
+            path,
+            filter,
+            format,
+        } => cmd_test(path, filter, format),
     }
 }
 
@@ -212,7 +224,9 @@ fn cmd_run(
     timeout: u64,
     format: OutputFormat,
 ) -> i32 {
-    use crate::runner::{HookCall, format_human, format_json, invoke_exec, invoke_hook, load_plugin};
+    use crate::runner::{
+        HookCall, format_human, format_json, invoke_exec, invoke_hook, load_plugin,
+    };
     use crate::test_host::TestState;
     use yosh_plugin_api::pattern::CommandPattern;
     use yosh_plugin_api::{capabilities_to_bitflags, parse_capability};

@@ -28,10 +28,7 @@ pub fn host_files_read_file(ctx: &HostContext, path: &str) -> Result<Vec<u8>, Er
     }
 }
 
-pub fn host_files_read_dir(
-    ctx: &HostContext,
-    path: &str,
-) -> Result<Vec<DirEntry>, ErrorCode> {
+pub fn host_files_read_dir(ctx: &HostContext, path: &str) -> Result<Vec<DirEntry>, ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
@@ -80,11 +77,7 @@ pub fn host_files_metadata(ctx: &HostContext, path: &str) -> Result<FileStat, Er
     })
 }
 
-pub fn host_files_write_file(
-    ctx: &HostContext,
-    path: &str,
-    data: &[u8],
-) -> Result<(), ErrorCode> {
+pub fn host_files_write_file(ctx: &HostContext, path: &str, data: &[u8]) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
@@ -92,11 +85,7 @@ pub fn host_files_write_file(
     std::fs::write(path, data).map_err(|_| ErrorCode::IoFailed)
 }
 
-pub fn host_files_append_file(
-    ctx: &HostContext,
-    path: &str,
-    data: &[u8],
-) -> Result<(), ErrorCode> {
+pub fn host_files_append_file(ctx: &HostContext, path: &str, data: &[u8]) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
@@ -164,10 +153,7 @@ pub fn deny_files_read_file(_ctx: &HostContext, _path: &str) -> Result<Vec<u8>, 
     Err(ErrorCode::Denied)
 }
 
-pub fn deny_files_read_dir(
-    _ctx: &HostContext,
-    _path: &str,
-) -> Result<Vec<DirEntry>, ErrorCode> {
+pub fn deny_files_read_dir(_ctx: &HostContext, _path: &str) -> Result<Vec<DirEntry>, ErrorCode> {
     Err(ErrorCode::Denied)
 }
 

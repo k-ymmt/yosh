@@ -127,14 +127,20 @@ mod tests {
 
     fn state_with_allow(patterns: &[&str]) -> TestState {
         let mut s = TestState::with_caps(CAP_COMMANDS_EXEC);
-        s.allow_exec = patterns.iter().map(|p| CommandPattern::parse(p).unwrap()).collect();
+        s.allow_exec = patterns
+            .iter()
+            .map(|p| CommandPattern::parse(p).unwrap())
+            .collect();
         s
     }
 
     #[test]
     fn exec_denied_without_cap() {
         let mut s = TestState::default();
-        assert!(matches!(host_exec(&mut s, "/bin/echo", &[]), Err(ErrorCode::Denied)));
+        assert!(matches!(
+            host_exec(&mut s, "/bin/echo", &[]),
+            Err(ErrorCode::Denied)
+        ));
     }
 
     #[test]
@@ -159,6 +165,9 @@ mod tests {
     #[test]
     fn exec_returns_not_found_for_missing_binary() {
         let mut s = state_with_allow(&["/nope/binary-xyz:*"]);
-        assert!(matches!(host_exec(&mut s, "/nope/binary-xyz", &[]), Err(ErrorCode::NotFound)));
+        assert!(matches!(
+            host_exec(&mut s, "/nope/binary-xyz", &[]),
+            Err(ErrorCode::NotFound)
+        ));
     }
 }

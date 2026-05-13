@@ -2,7 +2,10 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
-    verify_bundled_wit("../yosh-plugin-api/wit/yosh-plugin.wit", "wit/yosh-plugin.wit");
+    verify_bundled_wit(
+        "../yosh-plugin-api/wit/yosh-plugin.wit",
+        "wit/yosh-plugin.wit",
+    );
 
     let hash = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])

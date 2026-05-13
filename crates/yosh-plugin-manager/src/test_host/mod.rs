@@ -74,7 +74,10 @@ impl TestState {
     /// unit tests so each module doesn't have to repeat a local
     /// `state_with` helper.
     pub fn with_caps(caps: u32) -> Self {
-        TestState { caps, ..TestState::default() }
+        TestState {
+            caps,
+            ..TestState::default()
+        }
     }
 }
 
@@ -157,13 +160,21 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     vars.func_wrap(
         "set",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (name, value): (String, String)| {
-            Ok::<_, wasmtime::Error>((variables::host_set(&mut store.data_mut().state, &name, &value),))
+            Ok::<_, wasmtime::Error>((variables::host_set(
+                &mut store.data_mut().state,
+                &name,
+                &value,
+            ),))
         },
     )?;
     vars.func_wrap(
         "export-env",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (name, value): (String, String)| {
-            Ok::<_, wasmtime::Error>((variables::host_export_env(&mut store.data_mut().state, &name, &value),))
+            Ok::<_, wasmtime::Error>((variables::host_export_env(
+                &mut store.data_mut().state,
+                &name,
+                &value,
+            ),))
         },
     )?;
 
@@ -178,7 +189,9 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     fs.func_wrap(
         "set-cwd",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
-            Ok::<_, wasmtime::Error>((filesystem::host_set_cwd(&mut store.data_mut().state, &path),))
+            Ok::<_, wasmtime::Error>(
+                (filesystem::host_set_cwd(&mut store.data_mut().state, &path),),
+            )
         },
     )?;
 
@@ -214,19 +227,31 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     f.func_wrap(
         "write-file",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, data): (String, Vec<u8>)| {
-            Ok::<_, wasmtime::Error>((files::host_write_file(&mut store.data_mut().state, &path, &data),))
+            Ok::<_, wasmtime::Error>((files::host_write_file(
+                &mut store.data_mut().state,
+                &path,
+                &data,
+            ),))
         },
     )?;
     f.func_wrap(
         "append-file",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, data): (String, Vec<u8>)| {
-            Ok::<_, wasmtime::Error>((files::host_append_file(&mut store.data_mut().state, &path, &data),))
+            Ok::<_, wasmtime::Error>((files::host_append_file(
+                &mut store.data_mut().state,
+                &path,
+                &data,
+            ),))
         },
     )?;
     f.func_wrap(
         "create-dir",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, recursive): (String, bool)| {
-            Ok::<_, wasmtime::Error>((files::host_create_dir(&mut store.data_mut().state, &path, recursive),))
+            Ok::<_, wasmtime::Error>((files::host_create_dir(
+                &mut store.data_mut().state,
+                &path,
+                recursive,
+            ),))
         },
     )?;
     f.func_wrap(
@@ -238,7 +263,11 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     f.func_wrap(
         "remove-dir",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, recursive): (String, bool)| {
-            Ok::<_, wasmtime::Error>((files::host_remove_dir(&mut store.data_mut().state, &path, recursive),))
+            Ok::<_, wasmtime::Error>((files::host_remove_dir(
+                &mut store.data_mut().state,
+                &path,
+                recursive,
+            ),))
         },
     )?;
 
@@ -246,8 +275,13 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     let mut cmds = linker.instance("yosh:plugin/commands@0.2.1")?;
     cmds.func_wrap(
         "exec",
-        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (program, args): (String, Vec<String>)| {
-            Ok::<_, wasmtime::Error>((commands::host_exec(&mut store.data_mut().state, &program, &args),))
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>,
+         (program, args): (String, Vec<String>)| {
+            Ok::<_, wasmtime::Error>((commands::host_exec(
+                &mut store.data_mut().state,
+                &program,
+                &args,
+            ),))
         },
     )?;
 

@@ -6,11 +6,7 @@ use std::io::Write;
 use super::super::generated::yosh::plugin::types::{ErrorCode, IoStream};
 use super::HostContext;
 
-pub fn host_io_write(
-    ctx: &HostContext,
-    target: IoStream,
-    data: &[u8],
-) -> Result<(), ErrorCode> {
+pub fn host_io_write(ctx: &HostContext, target: IoStream, data: &[u8]) -> Result<(), ErrorCode> {
     ctx.ensure_bound()?;
     let result = match target {
         IoStream::Stdout => std::io::stdout().write_all(data),
@@ -19,11 +15,7 @@ pub fn host_io_write(
     result.map_err(|_| ErrorCode::IoFailed)
 }
 
-pub fn deny_io_write(
-    _ctx: &HostContext,
-    _target: IoStream,
-    _data: &[u8],
-) -> Result<(), ErrorCode> {
+pub fn deny_io_write(_ctx: &HostContext, _target: IoStream, _data: &[u8]) -> Result<(), ErrorCode> {
     Err(ErrorCode::Denied)
 }
 

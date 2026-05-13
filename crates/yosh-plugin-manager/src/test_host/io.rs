@@ -5,11 +5,7 @@ use super::TestState;
 use crate::generated::yosh::plugin::types::{ErrorCode, IoStream};
 use yosh_plugin_api::CAP_IO;
 
-pub fn host_write(
-    state: &mut TestState,
-    target: IoStream,
-    data: &[u8],
-) -> Result<(), ErrorCode> {
+pub fn host_write(state: &mut TestState, target: IoStream, data: &[u8]) -> Result<(), ErrorCode> {
     if state.caps & CAP_IO == 0 {
         return Err(ErrorCode::Denied);
     }
@@ -27,7 +23,10 @@ mod tests {
     #[test]
     fn write_denied_without_cap() {
         let mut s = TestState::default();
-        assert_eq!(host_write(&mut s, IoStream::Stdout, b"x"), Err(ErrorCode::Denied));
+        assert_eq!(
+            host_write(&mut s, IoStream::Stdout, b"x"),
+            Err(ErrorCode::Denied)
+        );
         assert!(s.stdout.is_empty());
     }
 

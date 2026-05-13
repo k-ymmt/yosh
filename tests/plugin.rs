@@ -917,14 +917,8 @@ fn perf_plugin_commands_exit_zero() {
         .expect("set PERF_VAR");
     let mut mgr = PluginManager::new();
 
-    test_helpers::load_plugin_with_caps(
-        &mut mgr,
-        &wasm,
-        &mut env,
-        yosh_plugin_api::CAP_ALL,
-        &[],
-    )
-    .expect("load perf_plugin");
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL, &[])
+        .expect("load perf_plugin");
 
     for cmd in ["noop_cmd", "noop_var", "burst_var"] {
         let result = mgr.exec_command(&mut env, cmd, &[]);
@@ -1003,14 +997,8 @@ fn perf_plugin_hooks_dispatch_without_panic() {
     let mut env = fresh_env();
     let mut mgr = PluginManager::new();
 
-    test_helpers::load_plugin_with_caps(
-        &mut mgr,
-        &wasm,
-        &mut env,
-        yosh_plugin_api::CAP_ALL,
-        &[],
-    )
-    .expect("load perf_plugin");
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL, &[])
+        .expect("load perf_plugin");
 
     // Hooks must dispatch without trapping. They have no observable
     // side effect by design (this is a perf fixture, not a behavior test);
@@ -1031,15 +1019,12 @@ fn linker_cache_reuses_entry_for_same_mask() {
     let mut mgr = PluginManager::new();
     let caps = yosh_plugin_api::CAP_ALL;
 
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps, &[])
-        .expect("first load");
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps, &[])
-        .expect("second load");
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps, &[]).expect("first load");
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps, &[]).expect("second load");
 
     let len = test_helpers::linker_cache_len(&mgr);
     assert_eq!(
-        len,
-        2,
+        len, 2,
         "expected 2 entries (CAP_ALL scratch + shared real mask), got {len}",
     );
 }
@@ -1055,15 +1040,12 @@ fn linker_cache_separates_entries_for_distinct_masks() {
     let caps_a = yosh_plugin_api::CAP_VARIABLES_READ;
     let caps_b = yosh_plugin_api::CAP_VARIABLES_READ | yosh_plugin_api::CAP_FILESYSTEM;
 
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps_a, &[])
-        .expect("load a");
-    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps_b, &[])
-        .expect("load b");
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps_a, &[]).expect("load a");
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, caps_b, &[]).expect("load b");
 
     let len = test_helpers::linker_cache_len(&mgr);
     assert_eq!(
-        len,
-        3,
+        len, 3,
         "expected 3 entries (CAP_ALL scratch + 2 distinct real masks), got {len}",
     );
 }

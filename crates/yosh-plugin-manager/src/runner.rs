@@ -83,19 +83,23 @@ use crate::test_host::ExecRecord;
 /// and scenario evaluator need.
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
-    pub exit_code: Option<i32>,        // Some for exec, None for hooks
+    pub exit_code: Option<i32>, // Some for exec, None for hooks
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub set_log: Vec<(String, String)>,
     pub export_log: Vec<(String, String)>,
     pub write_log: Vec<(std::path::PathBuf, usize)>,
     pub exec_log: Vec<ExecRecord>,
-    pub error: Option<String>,         // populated on trap/denied/timeout
+    pub error: Option<String>, // populated on trap/denied/timeout
     pub error_kind: Option<&'static str>,
 }
 
 impl RunOutcome {
-    fn from_state(state: TestState, exit_code: Option<i32>, error: Option<(&'static str, String)>) -> Self {
+    fn from_state(
+        state: TestState,
+        exit_code: Option<i32>,
+        error: Option<(&'static str, String)>,
+    ) -> Self {
         let (kind, msg) = match error {
             Some((k, m)) => (Some(k), Some(m)),
             None => (None, None),
@@ -114,11 +118,7 @@ impl RunOutcome {
     }
 }
 
-pub fn invoke_exec(
-    mut loaded: LoadedPlugin,
-    command: &str,
-    args: &[String],
-) -> RunOutcome {
+pub fn invoke_exec(mut loaded: LoadedPlugin, command: &str, args: &[String]) -> RunOutcome {
     let plugin = loaded.world.yosh_plugin_plugin();
     let res = plugin.call_exec(&mut loaded.store, command, args);
     let state = loaded.store.into_data().state;
@@ -151,9 +151,17 @@ fn classify_trap(err: &wasmtime::Error) -> &'static str {
 }
 
 pub enum HookCall {
-    PreExec { command_line: String },
-    PostExec { command_line: String, exit_code: i32 },
-    OnCd { old: String, new: String },
+    PreExec {
+        command_line: String,
+    },
+    PostExec {
+        command_line: String,
+        exit_code: i32,
+    },
+    OnCd {
+        old: String,
+        new: String,
+    },
     PrePrompt,
 }
 
@@ -161,9 +169,10 @@ pub fn invoke_hook(mut loaded: LoadedPlugin, hook: HookCall) -> RunOutcome {
     let hooks = loaded.world.yosh_plugin_hooks();
     let res = match &hook {
         HookCall::PreExec { command_line } => hooks.call_pre_exec(&mut loaded.store, command_line),
-        HookCall::PostExec { command_line, exit_code } => {
-            hooks.call_post_exec(&mut loaded.store, command_line, *exit_code)
-        }
+        HookCall::PostExec {
+            command_line,
+            exit_code,
+        } => hooks.call_post_exec(&mut loaded.store, command_line, *exit_code),
         HookCall::OnCd { old, new } => hooks.call_on_cd(&mut loaded.store, old, new),
         HookCall::PrePrompt => hooks.call_pre_prompt(&mut loaded.store),
     };
@@ -184,8 +193,12 @@ pub fn format_human(o: &RunOutcome) -> String {
     let _ = writeln!(out, "[stdout]\n{}", String::from_utf8_lossy(&o.stdout));
     let _ = writeln!(out, "[stderr]\n{}", String::from_utf8_lossy(&o.stderr));
     match o.exit_code {
-        Some(c) => { let _ = writeln!(out, "[exit] {}", c); }
-        None => { let _ = writeln!(out, "[exit] (hook — no exit code)"); }
+        Some(c) => {
+            let _ = writeln!(out, "[exit] {}", c);
+        }
+        None => {
+            let _ = writeln!(out, "[exit] (hook — no exit code)");
+        }
     }
     for (k, v) in &o.set_log {
         let _ = writeln!(out, "[vars set]    {}={}", k, v);
@@ -200,7 +213,10 @@ pub fn format_human(o: &RunOutcome) -> String {
         let _ = writeln!(
             out,
             "[exec]        {} {} → exit {} ({} bytes stdout)",
-            r.program, r.args.join(" "), r.exit_code, r.stdout_len
+            r.program,
+            r.args.join(" "),
+            r.exit_code,
+            r.stdout_len
         );
     }
     if let (Some(kind), Some(msg)) = (o.error_kind, &o.error) {
@@ -280,7 +296,12 @@ mod tests {
             | yosh_plugin_api::CAP_VARIABLES_WRITE
             | yosh_plugin_api::CAP_IO;
         let loaded = load_plugin(&wasm, state, Duration::from_secs(5)).expect("load");
-        let outcome = invoke_hook(loaded, HookCall::PreExec { command_line: "ls -l".into() });
+        let outcome = invoke_hook(
+            loaded,
+            HookCall::PreExec {
+                command_line: "ls -l".into(),
+            },
+        );
         assert!(outcome.error.is_none());
         // test_plugin records pre_exec:ls -l in its internal log; the
         // dump-events command flushes that log to a shell var, but we

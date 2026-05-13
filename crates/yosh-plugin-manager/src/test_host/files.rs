@@ -44,7 +44,8 @@ fn resolve(state: &TestState, path: &str) -> Result<PathBuf, ErrorCode> {
                 Ok(p) => p,
                 Err(_) => {
                     let parent = candidate.parent().ok_or(ErrorCode::Denied)?;
-                    let parent_canon = std::fs::canonicalize(parent).map_err(|_| ErrorCode::Denied)?;
+                    let parent_canon =
+                        std::fs::canonicalize(parent).map_err(|_| ErrorCode::Denied)?;
                     let file_name = candidate.file_name().ok_or(ErrorCode::Denied)?;
                     parent_canon.join(file_name)
                 }
@@ -74,11 +75,7 @@ pub fn host_read_file(state: &TestState, path: &str) -> Result<Vec<u8>, ErrorCod
     }
 }
 
-pub fn host_write_file(
-    state: &mut TestState,
-    path: &str,
-    data: &[u8],
-) -> Result<(), ErrorCode> {
+pub fn host_write_file(state: &mut TestState, path: &str, data: &[u8]) -> Result<(), ErrorCode> {
     require_write(state)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
@@ -93,16 +90,16 @@ pub fn host_write_file(
     Ok(())
 }
 
-pub fn host_append_file(
-    state: &mut TestState,
-    path: &str,
-    data: &[u8],
-) -> Result<(), ErrorCode> {
+pub fn host_append_file(state: &mut TestState, path: &str, data: &[u8]) -> Result<(), ErrorCode> {
     require_write(state)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
         None => {
-            state.files.entry(resolved.clone()).or_default().extend_from_slice(data);
+            state
+                .files
+                .entry(resolved.clone())
+                .or_default()
+                .extend_from_slice(data);
         }
         Some(_) => {
             use std::io::Write;
@@ -161,7 +158,11 @@ pub fn host_remove_file(state: &mut TestState, path: &str) -> Result<(), ErrorCo
     }
 }
 
-pub fn host_remove_dir(state: &mut TestState, path: &str, recursive: bool) -> Result<(), ErrorCode> {
+pub fn host_remove_dir(
+    state: &mut TestState,
+    path: &str,
+    recursive: bool,
+) -> Result<(), ErrorCode> {
     require_write(state)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
@@ -196,7 +197,11 @@ pub fn host_read_dir(state: &TestState, path: &str) -> Result<Vec<DirEntry>, Err
             for k in state.files.keys() {
                 if k.parent() == Some(&resolved) {
                     out.push(DirEntry {
-                        name: k.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                        name: k
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
                         is_file: true,
                         is_dir: false,
                         is_symlink: false,
@@ -316,7 +321,10 @@ mod tests {
         s.sandbox_root = Some(root.clone());
         let outside = format!("{}/../etc/passwd", root.display());
         let err = host_read_file(&s, &outside);
-        assert!(matches!(err, Err(ErrorCode::Denied) | Err(ErrorCode::NotFound)));
+        assert!(matches!(
+            err,
+            Err(ErrorCode::Denied) | Err(ErrorCode::NotFound)
+        ));
     }
 
     #[test]
