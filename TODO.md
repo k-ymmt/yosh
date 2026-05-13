@@ -212,6 +212,11 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       exits 0 without creating or truncating the target file. POSIX §2.9.1 requires
       that the redirections are performed even when no command is present. XFAIL test:
       `e2e/posix_spec/2_09_01_simple_commands/redirection_only_creates_file.sh`.
+- [ ] Reserved word not recognized after an assignment prefix — `x=1 if true; then echo y; fi`
+      triggers exit 127 ("if: not found") instead of treating `if` as the command-position
+      reserved word. POSIX §2.4 requires reserved-word recognition regardless of leading
+      assignment prefixes. XFAIL test:
+      `e2e/posix_spec/2_04_reserved_words/reserved_after_assignment_recognized.sh`.
 
 ## Future: E2E Test Expansion
 
