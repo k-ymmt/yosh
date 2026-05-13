@@ -1,7 +1,6 @@
 #!/bin/sh
 # POSIX_REF: 2.8.1 Consequences of Shell Errors
 # DESCRIPTION: Redirection error on special builtin causes non-interactive shell to exit
-# XFAIL: non-POSIX deviation (yosh continues after special-builtin redirect error — does not exit subshell)
 # EXPECT_OUTPUT:
 # EXPECT_EXIT: 0
 # Run in subshell so the parent stays alive. The subshell exits non-zero.

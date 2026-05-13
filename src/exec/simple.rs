@@ -318,6 +318,10 @@ impl Executor {
                     let mut redirect_state = RedirectState::new();
                     if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, false) {
                         self.env.exec.last_exit_status = 1;
+                        if !self.env.mode.is_interactive {
+                            eprintln!("yosh: {}", e);
+                            super::exit_child(1);
+                        }
                         return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
                     }
                     self.env.exec.last_exit_status = 0;
@@ -327,6 +331,10 @@ impl Executor {
                 let mut redirect_state = RedirectState::new();
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                     self.env.exec.last_exit_status = 1;
+                    if !self.env.mode.is_interactive {
+                        eprintln!("yosh: {}", e);
+                        super::exit_child(1);
+                    }
                     return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
                 }
                 // `args` for export/readonly was already produced by
