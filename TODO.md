@@ -187,6 +187,10 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       requires the trap action to run as soon as the shell is ready
       to accept it. XFAIL test:
       `e2e/posix_spec/4_special_builtin/trap_int_handler.sh`.
+- [ ] `trap 0` / `trap EXIT` not fired on subshell exit — POSIX §2.11
+      requires the EXIT pseudo-signal handler to run when the shell
+      exits, including subshells. XFAIL test:
+      `e2e/posix_spec/2_11_signals_and_error_handling/trap_zero_runs_on_exit.sh`.
 - [ ] `jobs` returns exit 0 for an unknown job spec or unknown option.
       POSIX requires exit 1 with a diagnostic. XFAIL tests:
       `e2e/posix_spec/4_required_builtin/jobs_unknown_spec.sh`,
