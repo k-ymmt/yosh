@@ -176,6 +176,12 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       commands (e.g., a following `read` does not see the file
       contents). XFAIL test:
       `e2e/posix_spec/4_special_builtin/exec_redir_input.sh`.
+- [ ] Redirection left-to-right ordering is not honoured — `cmd 2>&1 >f`
+      should dup fd 2 to the current stdout (terminal) before redirecting
+      stdout to `f`, so only stdout ends up in the file; yosh processes
+      both redirections against the post-update state, causing stderr to
+      also land in `f`. XFAIL test:
+      `e2e/posix_spec/2_07_redirection/redir_order_left_to_right.sh`.
 - [ ] `trap` INT handler is deferred to end-of-script instead of
       running asynchronously when the signal is delivered. POSIX
       requires the trap action to run as soon as the shell is ready
