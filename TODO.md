@@ -204,6 +204,10 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       continues to execute subsequent commands. POSIX §2.8.1 requires the
       non-interactive shell to exit on such an error. XFAIL test:
       `e2e/posix_spec/2_08_01_consequences_of_shell_errors/special_builtin_redir_error_exits.sh`.
+- [ ] Redirect-only simple command (no command word) does not apply the redirect — yosh
+      exits 0 without creating or truncating the target file. POSIX §2.9.1 requires
+      that the redirections are performed even when no command is present. XFAIL test:
+      `e2e/posix_spec/2_09_01_simple_commands/redirection_only_creates_file.sh`.
 
 ## Future: E2E Test Expansion
 
