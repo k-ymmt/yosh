@@ -1,8 +1,6 @@
 use std::ffi::CString;
 use std::io::Write;
 
-use nix::unistd::execvp;
-
 use crate::env::{FlowControl, ShellEnv, TrapAction};
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::exec::Executor;
@@ -381,20 +379,39 @@ fn builtin_eval(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
     }
 }
 
-fn builtin_exec(args: &[String], _env: &mut ShellEnv) -> Result<i32, ShellError> {
+fn builtin_exec(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() {
         return Ok(0);
     }
     let cmd = &args[0];
-    let c_cmd = match CString::new(cmd.as_str()) {
+
+    // Resolve the executable path. If the command contains `/`, treat as
+    // a relative or absolute path. Otherwise walk $PATH.
+    let resolved_path: std::path::PathBuf = if cmd.contains('/') {
+        std::path::PathBuf::from(cmd)
+    } else {
+        let path_var = env.vars.get("PATH").unwrap_or("").to_string();
+        match crate::exec::command::find_in_path(cmd, &path_var) {
+            Some(p) => p,
+            None => {
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::CommandNotFound,
+                    format!("exec: {}: not found", cmd),
+                ));
+            }
+        }
+    };
+
+    let c_path = match CString::new(resolved_path.as_os_str().as_encoded_bytes()) {
         Ok(s) => s,
         Err(_) => {
             return Err(ShellError::runtime(
                 RuntimeErrorKind::ExecFailed,
-                format!("exec: {}: invalid command name", cmd),
+                format!("exec: {}: invalid path", cmd),
             ));
         }
     };
+
     let mut c_args: Vec<CString> = Vec::with_capacity(args.len());
     for a in args {
         match CString::new(a.as_str()) {
@@ -407,7 +424,16 @@ fn builtin_exec(args: &[String], _env: &mut ShellEnv) -> Result<i32, ShellError>
             }
         }
     }
-    let err = execvp(&c_cmd, &c_args).unwrap_err();
+
+    // Build envp from currently-exported variables.
+    let envp: Vec<CString> = env
+        .vars
+        .environ()
+        .iter()
+        .filter_map(|(k, v)| CString::new(format!("{}={}", k, v)).ok())
+        .collect();
+
+    let err = nix::unistd::execve(&c_path, &c_args, &envp).unwrap_err();
     use nix::errno::Errno;
     match err {
         Errno::ENOENT => Err(ShellError::runtime(
