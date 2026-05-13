@@ -141,6 +141,60 @@ become PASS; remove the `# XFAIL:` line at that point.
       `e2e/posix_spec/4_required_builtin/ulimit_*.sh` (1 of 3 remains XFAIL
       — unknown-option case)
 
+## Future: POSIX Conformance Bugs
+
+The following yosh behaviors diverge from POSIX shall/must requirements
+and were surfaced as `XFAIL: non-POSIX deviation (...)` during the
+2026-05-13 Ch4+Ch8 E2E expansion. Each entry points to the XFAIL test
+that documents the expected POSIX behavior; when the fix lands, the
+test becomes PASS and the `# XFAIL:` line should be removed.
+
+- [ ] `break` / `continue` outside any enclosing loop — yosh exits 0
+      silently. POSIX requires nonzero exit and a diagnostic. XFAIL
+      tests: `e2e/posix_spec/4_special_builtin/break_outside_loop.sh`,
+      `continue_outside_loop.sh`.
+- [ ] `continue N` when N exceeds loop nesting — yosh treats it as
+      `break` (only first iteration runs). POSIX requires continuing
+      the outermost loop. XFAIL test:
+      `e2e/posix_spec/4_special_builtin/continue_n_exceeds_depth.sh`.
+- [ ] `export` / `readonly` / `unset` accept invalid identifiers (e.g.,
+      `export 1foo=v`). POSIX requires an error. XFAIL tests:
+      `e2e/posix_spec/4_special_builtin/export_invalid_name.sh`,
+      `readonly_invalid_name.sh`, `unset_invalid_name.sh`.
+- [ ] `readonly -p` produces no output (bare `readonly` works). POSIX
+      requires re-input form listing. XFAIL test:
+      `e2e/posix_spec/4_special_builtin/readonly_p_listing.sh`.
+- [ ] `unset -f` removes the variable instead of the function. POSIX
+      requires `-f` to act on functions only. XFAIL tests:
+      `e2e/posix_spec/4_special_builtin/unset_f_function.sh`,
+      `unset_f_keeps_variable.sh`.
+- [ ] `exec CMD` does not pass exported variables to the replaced
+      process. POSIX requires the environment to be preserved across
+      exec. XFAIL test:
+      `e2e/posix_spec/4_special_builtin/exec_keeps_env.sh`.
+- [ ] `exec <FILE` does not redirect the shell's stdin for subsequent
+      commands (e.g., a following `read` does not see the file
+      contents). XFAIL test:
+      `e2e/posix_spec/4_special_builtin/exec_redir_input.sh`.
+- [ ] `trap` INT handler is deferred to end-of-script instead of
+      running asynchronously when the signal is delivered. POSIX
+      requires the trap action to run as soon as the shell is ready
+      to accept it. XFAIL test:
+      `e2e/posix_spec/4_special_builtin/trap_int_handler.sh`.
+- [ ] `jobs` returns exit 0 for an unknown job spec or unknown option.
+      POSIX requires exit 1 with a diagnostic. XFAIL tests:
+      `e2e/posix_spec/4_required_builtin/jobs_unknown_spec.sh`,
+      `jobs_invalid_option.sh`.
+- [ ] `$PPID` special parameter returns empty — POSIX requires it to
+      hold the parent process ID at shell startup. XFAIL test:
+      `e2e/posix_spec/8_env_vars/PPID_is_set.sh`.
+- [ ] Locale support not implemented — `LANG` / `LC_*` / `NLSPATH` are
+      accepted as variables but do not affect collation, character
+      classification, message localization, or message catalogs.
+      XFAIL test:
+      `e2e/posix_spec/8_env_vars/LANG_default_collate.sh` (other
+      `LC_*` tests currently pass via default-C-locale semantics).
+
 ## Future: E2E Test Expansion
 
 - [ ] Deepen Chapter 2 POSIX coverage to normative-requirement granularity — after the hybrid (representative + thin-section) coverage lands, enumerate every shall/must/should clause in XCU Chapter 2 and add one E2E test per normative requirement (est. +100–200 tests). Use `XFAIL` liberally to register gaps; the goal is to make each normative clause individually traceable to a test ID.
