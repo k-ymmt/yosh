@@ -51,9 +51,9 @@ Out of scope:
 ## 3. Sub-Project Catalog
 
 Each sub-project (SP) targets a single `docs/superpowers/specs/…-design.md`
-brainstorming pass. Test counts sum to 55 (12 + 5 + 8 + 9 + 8 + 10 + 3).
+brainstorming pass. Test counts sum to 55 (11 + 5 + 9 + 9 + 8 + 10 + 3).
 
-### SP1 — Special-builtin error diagnostics & semantics (12 tests)
+### SP1 — Special-builtin error diagnostics & semantics (11 tests)
 
 **Files:**
 
@@ -66,9 +66,12 @@ brainstorming pass. Test counts sum to 55 (12 + 5 + 8 + 9 + 8 + 10 + 3).
 - `e2e/posix_spec/4_special_builtin/readonly_invalid_name.sh`
 - `e2e/posix_spec/4_special_builtin/readonly_p_listing.sh`
 - `e2e/posix_spec/4_special_builtin/export_invalid_name.sh`
-- `e2e/posix_spec/4_special_builtin/exec_redir_input.sh`
 - `e2e/posix_spec/4_special_builtin/exec_keeps_env.sh`
 - `e2e/posix_spec/2_08_01_consequences_of_shell_errors/special_builtin_redir_error_exits.sh`
+
+(`exec_redir_input.sh` originally belonged here but depends on the
+`read` builtin from SP3 and was moved during SP1 brainstorming —
+see `2026-05-13-e2e-xfail-sp1-special-builtin-design.md` §2.)
 
 **Nature:** Existing-builtin bug fixes — exit code, stderr diagnostic,
 or side-effect semantics. Code surface is concentrated in
@@ -93,7 +96,7 @@ that see yosh's alias/function/hash state. Code surface in
 
 **Dependencies:** None.
 
-### SP3 — `read` builtin implementation (8 tests)
+### SP3 — `read` builtin implementation (9 tests)
 
 **Files:**
 
@@ -105,12 +108,14 @@ that see yosh's alias/function/hash state. Code surface in
 - `e2e/posix_spec/4_required_builtin/read_r_preserves_backslash.sh`
 - `e2e/posix_spec/4_required_builtin/read_strips_ifs.sh`
 - `e2e/posix_spec/4_special_builtin/exec_close_fd.sh`
+- `e2e/posix_spec/4_special_builtin/exec_redir_input.sh`
 
 **Nature:** New required builtin. Reads one logical line from stdin,
 applies IFS field splitting across N variable names, with the last
 variable receiving the remainder. `-r` disables backslash escape
-processing. The `exec_close_fd` test is bundled because it can only be
-verified once `read` is present (the test issues `exec 3>&-; read … 3<&-`).
+processing. `exec_close_fd` and `exec_redir_input` are bundled because
+both verify `exec` redirection by calling `read` immediately after,
+which only works once `read` is implemented.
 
 **Dependencies:** None.
 
@@ -207,9 +212,9 @@ Each is documented in `TODO.md` with a rationale paragraph.
 
 | Order | Sub-project | Tests | Rationale |
 |-------|-------------|-------|-----------|
-| 1 | SP1 | 12 | Small bug fixes establish a working iteration cycle; touches code already under maintenance. |
+| 1 | SP1 | 11 | Small bug fixes establish a working iteration cycle; touches code already under maintenance. |
 | 2 | SP2 | 5 | Same shape as SP1; native `type`/`hash` are short. |
-| 3 | SP3 | 8 | First large feature; clears `exec_close_fd` blocker. |
+| 3 | SP3 | 9 | First large feature; clears `exec_close_fd` and `exec_redir_input` blockers. |
 | 4 | SP5 | 8 | Independent small features fit between two large ones. |
 | 5 | SP4 | 9 | Larger feature with state (`OPTIND`/`OPTARG` across invocations). |
 | 6 | SP6 | 10 | PTY work after non-interactive coverage is maximal. |
