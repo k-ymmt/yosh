@@ -21,7 +21,7 @@ impl Parser {
     }
 }
 
-pub(super) fn is_valid_name(s: &str) -> bool {
+pub(crate) fn is_valid_name(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }

@@ -6,6 +6,7 @@ use nix::unistd::execvp;
 use crate::env::{FlowControl, ShellEnv, TrapAction};
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::exec::Executor;
+use crate::parser::word::is_valid_name;
 
 pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor) -> i32 {
     let result = match name {
@@ -96,11 +97,17 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
 
     let mut status = 0;
     for arg in args {
+        let name = match arg.find('=') {
+            Some(pos) => &arg[..pos],
+            None => arg.as_str(),
+        };
+        if !is_valid_name(name) {
+            eprintln!("yosh: export: `{}': not a valid identifier", name);
+            status = 1;
+            continue;
+        }
         if let Some(pos) = arg.find('=') {
-            let name = &arg[..pos];
             let raw_value = &arg[pos + 1..];
-            // Value already has tilde expansion applied at the executor level
-            // via expand_assignment_builtin_args. No further expansion needed.
             if let Err(e) = env.vars.set(name, raw_value) {
                 eprintln!("yosh: export: {}", e);
                 status = 1;
@@ -108,17 +115,56 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
             }
             env.vars.export(name);
         } else {
-            // Just mark as exported (or create empty exported var)
-            env.vars.export(arg);
+            env.vars.export(name);
         }
     }
     Ok(status)
 }
 
 fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+    // POSIX §2.14.18: unset [-fv] name...
+    // -f removes function definitions; -v (default) removes variables.
+    // Combining -f and -v is rejected with status 2.
+    let mut mode_f = false;
+    let mut mode_v = false;
+    let mut idx = 0;
+    while idx < args.len() {
+        let arg = args[idx].as_str();
+        if arg == "--" {
+            idx += 1;
+            break;
+        }
+        if arg == "-" || !arg.starts_with('-') || arg.len() == 1 {
+            break;
+        }
+        for ch in arg[1..].chars() {
+            match ch {
+                'f' => mode_f = true,
+                'v' => mode_v = true,
+                _ => {
+                    eprintln!("yosh: unset: -{}: invalid option", ch);
+                    return Ok(2);
+                }
+            }
+        }
+        idx += 1;
+    }
+    if mode_f && mode_v {
+        eprintln!("yosh: unset: cannot simultaneously unset a function and a variable");
+        return Ok(2);
+    }
+    let unset_functions = mode_f;
+
     let mut status = 0;
-    for name in args {
-        if let Err(e) = env.vars.unset(name) {
+    for name in &args[idx..] {
+        if !is_valid_name(name) {
+            eprintln!("yosh: unset: `{}': not a valid identifier", name);
+            status = 1;
+            continue;
+        }
+        if unset_functions {
+            env.functions.remove(name);
+        } else if let Err(e) = env.vars.unset(name) {
             eprintln!("yosh: unset: {}", e);
             status = 1;
         }
@@ -145,11 +191,17 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
 
     let mut status = 0;
     for arg in args {
+        let name = match arg.find('=') {
+            Some(pos) => &arg[..pos],
+            None => arg.as_str(),
+        };
+        if !is_valid_name(name) {
+            eprintln!("yosh: readonly: `{}': not a valid identifier", name);
+            status = 1;
+            continue;
+        }
         if let Some(pos) = arg.find('=') {
-            let name = &arg[..pos];
             let raw_value = &arg[pos + 1..];
-            // Value already has tilde expansion applied at the executor level
-            // via expand_assignment_builtin_args. No further expansion needed.
             if let Err(e) = env.vars.set(name, raw_value) {
                 eprintln!("yosh: readonly: {}", e);
                 status = 1;
@@ -157,7 +209,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
             }
             env.vars.set_readonly(name);
         } else {
-            env.vars.set_readonly(arg);
+            env.vars.set_readonly(name);
         }
     }
     Ok(status)
@@ -819,5 +871,69 @@ mod tests {
         executor.env.exec.last_exit_status = 7;
         exec_special_builtin("exit", &[], &mut executor);
         assert_eq!(executor.exit_requested, Some(7));
+    }
+
+    #[test]
+    fn unset_rejects_invalid_identifier() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin("unset", &["1foo".to_string()], &mut executor);
+        assert_eq!(status, 1);
+    }
+
+    #[test]
+    fn readonly_rejects_invalid_identifier() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin("readonly", &["1foo=v".to_string()], &mut executor);
+        assert_eq!(status, 1);
+    }
+
+    #[test]
+    fn export_rejects_invalid_identifier() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin("export", &["1foo=v".to_string()], &mut executor);
+        assert_eq!(status, 1);
+    }
+
+    #[test]
+    fn unset_f_removes_function() {
+        let mut executor = Executor::new("yosh", vec![]);
+        executor.eval_string("foo() { :; }");
+        assert!(executor.env.functions.contains_key("foo"));
+        let status =
+            exec_special_builtin("unset", &["-f".to_string(), "foo".to_string()], &mut executor);
+        assert_eq!(status, 0);
+        assert!(!executor.env.functions.contains_key("foo"));
+    }
+
+    #[test]
+    fn unset_f_keeps_variable_of_same_name() {
+        let mut executor = Executor::new("yosh", vec![]);
+        executor.eval_string("foo() { :; }");
+        executor.env.vars.set("foo", "bar").unwrap();
+        exec_special_builtin("unset", &["-f".to_string(), "foo".to_string()], &mut executor);
+        assert_eq!(executor.env.vars.get("foo"), Some("bar"));
+        assert!(!executor.env.functions.contains_key("foo"));
+    }
+
+    #[test]
+    fn unset_rejects_combined_f_v() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "unset",
+            &["-f".to_string(), "-v".to_string(), "x".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 2);
+    }
+
+    #[test]
+    fn unset_rejects_clustered_fv_flag() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "unset",
+            &["-fv".to_string(), "x".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 2);
     }
 }

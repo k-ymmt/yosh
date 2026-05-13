@@ -3,7 +3,7 @@ mod compound;
 mod function;
 mod redirect;
 mod simple;
-mod word;
+pub(crate) mod word;
 
 use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::Lexer;
