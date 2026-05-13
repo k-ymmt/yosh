@@ -173,8 +173,10 @@ fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError>
 }
 
 fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
-    if args.is_empty() {
-        // Print all readonly variables
+    // POSIX §2.14.11: "When invoked with no arguments or with the -p
+    // option, readonly shall write...". bash/dash treat -p as a listing
+    // trigger that suppresses any operand processing.
+    if args.is_empty() || args.iter().any(|a| a == "-p") {
         let readonly_vars: Vec<(String, String)> = env
             .vars
             .vars_iter()
@@ -935,5 +937,15 @@ mod tests {
             &mut executor,
         );
         assert_eq!(status, 2);
+    }
+
+    #[test]
+    fn readonly_p_lists_readonly_var() {
+        let mut executor = Executor::new("yosh", vec![]);
+        exec_special_builtin("readonly", &["myvar=v".to_string()], &mut executor);
+        let status = exec_special_builtin("readonly", &["-p".to_string()], &mut executor);
+        assert_eq!(status, 0);
+        // The actual listing is on stdout (println!) which we don't capture here;
+        // smoke-test via the e2e suite for output content.
     }
 }
