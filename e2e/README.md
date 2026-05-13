@@ -101,6 +101,9 @@ metadata line. The accepted shapes are:
   Example: `POSIX_REF: 2.10 Shell Grammar - Terminator Equality`
 - `4 Utilities - <name>` — for Chapter 4 utility tests (XCU Chapter 4).
   Example: `POSIX_REF: 4 Utilities - test`
+- `8 Environment Variables - <var>` — for Chapter 8 environment-variable
+  tests (XBD Chapter 8).
+  Example: `POSIX_REF: 8 Environment Variables - IFS`
 
 A naive grep for one shape misses the others. To enumerate all
 §2.10.2-related tests, use:
