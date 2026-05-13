@@ -200,6 +200,10 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       XFAIL test:
       `e2e/posix_spec/8_env_vars/LANG_default_collate.sh` (other
       `LC_*` tests currently pass via default-C-locale semantics).
+- [ ] Redirection error on a special builtin does not exit the (sub)shell — yosh
+      continues to execute subsequent commands. POSIX §2.8.1 requires the
+      non-interactive shell to exit on such an error. XFAIL test:
+      `e2e/posix_spec/2_08_01_consequences_of_shell_errors/special_builtin_redir_error_exits.sh`.
 
 ## Future: E2E Test Expansion
 
