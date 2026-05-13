@@ -176,6 +176,12 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       commands (e.g., a following `read` does not see the file
       contents). XFAIL test:
       `e2e/posix_spec/4_special_builtin/exec_redir_input.sh`.
+- [ ] Standalone `$(...)` exit status not propagated to `$?` — yosh
+      sets `$?` to 0 after a bare `$(cmd)` regardless of `cmd`'s exit
+      status. POSIX §2.6.3 requires the substituted command's exit
+      status to be reflected in `$?` when the substitution is the
+      command itself. XFAIL test:
+      `e2e/posix_spec/2_06_03_command_substitution/exit_status_propagates_to_parent.sh`.
 - [ ] Redirection left-to-right ordering is not honoured — `cmd 2>&1 >f`
       should dup fd 2 to the current stdout (terminal) before redirecting
       stdout to `f`, so only stdout ends up in the file; yosh processes
