@@ -85,11 +85,11 @@ All seven §2.6 subsections. Commits split per subsection.
 
 | § | Scope | Existing | New |
 |---|---|---|---|
-| 2.7.1–2.7.4 input/output redirection | `<` / `>` / `>>` / `<>` and combinations (existing dir covers dup forms only) | (15) | (+8–12) |
-| 2.7.5 Appending | `>>` create-vs-append, `noclobber` interaction | 0 | 3–4 |
-| 2.7.6 Here-Document | quoted/unquoted delimiter, `<<-` tab strip, variable expansion in body | 0 | 6–8 |
-| 2.7.7 Duplicating | covered by existing dup_*.sh; supplement minimal | (10) | (+0–2) |
-| 2.7.8 Open R/W | covered by existing readwrite_*.sh | (4) | (+0–1) |
+| 2.7.1–2.7.3 input/output redirection | `<` / `>` / `>>` and combinations (existing dir covers dup forms only) | (15) | (+8–12) |
+| 2.7.3 Appending | `>>` create-vs-append, `noclobber` interaction | 0 | 3–4 |
+| 2.7.4 Here-Document | quoted/unquoted delimiter, `<<-` tab strip, variable expansion in body | 0 | 6–8 |
+| 2.7.5 / 2.7.6 Duplicating | covered by existing dup_*.sh; supplement minimal | (10) | (+0–2) |
+| 2.7.7 Open R/W | covered by existing readwrite_*.sh | (4) | (+0–1) |
 | 2.8 Exit Status / Errors (supplement) | special-builtin error semantics, `$?` propagation across constructs | (3) | (+5–8) |
 | 2.9.1 Simple Commands | 4-step execution order (redir → assign → expand → execute) | 0 | 4–6 |
 | 2.9.2 Pipelines | `\|`, `!` negation, last-command status semantics | 0 | 4–5 |
@@ -141,8 +141,7 @@ e2e/posix_spec/
 ├── 2_06_06_pathname_expansion/     ← new (P2)
 ├── 2_06_07_quote_removal/          ← new (P2)
 ├── 2_07_redirection/               ← existing, supplement only
-├── 2_07_05_appending/              ← new (P3, may merge into 2_07_redirection if minimal)
-├── 2_07_06_heredoc/                ← new (P3)
+├── 2_07_04_heredoc/                ← new (P3)
 ├── 2_08_01_consequences_of_shell_errors/  ← existing, supplement only
 ├── 2_09_01_simple_commands/        ← new (P3)
 ├── 2_09_02_pipelines/              ← new (P3)
@@ -303,7 +302,7 @@ P2 — Word Expansion (~48–66 tests, 7 commits — one per subsection)
   P2.7: 2.6.7 Quote Removal              (~3–5 tests)
 
 P3 — Redirection rest, Errors, Commands, Signals, ExecEnv (~51–78 tests, 5 commits)
-  P3.1: 2.7 redirection rest + here-doc  (~17–27 tests)
+  P3.1: 2.7 redirection rest + here-doc (~17–25 tests)
   P3.2: 2.8 Errors supplement            (~5–8 tests)
   P3.3: 2.9 Shell Commands (all five)    (~22–32 tests)
   P3.4: 2.11 Signals supplement          (~3–5 tests)
@@ -331,7 +330,7 @@ P4 — Existing § supplement (~15–25 tests, 1–2 commits)
 |---|---|
 | P1 done | sub-phase criteria × 3 + 4 new directories exist (`2_01_*`, `2_02_*`, `2_05_01_*`, `2_05_02_*`) |
 | P2 done | sub-phase criteria × 7 + all seven 2.6.X subsection directories exist |
-| P3 done | sub-phase criteria × 5 + `2_07_06_heredoc`, `2_09_0?_*`, `2_12_*` directories exist |
+| P3 done | sub-phase criteria × 5 + `2_07_04_heredoc`, `2_09_0?_*`, `2_12_*` directories exist |
 | P4 done | existing 4 directories supplemented + **TODO.md "Future: E2E Test Expansion" entry deleted** |
 
 ### Cross-Phase Acceptance (all phases complete)
@@ -381,7 +380,7 @@ XPASS is **not** a CI failure — it's a signal:
    at P2.2 start. Tentative plan: include 5–8 such cases in the
    edge-case layer.
 
-2. **`2.7.6` `<<-` tab-strip rule details.** POSIX specifies "tabs
+2. **`2.7.4` `<<-` tab-strip rule details.** POSIX specifies "tabs
    only". Mixed-space behavior to be confirmed against the POSIX
    text at P3.1 start. Tentative tests: tab-only strip, space-only
    no-strip, mixed boundary, escape interaction.
