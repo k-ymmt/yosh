@@ -3,8 +3,8 @@
 # DESCRIPTION: Files starting with . are not matched by unquoted * by default
 # EXPECT_OUTPUT: visible
 # EXPECT_EXIT: 0
-# XFAIL: yosh does not yet exclude leading-dot files from * glob expansion
-cd "$TEST_TMPDIR"
+mkdir "$TEST_TMPDIR/sub"
+cd "$TEST_TMPDIR/sub"
 : > .hidden
 : > visible
 echo *
