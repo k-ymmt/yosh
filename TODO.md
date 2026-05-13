@@ -12,6 +12,16 @@ Decomposition of 55 XFAIL tests into 7 sub-projects. See
 - [ ] SP6 — PTY harness migration (10 tests)
 - [ ] SP7 — Deferred / recorded as known deviation (3 tests)
 
+### SP1 follow-ups (non-blocking)
+
+- [ ] `exec_function_call` does not clear `env.exec.loop_depth` on entry, so `break`/`continue` inside a function called from a loop affects the caller's loop. Matches dash; bash treats it as out-of-loop. Decide intent and either save/restore `loop_depth` on function entry or document the deviation (`src/exec/function.rs`).
+- [ ] `loop_depth` bump/restore in `exec_for` / `exec_loop` is not panic-safe — `_inner` panics would skip the decrement. Currently fine because yosh uses `Result`, but a small `LoopDepthGuard` RAII drop guard would harden it (`src/exec/compound.rs`).
+- [ ] `exit_child` doc comment (`src/exec/mod.rs:24`) says "Use ONLY after fork() in the child branch, never in the shell parent", but SP1 G5b added a top-level non-interactive call site in `src/exec/simple.rs` (BuiltinKind::Special redirect-error). Either update the doc to permit non-interactive shell exit, or introduce a dedicated `exit_shell(status)` helper.
+- [ ] `builtin_exec` absolute-path branch (`cmd.contains('/')`) has no dedicated unit/e2e test. `exec_keeps_env.sh` covers the PATH-walk branch only. Add a focused test like `export m=v; exec /bin/sh -c 'echo $m'` (`src/builtin/special.rs::builtin_exec`).
+- [ ] `export -p foo=v` silently drops `foo=v` operand (the `-p` branch prints and returns). Pre-existing, made more visible by SP1 G2's stricter validation. Either accept operands after `-p` or document the limitation (`src/builtin/special.rs::builtin_export`).
+- [ ] `export -- foo=v` and `readonly -- foo=v` now report `--` as not a valid identifier (visible regression after SP1 G2's strict gate). Should consume `--` as POSIX end-of-options before validation (`src/builtin/special.rs::builtin_export`, `::builtin_readonly`).
+- [ ] `e2e/posix_spec/8_env_vars/PATH_search.sh` and `e2e/builtin/job_spec_prefix.sh` intermittently TIMEOUT under full-suite load (pass standalone). Observed twice during SP1 closure runs. Likely fork/wait timing under contention; investigate or bump per-test timeout (`e2e/run_tests.sh`).
+
 ## Job Control: Known Limitations
 
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
