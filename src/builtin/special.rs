@@ -242,6 +242,10 @@ fn builtin_return(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
 }
 
 fn builtin_break(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+    if env.exec.loop_depth == 0 {
+        eprintln!("yosh: break: only meaningful in a `for', `while', or `until' loop");
+        return Ok(1);
+    }
     let n = if args.is_empty() {
         1
     } else {
@@ -261,11 +265,16 @@ fn builtin_break(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError>
             }
         }
     };
-    env.exec.flow_control = Some(FlowControl::Break(n));
+    let clamped = n.min(env.exec.loop_depth);
+    env.exec.flow_control = Some(FlowControl::Break(clamped));
     Ok(0)
 }
 
 fn builtin_continue(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+    if env.exec.loop_depth == 0 {
+        eprintln!("yosh: continue: only meaningful in a `for', `while', or `until' loop");
+        return Ok(1);
+    }
     let n = if args.is_empty() {
         1
     } else {
@@ -285,7 +294,8 @@ fn builtin_continue(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
             }
         }
     };
-    env.exec.flow_control = Some(FlowControl::Continue(n));
+    let clamped = n.min(env.exec.loop_depth);
+    env.exec.flow_control = Some(FlowControl::Continue(clamped));
     Ok(0)
 }
 
@@ -947,5 +957,41 @@ mod tests {
         assert_eq!(status, 0);
         // The actual listing is on stdout (println!) which we don't capture here;
         // smoke-test via the e2e suite for output content.
+    }
+
+    #[test]
+    fn break_outside_loop_returns_one_and_no_flow_control() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin("break", &[], &mut executor);
+        assert_eq!(status, 1);
+        assert!(executor.env.exec.flow_control.is_none());
+    }
+
+    #[test]
+    fn continue_outside_loop_returns_one_and_no_flow_control() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin("continue", &[], &mut executor);
+        assert_eq!(status, 1);
+        assert!(executor.env.exec.flow_control.is_none());
+    }
+
+    #[test]
+    fn continue_n_is_clamped_to_loop_depth() {
+        use crate::env::FlowControl;
+        let mut executor = Executor::new("yosh", vec![]);
+        executor.env.exec.loop_depth = 1;
+        let status = exec_special_builtin("continue", &["5".to_string()], &mut executor);
+        assert_eq!(status, 0);
+        assert_eq!(executor.env.exec.flow_control, Some(FlowControl::Continue(1)));
+    }
+
+    #[test]
+    fn break_n_is_clamped_to_loop_depth() {
+        use crate::env::FlowControl;
+        let mut executor = Executor::new("yosh", vec![]);
+        executor.env.exec.loop_depth = 2;
+        let status = exec_special_builtin("break", &["7".to_string()], &mut executor);
+        assert_eq!(status, 0);
+        assert_eq!(executor.env.exec.flow_control, Some(FlowControl::Break(2)));
     }
 }

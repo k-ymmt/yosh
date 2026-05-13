@@ -57,6 +57,7 @@ impl ShellEnv {
             exec: ExecState {
                 last_exit_status: 0,
                 flow_control: None,
+                loop_depth: 0,
             },
             process: ProcessState {
                 shell_pid: getpid(),

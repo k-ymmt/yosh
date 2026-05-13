@@ -142,6 +142,18 @@ impl Executor {
         body: &[CompleteCommand],
         until: bool,
     ) -> i32 {
+        self.env.exec.loop_depth += 1;
+        let status = self.exec_loop_inner(condition, body, until);
+        self.env.exec.loop_depth -= 1;
+        status
+    }
+
+    fn exec_loop_inner(
+        &mut self,
+        condition: &[CompleteCommand],
+        body: &[CompleteCommand],
+        until: bool,
+    ) -> i32 {
         let mut status = 0;
         loop {
             let cond_status = self.with_errexit_suppressed(|e| e.exec_body(condition));
@@ -184,6 +196,18 @@ impl Executor {
     }
 
     fn exec_for(
+        &mut self,
+        var: &str,
+        words: &Option<Vec<Word>>,
+        body: &[CompleteCommand],
+    ) -> Result<i32, ShellError> {
+        self.env.exec.loop_depth += 1;
+        let result = self.exec_for_inner(var, words, body);
+        self.env.exec.loop_depth -= 1;
+        result
+    }
+
+    fn exec_for_inner(
         &mut self,
         var: &str,
         words: &Option<Vec<Word>>,
