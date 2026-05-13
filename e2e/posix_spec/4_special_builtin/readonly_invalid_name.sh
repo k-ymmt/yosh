@@ -1,0 +1,7 @@
+#!/bin/sh
+# POSIX_REF: 2.14.11 readonly
+# DESCRIPTION: readonly with identifier starting with digit is an error
+# XFAIL: non-POSIX deviation (yosh does not reject invalid identifiers in readonly)
+# EXPECT_STDERR: readonly
+# EXPECT_EXIT: 1
+readonly 1foo=v
