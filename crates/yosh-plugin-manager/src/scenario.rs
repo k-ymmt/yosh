@@ -274,25 +274,25 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
     let stdout_str = String::from_utf8_lossy(&o.stdout);
     let stderr_str = String::from_utf8_lossy(&o.stderr);
 
-    if let Some(want) = &e.stdout {
-        if stdout_str != *want {
-            fail!("stdout mismatch: want {:?}, got {:?}", want, stdout_str);
-        }
+    if let Some(want) = &e.stdout
+        && stdout_str != *want
+    {
+        fail!("stdout mismatch: want {:?}, got {:?}", want, stdout_str);
     }
-    if let Some(want) = &e.stderr {
-        if stderr_str != *want {
-            fail!("stderr mismatch: want {:?}, got {:?}", want, stderr_str);
-        }
+    if let Some(want) = &e.stderr
+        && stderr_str != *want
+    {
+        fail!("stderr mismatch: want {:?}, got {:?}", want, stderr_str);
     }
-    if let Some(sub) = &e.stdout_contains {
-        if !stdout_str.contains(sub.as_str()) {
-            fail!("stdout_contains {:?} not found in {:?}", sub, stdout_str);
-        }
+    if let Some(sub) = &e.stdout_contains
+        && !stdout_str.contains(sub.as_str())
+    {
+        fail!("stdout_contains {:?} not found in {:?}", sub, stdout_str);
     }
-    if let Some(sub) = &e.stderr_contains {
-        if !stderr_str.contains(sub.as_str()) {
-            fail!("stderr_contains {:?} not found in {:?}", sub, stderr_str);
-        }
+    if let Some(sub) = &e.stderr_contains
+        && !stderr_str.contains(sub.as_str())
+    {
+        fail!("stderr_contains {:?} not found in {:?}", sub, stderr_str);
     }
     if let Some(re) = &e.stdout_regex {
         let rx = regex::Regex::new(re).map_err(|err| err.to_string());
@@ -337,7 +337,7 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
         for (path, expectation) in want {
             match expectation {
                 FileExpect::Bytes(b) => {
-                    let want_len = b.as_bytes().len();
+                    let want_len = b.len();
                     match got.get(path) {
                         Some(actual) if *actual == want_len => {}
                         Some(actual) => fail!(
@@ -360,7 +360,7 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
                         }
                     }
                     if let Some(b) = bytes_eq {
-                        let want_len = b.as_bytes().len();
+                        let want_len = b.len();
                         match got.get(path) {
                             Some(actual) if *actual == want_len => {}
                             Some(actual) => fail!(
@@ -402,15 +402,15 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
                     g.args
                 );
             }
-            if let Some(exit) = w.exit {
-                if exit != g.exit_code {
-                    fail!(
-                        "exec_called[{}].exit: want {}, got {}",
-                        i,
-                        exit,
-                        g.exit_code
-                    );
-                }
+            if let Some(exit) = w.exit
+                && exit != g.exit_code
+            {
+                fail!(
+                    "exec_called[{}].exit: want {}, got {}",
+                    i,
+                    exit,
+                    g.exit_code
+                );
             }
         }
     }
@@ -552,10 +552,10 @@ pub fn run_dir(path: &std::path::Path, filter: Option<&str>) -> Vec<ScenarioRepo
     paths.sort();
 
     for p in paths {
-        if let Some(rx) = &filter_rx {
-            if !rx.is_match(&p.to_string_lossy()) {
-                continue;
-            }
+        if let Some(rx) = &filter_rx
+            && !rx.is_match(&p.to_string_lossy())
+        {
+            continue;
         }
         let results = run_scenario(&p);
         reports.push(ScenarioReport {

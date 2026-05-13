@@ -137,10 +137,10 @@ pub fn invoke_exec(mut loaded: LoadedPlugin, command: &str, args: &[String]) -> 
 /// substring fallback covers other wasmtime versions / future error
 /// shapes where the trap is nested inside an anyhow chain.
 fn classify_trap(err: &wasmtime::Error) -> &'static str {
-    if let Some(trap) = err.downcast_ref::<wasmtime::Trap>() {
-        if matches!(trap, wasmtime::Trap::Interrupt) {
-            return "timeout";
-        }
+    if let Some(trap) = err.downcast_ref::<wasmtime::Trap>()
+        && matches!(trap, wasmtime::Trap::Interrupt)
+    {
+        return "timeout";
     }
     let msg = err.to_string();
     if msg.contains("epoch") || msg.contains("deadline") || msg.contains("interrupt") {
@@ -276,8 +276,10 @@ mod tests {
             Some(p) => p,
             None => return, // wasm not built; skip silently
         };
-        let mut state = TestState::default();
-        state.caps = yosh_plugin_api::CAP_IO;
+        let state = TestState {
+            caps: yosh_plugin_api::CAP_IO,
+            ..Default::default()
+        };
         let loaded = load_plugin(&wasm, state, Duration::from_secs(5)).expect("load");
         let outcome = invoke_exec(loaded, "test_cmd", &["arg1".to_string()]);
         assert_eq!(outcome.exit_code, Some(0));
@@ -291,10 +293,12 @@ mod tests {
             Some(p) => p,
             None => return,
         };
-        let mut state = TestState::default();
-        state.caps = yosh_plugin_api::CAP_HOOK_PRE_EXEC
-            | yosh_plugin_api::CAP_VARIABLES_WRITE
-            | yosh_plugin_api::CAP_IO;
+        let state = TestState {
+            caps: yosh_plugin_api::CAP_HOOK_PRE_EXEC
+                | yosh_plugin_api::CAP_VARIABLES_WRITE
+                | yosh_plugin_api::CAP_IO,
+            ..Default::default()
+        };
         let loaded = load_plugin(&wasm, state, Duration::from_secs(5)).expect("load");
         let outcome = invoke_hook(
             loaded,

@@ -212,6 +212,7 @@ fn cmd_test(path: std::path::PathBuf, filter: Option<String>, format: OutputForm
     if all_passed { 0 } else { 1 }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_run(
     wasm: std::path::PathBuf,
     action: RunAction,

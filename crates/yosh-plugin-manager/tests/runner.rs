@@ -18,8 +18,10 @@ fn wasm() -> Option<PathBuf> {
 #[test]
 fn case_1_run_exec_happy_path() {
     let Some(w) = wasm() else { return };
-    let mut s = TestState::default();
-    s.caps = CAP_IO;
+    let s = TestState {
+        caps: CAP_IO,
+        ..Default::default()
+    };
     let loaded = load_plugin(&w, s, Duration::from_secs(5)).expect("load");
     let outcome = invoke_exec(loaded, "test_cmd", &["x".into()]);
     assert_eq!(outcome.exit_code, Some(0));
@@ -29,8 +31,10 @@ fn case_1_run_exec_happy_path() {
 #[test]
 fn case_2_hook_on_cd_records_var() {
     let Some(w) = wasm() else { return };
-    let mut s = TestState::default();
-    s.caps = CAP_HOOK_ON_CD | CAP_VARIABLES_WRITE | CAP_IO;
+    let s = TestState {
+        caps: CAP_HOOK_ON_CD | CAP_VARIABLES_WRITE | CAP_IO,
+        ..Default::default()
+    };
     let loaded = load_plugin(&w, s, Duration::from_secs(5)).expect("load");
     let outcome = invoke_hook(
         loaded,
@@ -47,8 +51,10 @@ fn case_3_insufficient_cap_denied() {
     let Some(w) = wasm() else { return };
     // echo_var requires variables:read. Granting only CAP_IO triggers Denied
     // in the guest's get_var call. The guest converts to exit code 2.
-    let mut s = TestState::default();
-    s.caps = CAP_IO;
+    let mut s = TestState {
+        caps: CAP_IO,
+        ..Default::default()
+    };
     s.vars.insert("X".into(), "y".into());
     let loaded = load_plugin(&w, s, Duration::from_secs(5)).expect("load");
     let outcome = invoke_exec(loaded, "echo_var", &["X".into()]);
@@ -58,9 +64,11 @@ fn case_3_insufficient_cap_denied() {
 #[test]
 fn case_4_allowed_exec_pattern_runs_echo() {
     let Some(w) = wasm() else { return };
-    let mut s = TestState::default();
-    s.caps = CAP_IO | CAP_COMMANDS_EXEC;
-    s.allow_exec = vec![CommandPattern::parse("echo:*").unwrap()];
+    let s = TestState {
+        caps: CAP_IO | CAP_COMMANDS_EXEC,
+        allow_exec: vec![CommandPattern::parse("echo:*").unwrap()],
+        ..Default::default()
+    };
     let loaded = load_plugin(&w, s, Duration::from_secs(5)).expect("load");
     let outcome = invoke_exec(loaded, "run-echo", &["hi".into()]);
     assert_eq!(outcome.exit_code, Some(0));
@@ -75,8 +83,10 @@ fn case_5_timeout_on_slow_plugin_pre_prompt() {
     if !slow.exists() {
         return;
     }
-    let mut s = TestState::default();
-    s.caps = yosh_plugin_api::CAP_HOOK_PRE_PROMPT;
+    let s = TestState {
+        caps: yosh_plugin_api::CAP_HOOK_PRE_PROMPT,
+        ..Default::default()
+    };
     let start = std::time::Instant::now();
     let loaded = load_plugin(&slow, s, Duration::from_millis(200)).expect("load");
     let outcome = invoke_hook(loaded, HookCall::PrePrompt);
