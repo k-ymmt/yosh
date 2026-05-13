@@ -107,6 +107,39 @@
 - [ ] `Executor` API visibility tightening (post-split follow-up) — five `pub` methods on `Executor` are candidates for `pub(crate)` since their callers are all in-crate: `Executor::exec_command` (only `pipeline.rs` + tests), `exec_and_or` (internal-only), `exec_program` (used by `expand/command_sub.rs`, `bin/yosh-dhat.rs`, `builtin/special.rs`), `exec_complete_command` (used by `compound.rs`, `interactive/mod.rs`, `main.rs`), and `display_job_notifications` (only `interactive/mod.rs` + `control.rs::exec_complete_command`). Mirrors the 2026-05-05 parser-visibility-tightening pattern. Surfaced during the 2026-05-05 exec/mod.rs split final review (`src/exec/control.rs`, `src/exec/job_control.rs`).
 - [ ] `assignment_rhs_backslash_tilde_after_colon_stays_literal` (`src/parser/simple.rs:311`) still uses the loose `!any(matches!(p, Tilde(_)))` form — sibling test to `assignment_rhs_param_then_escaped_tilde_stays_literal` (line 321) which was tightened on 2026-05-10 to a structural `assert_eq!`. Apply the same treatment so a `/bin` segment drop or shape regression is caught at unit-test level. Code-review follow-up from 2026-05-10 POSIX TODO cleanup branch.
 
+## Future: POSIX Required Builtin Implementation
+
+The following XCU §1.4 required builtins are not implemented as native
+yosh builtins. yosh currently falls through to the system's
+`/usr/bin/<name>` POSIX shell wrappers, which works for external
+commands and basic option parsing but cannot see yosh's session state
+(aliases, functions, in-shell variables). The XFAIL tests added in
+2026-05-13 (`e2e/posix_spec/4_required_builtin/`) serve as the
+behavioral acceptance spec for each native implementation. When a
+native builtin is implemented, the corresponding XFAIL tests should
+become PASS; remove the `# XFAIL:` line at that point.
+
+- [ ] `getopts optstring var [args]` — option-parsing helper, used in
+      portable shell scripts. Currently uses `/usr/bin/getopts`. XFAIL
+      tests: `e2e/posix_spec/4_required_builtin/getopts_*.sh` (6 of 8 tests
+      pass via fallback; 6 remain XFAIL pending native impl)
+- [ ] `hash [-r] [cmd]` — utility-location cache. Currently uses
+      `/usr/bin/hash`. XFAIL tests:
+      `e2e/posix_spec/4_required_builtin/hash_*.sh` (1 of 4 remains XFAIL —
+      exit-status mismatch for unknown command)
+- [ ] `read [-r] var...` — read one line from stdin into variables.
+      Currently uses `/usr/bin/read`. XFAIL tests:
+      `e2e/posix_spec/4_required_builtin/read_*.sh` (6 of 7 remain XFAIL —
+      most cases require in-process state)
+- [ ] `type name...` — identify command kind (function / builtin / alias
+      / external path). Currently uses `/usr/bin/type`. XFAIL tests:
+      `e2e/posix_spec/4_required_builtin/type_*.sh` (2 of 5 remain XFAIL —
+      session-local aliases and functions not visible to external wrapper)
+- [ ] `ulimit [-f] [num]` — resource-limit query/set. Currently uses
+      `/usr/bin/ulimit`. XFAIL tests:
+      `e2e/posix_spec/4_required_builtin/ulimit_*.sh` (1 of 3 remains XFAIL
+      — unknown-option case)
+
 ## Future: E2E Test Expansion
 
 - [ ] Extend chapter-by-chapter POSIX coverage beyond XCU Chapter 2 — once the Chapter 2 coverage matrix stabilizes, add systematic E2E coverage for Chapter 4 Utilities (all shell-relevant builtins: special + regular, with option/edge-case matrices) and Chapter 8 Environment Variables. Reuse the `POSIX_REF`/`XFAIL` harness established for Chapter 2.
