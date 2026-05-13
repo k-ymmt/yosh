@@ -937,8 +937,11 @@ mod tests {
         let mut executor = Executor::new("yosh", vec![]);
         executor.eval_string("foo() { :; }");
         assert!(executor.env.functions.contains_key("foo"));
-        let status =
-            exec_special_builtin("unset", &["-f".to_string(), "foo".to_string()], &mut executor);
+        let status = exec_special_builtin(
+            "unset",
+            &["-f".to_string(), "foo".to_string()],
+            &mut executor,
+        );
         assert_eq!(status, 0);
         assert!(!executor.env.functions.contains_key("foo"));
     }
@@ -948,7 +951,11 @@ mod tests {
         let mut executor = Executor::new("yosh", vec![]);
         executor.eval_string("foo() { :; }");
         executor.env.vars.set("foo", "bar").unwrap();
-        exec_special_builtin("unset", &["-f".to_string(), "foo".to_string()], &mut executor);
+        exec_special_builtin(
+            "unset",
+            &["-f".to_string(), "foo".to_string()],
+            &mut executor,
+        );
         assert_eq!(executor.env.vars.get("foo"), Some("bar"));
         assert!(!executor.env.functions.contains_key("foo"));
     }
@@ -1008,7 +1015,10 @@ mod tests {
         executor.env.exec.loop_depth = 1;
         let status = exec_special_builtin("continue", &["5".to_string()], &mut executor);
         assert_eq!(status, 0);
-        assert_eq!(executor.env.exec.flow_control, Some(FlowControl::Continue(1)));
+        assert_eq!(
+            executor.env.exec.flow_control,
+            Some(FlowControl::Continue(1))
+        );
     }
 
     #[test]

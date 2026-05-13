@@ -5,7 +5,6 @@
 Decomposition of 55 XFAIL tests into 7 sub-projects. See
 `docs/superpowers/specs/2026-05-13-e2e-xfail-roadmap-design.md`.
 
-- [ ] SP1 — Special-builtin error diagnostics & semantics (11 tests) — **in progress** — `docs/superpowers/specs/2026-05-13-e2e-xfail-sp1-special-builtin-design.md`
 - [ ] SP2 — Required-builtin diagnostics + native `type`/`hash` (5 tests)
 - [ ] SP3 — `read` builtin implementation (9 tests; includes `exec_close_fd` and `exec_redir_input`)
 - [ ] SP4 — `getopts` builtin implementation (9 tests)
