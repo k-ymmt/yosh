@@ -218,10 +218,6 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       assignment prefixes. XFAIL test:
       `e2e/posix_spec/2_04_reserved_words/reserved_after_assignment_recognized.sh`.
 
-## Future: E2E Test Expansion
-
-- [ ] Deepen Chapter 2 POSIX coverage to normative-requirement granularity — after the hybrid (representative + thin-section) coverage lands, enumerate every shall/must/should clause in XCU Chapter 2 and add one E2E test per normative requirement (est. +100–200 tests). Use `XFAIL` liberally to register gaps; the goal is to make each normative clause individually traceable to a test ID.
-
 ## Future: Release Skill Enhancements
 
 - [ ] `phase_push` remote tag upsert — currently only checks local tag existence; if the same tag already exists on origin, `git push origin <tag>` rejects. Add `git ls-remote --exit-code --tags origin <tag>` check before pushing (`.claude/skills/release/scripts/release.sh`)
