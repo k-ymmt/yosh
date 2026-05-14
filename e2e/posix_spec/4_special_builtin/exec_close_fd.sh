@@ -1,7 +1,6 @@
 #!/bin/sh
 # POSIX_REF: 2.14.10 exec
-# DESCRIPTION: exec N>&- closes fd N for the current shell
-# XFAIL: not yet implemented (TODO: implement read; exec N>&- test verifies fd close via read)
-# EXPECT_EXIT: 0
+# DESCRIPTION: exec N>&- closes fd N for the current shell; reading from closed fd is a redirection error
+# EXPECT_EXIT: 1
 exec 3>&-
 read line 0<&3 2>/dev/null
