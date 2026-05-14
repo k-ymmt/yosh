@@ -1,7 +1,6 @@
 #!/bin/sh
 # POSIX_REF: 2.14.10 exec
 # DESCRIPTION: exec with no command applies input redirection to shell
-# XFAIL: non-POSIX deviation (yosh exec < does not redirect shell stdin for subsequent read)
 # EXPECT_OUTPUT: line1
 # EXPECT_EXIT: 0
 echo line1 > "$TEST_TMPDIR/in"

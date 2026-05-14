@@ -217,10 +217,6 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       process. POSIX requires the environment to be preserved across
       exec. XFAIL test:
       `e2e/posix_spec/4_special_builtin/exec_keeps_env.sh`.
-- [ ] `exec <FILE` does not redirect the shell's stdin for subsequent
-      commands (e.g., a following `read` does not see the file
-      contents). XFAIL test:
-      `e2e/posix_spec/4_special_builtin/exec_redir_input.sh`.
 - [ ] Standalone `$(...)` exit status not propagated to `$?` — yosh
       sets `$?` to 0 after a bare `$(cmd)` regardless of `cmd`'s exit
       status. POSIX §2.6.3 requires the substituted command's exit
