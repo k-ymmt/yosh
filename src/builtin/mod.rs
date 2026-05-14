@@ -3,6 +3,7 @@ pub mod regular;
 pub mod resolve;
 pub mod special;
 pub mod test;
+pub mod r#type;
 
 use crate::env::ShellEnv;
 
@@ -12,7 +13,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "break", ":", "continue", ".", "eval", "exec", "exit", "export", "readonly", "return", "set",
     "shift", "times", "trap", "unset", "fc", // Regular builtins
     "cd", "command", "echo", "true", "false", "alias", "unalias", "kill", "wait", "fg", "bg",
-    "jobs", "umask", "test", "[",
+    "jobs", "umask", "test", "[", "type",
 ];
 
 /// Classification of a command name as a POSIX builtin kind.
@@ -33,7 +34,7 @@ pub fn classify_builtin(name: &str) -> BuiltinKind {
         "break" | ":" | "continue" | "." | "eval" | "exec" | "exit" | "export" | "readonly"
         | "return" | "set" | "shift" | "times" | "trap" | "unset" | "fc" => BuiltinKind::Special,
         "cd" | "command" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait"
-        | "fg" | "bg" | "jobs" | "umask" | "test" | "[" => BuiltinKind::Regular,
+        | "fg" | "bg" | "jobs" | "umask" | "test" | "[" | "type" => BuiltinKind::Regular,
         _ => BuiltinKind::NotBuiltin,
     }
 }
@@ -65,6 +66,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
             Ok(1)
         }
         "test" | "[" => Ok(test::builtin_test(name, args)),
+        "type" => r#type::builtin_type(args, env),
         _ => {
             eprintln!("yosh: {}: not a regular builtin", name);
             Ok(1)
