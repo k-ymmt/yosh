@@ -49,10 +49,10 @@ pub fn resolve_command_kind(env: &mut ShellEnv, name: &str) -> CommandKind {
     }
     // External: search $PATH.
     // Release the env.vars borrow first so env.utility_hash can be mutably borrowed.
-    if let Some(path_var) = env.vars.get("PATH").map(|s| s.to_string()) {
-        if let Some(p) = find_in_path(name, &path_var, &mut env.utility_hash) {
-            return CommandKind::External(p);
-        }
+    if let Some(path_var) = env.vars.get("PATH").map(|s| s.to_string())
+        && let Some(p) = find_in_path(name, &path_var, &mut env.utility_hash)
+    {
+        return CommandKind::External(p);
     }
     CommandKind::NotFound
 }
