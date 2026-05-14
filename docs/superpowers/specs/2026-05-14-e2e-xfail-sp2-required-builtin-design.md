@@ -97,7 +97,7 @@ operand resolves.
 
 **File layout:**
 
-- New file `src/builtin/r#type.rs` (raw identifier because `type` is a
+- New file `src/builtin/type.rs` (raw identifier because `type` is a
   Rust keyword) following the `src/builtin/command.rs` precedent for
   per-builtin files.
 - `src/builtin/mod.rs`:
@@ -371,7 +371,7 @@ terminates flag scanning. Any other `-X` →
 | Group | Files |
 |---|---|
 | G1 | `src/exec/job_control.rs`; 2 E2E test files (XFAIL removal) |
-| G2 | `src/builtin/r#type.rs` (new); `src/builtin/mod.rs`; 2 E2E test files |
+| G2 | `src/builtin/type.rs` (new); `src/builtin/mod.rs`; 2 E2E test files |
 | G3 | `src/env/mod.rs`; `src/exec/command.rs`; `src/builtin/hash.rs` (new); `src/builtin/mod.rs`; `src/builtin/special.rs`; `src/builtin/resolve.rs`; `src/exec/simple.rs`; `src/builtin/command.rs`; 1 E2E test file |
 | All | `TODO.md`, `docs/superpowers/specs/2026-05-13-e2e-xfail-roadmap-design.md` (status note if convention requires) |
 
