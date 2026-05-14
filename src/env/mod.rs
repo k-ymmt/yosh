@@ -58,6 +58,8 @@ impl ShellEnv {
     pub fn new(shell_name: impl Into<String>, args: Vec<String>) -> Self {
         let mut vars = VarStore::from_environ();
         vars.set_positional_params(args);
+        // POSIX: "OPTIND shall be initialized to 1 when the shell is invoked."
+        let _ = vars.set("OPTIND", "1");
         ShellEnv {
             vars,
             exec: ExecState {
@@ -159,5 +161,11 @@ mod tests {
             .insert("foo".to_string(), std::path::PathBuf::from("/bin/foo"));
         env.unset_var("PATH").unwrap();
         assert!(env.utility_hash.is_empty());
+    }
+
+    #[test]
+    fn shell_env_new_seeds_optind_to_one() {
+        let env = ShellEnv::new("yosh", vec![]);
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
     }
 }
