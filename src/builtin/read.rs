@@ -7,6 +7,7 @@
 
 use crate::env::ShellEnv;
 use crate::error::ShellError;
+use crate::parser::word::is_valid_name;
 
 pub fn builtin_read(_args: &[String], _env: &mut ShellEnv) -> Result<i32, ShellError> {
     eprintln!("yosh: read: not implemented");
@@ -27,8 +28,6 @@ enum ArgError {
 }
 
 fn parse_args(args: &[String]) -> Result<ParsedArgs, ArgError> {
-    use crate::parser::word::is_valid_name;
-
     let mut raw = false;
     let mut idx = 0;
     while idx < args.len() {
