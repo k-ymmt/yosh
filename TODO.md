@@ -132,6 +132,34 @@ Decomposition of 55 XFAIL tests into 7 sub-projects. See
       exports `OPTIND=5`, `ShellEnv::new` correctly overwrites to `"1"`
       per POSIX, but no test covers this path. Add a focused unit test
       in `src/env/mod.rs`. Code-review follow-up from SP4 Task 2.
+- [ ] `OPTARG` is unconditionally overwritten to empty string in
+      `builtin_getopts` even on end-of-options (exit 1) and on known
+      options with no argument. POSIX says OPTARG is unspecified at
+      end-of-options; bash and dash leave the previous value in place,
+      which is friendlier for scripts that inspect OPTARG after the
+      loop. Guard the OPTARG write on `step.optarg.is_some()` (or split
+      the end-of-options branch to skip the write entirely)
+      (`src/builtin/getopts.rs:74-75`). Final-review follow-up from
+      SP4 Task 6.
+- [ ] `let _ = env.assign_var(parsed.var_name, …)` and the two
+      following `assign_var` calls in `builtin_getopts` silently
+      discard readonly errors. If the user has `readonly opt`, calling
+      `getopts a opt` advances OPTIND without assigning `opt`, leaving
+      state inconsistent. POSIX does not mandate the behavior; bash
+      emits `getopts: opt: readonly variable` and returns non-zero.
+      Either capture the Err and surface a diagnostic + rc=2, or
+      pre-check `is_readonly` before any side effects
+      (`src/builtin/getopts.rs:73-76`). Final-review follow-up from
+      SP4 Task 6.
+- [ ] `step_getopts` casts a stack byte to `char` via `bytes[cursor]
+      as char`, which silently misinterprets non-ASCII UTF-8 bytes
+      (e.g. `-é` yields the byte `0xC3` as a char). POSIX option chars
+      are ASCII letters/digits so practical inputs hit the unknown-
+      option branch and exit safely, but the cast obscures the
+      intent. Switch to `char::from_u32(bytes[cursor] as u32)` (with
+      a fallback) or add a `// ASCII spec only` doc-comment at the
+      cast site (`src/builtin/getopts.rs:139-140`). Final-review
+      follow-up from SP4 Task 6.
 
 ## Job Control: Known Limitations
 
