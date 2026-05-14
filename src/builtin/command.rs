@@ -80,7 +80,7 @@ pub fn parse_flags(args: &[String]) -> Result<CommandFlags, String> {
 
 /// Render `-v` concise output. Returns `(stdout, exit_status)`.
 /// When `name` is unknown, stdout is empty and exit is 1.
-pub fn render_brief(env: &ShellEnv, name: &str) -> (String, i32) {
+pub fn render_brief(env: &mut ShellEnv, name: &str) -> (String, i32) {
     match resolve_command_kind(env, name) {
         CommandKind::Alias(val) => {
             let escaped = val.replace('\'', r"'\''");
@@ -96,7 +96,7 @@ pub fn render_brief(env: &ShellEnv, name: &str) -> (String, i32) {
 
 /// Render `-V` verbose output. Returns `(stdout_or_empty, stderr_or_empty, exit_status)`.
 /// For NotFound, stdout is empty and stderr holds the "not found" message.
-pub fn render_verbose(env: &ShellEnv, name: &str) -> (String, String, i32) {
+pub fn render_verbose(env: &mut ShellEnv, name: &str) -> (String, String, i32) {
     match resolve_command_kind(env, name) {
         CommandKind::Alias(val) => (
             format!("{} is aliased to '{}'", name, val),
@@ -227,7 +227,7 @@ mod tests {
     fn brief_alias() {
         let mut env = env_with_path("/bin:/usr/bin");
         env.aliases.set("ll", "ls -l");
-        let (out, code) = render_brief(&env, "ll");
+        let (out, code) = render_brief(&mut env, "ll");
         assert_eq!(out, "alias ll='ls -l'");
         assert_eq!(code, 0);
     }
@@ -238,28 +238,28 @@ mod tests {
         // round-trips through the shell's quoting rules (matches bash).
         let mut env = env_with_path("/bin:/usr/bin");
         env.aliases.set("weird", r"it's weird");
-        let (out, code) = render_brief(&env, "weird");
+        let (out, code) = render_brief(&mut env, "weird");
         assert_eq!(out, r"alias weird='it'\''s weird'");
         assert_eq!(code, 0);
     }
 
     #[test]
     fn brief_keyword() {
-        let env = env_with_path("/bin:/usr/bin");
-        assert_eq!(render_brief(&env, "if"), ("if".to_string(), 0));
+        let mut env = env_with_path("/bin:/usr/bin");
+        assert_eq!(render_brief(&mut env, "if"), ("if".to_string(), 0));
     }
 
     #[test]
     fn brief_builtin() {
-        let env = env_with_path("/bin:/usr/bin");
-        assert_eq!(render_brief(&env, "cd"), ("cd".to_string(), 0));
-        assert_eq!(render_brief(&env, "export"), ("export".to_string(), 0));
+        let mut env = env_with_path("/bin:/usr/bin");
+        assert_eq!(render_brief(&mut env, "cd"), ("cd".to_string(), 0));
+        assert_eq!(render_brief(&mut env, "export"), ("export".to_string(), 0));
     }
 
     #[test]
     fn brief_external() {
-        let env = env_with_path("/bin:/usr/bin");
-        let (out, code) = render_brief(&env, "sh");
+        let mut env = env_with_path("/bin:/usr/bin");
+        let (out, code) = render_brief(&mut env, "sh");
         assert!(
             out.ends_with("/sh"),
             "expected path ending in /sh, got: {out}"
@@ -269,8 +269,8 @@ mod tests {
 
     #[test]
     fn brief_not_found() {
-        let env = env_with_path("/bin:/usr/bin");
-        let (out, code) = render_brief(&env, "definitely_not_a_real_cmd_xyz");
+        let mut env = env_with_path("/bin:/usr/bin");
+        let (out, code) = render_brief(&mut env, "definitely_not_a_real_cmd_xyz");
         assert_eq!(out, "");
         assert_eq!(code, 1);
     }
@@ -279,7 +279,7 @@ mod tests {
     fn verbose_alias() {
         let mut env = env_with_path("/bin:/usr/bin");
         env.aliases.set("ll", "ls -l");
-        let (out, err, code) = render_verbose(&env, "ll");
+        let (out, err, code) = render_verbose(&mut env, "ll");
         assert_eq!(out, "ll is aliased to 'ls -l'");
         assert_eq!(err, "");
         assert_eq!(code, 0);
@@ -287,32 +287,32 @@ mod tests {
 
     #[test]
     fn verbose_keyword() {
-        let env = env_with_path("/bin:/usr/bin");
-        let (out, _, code) = render_verbose(&env, "if");
+        let mut env = env_with_path("/bin:/usr/bin");
+        let (out, _, code) = render_verbose(&mut env, "if");
         assert_eq!(out, "if is a shell keyword");
         assert_eq!(code, 0);
     }
 
     #[test]
     fn verbose_special_builtin() {
-        let env = env_with_path("/bin:/usr/bin");
-        let (out, _, code) = render_verbose(&env, "export");
+        let mut env = env_with_path("/bin:/usr/bin");
+        let (out, _, code) = render_verbose(&mut env, "export");
         assert_eq!(out, "export is a special shell builtin");
         assert_eq!(code, 0);
     }
 
     #[test]
     fn verbose_regular_builtin() {
-        let env = env_with_path("/bin:/usr/bin");
-        let (out, _, code) = render_verbose(&env, "cd");
+        let mut env = env_with_path("/bin:/usr/bin");
+        let (out, _, code) = render_verbose(&mut env, "cd");
         assert_eq!(out, "cd is a shell builtin");
         assert_eq!(code, 0);
     }
 
     #[test]
     fn verbose_external() {
-        let env = env_with_path("/bin:/usr/bin");
-        let (out, _, code) = render_verbose(&env, "sh");
+        let mut env = env_with_path("/bin:/usr/bin");
+        let (out, _, code) = render_verbose(&mut env, "sh");
         assert!(out.starts_with("sh is "), "got: {out}");
         assert!(out.contains("/sh"), "got: {out}");
         assert_eq!(code, 0);
@@ -320,8 +320,8 @@ mod tests {
 
     #[test]
     fn verbose_not_found() {
-        let env = env_with_path("/bin:/usr/bin");
-        let (out, err, code) = render_verbose(&env, "definitely_not_a_real_cmd_xyz");
+        let mut env = env_with_path("/bin:/usr/bin");
+        let (out, err, code) = render_verbose(&mut env, "definitely_not_a_real_cmd_xyz");
         assert_eq!(out, "");
         assert!(err.contains("not found"), "got stderr: {err}");
         assert_eq!(code, 1);

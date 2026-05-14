@@ -65,6 +65,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 aliases: env.aliases.clone(),
                 history: env.history.clone(),
                 default_path_cache: env.default_path_cache.clone(),
+                utility_hash: env.utility_hash.clone(),
             };
             child_env.traps.reset_for_command_sub();
             let mut executor = Executor::from_env(child_env);

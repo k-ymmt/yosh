@@ -7,6 +7,7 @@ pub mod traps;
 pub mod vars;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use aliases::AliasStore;
@@ -43,6 +44,11 @@ pub struct ShellEnv {
     /// Cache of the POSIX default PATH (`confstr(_CS_PATH)`), computed
     /// lazily on first use. See `env::default_path::default_path()`.
     pub default_path_cache: OnceLock<String>,
+    /// POSIX hash table: utility name → resolved absolute path.
+    /// Auto-populated by `find_in_path` / `lookup_in_path` cache misses
+    /// and by explicit `hash utility...` invocations. Cleared by
+    /// `hash -r` and on `PATH` reassignment (POSIX §2.5.3).
+    pub utility_hash: HashMap<String, PathBuf>,
 }
 
 impl ShellEnv {
@@ -75,7 +81,29 @@ impl ShellEnv {
             aliases: AliasStore::default(),
             history: History::new(),
             default_path_cache: OnceLock::new(),
+            utility_hash: HashMap::new(),
         }
+    }
+
+    /// Set a shell variable. If `name == "PATH"`, the utility hash
+    /// table is cleared after the successful assignment (POSIX
+    /// §2.5.3). Returns `Err` only if the variable is readonly.
+    pub fn assign_var(&mut self, name: &str, value: impl Into<String>) -> Result<(), String> {
+        self.vars.set(name, value)?;
+        if name == "PATH" {
+            self.utility_hash.clear();
+        }
+        Ok(())
+    }
+
+    /// Unset a shell variable. If `name == "PATH"`, the utility hash
+    /// table is cleared after the successful unset.
+    pub fn unset_var(&mut self, name: &str) -> Result<(), String> {
+        self.vars.unset(name)?;
+        if name == "PATH" {
+            self.utility_hash.clear();
+        }
+        Ok(())
     }
 }
 
@@ -103,5 +131,33 @@ mod tests {
     fn test_shell_pgid() {
         let env = ShellEnv::new("yosh", vec![]);
         assert!(env.process.shell_pgid.as_raw() > 0);
+    }
+
+    #[test]
+    fn assign_var_clears_utility_hash_on_path_change() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.utility_hash
+            .insert("foo".to_string(), std::path::PathBuf::from("/bin/foo"));
+        env.assign_var("PATH", "/new").unwrap();
+        assert!(env.utility_hash.is_empty());
+    }
+
+    #[test]
+    fn assign_var_leaves_utility_hash_for_non_path_var() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.utility_hash
+            .insert("foo".to_string(), std::path::PathBuf::from("/bin/foo"));
+        env.assign_var("OTHER", "x").unwrap();
+        assert_eq!(env.utility_hash.len(), 1);
+    }
+
+    #[test]
+    fn unset_var_clears_utility_hash_on_path_unset() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.assign_var("PATH", "/x").unwrap();
+        env.utility_hash
+            .insert("foo".to_string(), std::path::PathBuf::from("/bin/foo"));
+        env.unset_var("PATH").unwrap();
+        assert!(env.utility_hash.is_empty());
     }
 }

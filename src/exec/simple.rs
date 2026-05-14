@@ -583,7 +583,7 @@ impl Executor {
                 Some(w) => crate::expand::expand_word_to_string(&mut self.env, w)?,
                 None => String::new(),
             };
-            let _ = self.env.vars.set(&assignment.name, value);
+            let _ = self.env.assign_var(&assignment.name, value);
         }
         Ok(saved)
     }
@@ -593,10 +593,10 @@ impl Executor {
         for (name, old_val) in saved {
             match old_val {
                 Some(val) => {
-                    let _ = self.env.vars.set(&name, val);
+                    let _ = self.env.assign_var(&name, val);
                 }
                 None => {
-                    let _ = self.env.vars.unset(&name);
+                    let _ = self.env.unset_var(&name);
                 }
             }
         }
@@ -620,14 +620,14 @@ impl Executor {
 
         match parsed.verbose {
             Verbosity::Brief => {
-                let (out, code) = render_brief(&self.env, &parsed.name);
+                let (out, code) = render_brief(&mut self.env, &parsed.name);
                 if !out.is_empty() {
                     println!("{}", out);
                 }
                 code
             }
             Verbosity::Verbose => {
-                let (out, err, code) = render_verbose(&self.env, &parsed.name);
+                let (out, err, code) = render_verbose(&mut self.env, &parsed.name);
                 if !out.is_empty() {
                     println!("{}", out);
                 }
@@ -676,7 +676,7 @@ impl Executor {
         use crate::exec::command::{PathLookup, lookup_in_path};
 
         let dp = default_path(&self.env).to_string();
-        match lookup_in_path(name, &dp) {
+        match lookup_in_path(name, &dp, &mut self.env.utility_hash) {
             PathLookup::Executable(p) => exec_external_absolute(&p, name, args, &mut self.env),
             PathLookup::NotExecutable(p) => {
                 eprintln!("yosh: command: {}: permission denied", p.display());
@@ -722,7 +722,7 @@ impl Executor {
             .get("PATH")
             .map(|s| s.to_string())
             .unwrap_or_default();
-        match lookup_in_path(name, &path_var) {
+        match lookup_in_path(name, &path_var, &mut self.env.utility_hash) {
             PathLookup::Executable(p) => exec_external_absolute(&p, name, args, &mut self.env),
             PathLookup::NotExecutable(p) => {
                 eprintln!("yosh: command: {}: permission denied", p.display());

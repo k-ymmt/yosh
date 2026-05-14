@@ -134,7 +134,7 @@ mod tests {
         let env = ShellEnv::new("yosh", vec![]);
         let dp = default_path(&env);
         assert!(
-            find_in_path("sh", dp).is_some(),
+            find_in_path("sh", dp, &mut std::collections::HashMap::new()).is_some(),
             "expected to find sh in: {dp}"
         );
     }

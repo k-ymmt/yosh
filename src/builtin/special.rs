@@ -106,7 +106,7 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
         }
         if let Some(pos) = arg.find('=') {
             let raw_value = &arg[pos + 1..];
-            if let Err(e) = env.vars.set(name, raw_value) {
+            if let Err(e) = env.assign_var(name, raw_value) {
                 eprintln!("yosh: export: {}", e);
                 status = 1;
                 continue;
@@ -162,7 +162,7 @@ fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError>
         }
         if unset_functions {
             env.functions.remove(name);
-        } else if let Err(e) = env.vars.unset(name) {
+        } else if let Err(e) = env.unset_var(name) {
             eprintln!("yosh: unset: {}", e);
             status = 1;
         }
@@ -390,8 +390,12 @@ fn builtin_exec(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> 
     let resolved_path: std::path::PathBuf = if cmd.contains('/') {
         std::path::PathBuf::from(cmd)
     } else {
-        let path_var = env.vars.get("PATH").unwrap_or("").to_string();
-        match crate::exec::command::find_in_path(cmd, &path_var) {
+        let path_var = env
+            .vars
+            .get("PATH")
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        match crate::exec::command::find_in_path(cmd, &path_var, &mut env.utility_hash) {
             Some(p) => p,
             None => {
                 return Err(ShellError::runtime(

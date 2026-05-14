@@ -33,7 +33,7 @@ pub enum CommandKind {
 ///   3. function
 ///   4. builtin (Special or Regular)
 ///   5. PATH search
-pub fn resolve_command_kind(env: &ShellEnv, name: &str) -> CommandKind {
+pub fn resolve_command_kind(env: &mut ShellEnv, name: &str) -> CommandKind {
     if let Some(val) = env.aliases.get(name) {
         return CommandKind::Alias(val.to_string());
     }
@@ -48,10 +48,11 @@ pub fn resolve_command_kind(env: &ShellEnv, name: &str) -> CommandKind {
         kind => return CommandKind::Builtin(kind),
     }
     // External: search $PATH.
-    if let Some(path_var) = env.vars.get("PATH")
-        && let Some(p) = find_in_path(name, path_var)
-    {
-        return CommandKind::External(p);
+    // Release the env.vars borrow first so env.utility_hash can be mutably borrowed.
+    if let Some(path_var) = env.vars.get("PATH").map(|s| s.to_string()) {
+        if let Some(p) = find_in_path(name, &path_var, &mut env.utility_hash) {
+            return CommandKind::External(p);
+        }
     }
     CommandKind::NotFound
 }
@@ -72,17 +73,17 @@ mod tests {
         env.aliases.set("ls", "ls -G");
         // Even though "ls" also exists in PATH, alias takes precedence.
         assert_eq!(
-            resolve_command_kind(&env, "ls"),
+            resolve_command_kind(&mut env, "ls"),
             CommandKind::Alias("ls -G".to_string())
         );
     }
 
     #[test]
     fn keyword_detected() {
-        let env = env_with_path("/bin:/usr/bin");
-        assert_eq!(resolve_command_kind(&env, "if"), CommandKind::Keyword);
-        assert_eq!(resolve_command_kind(&env, "for"), CommandKind::Keyword);
-        assert_eq!(resolve_command_kind(&env, "done"), CommandKind::Keyword);
+        let mut env = env_with_path("/bin:/usr/bin");
+        assert_eq!(resolve_command_kind(&mut env, "if"), CommandKind::Keyword);
+        assert_eq!(resolve_command_kind(&mut env, "for"), CommandKind::Keyword);
+        assert_eq!(resolve_command_kind(&mut env, "done"), CommandKind::Keyword);
     }
 
     #[test]
@@ -104,23 +105,26 @@ mod tests {
                 redirects: Vec::new(),
             },
         );
-        assert_eq!(resolve_command_kind(&env, "echo"), CommandKind::Function);
+        assert_eq!(
+            resolve_command_kind(&mut env, "echo"),
+            CommandKind::Function
+        );
     }
 
     #[test]
     fn special_builtin_detected() {
-        let env = env_with_path("/bin:/usr/bin");
+        let mut env = env_with_path("/bin:/usr/bin");
         assert_eq!(
-            resolve_command_kind(&env, "export"),
+            resolve_command_kind(&mut env, "export"),
             CommandKind::Builtin(BuiltinKind::Special)
         );
     }
 
     #[test]
     fn regular_builtin_detected() {
-        let env = env_with_path("/bin:/usr/bin");
+        let mut env = env_with_path("/bin:/usr/bin");
         assert_eq!(
-            resolve_command_kind(&env, "cd"),
+            resolve_command_kind(&mut env, "cd"),
             CommandKind::Builtin(BuiltinKind::Regular)
         );
     }
@@ -128,8 +132,8 @@ mod tests {
     #[test]
     fn external_detected() {
         // /bin/sh is POSIX-mandatory on macOS + Linux.
-        let env = env_with_path("/bin:/usr/bin");
-        match resolve_command_kind(&env, "sh") {
+        let mut env = env_with_path("/bin:/usr/bin");
+        match resolve_command_kind(&mut env, "sh") {
             CommandKind::External(p) => {
                 assert!(
                     p.ends_with("sh"),
@@ -143,9 +147,9 @@ mod tests {
 
     #[test]
     fn not_found_for_unknown_name() {
-        let env = env_with_path("/bin:/usr/bin");
+        let mut env = env_with_path("/bin:/usr/bin");
         assert_eq!(
-            resolve_command_kind(&env, "definitely_not_a_real_cmd_xyz"),
+            resolve_command_kind(&mut env, "definitely_not_a_real_cmd_xyz"),
             CommandKind::NotFound
         );
     }
