@@ -5,7 +5,6 @@
 Decomposition of 55 XFAIL tests into 7 sub-projects. See
 `docs/superpowers/specs/2026-05-13-e2e-xfail-roadmap-design.md`.
 
-- [ ] SP3 — `read` builtin implementation (9 tests; includes `exec_close_fd` and `exec_redir_input`)
 - [ ] SP4 — `getopts` builtin implementation (9 tests)
 - [ ] SP5 — Miscellaneous small POSIX features (8 tests)
 - [ ] SP6 — PTY harness migration (10 tests)
@@ -52,6 +51,44 @@ Decomposition of 55 XFAIL tests into 7 sub-projects. See
       (`src/builtin/command.rs`) is dead code with a `// Cannot happen`
       comment. Replace with `unreachable!("…")` so the contract is
       compile-checked.
+
+### SP3 follow-ups (non-blocking)
+
+- [ ] Word-splitting applied to literal command argv tokens — uncovered
+      during SP3 Task 5 manual smoke. `IFS=:; echo a::b` produces three
+      args (`a`, ``, `b`) joined by `echo` into `a  b`, instead of the
+      single POSIX-literal `a::b`. POSIX XCU §2.6.5 restricts field
+      splitting to results of parameter/command/arithmetic expansion,
+      not to literal text. The `printf "a::b\n" | { read ... }` variant
+      works correctly because the IFS is consumed by `read`, not by the
+      expander on the literal. Likely fix in `src/expand/field_split.rs`
+      or in the simple-command expansion path before `field_split::split`
+      is called. Verified `read` itself is unaffected.
+- [ ] `split_fields` terminator-consume branches are mildly redundant
+      (`src/builtin/read.rs:200-213`). The `is_sep` and `else` (ws-only)
+      branches both end with the same `while is_ws(...)` consume loop;
+      flattening to "consume one sep byte if present, then consume any
+      ws-IFS run" makes the POSIX rule clearer. Pure refactor.
+- [ ] `split_fields` test coverage gaps surfaced by Task 4 code review
+      (`src/builtin/read.rs`):
+      - N=1 with sep-only IFS (leading `:` not trimmed)
+      - N=3 with collapsed multi-space run (`a   b   c`)
+      - Escaped leading sep-IFS byte (`\<:>` stays in field 1)
+      Each is a 3–5 line test; not blocking because spec coverage is
+      adequate via the existing 11 tests.
+- [ ] `assert!(n_vars >= 1)` at `src/builtin/read.rs:140` could drop to
+      `debug_assert!` since the only caller (`builtin_read`) guarantees
+      `var_names.len() >= 1` via `ArgError::NoVarName`. Saves a tiny
+      runtime check; matches the `debug_assert_eq!(result.len(), n_vars)`
+      at the function tail.
+- [ ] Partial-variable-assignment state on readonly error
+      (`src/builtin/read.rs:43-49`): if the Kth variable in
+      `read x y z` is readonly, `x` and `y` are already assigned before
+      the error fires for `z`. POSIX leaves this implementation-defined;
+      bash exhibits the same behaviour. A short comment at the loop
+      head acknowledging the contract would aid future readers, or
+      pre-check all names against `env.vars.is_readonly` before any
+      assignment lands.
 
 ## Job Control: Known Limitations
 
@@ -177,10 +214,6 @@ become PASS; remove the `# XFAIL:` line at that point.
       portable shell scripts. Currently uses `/usr/bin/getopts`. XFAIL
       tests: `e2e/posix_spec/4_required_builtin/getopts_*.sh` (6 of 8 tests
       pass via fallback; 6 remain XFAIL pending native impl)
-- [ ] `read [-r] var...` — read one line from stdin into variables.
-      Currently uses `/usr/bin/read`. XFAIL tests:
-      `e2e/posix_spec/4_required_builtin/read_*.sh` (6 of 7 remain XFAIL —
-      most cases require in-process state)
 - [ ] `ulimit [-f] [num]` — resource-limit query/set. Currently uses
       `/usr/bin/ulimit`. XFAIL tests:
       `e2e/posix_spec/4_required_builtin/ulimit_*.sh` (1 of 3 remains XFAIL
