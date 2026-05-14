@@ -5,7 +5,6 @@
 Decomposition of 55 XFAIL tests into 7 sub-projects. See
 `docs/superpowers/specs/2026-05-13-e2e-xfail-roadmap-design.md`.
 
-- [ ] SP2 — Required-builtin diagnostics + native `type`/`hash` (5 tests)
 - [ ] SP3 — `read` builtin implementation (9 tests; includes `exec_close_fd` and `exec_redir_input`)
 - [ ] SP4 — `getopts` builtin implementation (9 tests)
 - [ ] SP5 — Miscellaneous small POSIX features (8 tests)
@@ -21,6 +20,38 @@ Decomposition of 55 XFAIL tests into 7 sub-projects. See
 - [ ] `export -p foo=v` silently drops `foo=v` operand (the `-p` branch prints and returns). Pre-existing, made more visible by SP1 G2's stricter validation. Either accept operands after `-p` or document the limitation (`src/builtin/special.rs::builtin_export`).
 - [ ] `export -- foo=v` and `readonly -- foo=v` now report `--` as not a valid identifier (visible regression after SP1 G2's strict gate). Should consume `--` as POSIX end-of-options before validation (`src/builtin/special.rs::builtin_export`, `::builtin_readonly`).
 - [ ] `e2e/posix_spec/8_env_vars/PATH_search.sh` and `e2e/builtin/job_spec_prefix.sh` intermittently TIMEOUT under full-suite load (pass standalone). Observed twice during SP1 closure runs. Likely fork/wait timing under contention; investigate or bump per-test timeout (`e2e/run_tests.sh`).
+
+### SP2 follow-ups (non-blocking)
+
+- [ ] Migrate remaining variable-setting call sites to `env.assign_var` so
+      PATH cache invalidation is total. Pending paths:
+      `${var:=value}` in `src/expand/param.rs:75`; arithmetic assignment in
+      `src/expand/arith.rs:591,603`; `for` loop variable in
+      `src/exec/compound.rs:229`; plugin-set variables in
+      `src/plugin/host/variables.rs:19,35`. Each path could in principle
+      set `PATH` but no current XFAIL test exercises it.
+- [ ] `hash` listing format omits `hits=N` count. POSIX leaves the
+      format implementation-defined; bash includes hit counts. Track
+      hit counts on the cache entries if a tooling consumer asks
+      (`src/builtin/hash.rs`).
+- [ ] `command -V` (`src/builtin/command.rs::render_verbose`) does not
+      escape single quotes in alias values while native `type`
+      (`src/builtin/type.rs::format_type_line`) does. Pre-existing
+      escape gap surfaced during SP2 G2 code review. Either align
+      `render_verbose` with the escaping in `type`, or extract a shared
+      `format_alias_value` helper for both call sites.
+- [ ] `ShellEnv.utility_hash` field visibility is `pub` (`src/env/mod.rs`);
+      tighten to `pub(crate)` so only `assign_var`/`unset_var`/`hash`
+      builtin and `find_in_path` reach into it.
+- [ ] `lookup_in_path` checks `cmd.contains('/')` twice (once at the
+      cache-hit guard, once before auto-insert in the PATH walk loop)
+      while `find_in_path` checks once at the top. Symmetrize for
+      readability (`src/exec/command.rs`).
+- [ ] The `BuiltinKind::NotBuiltin` arm in `format_type_line`
+      (`src/builtin/type.rs`) and `render_verbose`
+      (`src/builtin/command.rs`) is dead code with a `// Cannot happen`
+      comment. Replace with `unreachable!("…")` so the contract is
+      compile-checked.
 
 ## Job Control: Known Limitations
 
@@ -146,18 +177,10 @@ become PASS; remove the `# XFAIL:` line at that point.
       portable shell scripts. Currently uses `/usr/bin/getopts`. XFAIL
       tests: `e2e/posix_spec/4_required_builtin/getopts_*.sh` (6 of 8 tests
       pass via fallback; 6 remain XFAIL pending native impl)
-- [ ] `hash [-r] [cmd]` — utility-location cache. Currently uses
-      `/usr/bin/hash`. XFAIL tests:
-      `e2e/posix_spec/4_required_builtin/hash_*.sh` (1 of 4 remains XFAIL —
-      exit-status mismatch for unknown command)
 - [ ] `read [-r] var...` — read one line from stdin into variables.
       Currently uses `/usr/bin/read`. XFAIL tests:
       `e2e/posix_spec/4_required_builtin/read_*.sh` (6 of 7 remain XFAIL —
       most cases require in-process state)
-- [ ] `type name...` — identify command kind (function / builtin / alias
-      / external path). Currently uses `/usr/bin/type`. XFAIL tests:
-      `e2e/posix_spec/4_required_builtin/type_*.sh` (2 of 5 remain XFAIL —
-      session-local aliases and functions not visible to external wrapper)
 - [ ] `ulimit [-f] [num]` — resource-limit query/set. Currently uses
       `/usr/bin/ulimit`. XFAIL tests:
       `e2e/posix_spec/4_required_builtin/ulimit_*.sh` (1 of 3 remains XFAIL
@@ -219,10 +242,6 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       requires the EXIT pseudo-signal handler to run when the shell
       exits, including subshells. XFAIL test:
       `e2e/posix_spec/2_11_signals_and_error_handling/trap_zero_runs_on_exit.sh`.
-- [ ] `jobs` returns exit 0 for an unknown job spec or unknown option.
-      POSIX requires exit 1 with a diagnostic. XFAIL tests:
-      `e2e/posix_spec/4_required_builtin/jobs_unknown_spec.sh`,
-      `jobs_invalid_option.sh`.
 - [ ] `$PPID` special parameter returns empty — POSIX requires it to
       hold the parent process ID at shell startup. XFAIL test:
       `e2e/posix_spec/8_env_vars/PPID_is_set.sh`.
