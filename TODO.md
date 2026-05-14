@@ -89,6 +89,16 @@ Decomposition of 55 XFAIL tests into 7 sub-projects. See
       head acknowledging the contract would aid future readers, or
       pre-check all names against `env.vars.is_readonly` before any
       assignment lands.
+- [ ] `StdinByteReader::read_byte` SAFETY comment imprecise
+      (`src/builtin/read.rs:67-70`). Says "STDIN_FILENO is always open at
+      process start" but does not address user-driven closure (e.g.,
+      `exec 0>&-`). Process path is fail-safe in that case (`libc::read`
+      returns -1/EBADF → `Err` → `yosh: read: <strerror>` and exit 1), but
+      the comment overstates the precondition. Either tighten to "fd 0
+      is a valid file descriptor at the time of the syscall — if it has
+      been explicitly closed by the user, `libc::read` returns EBADF
+      which we propagate as `Err`", or note the fail-safe behaviour
+      alongside the existing text. Surfaced during SP3 final review.
 
 ## Job Control: Known Limitations
 
