@@ -1,4 +1,5 @@
 pub mod command;
+pub mod getopts;
 pub mod hash;
 pub mod read;
 pub mod regular;
