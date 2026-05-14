@@ -31,6 +31,12 @@ impl Variable {
 struct Scope {
     vars: HashMap<String, Variable>,
     positional_params: Vec<String>,
+    /// POSIX `getopts` cursor within a stacked argv element (e.g. `-abc`).
+    /// `0` means "advance to the next argv element on the next call."
+    getopts_subindex: usize,
+    /// `OPTIND` value snapshot saved on `push_scope`, restored on `pop_scope`.
+    /// `None` outside any function call (global scope).
+    saved_optind: Option<String>,
 }
 
 /// Storage for shell variables with scope chain support.
@@ -55,6 +61,8 @@ impl VarStore {
             scopes: vec![Scope {
                 vars: HashMap::new(),
                 positional_params: Vec::new(),
+                getopts_subindex: 0,
+                saved_optind: None,
             }],
             environ_cache: None,
         }
@@ -70,6 +78,8 @@ impl VarStore {
             scopes: vec![Scope {
                 vars,
                 positional_params: Vec::new(),
+                getopts_subindex: 0,
+                saved_optind: None,
             }],
             environ_cache: None,
         }
@@ -79,20 +89,59 @@ impl VarStore {
 
     /// Push a new scope with the given positional parameters.
     /// Used for function calls.
+    ///
+    /// Saves the caller's current `OPTIND` value into the new scope's
+    /// `saved_optind` and resets the visible `OPTIND` to `"1"`. The
+    /// stacked-options subcursor starts at `0`.
     pub fn push_scope(&mut self, positional_params: Vec<String>) {
         self.environ_cache = None;
+        // Snapshot caller's OPTIND (may be unset → None).
+        let saved_optind = self.get("OPTIND").map(|s| s.to_string());
         self.scopes.push(Scope {
             vars: HashMap::new(),
             positional_params,
+            getopts_subindex: 0,
+            saved_optind,
         });
+        // Set OPTIND="1" in the new (top) scope so the function body
+        // sees a fresh parse position. Direct write into top scope to
+        // avoid POSIX "assign in caller" semantics of `set()`.
+        self.scopes
+            .last_mut()
+            .unwrap()
+            .vars
+            .insert("OPTIND".to_string(), Variable::new("1"));
     }
 
     /// Pop the current scope, restoring the previous scope's positional
     /// parameters. Panics if only the global scope remains.
+    ///
+    /// Restores the caller's `OPTIND` from the popped scope's
+    /// `saved_optind` snapshot (writing into whichever underlying scope
+    /// already holds OPTIND, or creating it in the new top scope).
     pub fn pop_scope(&mut self) {
         self.environ_cache = None;
         assert!(self.scopes.len() > 1, "cannot pop the global scope");
-        self.scopes.pop();
+        let popped = self.scopes.pop().unwrap();
+        if let Some(prev_optind) = popped.saved_optind {
+            // Write back into the now-current scope chain. Use `set`
+            // so the value lands where OPTIND was originally defined
+            // (typically scope[0]). Readonly OPTIND is not supported
+            // and the assignment cannot fail in practice.
+            let _ = self.set("OPTIND", prev_optind);
+        }
+    }
+
+    // ── getopts subcursor (top scope) ───────────────────────────────────
+
+    /// Get the current scope's `getopts` stacked-options subcursor.
+    pub fn getopts_subindex(&self) -> usize {
+        self.scopes.last().unwrap().getopts_subindex
+    }
+
+    /// Set the current scope's `getopts` stacked-options subcursor.
+    pub fn set_getopts_subindex(&mut self, value: usize) {
+        self.scopes.last_mut().unwrap().getopts_subindex = value;
     }
 
     /// Return the current scope depth. 1 = global scope only.
@@ -470,5 +519,44 @@ mod tests {
         store.pop_scope();
 
         assert_eq!(store.get("DEL"), None);
+    }
+
+    #[test]
+    fn push_scope_snapshots_optind_and_resets_to_one() {
+        let mut store = VarStore::new();
+        store.set("OPTIND", "5").unwrap();
+
+        store.push_scope(vec!["a".into(), "b".into()]);
+        assert_eq!(store.get("OPTIND"), Some("1"));
+
+        store.pop_scope();
+        assert_eq!(store.get("OPTIND"), Some("5"));
+    }
+
+    #[test]
+    fn push_scope_initial_subindex_is_zero() {
+        let mut store = VarStore::new();
+        store.push_scope(vec![]);
+        assert_eq!(store.getopts_subindex(), 0);
+    }
+
+    #[test]
+    fn set_getopts_subindex_round_trips() {
+        let mut store = VarStore::new();
+        store.set_getopts_subindex(3);
+        assert_eq!(store.getopts_subindex(), 3);
+    }
+
+    #[test]
+    fn push_scope_resets_subindex_and_pop_restores() {
+        let mut store = VarStore::new();
+        store.set_getopts_subindex(7);
+
+        store.push_scope(vec![]);
+        assert_eq!(store.getopts_subindex(), 0);
+        store.set_getopts_subindex(2);
+
+        store.pop_scope();
+        assert_eq!(store.getopts_subindex(), 7);
     }
 }
