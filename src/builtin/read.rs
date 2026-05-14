@@ -41,9 +41,9 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     };
     let values = split_fields(&ifs, &result.bytes, parsed.var_names.len());
 
-    for (name, value) in parsed.var_names.iter().zip(values.into_iter()) {
-        if let Err(e) = env.assign_var(name, value) {
-            eprintln!("yosh: read: {}", e);
+    for (name, value) in parsed.var_names.iter().zip(values) {
+        if env.assign_var(name, value).is_err() {
+            eprintln!("yosh: read: `{}': readonly variable", name);
             return Ok(1);
         }
     }
@@ -63,6 +63,9 @@ impl ByteReader for StdinByteReader {
     fn read_byte(&mut self) -> std::io::Result<Option<u8>> {
         let mut buf = [0u8; 1];
         loop {
+            // SAFETY: buf is a valid 1-byte stack allocation that lives for
+            // the duration of this call; STDIN_FILENO is always open at
+            // process start; the length matches the buffer size exactly.
             let n = unsafe {
                 libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, 1)
             };
@@ -453,6 +456,38 @@ mod tests {
         let res = read_logical_line(false, &mut r).unwrap();
         assert_eq!(res.bytes, vec![lb(b'a', false)]);
         assert!(res.hit_eof);
+    }
+
+    /// Reader implementing the ByteReader contract correctly: retries EINTR
+    /// internally rather than propagating it to the caller.
+    struct EintrRetryingReader<'a> {
+        eintr_count: usize,
+        inner: SliceReader<'a>,
+    }
+
+    impl<'a> ByteReader for EintrRetryingReader<'a> {
+        fn read_byte(&mut self) -> std::io::Result<Option<u8>> {
+            loop {
+                if self.eintr_count > 0 {
+                    self.eintr_count -= 1;
+                    continue; // simulate EINTR retry
+                }
+                return self.inner.read_byte();
+            }
+        }
+    }
+
+    #[test]
+    fn read_line_eintr_retries() {
+        // A ByteReader that retries EINTR internally (the contract for all
+        // implementors). read_logical_line must transparently get all bytes.
+        let mut r = EintrRetryingReader { eintr_count: 5, inner: SliceReader::new(b"hi\n") };
+        let res = read_logical_line(false, &mut r).unwrap();
+        assert_eq!(
+            res.bytes,
+            vec![lb(b'h', false), lb(b'i', false)],
+        );
+        assert!(!res.hit_eof);
     }
 
     fn split_for(ifs: &str, line: Vec<LineByte>, n_vars: usize) -> Vec<String> {
