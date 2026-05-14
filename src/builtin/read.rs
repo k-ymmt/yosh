@@ -132,6 +132,99 @@ fn read_logical_line<R: ByteReader>(raw: bool, reader: &mut R) -> std::io::Resul
     }
 }
 
+/// POSIX §2.6.5 field splitting for `read`. Returns exactly `n_vars`
+/// strings: var[0..n-1] are split fields, var[n-1] is the trailing
+/// remainder (with only trailing whitespace-IFS trimmed). When IFS is
+/// empty, no splitting occurs.
+fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
+    assert!(n_vars >= 1);
+
+    // Classify IFS bytes.
+    let mut ws_ifs: Vec<u8> = Vec::new();
+    let mut sep_ifs: Vec<u8> = Vec::new();
+    for b in ifs.bytes() {
+        if b == b' ' || b == b'\t' || b == b'\n' {
+            ws_ifs.push(b);
+        } else {
+            sep_ifs.push(b);
+        }
+    }
+
+    // Helper: is byte `b` an unescaped IFS byte of the given class?
+    let is_ws = |lb: &LineByte| !lb.escaped && ws_ifs.contains(&lb.value);
+    let is_sep = |lb: &LineByte| !lb.escaped && sep_ifs.contains(&lb.value);
+    let is_any_ifs = |lb: &LineByte| is_ws(lb) || is_sep(lb);
+
+    // Empty IFS → no splitting at all.
+    if ws_ifs.is_empty() && sep_ifs.is_empty() {
+        let whole: String = line.iter().map(|b| b.value as char).collect();
+        let mut out = vec![whole];
+        out.extend((1..n_vars).map(|_| String::new()));
+        return out;
+    }
+
+    // Trim leading ws_ifs.
+    let mut i = 0;
+    while i < line.len() && is_ws(&line[i]) {
+        i += 1;
+    }
+
+    // N=1 shortcut: trim trailing ws_ifs and return the whole remainder.
+    if n_vars == 1 {
+        let mut j = line.len();
+        while j > i && is_ws(&line[j - 1]) {
+            j -= 1;
+        }
+        let s: String = line[i..j].iter().map(|b| b.value as char).collect();
+        return vec![s];
+    }
+
+    let mut result: Vec<String> = Vec::with_capacity(n_vars);
+
+    // Emit fields 0..n_vars-2 (each terminated by IFS).
+    for _ in 0..(n_vars - 1) {
+        if i >= line.len() {
+            result.push(String::new());
+            continue;
+        }
+        // Field bytes: until the next IFS or end-of-line.
+        let start = i;
+        while i < line.len() && !is_any_ifs(&line[i]) {
+            i += 1;
+        }
+        let field: String = line[start..i].iter().map(|b| b.value as char).collect();
+        result.push(field);
+
+        // Consume one terminator: either a single sep_ifs byte plus
+        // any adjacent ws_ifs, or a run of ws_ifs.
+        if i < line.len() {
+            if is_sep(&line[i]) {
+                i += 1;
+                // Adjacent ws_ifs collapses with the sep terminator.
+                while i < line.len() && is_ws(&line[i]) {
+                    i += 1;
+                }
+            } else {
+                // ws_ifs run.
+                while i < line.len() && is_ws(&line[i]) {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    // Remainder for var[n_vars-1]: trim trailing ws_ifs only.
+    let mut j = line.len();
+    while j > i && is_ws(&line[j - 1]) {
+        j -= 1;
+    }
+    let remainder: String = line[i..j].iter().map(|b| b.value as char).collect();
+    result.push(remainder);
+
+    debug_assert_eq!(result.len(), n_vars);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +385,90 @@ mod tests {
         let res = read_logical_line(false, &mut r).unwrap();
         assert_eq!(res.bytes, vec![lb(b'a', false)]);
         assert!(res.hit_eof);
+    }
+
+    fn split_for(ifs: &str, line: Vec<LineByte>, n_vars: usize) -> Vec<String> {
+        split_fields(ifs, &line, n_vars)
+    }
+
+    fn to_line(s: &str) -> Vec<LineByte> {
+        s.bytes().map(|b| lb(b, false)).collect()
+    }
+
+    #[test]
+    fn split_n_eq_1_trims_both_sides() {
+        let out = split_for(" \t\n", to_line("   hello   "), 1);
+        assert_eq!(out, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn split_n_eq_1_empty_input_yields_empty_string() {
+        let out = split_for(" \t\n", to_line(""), 1);
+        assert_eq!(out, vec!["".to_string()]);
+    }
+
+    #[test]
+    fn split_n_gt_1_first_fields_then_remainder() {
+        let out = split_for(" \t\n", to_line("a b c"), 3);
+        assert_eq!(out, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn split_remainder_keeps_internal_ifs() {
+        let out = split_for(" \t\n", to_line("a b c d"), 2);
+        assert_eq!(out, vec!["a".to_string(), "b c d".to_string()]);
+    }
+
+    #[test]
+    fn split_leading_ifs_is_stripped() {
+        let out = split_for(" \t\n", to_line("   a b"), 2);
+        assert_eq!(out, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn split_trailing_ws_ifs_stripped_from_remainder() {
+        let out = split_for(" \t\n", to_line("a b c   "), 2);
+        assert_eq!(out, vec!["a".to_string(), "b c".to_string()]);
+    }
+
+    #[test]
+    fn split_more_vars_than_fields_yields_empty_strings() {
+        let out = split_for(" \t\n", to_line("a"), 3);
+        assert_eq!(out, vec!["a".to_string(), "".to_string(), "".to_string()]);
+    }
+
+    #[test]
+    fn split_empty_ifs_no_split() {
+        let out = split_for("", to_line("a b c"), 2);
+        // No splitting at all → entire line in var[0], var[1] empty.
+        assert_eq!(out, vec!["a b c".to_string(), "".to_string()]);
+    }
+
+    #[test]
+    fn split_sep_ifs_treated_as_single_separator() {
+        // `IFS=:`, input "a::b" → x=a, y="" (one colon separator), z=b
+        let out = split_for(":", to_line("a::b"), 3);
+        assert_eq!(out, vec!["a".to_string(), "".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn split_mixed_sep_and_ws_ifs() {
+        // IFS=":\t ", input "a: b" → ":" consumes one separator, then
+        // " " is also IFS and is consumed greedily as adjacent ws.
+        let out = split_for(": \t", to_line("a: b"), 2);
+        assert_eq!(out, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn split_escaped_byte_not_treated_as_ifs() {
+        // Non-raw "a\ b": split would normally see " " as IFS, but the
+        // space is escaped (came from `\<space>`), so it stays in field 1.
+        let line = vec![
+            lb(b'a', false),
+            lb(b' ', true), // escaped space
+            lb(b'b', false),
+        ];
+        let out = split_fields(" \t\n", &line, 2);
+        assert_eq!(out, vec!["a b".to_string(), "".to_string()]);
     }
 }
