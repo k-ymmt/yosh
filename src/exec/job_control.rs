@@ -27,6 +27,49 @@ fn strip_job_spec_prefix(spec: &str) -> &str {
     }
 }
 
+/// Parsed form of a `jobs [-l|-p] [--] [job_spec...]` invocation.
+#[derive(Debug)]
+struct JobsOpts {
+    long_format: bool,
+    pgid_only: bool,
+    operands: Vec<String>,
+}
+
+/// Parse `jobs` flags + operands. Returns `Err(message)` on unknown
+/// option; `message` is already prefixed (e.g., `"jobs: -x: invalid option"`)
+/// for the caller to write to stderr verbatim.
+fn parse_options(args: &[String]) -> Result<JobsOpts, String> {
+    let mut long_format = false;
+    let mut pgid_only = false;
+    let mut idx = 0;
+
+    while idx < args.len() {
+        let a = &args[idx];
+        if a == "--" {
+            idx += 1;
+            break;
+        }
+        if !a.starts_with('-') || a == "-" {
+            break;
+        }
+        for ch in a[1..].chars() {
+            match ch {
+                'l' => long_format = true,
+                'p' => pgid_only = true,
+                other => return Err(format!("jobs: -{}: invalid option", other)),
+            }
+        }
+        idx += 1;
+    }
+
+    let operands = args[idx..].to_vec();
+    Ok(JobsOpts {
+        long_format,
+        pgid_only,
+        operands,
+    })
+}
+
 impl Executor {
     /// POSIX wait builtin: wait for background jobs.
     pub(super) fn builtin_wait(&mut self, args: &[String]) -> Result<i32, ShellError> {
@@ -172,19 +215,43 @@ impl Executor {
     }
 
     pub(super) fn builtin_jobs(&mut self, args: &[String]) -> Result<i32, ShellError> {
-        let long_format = args.contains(&"-l".to_string());
-        let pgid_only = args.contains(&"-p".to_string());
+        let opts = match parse_options(args) {
+            Ok(o) => o,
+            Err(msg) => {
+                eprintln!("yosh: {}", msg);
+                return Ok(1);
+            }
+        };
 
-        // Collect job IDs first to avoid borrow issues
-        let job_ids: Vec<crate::env::jobs::JobId> =
-            self.env.process.jobs.all_jobs().map(|j| j.id).collect();
+        // Decide which job IDs to print.
+        let mut exit_status = 0;
+        let job_ids: Vec<crate::env::jobs::JobId> = if opts.operands.is_empty() {
+            self.env.process.jobs.all_jobs().map(|j| j.id).collect()
+        } else {
+            let mut resolved = Vec::with_capacity(opts.operands.len());
+            for spec in &opts.operands {
+                match self.env.process.jobs.resolve_job_spec(spec) {
+                    Ok(id) => resolved.push(id),
+                    Err(JobSpecError::Ambiguous) => {
+                        let display = strip_job_spec_prefix(spec);
+                        eprintln!("yosh: jobs: {}: ambiguous job spec", display);
+                        exit_status = 1;
+                    }
+                    Err(_) => {
+                        eprintln!("yosh: jobs: {}: no such job", spec);
+                        exit_status = 1;
+                    }
+                }
+            }
+            resolved
+        };
 
         for id in &job_ids {
-            if pgid_only {
+            if opts.pgid_only {
                 if let Some(job) = self.env.process.jobs.get(*id) {
                     println!("{}", job.pgid.as_raw());
                 }
-            } else if long_format {
+            } else if opts.long_format {
                 if let Some(line) = self.env.process.jobs.format_job_long(*id) {
                     println!("{}", line);
                 }
@@ -193,13 +260,13 @@ impl Executor {
             }
         }
 
-        // Mark done/terminated jobs as notified
+        // Mark done/terminated jobs as notified.
         let pending = self.env.process.jobs.pending_notifications();
         for id in pending {
             self.env.process.jobs.mark_notified(id);
         }
 
-        Ok(0)
+        Ok(exit_status)
     }
 
     pub(super) fn builtin_fg(&mut self, args: &[String]) -> Result<i32, ShellError> {
@@ -529,6 +596,53 @@ impl Executor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_options_recognizes_long_flag() {
+        let args = vec!["-l".to_string()];
+        let opts = parse_options(&args).unwrap();
+        assert!(opts.long_format);
+        assert!(!opts.pgid_only);
+        assert_eq!(opts.operands, Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_options_recognizes_pgid_flag() {
+        let args = vec!["-p".to_string()];
+        let opts = parse_options(&args).unwrap();
+        assert!(!opts.long_format);
+        assert!(opts.pgid_only);
+    }
+
+    #[test]
+    fn parse_options_clustered_flags() {
+        let args = vec!["-lp".to_string()];
+        let opts = parse_options(&args).unwrap();
+        assert!(opts.long_format);
+        assert!(opts.pgid_only);
+    }
+
+    #[test]
+    fn parse_options_double_dash_ends_flags() {
+        let args = vec!["--".to_string(), "%1".to_string()];
+        let opts = parse_options(&args).unwrap();
+        assert_eq!(opts.operands, vec!["%1".to_string()]);
+    }
+
+    #[test]
+    fn parse_options_rejects_unknown_flag() {
+        let args = vec!["-x".to_string()];
+        let err = parse_options(&args).unwrap_err();
+        assert!(err.contains("jobs:") && err.contains("-x"));
+    }
+
+    #[test]
+    fn parse_options_collects_operands_after_flags() {
+        let args = vec!["-l".to_string(), "%1".to_string(), "%2".to_string()];
+        let opts = parse_options(&args).unwrap();
+        assert!(opts.long_format);
+        assert_eq!(opts.operands, vec!["%1".to_string(), "%2".to_string()]);
+    }
 
     #[test]
     fn record_stopped_state_clears_stale_saved_tmodes_on_none_capture() {
