@@ -9,9 +9,77 @@ use crate::env::ShellEnv;
 use crate::error::ShellError;
 use crate::parser::word::is_valid_name;
 
-pub fn builtin_read(_args: &[String], _env: &mut ShellEnv) -> Result<i32, ShellError> {
-    eprintln!("yosh: read: not implemented");
-    Ok(1)
+pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+    let parsed = match parse_args(args) {
+        Ok(p) => p,
+        Err(ArgError::NoVarName) => {
+            eprintln!("yosh: read: missing variable name");
+            return Ok(1);
+        }
+        Err(ArgError::UnknownFlag(c)) => {
+            eprintln!("yosh: read: -{}: invalid option", c);
+            return Ok(1);
+        }
+        Err(ArgError::InvalidIdentifier(name)) => {
+            eprintln!("yosh: read: `{}': not a valid identifier", name);
+            return Ok(1);
+        }
+    };
+
+    let mut reader = StdinByteReader;
+    let result = match read_logical_line(parsed.raw, &mut reader) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("yosh: read: {}", e);
+            return Ok(1);
+        }
+    };
+
+    let ifs = match env.vars.get("IFS") {
+        Some(s) => s.to_string(),
+        None => " \t\n".to_string(),
+    };
+    let values = split_fields(&ifs, &result.bytes, parsed.var_names.len());
+
+    for (name, value) in parsed.var_names.iter().zip(values.into_iter()) {
+        if let Err(e) = env.assign_var(name, value) {
+            eprintln!("yosh: read: {}", e);
+            return Ok(1);
+        }
+    }
+
+    if result.hit_eof {
+        Ok(1)
+    } else {
+        Ok(0)
+    }
+}
+
+/// Production `ByteReader` reading 1 byte at a time from fd 0,
+/// retrying on EINTR.
+struct StdinByteReader;
+
+impl ByteReader for StdinByteReader {
+    fn read_byte(&mut self) -> std::io::Result<Option<u8>> {
+        let mut buf = [0u8; 1];
+        loop {
+            let n = unsafe {
+                libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, 1)
+            };
+            if n == 1 {
+                return Ok(Some(buf[0]));
+            }
+            if n == 0 {
+                return Ok(None);
+            }
+            // n == -1: check errno
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(err);
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
