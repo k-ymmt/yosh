@@ -5,7 +5,7 @@ use nix::unistd::Pid;
 
 use crate::error::{RuntimeErrorKind, ShellError};
 
-fn is_executable_file(p: &std::path::Path) -> bool {
+pub(crate) fn is_executable_file(p: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     if !p.is_file() {
         return false;

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use crate::env::ShellEnv;
 use crate::error::ShellError;
-use crate::exec::command::find_in_path;
+use crate::exec::command::{find_in_path, is_executable_file};
 
 pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     // Parse leading -X flags.
@@ -65,7 +65,7 @@ pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     for name in operands {
         if name.contains('/') {
             let path = PathBuf::from(name);
-            if !is_executable(&path) {
+            if !is_executable_file(&path) {
                 eprintln!("yosh: hash: {}: not found", name);
                 exit_status = 1;
                 continue;
@@ -94,17 +94,6 @@ pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         }
     }
     Ok(exit_status)
-}
-
-fn is_executable(p: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    if !p.is_file() {
-        return false;
-    }
-    matches!(
-        std::fs::metadata(p),
-        Ok(meta) if meta.permissions().mode() & 0o111 != 0
-    )
 }
 
 #[cfg(test)]
