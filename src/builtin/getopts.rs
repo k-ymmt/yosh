@@ -35,9 +35,52 @@ fn parse_args<'a>(args: &'a [String]) -> Result<ParsedArgs<'a>, ArgError> {
     Ok(ParsedArgs { optstring, var_name, operands })
 }
 
-pub fn builtin_getopts(_args: &[String], _env: &mut ShellEnv) -> Result<i32, ShellError> {
-    // Filled in by Task 6.
-    Ok(0)
+pub fn builtin_getopts(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+    let parsed = match parse_args(args) {
+        Ok(p) => p,
+        Err(ArgError::MissingOperands) => {
+            eprintln!("yosh: getopts: usage: getopts optstring name [arg ...]");
+            return Ok(2);
+        }
+        Err(ArgError::InvalidVarName(name)) => {
+            eprintln!("yosh: getopts: `{}': not a valid identifier", name);
+            return Ok(2);
+        }
+    };
+
+    let silent = parsed.optstring.starts_with(':');
+    let spec = if silent { &parsed.optstring[1..] } else { parsed.optstring };
+
+    // Resolve operands: explicit args[2..] if non-empty, else positional params.
+    let positional_owned: Vec<String>;
+    let operands_refs: Vec<&str> = if parsed.operands.is_empty() {
+        positional_owned = env.vars.positional_params().to_vec();
+        positional_owned.iter().map(String::as_str).collect()
+    } else {
+        parsed.operands.clone()
+    };
+
+    let optind_in = env
+        .vars
+        .get("OPTIND")
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(1);
+    let subindex_in = env.vars.getopts_subindex();
+
+    let step = step_getopts(spec, &operands_refs, optind_in, subindex_in, silent);
+
+    let _ = env.assign_var(parsed.var_name, step.var_value);
+    let optarg_value = step.optarg.unwrap_or_default();
+    let _ = env.assign_var("OPTARG", optarg_value);
+    let _ = env.assign_var("OPTIND", step.optind.to_string());
+    env.vars.set_getopts_subindex(step.subindex);
+
+    if let Some(msg) = step.stderr {
+        eprintln!("yosh: getopts: {}", msg);
+    }
+
+    Ok(step.exit)
 }
 
 #[derive(Debug, PartialEq)]
@@ -352,5 +395,84 @@ mod tests {
         assert_eq!(step.var_value, "?");
         assert_eq!(step.optind, 2);
         assert_eq!(step.exit, 1);
+    }
+
+    use crate::env::ShellEnv;
+
+    fn make_env() -> ShellEnv {
+        ShellEnv::new("yosh", vec![])
+    }
+
+    #[test]
+    fn builtin_dispatches_simple_option_from_positional() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["-a".into()]);
+        let rc = super::builtin_getopts(&s(&["a", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 0);
+        assert_eq!(env.vars.get("opt"), Some("a"));
+        assert_eq!(env.vars.get("OPTIND"), Some("2"));
+    }
+
+    #[test]
+    fn builtin_sets_optarg_for_takes_arg() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["-a".into(), "value".into()]);
+        let rc = super::builtin_getopts(&s(&["a:", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 0);
+        assert_eq!(env.vars.get("opt"), Some("a"));
+        assert_eq!(env.vars.get("OPTARG"), Some("value"));
+        assert_eq!(env.vars.get("OPTIND"), Some("3"));
+    }
+
+    #[test]
+    fn builtin_explicit_operands_override_positional() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["-x".into()]);
+        let rc = super::builtin_getopts(
+            &s(&["a", "opt", "-a"]),
+            &mut env,
+        ).unwrap();
+        assert_eq!(rc, 0);
+        assert_eq!(env.vars.get("opt"), Some("a"));
+    }
+
+    #[test]
+    fn builtin_stacked_two_calls() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["-ab".into()]);
+        let args = s(&["ab", "opt"]);
+
+        let rc1 = super::builtin_getopts(&args, &mut env).unwrap();
+        assert_eq!(rc1, 0);
+        assert_eq!(env.vars.get("opt"), Some("a"));
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
+
+        let rc2 = super::builtin_getopts(&args, &mut env).unwrap();
+        assert_eq!(rc2, 0);
+        assert_eq!(env.vars.get("opt"), Some("b"));
+        assert_eq!(env.vars.get("OPTIND"), Some("2"));
+    }
+
+    #[test]
+    fn builtin_end_of_options_returns_one() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["arg".into()]);
+        let rc = super::builtin_getopts(&s(&["a", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 1);
+        assert_eq!(env.vars.get("opt"), Some("?"));
+    }
+
+    #[test]
+    fn builtin_missing_operands_returns_two() {
+        let mut env = make_env();
+        let rc = super::builtin_getopts(&s(&[]), &mut env).unwrap();
+        assert_eq!(rc, 2);
+    }
+
+    #[test]
+    fn builtin_invalid_var_name_returns_two() {
+        let mut env = make_env();
+        let rc = super::builtin_getopts(&s(&["a", "1foo"]), &mut env).unwrap();
+        assert_eq!(rc, 2);
     }
 }
