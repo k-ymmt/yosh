@@ -68,9 +68,6 @@ fn step_getopts(
     subindex_in: usize,
     silent: bool,
 ) -> GetoptsStep {
-    // Drop unused-warning until Task 5 fills the body.
-    let _ = silent;
-
     if optind_in == 0 || optind_in > operands.len() {
         return end_of_options(optind_in.max(1));
     }
@@ -102,9 +99,36 @@ fn step_getopts(
     let rest_of_elt = next_cursor < bytes.len();
 
     let pos = spec.bytes().position(|b| b == ch as u8);
-    let takes_arg = matches!(pos.and_then(|p| spec.as_bytes().get(p + 1)), Some(b':'));
 
-    if pos.is_some() && !takes_arg {
+    // Unknown option
+    if pos.is_none() {
+        let next_optind = if rest_of_elt { optind_in } else { optind_in + 1 };
+        let next_sub = if rest_of_elt { next_cursor } else { 0 };
+        if silent {
+            return GetoptsStep {
+                var_value: "?".to_string(),
+                optarg: Some(ch.to_string()),
+                optind: next_optind,
+                subindex: next_sub,
+                exit: 0,
+                stderr: None,
+            };
+        }
+        return GetoptsStep {
+            var_value: "?".to_string(),
+            optarg: None,
+            optind: next_optind,
+            subindex: next_sub,
+            exit: 0,
+            stderr: Some(format!("-{}: illegal option", ch)),
+        };
+    }
+
+    let pos = pos.unwrap();
+    let takes_arg = matches!(spec.as_bytes().get(pos + 1), Some(b':'));
+
+    // Known, no-arg option
+    if !takes_arg {
         return GetoptsStep {
             var_value: ch.to_string(),
             optarg: None,
@@ -115,10 +139,51 @@ fn step_getopts(
         };
     }
 
-    // Other branches (unknown, takes_arg) handled in Task 5.
-    // Returning end_of_options as a placeholder is wrong but tests for
-    // those branches do not exist yet.
-    end_of_options(optind_in)
+    // Known, takes argument — argument inside same element
+    if rest_of_elt {
+        let arg = &elt[next_cursor..];
+        return GetoptsStep {
+            var_value: ch.to_string(),
+            optarg: Some(arg.to_string()),
+            optind: optind_in + 1,
+            subindex: 0,
+            exit: 0,
+            stderr: None,
+        };
+    }
+
+    // Argument in next element
+    if optind_in + 1 > operands.len() {
+        // Missing
+        if silent {
+            return GetoptsStep {
+                var_value: ":".to_string(),
+                optarg: Some(ch.to_string()),
+                optind: optind_in + 1,
+                subindex: 0,
+                exit: 0,
+                stderr: None,
+            };
+        }
+        return GetoptsStep {
+            var_value: "?".to_string(),
+            optarg: None,
+            optind: optind_in + 1,
+            subindex: 0,
+            exit: 0,
+            stderr: Some(format!("option requires an argument -- {}", ch)),
+        };
+    }
+
+    let arg = operands[optind_in];
+    GetoptsStep {
+        var_value: ch.to_string(),
+        optarg: Some(arg.to_string()),
+        optind: optind_in + 2,
+        subindex: 0,
+        exit: 0,
+        stderr: None,
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +257,100 @@ mod tests {
         let step = step_getopts("a", &["-"], 1, 0, false);
         assert_eq!(step.var_value, "?");
         assert_eq!(step.optind, 1);
+        assert_eq!(step.exit, 1);
+    }
+
+    #[test]
+    fn step_option_with_arg_same_element() {
+        let step = step_getopts("a:", &["-aval"], 1, 0, false);
+        assert_eq!(step.var_value, "a");
+        assert_eq!(step.optarg, Some("val".into()));
+        assert_eq!(step.optind, 2);
+        assert_eq!(step.subindex, 0);
+        assert_eq!(step.exit, 0);
+    }
+
+    #[test]
+    fn step_option_with_arg_next_element() {
+        let step = step_getopts("a:", &["-a", "val"], 1, 0, false);
+        assert_eq!(step.var_value, "a");
+        assert_eq!(step.optarg, Some("val".into()));
+        assert_eq!(step.optind, 3);
+        assert_eq!(step.subindex, 0);
+        assert_eq!(step.exit, 0);
+    }
+
+    #[test]
+    fn step_stacked_first() {
+        let step = step_getopts("ab", &["-ab"], 1, 0, false);
+        assert_eq!(step.var_value, "a");
+        assert_eq!(step.optind, 1);
+        assert_eq!(step.subindex, 2);
+        assert_eq!(step.exit, 0);
+    }
+
+    #[test]
+    fn step_stacked_second() {
+        let step = step_getopts("ab", &["-ab"], 1, 2, false);
+        assert_eq!(step.var_value, "b");
+        assert_eq!(step.optind, 2);
+        assert_eq!(step.subindex, 0);
+        assert_eq!(step.exit, 0);
+    }
+
+    #[test]
+    fn step_unknown_option_normal_mode() {
+        let step = step_getopts("a", &["-x"], 1, 0, false);
+        assert_eq!(step.var_value, "?");
+        assert_eq!(step.optarg, None);
+        assert_eq!(step.optind, 2);
+        assert_eq!(step.subindex, 0);
+        assert_eq!(step.exit, 0);
+        assert!(step.stderr.is_some());
+        let msg = step.stderr.unwrap();
+        assert!(msg.contains("-x"), "stderr msg = {msg}");
+        assert!(msg.contains("illegal option"), "stderr msg = {msg}");
+    }
+
+    #[test]
+    fn step_unknown_option_silent_mode() {
+        let step = step_getopts("a", &["-x"], 1, 0, true);
+        assert_eq!(step.var_value, "?");
+        assert_eq!(step.optarg, Some("x".into()));
+        assert_eq!(step.optind, 2);
+        assert_eq!(step.exit, 0);
+        assert!(step.stderr.is_none());
+    }
+
+    #[test]
+    fn step_missing_arg_normal_mode() {
+        let step = step_getopts("a:", &["-a"], 1, 0, false);
+        assert_eq!(step.var_value, "?");
+        assert_eq!(step.optarg, None);
+        assert_eq!(step.optind, 2);
+        assert_eq!(step.subindex, 0);
+        assert_eq!(step.exit, 0);
+        assert!(step.stderr.is_some());
+        let msg = step.stderr.unwrap();
+        assert!(msg.contains("requires an argument"), "stderr msg = {msg}");
+        assert!(msg.contains("a"), "stderr msg = {msg}");
+    }
+
+    #[test]
+    fn step_missing_arg_silent_mode() {
+        let step = step_getopts("a:", &["-a"], 1, 0, true);
+        assert_eq!(step.var_value, ":");
+        assert_eq!(step.optarg, Some("a".into()));
+        assert_eq!(step.optind, 2);
+        assert_eq!(step.exit, 0);
+        assert!(step.stderr.is_none());
+    }
+
+    #[test]
+    fn step_double_dash_advances_optind() {
+        let step = step_getopts("a", &["--"], 1, 0, false);
+        assert_eq!(step.var_value, "?");
+        assert_eq!(step.optind, 2);
         assert_eq!(step.exit, 1);
     }
 }
