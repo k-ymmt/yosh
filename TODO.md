@@ -5,7 +5,6 @@
 Decomposition of 55 XFAIL tests into 7 sub-projects. See
 `docs/superpowers/specs/2026-05-13-e2e-xfail-roadmap-design.md`.
 
-- [ ] SP4 — `getopts` builtin implementation (9 tests)
 - [ ] SP5 — Miscellaneous small POSIX features (8 tests)
 - [ ] SP6 — PTY harness migration (10 tests)
 - [ ] SP7 — Deferred / recorded as known deviation (3 tests)
@@ -99,6 +98,40 @@ Decomposition of 55 XFAIL tests into 7 sub-projects. See
       been explicitly closed by the user, `libc::read` returns EBADF
       which we propagate as `Err`", or note the fail-safe behaviour
       alongside the existing text. Surfaced during SP3 final review.
+
+### SP4 follow-ups (non-blocking)
+
+- [ ] User-reset semantics for `OPTIND` — POSIX `getopts` allows
+      restarting argument parsing by setting `OPTIND=1` mid-iteration
+      (XCU `getopts` rationale). Current native impl does NOT detect
+      the user writing `OPTIND="1"` when the previous call left
+      OPTIND already at "1" (e.g. mid-stacked `-ab`); state therefore
+      continues stacking. Workaround: scripts can write `OPTIND=2`
+      followed by `OPTIND=1` to force a detected change, but this is
+      not POSIX. Proper fix requires either (a) hooking
+      `VarStore::set("OPTIND", _)` to reset `getopts_subindex` (rejected
+      during SP4 for layering reasons), or (b) tracking
+      `last_optind_written` on the scope. None of the 9 SP4 XFAIL
+      targets exercised this; closed test
+      `builtin_user_resets_optind_to_one` dropped from `src/builtin/getopts.rs`
+      tests as out-of-scope. Pre-decided during SP4 final review.
+- [ ] `Scope.saved_optind` restore path (`src/env/vars.rs::pop_scope`)
+      silently discards `set()` errors with a stale rationale comment
+      ("Readonly OPTIND is not supported and the assignment cannot fail
+      in practice"). User scripts CAN make OPTIND readonly via
+      `readonly OPTIND=5`, in which case `set` returns Err on pop.
+      Behavior is still correct (the readonly value IS the saved one,
+      so the discard is a no-op), but the comment overstates the
+      precondition. Tighten to acknowledge the readonly-OPTIND fail-safe.
+      Code-review follow-up from SP4 Task 1.
+- [ ] Edge-case test coverage: nested function-call OPTIND save/restore
+      (push → push → set OPTIND → pop sees inner saved → pop sees outer
+      saved), and readonly-OPTIND push/pop round-trip. Both are real
+      script patterns. Code-review follow-up from SP4 Task 1.
+- [ ] Inherited-environment OPTIND override test: if the parent process
+      exports `OPTIND=5`, `ShellEnv::new` correctly overwrites to `"1"`
+      per POSIX, but no test covers this path. Add a focused unit test
+      in `src/env/mod.rs`. Code-review follow-up from SP4 Task 2.
 
 ## Job Control: Known Limitations
 
@@ -220,10 +253,6 @@ behavioral acceptance spec for each native implementation. When a
 native builtin is implemented, the corresponding XFAIL tests should
 become PASS; remove the `# XFAIL:` line at that point.
 
-- [ ] `getopts optstring var [args]` — option-parsing helper, used in
-      portable shell scripts. Currently uses `/usr/bin/getopts`. XFAIL
-      tests: `e2e/posix_spec/4_required_builtin/getopts_*.sh` (6 of 8 tests
-      pass via fallback; 6 remain XFAIL pending native impl)
 - [ ] `ulimit [-f] [num]` — resource-limit query/set. Currently uses
       `/usr/bin/ulimit`. XFAIL tests:
       `e2e/posix_spec/4_required_builtin/ulimit_*.sh` (1 of 3 remains XFAIL
