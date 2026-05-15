@@ -488,3 +488,31 @@ fn test_subshell_pipeline_preserves_unflushed_output() {
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hi");
 }
+
+// =============================================================================
+// POSIX §2.11: EXIT trap fires on subshell exit (SP5 T6)
+// =============================================================================
+
+#[test]
+fn subshell_exit_trap_fires_on_paren_exit() {
+    let out = yosh_exec("(trap 'echo bye' 0; :)");
+    assert!(
+        out.status.success(),
+        "yosh -c must exit 0; got {:?}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("bye"),
+        "subshell EXIT trap must fire; stdout was {:?}",
+        stdout
+    );
+}
+
+#[test]
+fn subshell_exit_trap_runs_even_when_subshell_exits_nonzero() {
+    let out = yosh_exec("(trap 'echo bye' 0; exit 5)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("bye"), "stdout was {:?}", stdout);
+    assert_eq!(out.status.code(), Some(5), "subshell exit code propagates");
+}
