@@ -146,6 +146,16 @@ impl Executor {
             } else {
                 None
             };
+
+            // POSIX §2.9.1: a command consisting only of redirections must still
+            // apply them. Apply with save=true so the shell-process fds are
+            // restored after this "command" completes (matches bash/dash).
+            let mut redirect_state = RedirectState::new();
+            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
+                self.env.exec.last_exit_status = 1;
+                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
+            }
+
             for assignment in &cmd.assignments {
                 let has_cmd_sub = assignment.value.as_ref().is_some_and(word_has_command_sub);
                 let value = match assignment.value.as_ref() {
@@ -179,6 +189,7 @@ impl Executor {
                 }
             }
             let final_status = last_cmd_sub_status.unwrap_or(0);
+            redirect_state.restore();
             self.env.exec.last_exit_status = final_status;
             return Ok(final_status);
         }
@@ -890,5 +901,72 @@ mod tests {
         let prog = Parser::new("x=$(false)\n").parse_program().unwrap();
         exec.exec_program(&prog);
         assert_eq!(exec.env.exec.last_exit_status, 1);
+    }
+
+    #[test]
+    fn redirect_only_creates_file() {
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+
+        let tmp =
+            std::env::temp_dir().join(format!("yosh_redirect_only_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        let source = format!(">{}\n", tmp.display());
+        let prog = Parser::new(&source).parse_program().unwrap();
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.exec_program(&prog);
+
+        assert!(
+            tmp.exists(),
+            "redirect-only command must create {}",
+            tmp.display()
+        );
+        let metadata = std::fs::metadata(&tmp).unwrap();
+        assert_eq!(
+            metadata.len(),
+            0,
+            "the file must be truncated to zero bytes"
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn redirect_only_truncates_existing_file() {
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "yosh_redirect_only_trunc_{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, b"existing-content").unwrap();
+
+        let source = format!(">{}\n", tmp.display());
+        let prog = Parser::new(&source).parse_program().unwrap();
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.exec_program(&prog);
+
+        let metadata = std::fs::metadata(&tmp).unwrap();
+        assert_eq!(metadata.len(), 0, "existing file must be truncated");
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn redirect_only_returns_zero() {
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+
+        let tmp =
+            std::env::temp_dir().join(format!("yosh_redirect_only_rc_{}.txt", std::process::id()));
+        let source = format!(">{}\n", tmp.display());
+        let prog = Parser::new(&source).parse_program().unwrap();
+        let mut exec = Executor::new("yosh", vec![]);
+        let status = exec.exec_program(&prog);
+
+        assert_eq!(status, 0, "redirect-only command returns 0 on success");
+        let _ = std::fs::remove_file(&tmp);
     }
 }
