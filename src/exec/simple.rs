@@ -162,6 +162,7 @@ impl Executor {
                     Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
                         Ok(v) => v,
                         Err(e) => {
+                            redirect_state.restore();
                             self.env.exec.last_exit_status = 1;
                             return Err(e);
                         }
@@ -181,6 +182,7 @@ impl Executor {
                     value,
                     self.env.mode.options.allexport,
                 ) {
+                    redirect_state.restore();
                     self.env.exec.last_exit_status = 1;
                     return Err(ShellError::runtime(
                         RuntimeErrorKind::ReadonlyVariable,
@@ -967,6 +969,37 @@ mod tests {
         let status = exec.exec_program(&prog);
 
         assert_eq!(status, 0, "redirect-only command returns 0 on success");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn redirect_only_with_readonly_assignment_errors_cleanly() {
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+
+        let tmp =
+            std::env::temp_dir().join(format!("yosh_redirect_readonly_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut exec = Executor::new("yosh", vec![]);
+        // Mark x readonly so the assignment x=replaced will fail.
+        exec.env.vars.set("x", "initial").expect("set must succeed");
+        exec.env.vars.set_readonly("x");
+
+        // `>tmp x=replaced` — assignment-only with redirect; readonly x triggers error.
+        let source = format!(">{} x=replaced\n", tmp.display());
+        let prog = Parser::new(&source).parse_program().unwrap();
+        let status = exec.exec_program(&prog);
+
+        // The readonly error must yield non-zero exit status.
+        // Crucially, this exercises the error path with redirect_state.restore()
+        // so that stdout/stderr are not leaked for subsequent tests.
+        assert_ne!(
+            status, 0,
+            "readonly assignment must error; status={}",
+            status
+        );
+
         let _ = std::fs::remove_file(&tmp);
     }
 }
