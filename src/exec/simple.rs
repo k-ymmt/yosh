@@ -53,7 +53,7 @@ fn expand_assignment_builtin_args(
     Ok(out)
 }
 
-fn xtrace_prefix(env: &crate::env::ShellEnv) -> &str {
+fn xtrace_prefix(env: &ShellEnv) -> &str {
     env.vars.get("PS4").unwrap_or("+ ")
 }
 
@@ -837,14 +837,14 @@ mod tests {
 
     #[test]
     fn test_xtrace_prefix_uses_ps4_when_set() {
-        let mut env = crate::env::ShellEnv::new("yosh", vec![]);
+        let mut env = ShellEnv::new("yosh", vec![]);
         env.vars.set("PS4", "TRACE> ").unwrap();
         assert_eq!(xtrace_prefix(&env), "TRACE> ");
     }
 
     #[test]
     fn test_xtrace_prefix_default_when_ps4_unset() {
-        let env = crate::env::ShellEnv::new("yosh", vec![]);
+        let env = ShellEnv::new("yosh", vec![]);
         // PS4 is not set by ShellEnv::new, so the helper falls back to "+ ".
         assert_eq!(xtrace_prefix(&env), "+ ");
     }

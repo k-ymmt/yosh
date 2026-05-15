@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 use aliases::AliasStore;
 pub use exec_state::{ExecState, FlowControl};
 use jobs::JobTable;
-use nix::unistd::{Pid, getpid};
+use nix::unistd::{Pid, getpgrp, getpid, getppid};
 pub use shell_mode::{ShellMode, ShellOptions};
 pub use traps::{TrapAction, TrapStore};
 use vars::VarStore;
@@ -62,7 +62,7 @@ impl ShellEnv {
         let _ = vars.set("OPTIND", "1");
         // POSIX §2.5.3: $PPID is the parent PID of the invoking shell,
         // captured once at startup. Subshells inherit the value.
-        let _ = vars.set("PPID", nix::unistd::getppid().as_raw().to_string());
+        let _ = vars.set("PPID", getppid().as_raw().to_string());
         ShellEnv {
             vars,
             exec: ExecState {
@@ -72,7 +72,7 @@ impl ShellEnv {
             },
             process: ProcessState {
                 shell_pid: getpid(),
-                shell_pgid: nix::unistd::getpgrp(),
+                shell_pgid: getpgrp(),
                 jobs: JobTable::default(),
             },
             mode: ShellMode {
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn test_shell_env_sets_ppid_to_getppid() {
+    fn shell_env_new_seeds_ppid_to_getppid() {
         let env = ShellEnv::new("yosh", vec![]);
         let ppid = env.vars.get("PPID").expect("PPID must be set");
         let expected = nix::unistd::getppid().as_raw().to_string();
