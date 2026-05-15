@@ -1,7 +1,6 @@
 #!/bin/sh
 # POSIX_REF: 2.14.17 trap
 # DESCRIPTION: trap runs handler then resumes
-# XFAIL: non-POSIX deviation (yosh defers INT trap to end-of-script; handler runs after 'after')
 # EXPECT_OUTPUT<<END
 # caught
 # after

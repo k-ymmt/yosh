@@ -214,6 +214,23 @@ fn test_kill_0_targets_shell_pgid() {
     );
 }
 
+// SIGINT trap ordering
+
+#[test]
+fn sigint_trap_fires_between_commands() {
+    let script =
+        "trap 'echo caught' INT\nkill -INT $$ 2>/dev/null\nsleep 0.05 2>/dev/null\necho after\n";
+    let out = yosh_exec(script);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let caught_idx = stdout.find("caught").expect("stdout must contain 'caught'");
+    let after_idx = stdout.find("after").expect("stdout must contain 'after'");
+    assert!(
+        caught_idx < after_idx,
+        "trap output must precede 'after' line; got stdout = {:?}",
+        stdout
+    );
+}
+
 // Background job tracking
 
 #[test]

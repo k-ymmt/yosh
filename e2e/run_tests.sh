@@ -278,9 +278,16 @@ for test_file in $test_files; do
     _stderr_file="$TEST_TMPDIR/_stderr"
     _exit_file="$TEST_TMPDIR/_exit"
 
-    # Use a background process + wait to implement timeout
+    # Use a background process + wait to implement timeout.
+    # Wrap the test shell with a perl one-liner that resets SIGINT/SIGQUIT to
+    # SIG_DFL before exec, so the test shell does not inherit SIG_IGN from this
+    # background subshell (POSIX §2.11: a shell that inherits SIG_IGN cannot
+    # trap or reset that signal).  Plain `trap - INT QUIT` inside a bash
+    # background subshell does not override the inherited SIG_IGN at the kernel
+    # level; perl's `$SIG{X}="DEFAULT"` does.
     (
-        exec "$SHELL_UNDER_TEST" "$test_file" >"$_stdout_file" 2>"$_stderr_file"
+        perl -e '$SIG{INT}="DEFAULT";$SIG{QUIT}="DEFAULT";exec @ARGV or die $!' \
+            -- "$SHELL_UNDER_TEST" "$test_file" >"$_stdout_file" 2>"$_stderr_file"
     ) &
     _pid=$!
 

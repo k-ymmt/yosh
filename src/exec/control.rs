@@ -187,6 +187,8 @@ impl Executor {
         }
 
         self.env.exec.last_exit_status = status;
+        // POSIX §2.11: handle async signals (SIGINT trap etc.) between commands.
+        self.process_pending_signals();
         status
     }
 
