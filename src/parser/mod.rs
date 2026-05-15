@@ -273,8 +273,8 @@ impl Parser {
             let mut prefix_assignments = Vec::new();
             let found_compound = loop {
                 if let Token::Word(word) = &self.current.token {
-                    let word_clone = word.clone();
-                    if let Some(a) = Self::try_parse_assignment(&word_clone) {
+                    let word = word.clone();
+                    if let Some(a) = Self::try_parse_assignment(&word) {
                         if self.advance().is_err() {
                             break false;
                         }

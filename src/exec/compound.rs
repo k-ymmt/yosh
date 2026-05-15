@@ -21,25 +21,15 @@ impl Executor {
     ) -> Result<i32, ShellError> {
         let _ = self.env.vars.set("LINENO", compound.line.to_string());
 
-        // POSIX §2.9.1 + §2.4: prefix assignments on a compound are
-        // applied as temp assignments scoped to the compound body.
-        let saved = if !compound.assignments.is_empty() {
-            match self.apply_temp_assignments(&compound.assignments) {
-                Ok(s) => s,
-                Err(e) => {
-                    self.env.exec.last_exit_status = 1;
-                    return Err(e);
-                }
-            }
-        } else {
-            Vec::new()
-        };
+        let saved = self
+            .apply_temp_assignments(&compound.assignments)
+            .inspect_err(|_| {
+                self.env.exec.last_exit_status = 1;
+            })?;
 
         let mut redirect_state = RedirectState::new();
         if let Err(e) = redirect_state.apply(redirects, &mut self.env, true) {
-            if !compound.assignments.is_empty() {
-                self.restore_assignments(saved);
-            }
+            self.restore_assignments(saved);
             self.env.exec.last_exit_status = 1;
             return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
         }
@@ -72,9 +62,7 @@ impl Executor {
         };
 
         redirect_state.restore();
-        if !compound.assignments.is_empty() {
-            self.restore_assignments(saved);
-        }
+        self.restore_assignments(saved);
         self.env.exec.last_exit_status = status;
         Ok(status)
     }
