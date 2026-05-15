@@ -32,7 +32,11 @@ fn parse_args<'a>(args: &'a [String]) -> Result<ParsedArgs<'a>, ArgError> {
         return Err(ArgError::InvalidVarName(var_name.to_string()));
     }
     let operands: Vec<&str> = args[2..].iter().map(String::as_str).collect();
-    Ok(ParsedArgs { optstring, var_name, operands })
+    Ok(ParsedArgs {
+        optstring,
+        var_name,
+        operands,
+    })
 }
 
 pub fn builtin_getopts(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
@@ -49,7 +53,11 @@ pub fn builtin_getopts(args: &[String], env: &mut ShellEnv) -> Result<i32, Shell
     };
 
     let silent = parsed.optstring.starts_with(':');
-    let spec = if silent { &parsed.optstring[1..] } else { parsed.optstring };
+    let spec = if silent {
+        &parsed.optstring[1..]
+    } else {
+        parsed.optstring
+    };
 
     // Resolve operands: explicit args[2..] if non-empty, else positional params.
     let positional_owned: Vec<String>;
@@ -145,7 +153,11 @@ fn step_getopts(
 
     // Unknown option
     if pos.is_none() {
-        let next_optind = if rest_of_elt { optind_in } else { optind_in + 1 };
+        let next_optind = if rest_of_elt {
+            optind_in
+        } else {
+            optind_in + 1
+        };
         let next_sub = if rest_of_elt { next_cursor } else { 0 };
         if silent {
             return GetoptsStep {
@@ -175,7 +187,11 @@ fn step_getopts(
         return GetoptsStep {
             var_value: ch.to_string(),
             optarg: None,
-            optind: if rest_of_elt { optind_in } else { optind_in + 1 },
+            optind: if rest_of_elt {
+                optind_in
+            } else {
+                optind_in + 1
+            },
             subindex: if rest_of_elt { next_cursor } else { 0 },
             exit: 0,
             stderr: None,
@@ -416,7 +432,8 @@ mod tests {
     #[test]
     fn builtin_sets_optarg_for_takes_arg() {
         let mut env = make_env();
-        env.vars.set_positional_params(vec!["-a".into(), "value".into()]);
+        env.vars
+            .set_positional_params(vec!["-a".into(), "value".into()]);
         let rc = super::builtin_getopts(&s(&["a:", "opt"]), &mut env).unwrap();
         assert_eq!(rc, 0);
         assert_eq!(env.vars.get("opt"), Some("a"));
@@ -428,10 +445,7 @@ mod tests {
     fn builtin_explicit_operands_override_positional() {
         let mut env = make_env();
         env.vars.set_positional_params(vec!["-x".into()]);
-        let rc = super::builtin_getopts(
-            &s(&["a", "opt", "-a"]),
-            &mut env,
-        ).unwrap();
+        let rc = super::builtin_getopts(&s(&["a", "opt", "-a"]), &mut env).unwrap();
         assert_eq!(rc, 0);
         assert_eq!(env.vars.get("opt"), Some("a"));
     }

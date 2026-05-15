@@ -53,6 +53,10 @@ fn expand_assignment_builtin_args(
     Ok(out)
 }
 
+fn xtrace_prefix(env: &crate::env::ShellEnv) -> &str {
+    env.vars.get("PS4").unwrap_or("+ ")
+}
+
 impl Executor {
     /// Execute a simple command (assignments, builtins, or external programs).
     pub(crate) fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> Result<i32, ShellError> {
@@ -172,7 +176,7 @@ impl Executor {
         }
 
         if self.env.mode.options.xtrace && !expanded.is_empty() {
-            eprintln!("+ {}", expanded.join(" "));
+            eprintln!("{}{}", xtrace_prefix(&self.env), expanded.join(" "));
         }
 
         let mut expanded_iter = expanded.into_iter();
@@ -824,5 +828,24 @@ fn param_has_command_sub(p: &ParamExpr) -> bool {
         | ParamExpr::StripLongSuffix(_, w)
         | ParamExpr::StripShortPrefix(_, w)
         | ParamExpr::StripLongPrefix(_, w) => word_has_command_sub(w),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_xtrace_prefix_uses_ps4_when_set() {
+        let mut env = crate::env::ShellEnv::new("yosh", vec![]);
+        env.vars.set("PS4", "TRACE> ").unwrap();
+        assert_eq!(xtrace_prefix(&env), "TRACE> ");
+    }
+
+    #[test]
+    fn test_xtrace_prefix_default_when_ps4_unset() {
+        let env = crate::env::ShellEnv::new("yosh", vec![]);
+        // PS4 is not set by ShellEnv::new, so the helper falls back to "+ ".
+        assert_eq!(xtrace_prefix(&env), "+ ");
     }
 }

@@ -48,11 +48,7 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         }
     }
 
-    if result.hit_eof {
-        Ok(1)
-    } else {
-        Ok(0)
-    }
+    if result.hit_eof { Ok(1) } else { Ok(0) }
 }
 
 /// Production `ByteReader` reading 1 byte at a time from fd 0,
@@ -66,9 +62,8 @@ impl ByteReader for StdinByteReader {
             // SAFETY: buf is a valid 1-byte stack allocation that lives for
             // the duration of this call; STDIN_FILENO is always open at
             // process start; the length matches the buffer size exactly.
-            let n = unsafe {
-                libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, 1)
-            };
+            let n =
+                unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, 1) };
             if n == 1 {
                 return Ok(Some(buf[0]));
             }
@@ -188,17 +183,38 @@ fn read_logical_line<R: ByteReader>(raw: bool, reader: &mut R) -> std::io::Resul
     let mut bytes: Vec<LineByte> = Vec::new();
     loop {
         match reader.read_byte()? {
-            None => return Ok(LineReadResult { bytes, hit_eof: true }),
-            Some(b'\n') => return Ok(LineReadResult { bytes, hit_eof: false }),
+            None => {
+                return Ok(LineReadResult {
+                    bytes,
+                    hit_eof: true,
+                });
+            }
+            Some(b'\n') => {
+                return Ok(LineReadResult {
+                    bytes,
+                    hit_eof: false,
+                });
+            }
             Some(b'\\') if !raw => {
                 // Enter escape state.
                 match reader.read_byte()? {
-                    None => return Ok(LineReadResult { bytes, hit_eof: true }),
+                    None => {
+                        return Ok(LineReadResult {
+                            bytes,
+                            hit_eof: true,
+                        });
+                    }
                     Some(b'\n') => continue, // line continuation: drop both
-                    Some(other) => bytes.push(LineByte { value: other, escaped: true }),
+                    Some(other) => bytes.push(LineByte {
+                        value: other,
+                        escaped: true,
+                    }),
                 }
             }
-            Some(other) => bytes.push(LineByte { value: other, escaped: false }),
+            Some(other) => bytes.push(LineByte {
+                value: other,
+                escaped: false,
+            }),
         }
     }
 }
@@ -313,7 +329,10 @@ mod tests {
     fn parse_args_single_var() {
         assert_eq!(
             parse_args(&s(&["line"])),
-            Ok(ParsedArgs { raw: false, var_names: vec!["line".into()] })
+            Ok(ParsedArgs {
+                raw: false,
+                var_names: vec!["line".into()]
+            })
         );
     }
 
@@ -321,7 +340,10 @@ mod tests {
     fn parse_args_dash_r_sets_raw() {
         assert_eq!(
             parse_args(&s(&["-r", "line"])),
-            Ok(ParsedArgs { raw: true, var_names: vec!["line".into()] })
+            Ok(ParsedArgs {
+                raw: true,
+                var_names: vec!["line".into()]
+            })
         );
     }
 
@@ -330,7 +352,10 @@ mod tests {
         // After `--`, even `-r` is treated as a (invalid) variable name.
         assert_eq!(
             parse_args(&s(&["--", "line"])),
-            Ok(ParsedArgs { raw: false, var_names: vec!["line".into()] })
+            Ok(ParsedArgs {
+                raw: false,
+                var_names: vec!["line".into()]
+            })
         );
     }
 
@@ -345,7 +370,10 @@ mod tests {
 
     #[test]
     fn parse_args_unknown_flag_errors() {
-        assert_eq!(parse_args(&s(&["-x", "line"])), Err(ArgError::UnknownFlag('x')));
+        assert_eq!(
+            parse_args(&s(&["-x", "line"])),
+            Err(ArgError::UnknownFlag('x'))
+        );
     }
 
     #[test]
@@ -378,7 +406,13 @@ mod tests {
         assert_eq!(
             res,
             LineReadResult {
-                bytes: vec![lb(b'h', false), lb(b'e', false), lb(b'l', false), lb(b'l', false), lb(b'o', false)],
+                bytes: vec![
+                    lb(b'h', false),
+                    lb(b'e', false),
+                    lb(b'l', false),
+                    lb(b'l', false),
+                    lb(b'o', false)
+                ],
                 hit_eof: false,
             }
         );
@@ -407,10 +441,7 @@ mod tests {
     fn read_line_backslash_newline_continues() {
         let mut r = SliceReader::new(b"a\\\nb\n");
         let res = read_logical_line(false, &mut r).unwrap();
-        assert_eq!(
-            res.bytes,
-            vec![lb(b'a', false), lb(b'b', false)],
-        );
+        assert_eq!(res.bytes, vec![lb(b'a', false), lb(b'b', false)],);
         assert!(!res.hit_eof);
     }
 
@@ -440,10 +471,7 @@ mod tests {
         // literal byte and the newline still ends the logical line.
         let mut r = SliceReader::new(b"a\\\nrest\n");
         let res = read_logical_line(true, &mut r).unwrap();
-        assert_eq!(
-            res.bytes,
-            vec![lb(b'a', false), lb(b'\\', false)],
-        );
+        assert_eq!(res.bytes, vec![lb(b'a', false), lb(b'\\', false)],);
         assert!(!res.hit_eof);
     }
 
@@ -481,12 +509,12 @@ mod tests {
     fn read_line_eintr_retries() {
         // A ByteReader that retries EINTR internally (the contract for all
         // implementors). read_logical_line must transparently get all bytes.
-        let mut r = EintrRetryingReader { eintr_count: 5, inner: SliceReader::new(b"hi\n") };
+        let mut r = EintrRetryingReader {
+            eintr_count: 5,
+            inner: SliceReader::new(b"hi\n"),
+        };
         let res = read_logical_line(false, &mut r).unwrap();
-        assert_eq!(
-            res.bytes,
-            vec![lb(b'h', false), lb(b'i', false)],
-        );
+        assert_eq!(res.bytes, vec![lb(b'h', false), lb(b'i', false)],);
         assert!(!res.hit_eof);
     }
 

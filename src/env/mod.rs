@@ -60,6 +60,9 @@ impl ShellEnv {
         vars.set_positional_params(args);
         // POSIX: "OPTIND shall be initialized to 1 when the shell is invoked."
         let _ = vars.set("OPTIND", "1");
+        // POSIX §2.5.3: $PPID is the parent PID of the invoking shell,
+        // captured once at startup. Subshells inherit the value.
+        let _ = vars.set("PPID", nix::unistd::getppid().as_raw().to_string());
         ShellEnv {
             vars,
             exec: ExecState {
@@ -167,5 +170,18 @@ mod tests {
     fn shell_env_new_seeds_optind_to_one() {
         let env = ShellEnv::new("yosh", vec![]);
         assert_eq!(env.vars.get("OPTIND"), Some("1"));
+    }
+
+    #[test]
+    fn test_shell_env_sets_ppid_to_getppid() {
+        let env = ShellEnv::new("yosh", vec![]);
+        let ppid = env.vars.get("PPID").expect("PPID must be set");
+        let expected = nix::unistd::getppid().as_raw().to_string();
+        assert_eq!(
+            ppid, expected,
+            "$PPID must equal nix::unistd::getppid() at shell start"
+        );
+        let n: i32 = ppid.parse().expect("PPID must parse as integer");
+        assert!(n > 0, "$PPID must be a positive integer, got {}", n);
     }
 }

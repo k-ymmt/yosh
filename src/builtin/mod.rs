@@ -37,7 +37,9 @@ pub fn classify_builtin(name: &str) -> BuiltinKind {
         "break" | ":" | "continue" | "." | "eval" | "exec" | "exit" | "export" | "readonly"
         | "return" | "set" | "shift" | "times" | "trap" | "unset" | "fc" => BuiltinKind::Special,
         "cd" | "command" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait"
-        | "fg" | "bg" | "jobs" | "umask" | "test" | "[" | "type" | "hash" | "read" | "getopts" => BuiltinKind::Regular,
+        | "fg" | "bg" | "jobs" | "umask" | "test" | "[" | "type" | "hash" | "read" | "getopts" => {
+            BuiltinKind::Regular
+        }
         _ => BuiltinKind::NotBuiltin,
     }
 }
