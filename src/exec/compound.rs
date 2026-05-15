@@ -20,8 +20,26 @@ impl Executor {
         redirects: &[Redirect],
     ) -> Result<i32, ShellError> {
         let _ = self.env.vars.set("LINENO", compound.line.to_string());
+
+        // POSIX §2.9.1 + §2.4: prefix assignments on a compound are
+        // applied as temp assignments scoped to the compound body.
+        let saved = if !compound.assignments.is_empty() {
+            match self.apply_temp_assignments(&compound.assignments) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.env.exec.last_exit_status = 1;
+                    return Err(e);
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
         let mut redirect_state = RedirectState::new();
         if let Err(e) = redirect_state.apply(redirects, &mut self.env, true) {
+            if !compound.assignments.is_empty() {
+                self.restore_assignments(saved);
+            }
             self.env.exec.last_exit_status = 1;
             return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
         }
@@ -54,6 +72,9 @@ impl Executor {
         };
 
         redirect_state.restore();
+        if !compound.assignments.is_empty() {
+            self.restore_assignments(saved);
+        }
         self.env.exec.last_exit_status = status;
         Ok(status)
     }
@@ -305,5 +326,29 @@ impl Executor {
         }
 
         Ok(status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::exec::Executor;
+    use crate::parser::Parser;
+
+    #[test]
+    fn compound_with_assignment_prefix_runs_inside_temp_scope() {
+        let source = "y=initial\nx=replaced if true; then echo $x; fi\necho post=$x";
+        let prog = Parser::new(source).parse_program().unwrap();
+        let mut exec = Executor::new("yosh", vec![]);
+        // Capture stdout by running in-process; for simplicity rely on
+        // env after execution to verify scope behavior.
+        exec.exec_program(&prog);
+        // The temp assignment must NOT persist past the compound.
+        assert_eq!(
+            exec.env.vars.get("x"),
+            None,
+            "x must not leak past compound"
+        );
+        // The earlier permanent assignment must remain.
+        assert_eq!(exec.env.vars.get("y"), Some("initial"));
     }
 }

@@ -260,6 +260,44 @@ impl Parser {
             return Ok(Command::Compound(compound, redirects));
         }
 
+        // POSIX §2.4: reserved words are recognized at command position even
+        // after a leading assignment prefix. Scan ahead (saving and restoring
+        // lexer state) to check whether the token after any leading assignments
+        // is a compound-command start. If yes, consume for real and attach the
+        // assignments to the compound. Otherwise fall through to the normal
+        // simple-command / function-def paths which handle assignments themselves.
+        if let Token::Word(_) = &self.current.token {
+            let saved_state = self.lexer.save_state();
+            let saved_current = self.current.clone();
+
+            let mut prefix_assignments = Vec::new();
+            let found_compound = loop {
+                if let Token::Word(word) = &self.current.token {
+                    let word_clone = word.clone();
+                    if let Some(a) = Self::try_parse_assignment(&word_clone) {
+                        if self.advance().is_err() {
+                            break false;
+                        }
+                        prefix_assignments.push(a);
+                        continue;
+                    }
+                }
+                break self.is_compound_command_start();
+            };
+
+            if found_compound && !prefix_assignments.is_empty() {
+                // We're committed: parse the compound and attach assignments.
+                let mut compound = self.parse_compound_command()?;
+                compound.assignments = prefix_assignments;
+                let redirects = self.parse_redirect_list()?;
+                return Ok(Command::Compound(compound, redirects));
+            }
+
+            // Not a compound-after-assignments case: restore and fall through.
+            self.lexer.restore_state(saved_state);
+            self.current = saved_current;
+        }
+
         if let Some(func_def) = self.try_parse_function_def()? {
             return Ok(Command::FunctionDef(func_def));
         }

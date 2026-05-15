@@ -63,6 +63,11 @@ pub struct Assignment {
 pub struct CompoundCommand {
     pub kind: CompoundCommandKind,
     pub line: usize,
+    /// Prefix assignments collected before a reserved-word-led compound,
+    /// e.g. `x=1 if true; then ...; fi` carries `[Assignment { name: "x", value: Some("1") }]`.
+    /// Applied as temporary assignments around the compound body per POSIX §2.9.1
+    /// (extended to compound commands per §2.4 reserved-word recognition rules).
+    pub assignments: Vec<Assignment>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

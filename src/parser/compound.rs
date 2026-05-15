@@ -30,7 +30,11 @@ impl Parser {
                 "expected compound command",
             ));
         };
-        Ok(CompoundCommand { kind, line })
+        Ok(CompoundCommand {
+            kind,
+            line,
+            assignments: Vec::new(),
+        })
     }
 
     /// Parse a compound_list: skip newlines, then parse complete_commands until at_end or is_complete_command_end.

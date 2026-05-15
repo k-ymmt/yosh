@@ -359,4 +359,62 @@ mod tests {
         let cmd = parse_first_simple("\n\necho hi\n");
         assert_eq!(cmd.line, 3);
     }
+
+    #[test]
+    fn assignment_prefix_before_if_reserved_word_attaches_to_compound() {
+        use super::super::ast::{Command, CompoundCommandKind};
+        let mut parser = Parser::new("x=1 if true; then echo y; fi\n");
+        let prog = parser.parse_program().unwrap();
+        let cc = &prog.commands[0];
+        let (aol, _) = &cc.items[0];
+        let cmd = &aol.first.commands[0];
+        let Command::Compound(comp, _redirs) = cmd else {
+            panic!("expected Compound, got {:?}", cmd);
+        };
+        assert!(matches!(comp.kind, CompoundCommandKind::If { .. }));
+        assert_eq!(comp.assignments.len(), 1);
+        assert_eq!(comp.assignments[0].name, "x");
+        assert_eq!(
+            comp.assignments[0].value.as_ref().unwrap().as_literal(),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn assignment_prefix_before_while_attaches_to_compound() {
+        use super::super::ast::{Command, CompoundCommandKind};
+        let mut parser = Parser::new("a=hi while false; do :; done\n");
+        let prog = parser.parse_program().unwrap();
+        let Command::Compound(comp, _) = &prog.commands[0].items[0].0.first.commands[0] else {
+            panic!()
+        };
+        assert!(matches!(comp.kind, CompoundCommandKind::While { .. }));
+        assert_eq!(comp.assignments.len(), 1);
+        assert_eq!(comp.assignments[0].name, "a");
+    }
+
+    #[test]
+    fn no_assignment_prefix_does_not_create_phantom_assignments() {
+        use super::super::ast::Command;
+        let mut parser = Parser::new("if true; then echo y; fi\n");
+        let prog = parser.parse_program().unwrap();
+        let Command::Compound(comp, _) = &prog.commands[0].items[0].0.first.commands[0] else {
+            panic!()
+        };
+        assert!(comp.assignments.is_empty());
+    }
+
+    #[test]
+    fn assignment_then_simple_command_still_lands_in_simple() {
+        use super::super::ast::Command;
+        let mut parser = Parser::new("x=1 echo y\n");
+        let prog = parser.parse_program().unwrap();
+        let Command::Simple(sc) = &prog.commands[0].items[0].0.first.commands[0] else {
+            panic!("expected Simple, got compound")
+        };
+        assert_eq!(sc.assignments.len(), 1);
+        assert_eq!(sc.assignments[0].name, "x");
+        assert_eq!(sc.words.len(), 2);
+        assert_eq!(sc.words[0].as_literal(), Some("echo"));
+    }
 }

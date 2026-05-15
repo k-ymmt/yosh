@@ -463,6 +463,7 @@ mod tests {
                 }],
             },
             line: 10,
+            assignments: vec![],
         };
         let _ = exec.exec_compound_command(&cmd, &[]);
         // Inner SimpleCommand (line 11) runs last, so LINENO ends at 11.
@@ -497,6 +498,7 @@ mod tests {
                 }],
             },
             line: 7,
+            assignments: vec![],
         };
         let _ = exec.exec_compound_command(&cmd, &[]);
         assert_eq!(exec.env.vars.get("LINENO"), Some("7"));

@@ -125,6 +125,7 @@ mod tests {
                 body: Rc::new(CompoundCommand {
                     kind: CompoundCommandKind::BraceGroup { body: Vec::new() },
                     line: 0,
+                    assignments: Vec::new(),
                 }),
                 redirects: Vec::new(),
             },
