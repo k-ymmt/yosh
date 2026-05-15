@@ -5,7 +5,6 @@
 Decomposition of 55 XFAIL tests into 7 sub-projects. See
 `docs/superpowers/specs/2026-05-13-e2e-xfail-roadmap-design.md`.
 
-- [ ] SP5 — Miscellaneous small POSIX features (8 tests)
 - [ ] SP6 — PTY harness migration (10 tests)
 - [ ] SP7 — Deferred / recorded as known deviation (3 tests)
 
@@ -160,6 +159,65 @@ Decomposition of 55 XFAIL tests into 7 sub-projects. See
       a fallback) or add a `// ASCII spec only` doc-comment at the
       cast site (`src/builtin/getopts.rs:139-140`). Final-review
       follow-up from SP4 Task 6.
+
+### SP5 follow-ups (non-blocking)
+
+- [ ] PS4 variable / arithmetic / command-sub expansion not implemented.
+      `set -x` currently emits the raw PS4 value as a literal prefix,
+      so `PS4='+ $LINENO> '` shows `$LINENO` verbatim instead of the
+      line number. POSIX leaves PS4 expansion implementation-defined;
+      bash performs full parameter expansion before printing. Add a
+      param/arith expansion pass on PS4 in `exec_simple_command`'s
+      xtrace branch (`src/exec/simple.rs`). Code-review follow-up
+      from SP5 T1.
+- [ ] PS4 first-character-repeat rule for nesting depth — POSIX-
+      compatible shells repeat the first byte of PS4 N times where N
+      is the depth of nested function / source invocations. Not
+      implemented; SP5 T1 emits PS4 verbatim. Add nesting-depth
+      tracking on `ShellEnv` and repeat the first char in
+      `xtrace_prefix`. Final-review follow-up from SP5 T1.
+- [ ] `word_has_command_sub` returns true for `WordPart::ArithSub` even
+      though arithmetic expansion does not update `last_exit_status`.
+      For an assignment-only command consisting only of `$((expr))`,
+      yosh's new T3 logic now seeds `last_cmd_sub_status` from the
+      previous command's `$?`, which is a behavioural regression from
+      "0 on entry to arithmetic-only". POSIX leaves it implementation-
+      defined; bash returns 0 in this case. Either split
+      `word_has_command_sub` into a CmdSub-only predicate, or document
+      the divergence (`src/exec/simple.rs:819`). Code-review follow-up
+      from SP5 T3.
+- [ ] Pipeline-child EXIT trap firing — `exec_subshell`'s child branch
+      now fires `execute_exit_trap` (SP5 T6) but `exec/pipeline.rs`'s
+      pipeline-member child branches still call `exit_child` directly
+      without firing the trap. POSIX permits either interpretation;
+      bash fires the trap on every pipeline member's exit while dash
+      fires only on the rightmost. Pick a stance and apply uniformly,
+      or document the asymmetry. Final-review follow-up from SP5 T6.
+- [ ] `process_pending_signals` is now called at the tail of
+      `exec_complete_command` (top level) but NOT inside `exec_body`
+      iteration tails or `exec_function_call` returns. Async traps
+      installed inside a long-running function or loop body therefore
+      fire only after the function / loop completes (rather than
+      between iterations / between statements inside the body). Add
+      drain calls inside `exec_body`'s loop and `exec_function_call`'s
+      tail if a use case surfaces, weighing the per-iteration cost.
+      Code-review follow-up from SP5 T7.
+- [ ] `x=1 myfunc() { :; }` (assignment prefix before function
+      definition) silently drops the assignment instead of emitting
+      `ParseErrorKind::UnexpectedToken`. yosh still errors via a
+      downstream parser path ("empty compound list in subshell") so
+      the user sees a syntax error, but the message is misleading.
+      The clean fix is to detect this case in `parse_command` after
+      restoring lexer state and emit an explicit syntax-error
+      diagnostic (`src/parser/mod.rs`). Code-review follow-up from
+      SP5 T2.
+- [ ] E2E runner perl wrapper introduces a perl dependency. macOS /
+      most Linux distros ship perl by default but the requirement is
+      now part of the test infrastructure contract. Either add an
+      explicit check at runner entry (`command -v perl >/dev/null ||
+      exit 1`), document the dependency in CLAUDE.md, or replace the
+      perl one-liner with a tiny C helper / Rust binary. Follow-up
+      from SP5 T7.
 
 ## Job Control: Known Limitations
 
