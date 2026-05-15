@@ -133,11 +133,19 @@ impl Executor {
         // Assignment-only command (no words, or all words expanded to empty)
         if expanded.is_empty() {
             // POSIX §2.9.1: exit status of an assignment-only command is the status
-            // of the last command substitution performed, or 0 if none.
+            // of the last command substitution performed, or 0 if none. Both
+            // command-word (`$(false)` alone) and assignment-value substitutions
+            // are eligible. Word-side substitutions already updated
+            // env.exec.last_exit_status during expand_words above.
             //
             // $? must remain visible to value expansions (e.g. `x=$?`) until a
             // command substitution overwrites it, so we do NOT reset it up front.
-            let mut last_cmd_sub_status: Option<i32> = None;
+            let words_had_cmd_sub = cmd.words.iter().any(word_has_command_sub);
+            let mut last_cmd_sub_status: Option<i32> = if words_had_cmd_sub {
+                Some(self.env.exec.last_exit_status)
+            } else {
+                None
+            };
             for assignment in &cmd.assignments {
                 let has_cmd_sub = assignment.value.as_ref().is_some_and(word_has_command_sub);
                 let value = match assignment.value.as_ref() {
@@ -847,5 +855,40 @@ mod tests {
         let env = ShellEnv::new("yosh", vec![]);
         // PS4 is not set by ShellEnv::new, so the helper falls back to "+ ".
         assert_eq!(xtrace_prefix(&env), "+ ");
+    }
+
+    #[test]
+    fn standalone_false_cmd_sub_propagates_exit_status() {
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+        let mut exec = Executor::new("yosh", vec![]);
+        let prog = Parser::new("$(false)\n").parse_program().unwrap();
+        exec.exec_program(&prog);
+        assert_eq!(
+            exec.env.exec.last_exit_status, 1,
+            "$? must reflect the substituted command's exit status"
+        );
+    }
+
+    #[test]
+    fn standalone_true_cmd_sub_propagates_zero() {
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+        let mut exec = Executor::new("yosh", vec![]);
+        let prog = Parser::new("$(true)\n").parse_program().unwrap();
+        exec.exec_program(&prog);
+        assert_eq!(exec.env.exec.last_exit_status, 0);
+    }
+
+    #[test]
+    fn cmd_sub_followed_by_echo_dollarquestion_outputs_status() {
+        // Regression-friendly form: the test ensures the fix does not break
+        // the existing assignment-side propagation.
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+        let mut exec = Executor::new("yosh", vec![]);
+        let prog = Parser::new("x=$(false)\n").parse_program().unwrap();
+        exec.exec_program(&prog);
+        assert_eq!(exec.env.exec.last_exit_status, 1);
     }
 }
