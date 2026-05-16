@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod mock_terminal;
+pub mod pty;
 
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;

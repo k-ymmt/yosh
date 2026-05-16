@@ -1,108 +1,12 @@
-use std::os::fd::AsRawFd;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+mod helpers;
 
-use expectrl::{Eof, Expect, Regex, Session, session::OsSession};
+use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(15);
-const RAW_MODE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+use expectrl::{Eof, Expect, Regex, session::OsSession};
 
-// ── TempDir (inline, avoids pulling in mock_terminal via mod helpers) ─────
-
-static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new() -> Self {
-        let mut path = std::env::temp_dir();
-        let id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        path.push(format!("yosh-pty-test-{}-{}", id, seq));
-        std::fs::create_dir_all(&path).unwrap();
-        TempDir { path }
-    }
-
-    fn path(&self) -> &PathBuf {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────
-
-/// Returns (session, tmpdir). The tmpdir must be kept alive for the
-/// duration of the test so that yosh's HOME directory is not deleted.
-fn spawn_yosh() -> (OsSession, TempDir) {
-    let bin = env!("CARGO_BIN_EXE_yosh");
-    let tmpdir = TempDir::new();
-
-    let mut cmd = Command::new(bin);
-    cmd.env("TERM", "dumb");
-    cmd.env("HOME", tmpdir.path());
-
-    let mut session = Session::spawn(cmd).expect("failed to spawn yosh");
-    session.set_expect_timeout(Some(TIMEOUT));
-    (session, tmpdir)
-}
-
-fn wait_for_prompt(session: &mut OsSession) {
-    session.expect("$ ").expect("prompt not found");
-    wait_for_raw_mode(session);
-}
-
-fn wait_for_ps2(session: &mut OsSession) {
-    session.expect("> ").expect("PS2 prompt not found");
-    wait_for_raw_mode(session);
-}
-
-/// Block until yosh has called `enable_raw_mode()` on the PTY slave.
-///
-/// The previous implementation used a fixed 50ms sleep, which is a classic
-/// flaky-test pattern — under load the child can take longer than that to
-/// transition from canonical to raw mode, and input sent in the race window
-/// gets processed by the cooked line discipline (ICRNL translation, ECHO,
-/// ICANON buffering) instead of yosh's LineEditor.
-///
-/// Both ends of a PTY share one termios struct, so `tcgetattr` on the master
-/// fd (which expectrl exposes via `AsRawFd`) observes the slave-side settings.
-/// Poll for `ICANON` cleared — raw mode disables it — and return as soon as
-/// the transition is visible.
-fn wait_for_raw_mode(session: &OsSession) {
-    let fd = session.as_raw_fd();
-    let deadline = Instant::now() + RAW_MODE_WAIT_TIMEOUT;
-    loop {
-        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
-        let rc = unsafe { libc::tcgetattr(fd, &mut termios) };
-        if rc == 0 && (termios.c_lflag & (libc::ICANON as libc::tcflag_t)) == 0 {
-            return;
-        }
-        if Instant::now() >= deadline {
-            let errno = if rc != 0 {
-                std::io::Error::last_os_error().to_string()
-            } else {
-                "ok".to_string()
-            };
-            panic!(
-                "wait_for_raw_mode timed out: tcgetattr rc={} ({}), c_lflag=0x{:x}",
-                rc, errno, termios.c_lflag,
-            );
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-}
+use helpers::pty::{
+    TIMEOUT, spawn_yosh, wait_for_prompt, wait_for_ps2, wait_for_raw_mode,
+};
 
 /// Wait for command output (a line following a newline, not the input echo).
 /// Uses a regex that matches the pattern preceded by a newline. The \r before
