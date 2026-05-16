@@ -118,6 +118,13 @@ pub fn wait_for_raw_mode(session: &OsSession) {
     }
 }
 
+/// **Caveat:** When yosh's interactive line editor is in syntax-highlight
+/// mode (the default), the line editor repaints `$ <partial>` after every
+/// keystroke. This function's `\$ ` regex can match one of those transient
+/// repaints instead of the actual post-command prompt, returning prematurely
+/// with only echoed input bytes. For interactive PTY tests that send
+/// arbitrary commands, prefer [`capture_until_sentinel`].
+///
 /// Read output that arrives between the previously-sent command and the
 /// next `$ ` prompt, returning the captured text with the trailing prompt
 /// stripped.
@@ -136,4 +143,42 @@ pub fn read_until_prompt(session: &mut OsSession) -> String {
         .expect(Regex(r"\$ "))
         .expect("next prompt not found");
     String::from_utf8_lossy(captured.before()).into_owned()
+}
+
+/// Send `cmd` followed by `; echo __YOSH_DONE__` and capture everything
+/// up to the sentinel marker on a fresh line.
+///
+/// Use this instead of [`read_until_prompt`] when running under yosh's
+/// interactive line editor: the line editor repaints the prompt on every
+/// keystroke under syntax-highlighting, so a plain `$ ` regex match
+/// would race past the actual command output and bind to a transient
+/// repaint. The sentinel pattern eliminates that race because the
+/// sentinel can only appear on a real output line.
+///
+/// Returns the captured output (everything between the command echo and
+/// the sentinel marker, exclusive). Internally resyncs to the next `$ `
+/// prompt before returning so the caller can immediately send another
+/// command.
+pub fn capture_until_sentinel(session: &mut OsSession, cmd: &str) -> String {
+    // `; echo __YOSH_DONE__` runs after `cmd` regardless of `cmd`'s exit
+    // status (we use ; not &&). The `\r?\n__YOSH_DONE__` regex matches a
+    // CR/LF prefix to skip the user's echoed input which contains
+    // `__YOSH_DONE__` as part of the line-editor's repaint of the
+    // typed string.
+    let full = format!("{}; echo __YOSH_DONE__", cmd);
+    session.send_line(&full).unwrap();
+    let captured = session
+        .expect(Regex(r"\r?\n__YOSH_DONE__"))
+        .expect("sentinel __YOSH_DONE__ not found");
+    let out = String::from_utf8_lossy(captured.before()).into_owned();
+    // Resync: consume up to and including the next prompt.
+    let _ = session.expect(Regex(r"\$ ")).expect("prompt not found");
+    out
+}
+
+/// Run a command via the sentinel pattern and discard the output. Used
+/// when only the side effects (e.g. `export FOO=bar`) matter and the
+/// caller does not need to inspect what the command printed.
+pub fn run_and_drain(session: &mut OsSession, cmd: &str) {
+    let _ = capture_until_sentinel(session, cmd);
 }

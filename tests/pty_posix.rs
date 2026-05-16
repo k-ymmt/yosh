@@ -12,48 +12,11 @@
 
 mod helpers;
 
-#[allow(unused_imports)]
-use expectrl::{Eof, Expect, Regex, session::OsSession};
+use expectrl::{Eof, Expect, session::OsSession};
 
-#[allow(unused_imports)]
-use helpers::pty::{spawn_yosh, spawn_yosh_with_env, wait_for_prompt};
-
-/// Send a command and capture every byte written until a sentinel line
-/// `__YOSH_DONE__` appears on its own (preceded by CR/LF). Returns the
-/// captured bytes (which include the line-editor echo + the command's
-/// stdout/stderr that landed on the PTY).
-///
-/// Why a sentinel instead of `read_until_prompt`'s `\$ ` regex: when the
-/// line editor is in syntax-highlight mode (the default for an interactive
-/// yosh), it repaints `$ <partial>` after every keystroke. A `\$ ` regex
-/// matches the very first such repaint and returns before the command
-/// has even been submitted. The sentinel pattern `__YOSH_DONE__` cannot
-/// appear in any line-editor repaint (the LineEditor only renders chars
-/// already typed by the user up to that point), so matching on it is
-/// race-free.
-fn capture_until_sentinel(session: &mut OsSession, cmd: &str) -> String {
-    // `; echo __YOSH_DONE__` runs after `cmd` regardless of `cmd`'s exit
-    // status (we use ; not &&). The `\r?\n__YOSH_DONE__` regex matches a
-    // CR/LF prefix to skip the user's echoed input which contains
-    // `__YOSH_DONE__` as part of the line-editor's repaint of the
-    // typed string.
-    let full = format!("{}; echo __YOSH_DONE__", cmd);
-    session.send_line(&full).unwrap();
-    let captured = session
-        .expect(Regex(r"\r?\n__YOSH_DONE__"))
-        .expect("sentinel __YOSH_DONE__ not found");
-    let out = String::from_utf8_lossy(captured.before()).into_owned();
-    // Resync: consume up to and including the next prompt.
-    let _ = session.expect(Regex(r"\$ ")).expect("prompt not found");
-    out
-}
-
-/// Run a command for its side effect only (e.g. seeding history). Captures
-/// and discards output up through the next prompt using the same sentinel
-/// trick as `capture_until_sentinel`.
-fn run_and_drain(session: &mut OsSession, cmd: &str) {
-    let _ = capture_until_sentinel(session, cmd);
-}
+use helpers::pty::{
+    capture_until_sentinel, run_and_drain, spawn_yosh, spawn_yosh_with_env, wait_for_prompt,
+};
 
 mod fc {
     use super::*;
@@ -181,6 +144,60 @@ mod fc {
         wait_for_prompt(&mut session);
 
         run_and_drain(&mut session, "export FCEDIT=cat");
+        run_and_drain(&mut session, "echo seedline");
+
+        let out = capture_until_sentinel(
+            &mut session,
+            "fc echo </dev/null >/dev/null 2>&1; echo RC=$?",
+        );
+
+        assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
+
+        session.send_line("exit").unwrap();
+        let _ = session.expect(Eof);
+    }
+}
+
+mod fcedit {
+    use super::*;
+
+    #[test]
+    fn used_by_fc() {
+        // FCEDIT=cat → fc invokes cat as editor → cat reads tempfile,
+        // exits 0 → fc re-executes the previous command.
+        //
+        // Pass `echo` as a prefix-match operand so fc resolves to the
+        // seeded `echo seedline` history entry, NOT the fc command
+        // itself. This works around yosh's eager history-add-before-
+        // execute behavior (src/interactive/mod.rs:268-272).
+        let (mut session, _tmpdir) = spawn_yosh();
+        wait_for_prompt(&mut session);
+
+        run_and_drain(&mut session, "export FCEDIT=cat");
+        run_and_drain(&mut session, "echo seedline");
+
+        let out = capture_until_sentinel(
+            &mut session,
+            "fc echo </dev/null >/dev/null 2>&1; echo RC=$?",
+        );
+
+        assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
+
+        session.send_line("exit").unwrap();
+        let _ = session.expect(Eof);
+    }
+
+    #[test]
+    fn default_ed() {
+        // FCEDIT and EDITOR removed → fc falls back to /bin/ed. We
+        // verify /bin/ed exits 0 when given an empty stdin (probed
+        // platform-side; see SP6 design §6).
+        //
+        // Pass `echo` as a prefix-match operand for the same reason as
+        // used_by_fc (see that test's comment).
+        let (mut session, _tmpdir) = spawn_yosh_with_env(&[("FCEDIT", None), ("EDITOR", None)]);
+        wait_for_prompt(&mut session);
+
         run_and_drain(&mut session, "echo seedline");
 
         let out = capture_until_sentinel(
