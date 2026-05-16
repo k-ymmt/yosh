@@ -5,7 +5,6 @@
 Decomposition of 55 XFAIL tests into 7 sub-projects. See
 `docs/superpowers/specs/2026-05-13-e2e-xfail-roadmap-design.md`.
 
-- [ ] SP6 — PTY harness migration (10 tests)
 - [ ] SP7 — Deferred / recorded as known deviation (3 tests)
 
 ### SP1 follow-ups (non-blocking)
@@ -218,6 +217,36 @@ Decomposition of 55 XFAIL tests into 7 sub-projects. See
       exit 1`), document the dependency in CLAUDE.md, or replace the
       perl one-liner with a tiny C helper / Rust binary. Follow-up
       from SP5 T7.
+
+### SP6 follow-ups (non-blocking)
+
+- [ ] `fc` builtin with no operand (`fc`, `fc -e <editor>`) infinite-recurses
+      and stack-overflows yosh. Root cause: `Repl::run` adds the running
+      command to history via `executor.env.history.add(...)` BEFORE
+      `exec_complete_command` (`src/interactive/mod.rs:268-272`), so bare
+      `fc` resolves "previous command" to the fc command itself and
+      `eval_string`s back into fc. POSIX explicitly says fc must not
+      enter itself in history. Affects `tests/pty_posix.rs::fc::editor_dash_e`
+      and `tests/pty_posix.rs::fc::no_args_uses_editor`, which currently
+      work around it by passing an `echo` prefix operand. Fix: hoist the
+      `history.add` call after `exec_complete_command`, or have `fc`
+      itself filter its own command from the history slice it operates on.
+- [ ] `tests/helpers/pty.rs::read_until_prompt` regex `\$ ` mis-matches
+      yosh's syntax-highlight repaint output, which emits a transient
+      `$ <partial>` after every keystroke. `capture_until_sentinel`
+      (added in SP6 T4, promoted in T5) is the workaround. Long-term, a
+      raw-mode-aware capture primitive that recognizes the line-editor's
+      repaint pattern would let `read_until_prompt` work everywhere
+      (`tests/helpers/pty.rs`).
+- [ ] `exec >file` followed by `capture_until_sentinel` hangs because the
+      sentinel's `echo __YOSH_DONE__` lands in the file rather than
+      back at the PTY. SP6 T6 (`tests/pty_posix.rs::exec_redirect::no_cmd_redirects`)
+      works around this by fusing the entire redirect sequence into one
+      command line so stdout is restored before the sentinel fires. If
+      more tests need step-wise interaction across a `exec >file` boundary,
+      add a `capture_until_sentinel_via_stderr` variant that uses
+      `>&2 echo __YOSH_DONE__` so the sentinel travels on fd 2 even when
+      fd 1 is redirected (`tests/helpers/pty.rs`).
 
 ## Job Control: Known Limitations
 
