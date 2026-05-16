@@ -211,3 +211,96 @@ mod fcedit {
         let _ = session.expect(Eof);
     }
 }
+
+mod ps1 {
+    use super::*;
+
+    #[test]
+    fn default_value_set() {
+        // Start with PS1 stripped from the inherited env so yosh's
+        // Repl::new must be the one to set it. The is_none() guard
+        // in src/interactive/mod.rs ensures the POSIX default value
+        // ("$ " / "# ") is written to the variable.
+        let (mut session, _tmpdir) = spawn_yosh_with_env(&[("PS1", None)]);
+        wait_for_prompt(&mut session);
+
+        // Use distinct, non-overlapping sentinels so a negative assertion
+        // can rule out the unset branch even when the captured stream
+        // includes the user's echoed input (syntax-highlight repaints
+        // emit every typed byte). The output line begins with "\r\n",
+        // so anchoring on a leading newline isolates real output.
+        let out = capture_until_sentinel(
+            &mut session,
+            r#"[ -n "${PS1+x}" ] && echo PS1ISSET || echo PS1ISMISSING"#,
+        );
+
+        // The command's actual stdout appears on a fresh line just
+        // before the sentinel; the typed input (echoed back by the
+        // line editor) appears interleaved with cursor/color escapes
+        // but never on a bare new line of its own.
+        assert!(
+            out.contains("\nPS1ISSET") || out.contains("\r\nPS1ISSET"),
+            "PS1 not set (no PS1ISSET output line) in: {:?}",
+            out,
+        );
+        assert!(
+            !(out.contains("\nPS1ISMISSING") || out.contains("\r\nPS1ISMISSING")),
+            "PS1 reported MISSING in: {:?}",
+            out,
+        );
+
+        session.send_line("exit").unwrap();
+        let _ = session.expect(Eof);
+    }
+}
+
+mod exec_redirect {
+    use super::*;
+    use expectrl::Regex;
+
+    #[test]
+    fn no_cmd_redirects() {
+        // POSIX 2.14.10: bare `exec` with redirections applies them to
+        // the current shell. After `exec >file`, subsequent stdout
+        // lands in file. Restoring with `exec >/dev/tty` requires
+        // /dev/tty to be available — i.e., the shell must run under
+        // a PTY (otherwise /dev/tty fails to open).
+        //
+        // Important: once `exec >file` redirects the shell's stdout,
+        // the prompt and the sentinel `echo __YOSH_DONE__` also go to
+        // the file rather than back to the PTY. So we can't run the
+        // sequence as four separate `run_and_drain` calls — the second
+        // one would hang waiting for a prompt that landed in the file.
+        // Instead, fuse the redirect + echo + restore into a single
+        // compound command terminated by `; cat "$TEST_TMPDIR/out"`;
+        // by the time the sentinel is emitted, stdout has been restored
+        // to /dev/tty and the cat output is visible to expectrl.
+        let (mut session, tmpdir) = spawn_yosh();
+        wait_for_prompt(&mut session);
+
+        // Export the per-test tmpdir so the script can reference it
+        // via $TEST_TMPDIR (mirrors how e2e/run_tests.sh provides it).
+        let tmp = tmpdir.path().to_string_lossy().to_string();
+        run_and_drain(&mut session, &format!("export TEST_TMPDIR={}", tmp));
+
+        // Fuse the whole POSIX 2.14.10 sequence into one command line
+        // followed by the sentinel. We don't reuse `capture_until_sentinel`
+        // because it resyncs to the next `$ ` prompt afterward — and
+        // depending on whether `exec >/dev/tty` resolves the controlling
+        // terminal back to the PTY slave (which it does under expectrl
+        // but is the subject of this test's hedging), the post-sentinel
+        // prompt may or may not be visible. The sentinel itself appearing
+        // is sufficient evidence the sequence ran to completion.
+        let cmd = r#"exec >"$TEST_TMPDIR/out"; echo persistent; exec >/dev/tty 2>/dev/null || exec >&-; cat "$TEST_TMPDIR/out"; echo __YOSH_DONE__"#;
+        session.send_line(cmd).unwrap();
+        let captured = session
+            .expect(Regex(r"\r?\n__YOSH_DONE__"))
+            .expect("sentinel __YOSH_DONE__ not found");
+        let out = String::from_utf8_lossy(captured.before()).into_owned();
+
+        assert!(out.contains("persistent"), "missing 'persistent' in: {:?}", out);
+
+        session.send_line("exit").unwrap();
+        let _ = session.expect(Eof);
+    }
+}

@@ -1,7 +1,7 @@
 #!/bin/sh
 # POSIX_REF: 2.14.10 exec
 # DESCRIPTION: exec with no command applies redirections to the current shell
-# XFAIL: harness limitation (/dev/tty unavailable in non-interactive test environment)
+# MIGRATED_TO: tests/pty_posix.rs::exec_redirect::no_cmd_redirects
 # EXPECT_OUTPUT: persistent
 # EXPECT_EXIT: 0
 exec >"$TEST_TMPDIR/out"
