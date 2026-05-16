@@ -1,6 +1,6 @@
 #!/bin/sh
 # POSIX_REF: 4 Utilities - fc
 # DESCRIPTION: fc -l -n suppresses leading numbers in the listing
-# XFAIL: harness limitation (fc requires non-empty history; non-interactive harness has no history)
+# MIGRATED_TO: tests/pty_posix.rs::fc::list_no_numbers
 # EXPECT_EXIT: 0
 fc -l -n >/dev/null
