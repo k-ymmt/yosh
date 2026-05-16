@@ -73,6 +73,19 @@ impl Repl {
         let _ = executor.env.vars.set("HISTFILESIZE", "500");
         let _ = executor.env.vars.set("HISTCONTROL", "ignoreboth");
 
+        // POSIX XCU §2.5.3: PS1 has a default value for interactive shells.
+        // Set it as a real variable so observers like `[ -n "${PS1+x}" ]`
+        // see it. Defer to inherited / rc-set value if already present.
+        if executor.env.vars.get("PS1").is_none() {
+            // SAFETY: getuid() is always safe to call.
+            let default = if unsafe { libc::getuid() } == 0 {
+                "# "
+            } else {
+                "$ "
+            };
+            let _ = executor.env.vars.set("PS1", default);
+        }
+
         // Load history from file
         executor.env.history.load(std::path::Path::new(&histfile));
 
