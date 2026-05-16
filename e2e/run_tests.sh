@@ -164,11 +164,12 @@ failed=0
 xfailed=0
 xpassed=0
 timedout=0
+migrated=0
 
 # ── Parse metadata from a test file ─────────────────────────────────
 # Sets: meta_posix_ref, meta_description, meta_expect_output,
 #       meta_expect_exit, meta_expect_stderr, meta_xfail,
-#       meta_has_expect_output
+#       meta_migrated, meta_has_expect_output
 parse_metadata() {
     _file="$1"
     meta_posix_ref=""
@@ -177,6 +178,7 @@ parse_metadata() {
     meta_expect_exit="0"
     meta_expect_stderr=""
     meta_xfail=""
+    meta_migrated=""
     meta_has_expect_output=0
 
     _in_heredoc=0
@@ -234,6 +236,9 @@ ${_stripped}"
             "# XFAIL: "*)
                 meta_xfail="${_line#"# XFAIL: "}"
                 ;;
+            "# MIGRATED_TO: "*)
+                meta_migrated="${_line#"# MIGRATED_TO: "}"
+                ;;
         esac
     done < "$_file"
 
@@ -264,6 +269,16 @@ for test_file in $test_files; do
 
     # Parse metadata
     parse_metadata "$test_file"
+
+    # Migrated tests: short-circuit (no execution, no temp dir).
+    if [ -n "$meta_migrated" ]; then
+        if [ -n "$meta_xfail" ]; then
+            printf "${YELLOW}[WARN]${RESET}  %s has both MIGRATED_TO and XFAIL — MIGRATED_TO wins; remove the stale XFAIL\n" "$rel_path"
+        fi
+        migrated=$((migrated + 1))
+        printf "${CYAN}[MIGRATED]${RESET} %s (%s)\n" "$rel_path" "$meta_migrated"
+        continue
+    fi
 
     # Create per-test temp directory
     TEST_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/yosh_e2e.XXXXXX")
@@ -433,6 +448,7 @@ printf "${GREEN}Passed: %d${RESET}  " "$passed"
 printf "${RED}Failed: %d${RESET}  " "$failed"
 printf "${YELLOW}Timedout: %d${RESET}  " "$timedout"
 printf "${CYAN}XFail: %d${RESET}  " "$xfailed"
+printf "${CYAN}Migrated: %d${RESET}  " "$migrated"
 printf "${YELLOW}XPass: %d${RESET}\n" "$xpassed"
 
 # Point users at the auto-captured failure log if one was written.
