@@ -31,10 +31,19 @@ In scope:
   `## Future: POSIX Conformance Bugs` (the only missing rationale; the
   ulimit and locale entries already exist).
 - Delete the `- [ ] SP7 — Deferred / recorded as known deviation (3
-  tests)` line from `TODO.md`. Since SP1–SP6 entries were already
-  removed on closure, this empties the `## E2E XFAIL Roadmap` section;
-  remove the section heading and intro paragraph as well so `TODO.md`
-  no longer carries a roadmap stub.
+  tests)` line from `TODO.md`. The roadmap is fully closed once SP7
+  lands, but the `### SP1 follow-ups (non-blocking)` through
+  `### SP6 follow-ups (non-blocking)` subsections that live under the
+  same `##` heading are still active technical-debt items that must
+  remain. Therefore:
+    - Rename `## E2E XFAIL Roadmap` to `## E2E XFAIL Roadmap Follow-ups`
+      to truthfully reflect the post-closure contents.
+    - Replace the existing intro paragraph (`Decomposition of 55 XFAIL
+      tests into 7 sub-projects. See ...`) with a one-line closure
+      marker: `Roadmap closed 2026-05-17. Non-blocking follow-ups from
+      SP1–SP6 retained below for tracking.`
+    - Delete only the SP7 line; leave the `### SPN follow-ups` blocks
+      untouched.
 - Commit this design spec under `docs/superpowers/specs/`.
 
 Out of scope:
@@ -82,11 +91,33 @@ Out of scope:
       `e2e/posix_spec/2_11_signals_and_error_handling/trap_resets_in_subshell_when_unhandled.sh`.
 ```
 
-### 3.5 `TODO.md` — remove the `## E2E XFAIL Roadmap` section
+### 3.5 `TODO.md` — close the roadmap, retain follow-ups
 
-The section currently contains only the SP7 line plus the two-line
-intro paragraph. Delete the heading, the intro, and the SP7 line — the
-roadmap is fully closed once SP7 lands.
+Three coordinated edits inside the existing top section:
+
+1. Rename the `## E2E XFAIL Roadmap` heading to
+   `## E2E XFAIL Roadmap Follow-ups`.
+2. Replace the existing two-line intro paragraph
+
+   ```markdown
+   Decomposition of 55 XFAIL tests into 7 sub-projects. See
+   `docs/superpowers/specs/2026-05-13-e2e-xfail-roadmap-design.md`.
+   ```
+
+   with
+
+   ```markdown
+   Roadmap closed 2026-05-17. Non-blocking follow-ups from SP1–SP6
+   retained below for tracking.
+   ```
+
+3. Delete the `- [ ] SP7 — Deferred / recorded as known deviation (3
+   tests)` line.
+
+The `### SP1 follow-ups (non-blocking)` through
+`### SP6 follow-ups (non-blocking)` subsections that live under this
+heading are unaffected — they are active technical-debt items and
+remain in place.
 
 ## 4. Acceptance criteria
 
@@ -98,8 +129,11 @@ roadmap is fully closed once SP7 lands.
    changes expected to affect them).
 4. `TODO.md` contains the new `Subshell trap reset for uncaught
    signals` entry under `## Future: POSIX Conformance Bugs`.
-5. `TODO.md` no longer contains the `## E2E XFAIL Roadmap` section or
-   the `SP7 — Deferred / recorded as known deviation` line.
+5. `TODO.md` heading is renamed to
+   `## E2E XFAIL Roadmap Follow-ups`, the intro paragraph carries the
+   closure marker, the `SP7 — Deferred / recorded as known deviation`
+   line is gone, and the `### SPN follow-ups (non-blocking)` blocks
+   are unchanged.
 6. This spec is committed under `docs/superpowers/specs/`.
 7. The `project_e2e_xfail_roadmap` auto-memory entry is updated to
    reflect "SP7 COMPLETE (2026-05-17); roadmap fully closed".
@@ -114,8 +148,11 @@ roadmap is fully closed once SP7 lands.
 4. `cargo build` + `cargo test` green.
 5. Grep checks on `TODO.md`:
    - `grep -c "SP7" TODO.md` → 0
-   - `grep -c "## E2E XFAIL Roadmap" TODO.md` → 0
+   - `grep -c "^## E2E XFAIL Roadmap Follow-ups$" TODO.md` → 1
+   - `grep -c "Roadmap closed 2026-05-17" TODO.md` → 1
    - `grep -c "Subshell trap reset for uncaught signals" TODO.md` → 1
+   - `grep -c "^### SP1 follow-ups" TODO.md` → 1 (sanity: SP1 block preserved)
+   - `grep -c "^### SP6 follow-ups" TODO.md` → 1 (sanity: SP6 block preserved)
 
 ## 6. Commit shape
 
