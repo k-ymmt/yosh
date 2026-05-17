@@ -1,11 +1,9 @@
 # TODO
 
-## E2E XFAIL Roadmap
+## E2E XFAIL Roadmap Follow-ups
 
-Decomposition of 55 XFAIL tests into 7 sub-projects. See
-`docs/superpowers/specs/2026-05-13-e2e-xfail-roadmap-design.md`.
-
-- [ ] SP7 — Deferred / recorded as known deviation (3 tests)
+Roadmap closed 2026-05-17. Non-blocking follow-ups from SP1–SP6
+retained below for tracking.
 
 ### SP1 follow-ups (non-blocking)
 
@@ -447,6 +445,14 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       reserved word. POSIX §2.4 requires reserved-word recognition regardless of leading
       assignment prefixes. XFAIL test:
       `e2e/posix_spec/2_04_reserved_words/reserved_after_assignment_recognized.sh`.
+- [ ] Subshell trap reset for uncaught signals not implemented — yosh
+      inherits the parent's `trap 'cmd' SIG` action into subshells
+      instead of resetting non-caught signals to their default action.
+      POSIX §2.11 leaves the precise semantics open to interpretation
+      and major shells (bash, dash, ksh) diverge on which signals are
+      reset and when. Recorded as a known deviation rather than a fix
+      target. XFAIL test:
+      `e2e/posix_spec/2_11_signals_and_error_handling/trap_resets_in_subshell_when_unhandled.sh`.
 
 ## Future: Release Skill Enhancements
 
