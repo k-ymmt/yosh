@@ -423,9 +423,6 @@ test becomes PASS and the `# XFAIL:` line should be removed.
       requires the EXIT pseudo-signal handler to run when the shell
       exits, including subshells. XFAIL test:
       `e2e/posix_spec/2_11_signals_and_error_handling/trap_zero_runs_on_exit.sh`.
-- [ ] `$PPID` special parameter returns empty — POSIX requires it to
-      hold the parent process ID at shell startup. XFAIL test:
-      `e2e/posix_spec/8_env_vars/PPID_is_set.sh`.
 - [ ] Locale support not implemented — `LANG` / `LC_*` / `NLSPATH` are
       accepted as variables but do not affect collation, character
       classification, message localization, or message catalogs.
