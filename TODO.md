@@ -373,75 +373,18 @@ become PASS; remove the `# XFAIL:` line at that point.
 
 ## Future: POSIX Conformance Bugs
 
-The following yosh behaviors diverge from POSIX shall/must requirements
-and were surfaced as `XFAIL: non-POSIX deviation (...)` during the
-2026-05-13 Ch4+Ch8 E2E expansion. Each entry points to the XFAIL test
-that documents the expected POSIX behavior; when the fix lands, the
-test becomes PASS and the `# XFAIL:` line should be removed.
+The 2026-05-13 Ch4+Ch8 E2E expansion surfaced 16 POSIX shall/must
+deviations as XFAILs. SP1–SP5 fixed all but the two below, which SP7
+(2026-05-17) recorded as deferred / known deviation. Each remaining
+entry points to the XFAIL test that documents the expected POSIX
+behavior.
 
-- [ ] `break` / `continue` outside any enclosing loop — yosh exits 0
-      silently. POSIX requires nonzero exit and a diagnostic. XFAIL
-      tests: `e2e/posix_spec/4_special_builtin/break_outside_loop.sh`,
-      `continue_outside_loop.sh`.
-- [ ] `continue N` when N exceeds loop nesting — yosh treats it as
-      `break` (only first iteration runs). POSIX requires continuing
-      the outermost loop. XFAIL test:
-      `e2e/posix_spec/4_special_builtin/continue_n_exceeds_depth.sh`.
-- [ ] `export` / `readonly` / `unset` accept invalid identifiers (e.g.,
-      `export 1foo=v`). POSIX requires an error. XFAIL tests:
-      `e2e/posix_spec/4_special_builtin/export_invalid_name.sh`,
-      `readonly_invalid_name.sh`, `unset_invalid_name.sh`.
-- [ ] `readonly -p` produces no output (bare `readonly` works). POSIX
-      requires re-input form listing. XFAIL test:
-      `e2e/posix_spec/4_special_builtin/readonly_p_listing.sh`.
-- [ ] `unset -f` removes the variable instead of the function. POSIX
-      requires `-f` to act on functions only. XFAIL tests:
-      `e2e/posix_spec/4_special_builtin/unset_f_function.sh`,
-      `unset_f_keeps_variable.sh`.
-- [ ] `exec CMD` does not pass exported variables to the replaced
-      process. POSIX requires the environment to be preserved across
-      exec. XFAIL test:
-      `e2e/posix_spec/4_special_builtin/exec_keeps_env.sh`.
-- [ ] Standalone `$(...)` exit status not propagated to `$?` — yosh
-      sets `$?` to 0 after a bare `$(cmd)` regardless of `cmd`'s exit
-      status. POSIX §2.6.3 requires the substituted command's exit
-      status to be reflected in `$?` when the substitution is the
-      command itself. XFAIL test:
-      `e2e/posix_spec/2_06_03_command_substitution/exit_status_propagates_to_parent.sh`.
-- [ ] Redirection left-to-right ordering is not honoured — `cmd 2>&1 >f`
-      should dup fd 2 to the current stdout (terminal) before redirecting
-      stdout to `f`, so only stdout ends up in the file; yosh processes
-      both redirections against the post-update state, causing stderr to
-      also land in `f`. XFAIL test:
-      `e2e/posix_spec/2_07_redirection/redir_order_left_to_right.sh`.
-- [ ] `trap` INT handler is deferred to end-of-script instead of
-      running asynchronously when the signal is delivered. POSIX
-      requires the trap action to run as soon as the shell is ready
-      to accept it. XFAIL test:
-      `e2e/posix_spec/4_special_builtin/trap_int_handler.sh`.
-- [ ] `trap 0` / `trap EXIT` not fired on subshell exit — POSIX §2.11
-      requires the EXIT pseudo-signal handler to run when the shell
-      exits, including subshells. XFAIL test:
-      `e2e/posix_spec/2_11_signals_and_error_handling/trap_zero_runs_on_exit.sh`.
 - [ ] Locale support not implemented — `LANG` / `LC_*` / `NLSPATH` are
       accepted as variables but do not affect collation, character
       classification, message localization, or message catalogs.
       XFAIL test:
       `e2e/posix_spec/8_env_vars/LANG_default_collate.sh` (other
       `LC_*` tests currently pass via default-C-locale semantics).
-- [ ] Redirection error on a special builtin does not exit the (sub)shell — yosh
-      continues to execute subsequent commands. POSIX §2.8.1 requires the
-      non-interactive shell to exit on such an error. XFAIL test:
-      `e2e/posix_spec/2_08_01_consequences_of_shell_errors/special_builtin_redir_error_exits.sh`.
-- [ ] Redirect-only simple command (no command word) does not apply the redirect — yosh
-      exits 0 without creating or truncating the target file. POSIX §2.9.1 requires
-      that the redirections are performed even when no command is present. XFAIL test:
-      `e2e/posix_spec/2_09_01_simple_commands/redirection_only_creates_file.sh`.
-- [ ] Reserved word not recognized after an assignment prefix — `x=1 if true; then echo y; fi`
-      triggers exit 127 ("if: not found") instead of treating `if` as the command-position
-      reserved word. POSIX §2.4 requires reserved-word recognition regardless of leading
-      assignment prefixes. XFAIL test:
-      `e2e/posix_spec/2_04_reserved_words/reserved_after_assignment_recognized.sh`.
 - [ ] Subshell trap reset for uncaught signals not implemented — yosh
       inherits the parent's `trap 'cmd' SIG` action into subshells
       instead of resetting non-caught signals to their default action.
