@@ -110,7 +110,12 @@ impl TrapStore {
 
     /// Reset all non-ignored traps to default (POSIX subshell behavior).
     /// Command traps are removed. Ignore traps are preserved.
-    pub fn reset_non_ignored(&mut self) {
+    ///
+    /// Crate-private: external fork-time call sites must use
+    /// [`Self::reset_for_subshell`] or [`Self::reset_for_command_sub`], which
+    /// additionally handle `saved_traps`. This stays accessible to the
+    /// surrounding helpers and unit tests.
+    pub(crate) fn reset_non_ignored(&mut self) {
         if matches!(self.exit_trap, Some(TrapAction::Command(_))) {
             self.exit_trap = None;
         }

@@ -545,3 +545,18 @@ fn test_pipeline_child_clears_saved_traps() {
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
 }
+
+#[test]
+fn test_background_async_clears_saved_traps() {
+    // exec_async fork must also clear saved_traps: $(... & wait) routes
+    // the async child's stdout into the command-sub pipe, so the inner
+    // `trap` builtin's output is captured. USR1 must not appear because
+    // reset_for_subshell clears the parent snapshot in the async child.
+    let out = yosh_exec(
+        "trap 'echo parent' USR1; \
+         out=$(trap & wait); \
+         case \"$out\" in *USR1*) echo bad ;; *) echo ok ;; esac",
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+}
