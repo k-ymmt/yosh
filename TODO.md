@@ -374,10 +374,9 @@ become PASS; remove the `# XFAIL:` line at that point.
 ## Future: POSIX Conformance Bugs
 
 The 2026-05-13 Ch4+Ch8 E2E expansion surfaced 16 POSIX shall/must
-deviations as XFAILs. SP1–SP5 fixed all but the two below, which SP7
-(2026-05-17) recorded as deferred / known deviation. Each remaining
-entry points to the XFAIL test that documents the expected POSIX
-behavior.
+deviations as XFAILs. SP1–SP5 plus the 2026-05-19 trap-reset fix
+closed all but the locale entry below. Each remaining entry points
+to the XFAIL test that documents the expected POSIX behavior.
 
 - [ ] Locale support not implemented — `LANG` / `LC_*` / `NLSPATH` are
       accepted as variables but do not affect collation, character
