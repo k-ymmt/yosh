@@ -125,7 +125,7 @@ impl Executor {
                 nix::unistd::setpgid(pid, pid).ok();
 
                 let ignored = self.env.traps.ignored_signals();
-                self.env.traps.reset_non_ignored();
+                self.env.traps.reset_for_subshell();
                 if self.env.mode.options.monitor {
                     signal::setup_background_child_signals(&ignored);
                 } else {

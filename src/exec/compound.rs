@@ -100,7 +100,7 @@ impl Executor {
             )),
             Ok(ForkResult::Child) => {
                 let ignored = self.env.traps.ignored_signals();
-                self.env.traps.reset_non_ignored();
+                self.env.traps.reset_for_subshell();
                 signal::reset_child_signals(&ignored);
                 let status = self.exec_body(body);
                 // POSIX §2.11: EXIT pseudo-signal handler runs on shell exit,

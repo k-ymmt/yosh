@@ -76,7 +76,7 @@ impl Executor {
                         setpgid(my_pid, pgid).ok();
                     }
                     let ignored = self.env.traps.ignored_signals();
-                    self.env.traps.reset_non_ignored();
+                    self.env.traps.reset_for_subshell();
                     if self.env.mode.options.monitor {
                         signal::setup_foreground_child_signals(&ignored);
                     } else {

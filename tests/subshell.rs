@@ -516,3 +516,32 @@ fn subshell_exit_trap_runs_even_when_subshell_exits_nonzero() {
     assert!(stdout.contains("bye"), "stdout was {:?}", stdout);
     assert_eq!(out.status.code(), Some(5), "subshell exit code propagates");
 }
+
+// =============================================================================
+// POSIX §2.11: saved_traps cleared in nested literal subshell / pipeline child
+// (fix: reset_for_subshell replaces reset_non_ignored at fork sites)
+// =============================================================================
+
+#[test]
+fn test_nested_subshell_inside_cmdsub_shows_reset_traps() {
+    // $( (trap) ) — nested literal subshell inside command sub must clear
+    // saved_traps and show the inner subshell's reset state.
+    let out = yosh_exec(
+        "trap 'echo parent' USR1; out=$( (trap) ); \
+         case \"$out\" in *USR1*) echo bad ;; *) echo ok ;; esac",
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+}
+
+#[test]
+fn test_pipeline_child_clears_saved_traps() {
+    // Pipeline child should also clear saved_traps.
+    let out = yosh_exec(
+        "trap 'echo parent' USR1; \
+         out=$(echo dummy | (trap)); \
+         case \"$out\" in *USR1*) echo bad ;; *) echo ok ;; esac",
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+}

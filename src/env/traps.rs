@@ -118,6 +118,27 @@ impl TrapStore {
             .retain(|_, action| matches!(action, TrapAction::Ignore));
     }
 
+    /// Reset traps for an immediate subshell (literal `(...)`, pipeline child,
+    /// background `&`). Clears `saved_traps` so a nested `trap` builtin reflects
+    /// the post-reset state of the subshell rather than an enclosing
+    /// command-substitution's parent snapshot.
+    ///
+    /// Distinct from [`Self::reset_for_command_sub`]: command substitution
+    /// (`$(...)`) preserves parent traps in `saved_traps` for the POSIX
+    /// `traps=$(trap)` save/restore pattern (POSIX §2.14 RATIONALE), but
+    /// non-command-sub subshells must show their own (reset) state.
+    pub fn reset_for_subshell(&mut self) {
+        self.reset_non_ignored();
+        self.saved_traps = None;
+    }
+
+    /// Test-only helper: inspect whether `saved_traps` is populated.
+    /// Avoids bumping the field's visibility purely for unit tests.
+    #[cfg(test)]
+    pub(crate) fn saved_traps_is_some(&self) -> bool {
+        self.saved_traps.is_some()
+    }
+
     /// Reset traps for command substitution context.
     /// Saves parent traps so `trap` (no args) in `$(trap)` shows parent traps (POSIX).
     pub fn reset_for_command_sub(&mut self) {
@@ -340,5 +361,61 @@ mod tests {
             Some(TrapAction::Command(_))
         ));
         assert!(store.get_signal_trap(15).is_none());
+    }
+
+    #[test]
+    fn test_reset_for_subshell_clears_saved_traps() {
+        let mut store = TrapStore::default();
+        store
+            .set_trap("INT", TrapAction::Command("echo parent".into()))
+            .unwrap();
+        store.reset_for_command_sub();
+        assert!(
+            store.saved_traps_is_some(),
+            "precondition: reset_for_command_sub must populate saved_traps"
+        );
+        store.reset_for_subshell();
+        assert!(
+            !store.saved_traps_is_some(),
+            "saved_traps must be cleared by reset_for_subshell"
+        );
+        assert!(
+            store.signal_traps.is_empty(),
+            "signal_traps must be reset by reset_for_subshell"
+        );
+    }
+
+    #[test]
+    fn test_reset_for_subshell_preserves_ignored() {
+        // POSIX §2.11: Ignore-action traps must survive subshell entry.
+        let mut store = TrapStore::default();
+        store.set_trap("HUP", TrapAction::Ignore).unwrap();
+        store
+            .set_trap("INT", TrapAction::Command("x".into()))
+            .unwrap();
+        store.reset_for_subshell();
+        assert_eq!(
+            store.signal_traps.get(&1),
+            Some(&TrapAction::Ignore),
+            "HUP Ignore must be preserved"
+        );
+        assert!(
+            !store.signal_traps.contains_key(&2),
+            "INT Command must be cleared"
+        );
+    }
+
+    #[test]
+    fn test_reset_for_subshell_with_no_saved_traps_is_safe() {
+        // Calling reset_for_subshell on a store without a prior
+        // reset_for_command_sub must not panic and must reset signal_traps.
+        let mut store = TrapStore::default();
+        store
+            .set_trap("INT", TrapAction::Command("x".into()))
+            .unwrap();
+        // saved_traps is None at this point.
+        store.reset_for_subshell();
+        assert!(!store.saved_traps_is_some());
+        assert!(store.signal_traps.is_empty());
     }
 }

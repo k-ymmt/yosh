@@ -385,14 +385,6 @@ behavior.
       XFAIL test:
       `e2e/posix_spec/8_env_vars/LANG_default_collate.sh` (other
       `LC_*` tests currently pass via default-C-locale semantics).
-- [ ] Subshell trap reset for uncaught signals not implemented — yosh
-      inherits the parent's `trap 'cmd' SIG` action into subshells
-      instead of resetting non-caught signals to their default action.
-      POSIX §2.11 leaves the precise semantics open to interpretation
-      and major shells (bash, dash, ksh) diverge on which signals are
-      reset and when. Recorded as a known deviation rather than a fix
-      target. XFAIL test:
-      `e2e/posix_spec/2_11_signals_and_error_handling/trap_resets_in_subshell_when_unhandled.sh`.
 
 ## Future: Release Skill Enhancements
 
