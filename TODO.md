@@ -246,6 +246,27 @@ retained below for tracking.
       `>&2 echo __YOSH_DONE__` so the sentinel travels on fd 2 even when
       fd 1 is redirected (`tests/helpers/pty.rs`).
 
+### 2026-05-19 trap-reset follow-ups (non-blocking)
+
+- [ ] `tests/subshell.rs` の trap-reset 統合テスト 3 件
+      (`test_nested_subshell_inside_cmdsub_shows_reset_traps`,
+      `test_pipeline_child_clears_saved_traps`,
+      `test_background_async_clears_saved_traps`) がファイル末尾にあり、
+      意味的に近い `test_cmdsub_trap_isolation`
+      (`tests/subshell.rs:237` 周辺) から離れている。次回 subshell.rs を
+      触る時にコマンドサブセクションへ寄せる。
+      Code-review follow-up from f703a26.
+- [ ] `src/env/traps.rs::tests` の `.unwrap()` と `.expect("...")` が
+      不統一 — `test_reset_for_subshell_*` 系は `.unwrap()`、
+      `test_set_trap_with_*` 系も `.unwrap()` のメッセージなし。
+      失敗時のデバッグ性を上げるため `.expect(...)` で揃える。
+      Code-review follow-up from f703a26.
+- [ ] `reset_for_subshell` が `Command` 種 `exit_trap` をクリアする
+      ことを直接検証するユニットテストがない。`reset_non_ignored`
+      の `exit_trap` クリア挙動は `test_trap_store_reset_non_ignored`
+      が間接的にカバーするのみ。`reset_for_subshell` 経由の同等カバレッジ
+      を追加すると安心。Code-review follow-up from f703a26.
+
 ## Job Control: Known Limitations
 
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
