@@ -1,10 +1,17 @@
 //! POSIX §8.2 locale resolution.
 //!
-//! yosh fixes on C/POSIX locale semantics internally; non-C locale
-//! values are preserved as variables and exported to child processes
-//! unchanged, but yosh's internal pattern matching and test
-//! comparisons interpret them as C. See
+//! yosh operates on C/POSIX locale semantics internally; non-C
+//! locale values are preserved as variables and exported to child
+//! processes unchanged, but yosh's internal pattern matching and
+//! test comparisons interpret them as C. See
 //! `docs/yosh/posix-compliance.md`.
+//!
+//! v1 scope: this module is the explicit branch point for a future
+//! non-C extension. All current call sites fall back to C-locale
+//! behaviour, so the public API here has no live consumers yet —
+//! `#![allow(dead_code)]` is intentional.
+
+#![allow(dead_code)]
 
 use crate::env::ShellEnv;
 
