@@ -267,6 +267,63 @@ retained below for tracking.
       が間接的にカバーするのみ。`reset_for_subshell` 経由の同等カバレッジ
       を追加すると安心。Code-review follow-up from f703a26.
 
+### 2026-05-21 locale-support follow-ups (non-blocking)
+
+- [ ] `LocaleCategory::env_var_name` is `fn` (private). When a
+      future caller needs the variable name string (e.g., diagnostic
+      messages referring to "LC_CTYPE"), promote to `pub(crate)`.
+      Code-review follow-up from 2026-05-21 locale-support branch
+      (`src/env/locale.rs`).
+- [ ] `each_category_reads_its_own_var` test verifies only `value`,
+      not `source`. A regression that swaps the LC_<category> and
+      LANG branches in `resolve()` would still pass this test. Add
+      `assert_eq!(r.source, LocaleSource::LcCategory)` to each of
+      the six assertions. Code-review follow-up from 2026-05-21
+      locale-support branch (`src/env/locale.rs`).
+- [ ] `ResolvedLocale` derives only `Clone, Debug`. Add `PartialEq`
+      (and possibly `Eq`) for symmetry with `LocaleCategory` and
+      `LocaleSource`. Cheap, but YAGNI until a caller wants struct
+      equality. Code-review follow-up from 2026-05-21 locale-support
+      branch (`src/env/locale.rs`).
+- [ ] `pattern.rs` test naming inconsistency — existing tests use
+      `test_*` prefix (e.g. `test_bracket_set`), new POSIX-class
+      tests use bare names (e.g. `class_alpha_matches_letter`).
+      Unify in a future cleanup. Code-review follow-up from
+      2026-05-21 locale-support branch (`src/expand/pattern.rs`).
+- [ ] No unit test exercises multiple POSIX classes in one bracket
+      (`[[:alpha:][:digit:]]`). Manually traced as correct, but a
+      regression test would solidify the behaviour. Code-review
+      follow-up from 2026-05-21 locale-support branch
+      (`src/expand/pattern.rs`).
+- [ ] `try_parse_posix_class` allocates a temporary `String` for
+      the class-name lookup (`pat[..end].iter().collect()`). All 12
+      class names are short ASCII; comparing `&[char]` slices
+      directly against each known name would avoid the allocation.
+      Only matters if glob/pattern matching becomes a hot path.
+      Code-review follow-up from 2026-05-21 locale-support branch
+      (`src/expand/pattern.rs`).
+- [ ] `try_parse_posix_class` loop guard `while end + 1 < pat.len()`
+      is correct but `while end < pat.len().saturating_sub(1)`
+      reads more clearly as "scan up to the second-to-last char".
+      Cosmetic. Code-review follow-up from 2026-05-21 locale-support
+      branch (`src/expand/pattern.rs`).
+- [ ] `docs/yosh/posix-compliance.md` LC_COLLATE description says
+      "Unicode codepoint ordering coincides with C-locale bytewise
+      ordering". Strictly true only in the ASCII range; UTF-8 byte
+      order and codepoint order diverge for non-ASCII characters
+      (e.g. multi-byte sequences sort by leading-byte value, which
+      matches codepoint order for U+0080-U+07FF but diverges in
+      detail). yosh's `str::cmp` is bytewise (per `src/builtin/test.rs`
+      comment), so the doc could tighten to "yosh uses bytewise
+      comparison on UTF-8 encoding, which equals C-locale ordering
+      on ASCII strings."
+- [ ] `locale::resolve()` API has no live callers in v1 (intentional
+      `#![allow(dead_code)]` scaffolding). When non-C locale support
+      is added, wire `resolve()` into the pattern range / POSIX
+      character class / `test` string-comparison call sites. Spec
+      `docs/superpowers/specs/2026-05-21-locale-support-design.md`
+      §2.3 documents this as the intended branch point.
+
 ## Job Control: Known Limitations
 
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
