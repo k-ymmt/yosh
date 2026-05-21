@@ -149,6 +149,10 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
 
 fn eval_binary(lhs: &str, op: &str, rhs: &str) -> Result<bool, TestError> {
     match op {
+        // String comparison uses bytewise ordering (LC_COLLATE=C
+        // semantics). Non-C locale values are currently treated as C
+        // per yosh's POSIX-compliance doc (XBD §7.2 implementation-
+        // defined).
         "=" => Ok(lhs == rhs),
         "!=" => Ok(lhs != rhs),
         "-eq" | "-ne" | "-lt" | "-gt" | "-le" | "-ge" => {
