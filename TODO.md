@@ -392,20 +392,6 @@ become PASS; remove the `# XFAIL:` line at that point.
       `e2e/posix_spec/4_required_builtin/ulimit_*.sh` (1 of 3 remains XFAIL
       — unknown-option case)
 
-## Future: POSIX Conformance Bugs
-
-The 2026-05-13 Ch4+Ch8 E2E expansion surfaced 16 POSIX shall/must
-deviations as XFAILs. SP1–SP5 plus the 2026-05-19 trap-reset fix
-closed all but the locale entry below. Each remaining entry points
-to the XFAIL test that documents the expected POSIX behavior.
-
-- [ ] Locale support not implemented — `LANG` / `LC_*` / `NLSPATH` are
-      accepted as variables but do not affect collation, character
-      classification, message localization, or message catalogs.
-      XFAIL test:
-      `e2e/posix_spec/8_env_vars/LANG_default_collate.sh` (other
-      `LC_*` tests currently pass via default-C-locale semantics).
-
 ## Future: Release Skill Enhancements
 
 - [ ] `phase_push` remote tag upsert — currently only checks local tag existence; if the same tag already exists on origin, `git push origin <tag>` rejects. Add `git ls-remote --exit-code --tags origin <tag>` check before pushing (`.claude/skills/release/scripts/release.sh`)
