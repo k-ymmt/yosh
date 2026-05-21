@@ -2,6 +2,7 @@ pub mod aliases;
 pub mod default_path;
 pub mod exec_state;
 pub mod jobs;
+pub mod locale;
 pub mod shell_mode;
 pub mod traps;
 pub mod vars;
