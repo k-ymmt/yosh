@@ -81,6 +81,15 @@ fn parse_bracket(pat: &[char], ch: Option<char>) -> Option<(usize, bool)> {
             found_close = true;
             break;
         }
+        // POSIX character class [:class:]
+        if pat[i] == '[' && i + 1 < pat.len() && pat[i + 1] == ':' {
+            if let Some((consumed, class)) = try_parse_posix_class(&pat[i + 2..]) {
+                members.push(BracketItem::Class(class));
+                i += 2 + consumed;
+                continue;
+            }
+            // Fall through to literal handling on malformed class
+        }
         // Range: x-y  (only if there is a '-' followed by another char before ']')
         if i + 2 < pat.len() && pat[i + 1] == '-' && pat[i + 2] != ']' {
             members.push(BracketItem::Range(pat[i], pat[i + 2]));
@@ -108,6 +117,84 @@ fn parse_bracket(pat: &[char], ch: Option<char>) -> Option<(usize, bool)> {
 enum BracketItem {
     Char(char),
     Range(char, char),
+    Class(PosixClass),
+}
+
+#[derive(Copy, Clone)]
+enum PosixClass {
+    Alpha,
+    Upper,
+    Lower,
+    Digit,
+    Alnum,
+    Xdigit,
+    Space,
+    Blank,
+    Cntrl,
+    Print,
+    Graph,
+    Punct,
+}
+
+impl PosixClass {
+    /// LC_CTYPE=C semantics: ASCII-only. Non-C locale values are
+    /// currently treated as C per yosh's POSIX-compliance doc
+    /// (XBD §7.2 implementation-defined).
+    fn matches(self, c: char) -> bool {
+        match self {
+            PosixClass::Alpha => c.is_ascii_alphabetic(),
+            PosixClass::Upper => c.is_ascii_uppercase(),
+            PosixClass::Lower => c.is_ascii_lowercase(),
+            PosixClass::Digit => c.is_ascii_digit(),
+            PosixClass::Alnum => c.is_ascii_alphanumeric(),
+            PosixClass::Xdigit => c.is_ascii_hexdigit(),
+            PosixClass::Space => matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r'),
+            PosixClass::Blank => matches!(c, ' ' | '\t'),
+            PosixClass::Cntrl => c.is_ascii_control(),
+            PosixClass::Print => matches!(c, '\x20'..='\x7e'),
+            PosixClass::Graph => matches!(c, '\x21'..='\x7e'),
+            PosixClass::Punct => c.is_ascii_punctuation(),
+        }
+    }
+}
+
+const POSIX_CLASSES: &[(&str, PosixClass)] = &[
+    ("alpha", PosixClass::Alpha),
+    ("upper", PosixClass::Upper),
+    ("lower", PosixClass::Lower),
+    ("digit", PosixClass::Digit),
+    ("alnum", PosixClass::Alnum),
+    ("xdigit", PosixClass::Xdigit),
+    ("space", PosixClass::Space),
+    ("blank", PosixClass::Blank),
+    ("cntrl", PosixClass::Cntrl),
+    ("print", PosixClass::Print),
+    ("graph", PosixClass::Graph),
+    ("punct", PosixClass::Punct),
+];
+
+/// Try to parse a `[:class:]` POSIX character-class form.
+///
+/// `pat` is the slice starting AFTER the opening `[:` (i.e., the
+/// first character of the class name). Returns `Some((consumed,
+/// class))` where `consumed` covers the class name and the trailing
+/// `:]` (so the caller advances by `2 + consumed` from the opening
+/// `[`).
+fn try_parse_posix_class(pat: &[char]) -> Option<(usize, PosixClass)> {
+    let mut end = 0;
+    while end + 1 < pat.len() {
+        if pat[end] == ':' && pat[end + 1] == ']' {
+            let name: String = pat[..end].iter().collect();
+            for (n, c) in POSIX_CLASSES {
+                if name == *n {
+                    return Some((end + 2, *c));
+                }
+            }
+            return None;
+        }
+        end += 1;
+    }
+    None
 }
 
 impl BracketItem {
@@ -115,11 +202,16 @@ impl BracketItem {
         match self {
             BracketItem::Char(x) => *x == c,
             BracketItem::Range(lo, hi) => {
+                // LC_COLLATE=C semantics: byte/codepoint ordering.
+                // Non-C locale values are currently treated as C
+                // per yosh's POSIX-compliance doc (XBD §7.2
+                // implementation-defined).
                 let lo = *lo as u32;
                 let hi = *hi as u32;
                 let c = c as u32;
                 c >= lo && c <= hi
             }
+            BracketItem::Class(cls) => cls.matches(c),
         }
     }
 }
@@ -252,5 +344,140 @@ mod tests {
         assert!(matches("*?", "a"));
         assert!(matches("*?", "ab"));
         assert!(!matches("*?", ""));
+    }
+
+    // ── POSIX character classes ──
+
+    #[test]
+    fn class_alpha_matches_letter() {
+        assert!(matches("[[:alpha:]]", "a"));
+        assert!(matches("[[:alpha:]]", "Z"));
+    }
+
+    #[test]
+    fn class_alpha_rejects_digit() {
+        assert!(!matches("[[:alpha:]]", "5"));
+        assert!(!matches("[[:alpha:]]", "_"));
+    }
+
+    #[test]
+    fn class_upper_matches_only_upper() {
+        assert!(matches("[[:upper:]]", "A"));
+        assert!(!matches("[[:upper:]]", "a"));
+    }
+
+    #[test]
+    fn class_lower_matches_only_lower() {
+        assert!(matches("[[:lower:]]", "z"));
+        assert!(!matches("[[:lower:]]", "Z"));
+    }
+
+    #[test]
+    fn class_digit() {
+        assert!(matches("[[:digit:]]", "0"));
+        assert!(matches("[[:digit:]]", "9"));
+        assert!(!matches("[[:digit:]]", "a"));
+    }
+
+    #[test]
+    fn class_alnum() {
+        assert!(matches("[[:alnum:]]", "5"));
+        assert!(matches("[[:alnum:]]", "a"));
+        assert!(!matches("[[:alnum:]]", "_"));
+    }
+
+    #[test]
+    fn class_xdigit() {
+        assert!(matches("[[:xdigit:]]", "0"));
+        assert!(matches("[[:xdigit:]]", "f"));
+        assert!(matches("[[:xdigit:]]", "F"));
+        assert!(!matches("[[:xdigit:]]", "g"));
+    }
+
+    #[test]
+    fn class_space_matches_whitespace() {
+        assert!(matches("[[:space:]]", " "));
+        assert!(matches("[[:space:]]", "\t"));
+        assert!(!matches("[[:space:]]", "a"));
+    }
+
+    #[test]
+    fn class_blank_matches_horizontal_only() {
+        assert!(matches("[[:blank:]]", " "));
+        assert!(matches("[[:blank:]]", "\t"));
+        assert!(!matches("[[:blank:]]", "\n"));
+    }
+
+    #[test]
+    fn class_cntrl_matches_control() {
+        assert!(matches("[[:cntrl:]]", "\x01"));
+        assert!(matches("[[:cntrl:]]", "\x7f"));
+        assert!(!matches("[[:cntrl:]]", "a"));
+    }
+
+    #[test]
+    fn class_print_includes_space() {
+        assert!(matches("[[:print:]]", " "));
+        assert!(matches("[[:print:]]", "a"));
+        assert!(!matches("[[:print:]]", "\x01"));
+    }
+
+    #[test]
+    fn class_graph_excludes_space() {
+        assert!(matches("[[:graph:]]", "a"));
+        assert!(!matches("[[:graph:]]", " "));
+        assert!(!matches("[[:graph:]]", "\x01"));
+    }
+
+    #[test]
+    fn class_punct_is_print_minus_alnum_space() {
+        assert!(matches("[[:punct:]]", "."));
+        assert!(matches("[[:punct:]]", "_"));
+        assert!(!matches("[[:punct:]]", "a"));
+        assert!(!matches("[[:punct:]]", "5"));
+        assert!(!matches("[[:punct:]]", " "));
+    }
+
+    #[test]
+    fn class_combined_with_range() {
+        // [[:alpha:]0-9] matches letters OR digits
+        assert!(matches("[[:alpha:]0-9]", "a"));
+        assert!(matches("[[:alpha:]0-9]", "5"));
+        assert!(!matches("[[:alpha:]0-9]", "_"));
+    }
+
+    #[test]
+    fn class_negation_with_outer_bang() {
+        // [![:digit:]] matches non-digit
+        assert!(matches("[![:digit:]]", "a"));
+        assert!(!matches("[![:digit:]]", "5"));
+    }
+
+    #[test]
+    fn unknown_class_name_falls_through_to_literal_chars() {
+        // [[:unknown:]] does not panic. The class name "unknown"
+        // is not in POSIX_CLASSES, so `try_parse_posix_class`
+        // returns None and the loop falls through to char-by-char
+        // handling. The outer bracket then contains literals
+        // `[`, `:`, `u`, `n`, `k`, `o`, `w`, `:` and is closed by
+        // the second-to-last `]`. The final `]` is a trailing
+        // literal char. So the pattern matches 2-char strings
+        // whose first char is one of those literals and whose
+        // second char is `]`.
+        assert!(matches("[[:unknown:]]", "[]"));
+        assert!(matches("[[:unknown:]]", "u]"));
+        assert!(!matches("[[:unknown:]]", "a]"));
+    }
+
+    #[test]
+    fn missing_colon_close_does_not_panic() {
+        // [[:alpha] (no `:]` inside) — `try_parse_posix_class`
+        // scans `alpha]` and never finds `:]`, so it returns
+        // None. The outer bracket then eats `[`, `:`, `a`, `l`,
+        // `p`, `h`, `a` as literals; the final `]` closes the
+        // bracket. Pattern matches single chars from that set.
+        assert!(matches("[[:alpha]", "a"));
+        assert!(matches("[[:alpha]", "["));
+        assert!(!matches("[[:alpha]", "z"));
     }
 }
