@@ -27,10 +27,20 @@ pub struct PluginEntry {
     /// back to in-memory precompile in that case.
     #[serde(default)]
     pub cwasm_path: Option<std::path::PathBuf>,
-    /// Cache key tuple for the cwasm at `cwasm_path`. `None` if no cwasm.
-    /// See `crate::plugin::cache::CacheKey`.
+    /// Wasmtime version that produced the cwasm at `cwasm_path`. Flat
+    /// top-level field in the lockfile (see
+    /// `yosh_plugin_manager::lockfile::LockEntry`). Combined with
+    /// `target_triple`, `engine_config_hash`, and `sha256` to rebuild a
+    /// `CacheKey` via [`PluginEntry::cache_key`].
     #[serde(default)]
-    pub cache_key: Option<crate::plugin::cache::CacheKey>,
+    pub wasmtime_version: Option<String>,
+    /// Target triple the cwasm was precompiled for. See `wasmtime_version`.
+    #[serde(default)]
+    pub target_triple: Option<String>,
+    /// Hex-encoded wasmtime engine config hash captured at sync time.
+    /// See `wasmtime_version`.
+    #[serde(default)]
+    pub engine_config_hash: Option<String>,
     /// Per-plugin allowlist of argv patterns that the `commands:exec`
     /// capability is restricted to. `None` or empty means no command is
     /// permitted; matching is OR across the list.
@@ -40,6 +50,21 @@ pub struct PluginEntry {
 
 fn default_true() -> bool {
     true
+}
+
+impl PluginEntry {
+    /// Reconstruct the four-tuple cwasm `CacheKey` from the flat lockfile
+    /// fields written by `yosh-plugin sync`. Returns `None` when any of
+    /// the four required components is absent — in that case the host
+    /// must fall back to an in-memory `Component::new`.
+    pub fn cache_key(&self) -> Option<crate::plugin::cache::CacheKey> {
+        Some(crate::plugin::cache::CacheKey {
+            wasm_sha256: self.sha256.clone()?,
+            wasmtime_version: self.wasmtime_version.clone()?,
+            target_triple: self.target_triple.clone()?,
+            engine_config_hash: self.engine_config_hash.clone()?,
+        })
+    }
 }
 
 impl PluginConfig {
@@ -297,5 +322,73 @@ path = "/tmp/x.wasm"
             capability_from_str("commands:exec"),
             Some(CAP_COMMANDS_EXEC)
         );
+    }
+
+    /// Regression: `yosh-plugin sync` writes `wasmtime_version`,
+    /// `target_triple`, `engine_config_hash`, and `sha256` as flat
+    /// top-level fields on each `[[plugin]]` entry. The host must
+    /// reconstruct a `CacheKey` from those flat fields so the cwasm
+    /// trust path is taken instead of the in-memory fallback warning.
+    #[test]
+    fn parse_lockfile_flat_cwasm_fields_populate_cache_key() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "rich-prompt-plugin"
+path = "~/.yosh/plugins/rich-prompt-plugin/rich_prompt_plugin.wasm"
+enabled = true
+sha256 = "96c55424ea8c0f87a7b33702022eb070d798f54b2daf7cf526448f6203eea550"
+source = "github:k-ymmt/rich-prompt-plugin"
+version = "0.1.2"
+cwasm_path = "~/.yosh/plugins/rich-prompt-plugin/rich_prompt_plugin.cwasm"
+wasmtime_version = "27"
+target_triple = "aarch64-apple-darwin"
+engine_config_hash = "deadbeefcafebabe0123456789abcdef0123456789abcdef0123456789abcdef"
+"#
+        )
+        .unwrap();
+        let config = PluginConfig::load(f.path()).unwrap();
+        let entry = &config.plugin[0];
+        assert!(entry.cwasm_path.is_some(), "cwasm_path must deserialize");
+        let key = entry
+            .cache_key()
+            .expect("flat cwasm fields must compose into a CacheKey");
+        assert_eq!(
+            key.wasm_sha256,
+            "96c55424ea8c0f87a7b33702022eb070d798f54b2daf7cf526448f6203eea550"
+        );
+        assert_eq!(key.wasmtime_version, "27");
+        assert_eq!(key.target_triple, "aarch64-apple-darwin");
+        assert_eq!(
+            key.engine_config_hash,
+            "deadbeefcafebabe0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    /// Entries written by an older sync (or `cwasm_path` missing) must
+    /// still load without a `cache_key`. The host falls back to an
+    /// in-memory compile in that case.
+    #[test]
+    fn parse_lockfile_without_cwasm_fields_yields_no_cache_key() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "legacy"
+path = "~/.yosh/plugins/legacy/legacy.wasm"
+enabled = true
+sha256 = "deadbeef"
+source = "github:owner/legacy"
+version = "0.1.0"
+"#
+        )
+        .unwrap();
+        let config = PluginConfig::load(f.path()).unwrap();
+        let entry = &config.plugin[0];
+        assert!(entry.cwasm_path.is_none());
+        assert!(entry.cache_key().is_none());
     }
 }

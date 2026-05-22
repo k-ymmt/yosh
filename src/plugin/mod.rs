@@ -294,12 +294,13 @@ impl PluginManager {
                 .capabilities
                 .as_ref()
                 .map(|strs| config::capabilities_from_strs(strs));
+            let cache_key = entry.cache_key();
             if let Err(e) = self.load_one(
                 &path,
                 env,
                 config_caps,
                 entry.cwasm_path.as_deref(),
-                entry.cache_key.as_ref(),
+                cache_key.as_ref(),
                 entry.allowed_commands.as_deref().unwrap_or_default(),
             ) {
                 eprintln!("yosh: plugin: {}", e);
