@@ -93,7 +93,9 @@ compute_wit_content_sha() {
 }
 
 # Job list for parallel test execution. Format: "name|group|cargo-args..."
-# group: "pty" = serialized via PTY lock, "free" = unbounded parallel.
+# group: "pty" = mutually-exclusive serial slot via mkdir lock — for tests
+# that race on shared resources (real PTYs, signal delivery, foreground
+# process group). "free" = unbounded parallel.
 # Edit this list when adding/removing test binaries or workspace crates.
 PHASE_TEST_JOBS=(
   "lib|free|test --lib -p yosh"
@@ -109,9 +111,10 @@ PHASE_TEST_JOBS=(
   "parser_integration|free|test --test parser_integration"
   "plugin|free|test --test plugin --features test-helpers"
   "plugin_cli_help|free|test --test plugin_cli_help"
-  "signals|free|test --test signals"
+  "signals|pty|test --test signals"
   "subshell|free|test --test subshell"
   "pty_interactive|pty|test --test pty_interactive"
+  "pty_posix|pty|test --test pty_posix"
 )
 
 # Set by phase_test at invocation time. Absent path = unlocked, present = held.
@@ -123,12 +126,24 @@ _run_test_job() {
   local name="$1" group="$2" log="$3"
   shift 3
 
+  # Per-job worker-thread cap. Without this, each libtest binary defaults to
+  # num_cpus threads, producing ~17 × 8 ≈ 130 concurrent test threads on 8
+  # cores — intermittent timeouts in signals/PTY/e2e tests.
+  #
+  # Split by group: free-group jobs use 4 (≈7× total oversubscription, fast
+  # enough not to choke rustdoc-heavy `doc`). PTY-group jobs use 2 because
+  # they drive yosh through expectrl with a 15s prompt-wait budget
+  # (tests/helpers/pty.rs) — the serial lock only excludes other PTY jobs,
+  # so 14 free jobs are still consuming CPU while a PTY job runs, and the
+  # budget breaks at threads=4 (every test times out).
+  local threads=4
   if [[ "$group" == "pty" ]]; then
     while ! mkdir "$PTY_LOCK_DIR" 2>/dev/null; do sleep 0.05; done
     trap 'rmdir "$PTY_LOCK_DIR" 2>/dev/null' EXIT
+    threads=2
   fi
 
-  cargo "$@" >"$log" 2>&1
+  RUST_TEST_THREADS="$threads" cargo "$@" >"$log" 2>&1
 }
 
 # Launch all jobs in PHASE_TEST_JOBS plus e2e in parallel, wait, aggregate.
@@ -155,9 +170,13 @@ _run_all_tests_parallel() {
     idx=$((idx+1))
   done
 
-  # e2e as an additional parallel job alongside the cargo jobs.
+  # e2e as an additional parallel job alongside the cargo jobs. Bump the
+  # per-test budget from the standalone default (15s): under release-time
+  # contention, even trivially fast tests can stall past 15s while the
+  # cargo jobs hog CPU. 45s is well above the worst observed stall and
+  # still tight enough to surface real hangs.
   local e2e_log="$log_dir/e2e.log"
-  ( ./e2e/run_tests.sh >"$e2e_log" 2>&1 ) &
+  ( YOSH_E2E_TIMEOUT=45 ./e2e/run_tests.sh >"$e2e_log" 2>&1 ) &
   pids[$idx]=$!
   names[$idx]="e2e"
   logs[$idx]="$e2e_log"

@@ -43,7 +43,10 @@ set -u
 SHELL_UNDER_TEST="./target/debug/yosh"
 FILTER=""
 VERBOSE=0
-TIMEOUT=15
+# Per-test wall-clock budget. Override with YOSH_E2E_TIMEOUT — release.sh sets
+# a higher value because its parallel-load run can stall any single test under
+# CPU contention well past the standalone budget.
+TIMEOUT="${YOSH_E2E_TIMEOUT:-15}"
 
 # ── Auto failure log ─────────────────────────────────────────────────
 # When any test FAILS or TIMES OUT, append details (path, kind, captured
@@ -115,6 +118,7 @@ usage() {
     printf "\nEnvironment:\n"
     printf "  YOSH_E2E_NO_TIMEOUT=1  Skip per-test timeout; never set in CI or\n"
     printf "                         release.sh (individual runaway tests will hang forever)\n"
+    printf "  YOSH_E2E_TIMEOUT=N     Override per-test timeout (default: 15s)\n"
     exit 0
 }
 
