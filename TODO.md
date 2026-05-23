@@ -218,17 +218,6 @@ retained below for tracking.
 
 ### SP6 follow-ups (non-blocking)
 
-- [ ] `fc` builtin with no operand (`fc`, `fc -e <editor>`) infinite-recurses
-      and stack-overflows yosh. Root cause: `Repl::run` adds the running
-      command to history via `executor.env.history.add(...)` BEFORE
-      `exec_complete_command` (`src/interactive/mod.rs:268-272`), so bare
-      `fc` resolves "previous command" to the fc command itself and
-      `eval_string`s back into fc. POSIX explicitly says fc must not
-      enter itself in history. Affects `tests/pty_posix.rs::fc::editor_dash_e`
-      and `tests/pty_posix.rs::fc::no_args_uses_editor`, which currently
-      work around it by passing an `echo` prefix operand. Fix: hoist the
-      `history.add` call after `exec_complete_command`, or have `fc`
-      itself filter its own command from the history slice it operates on.
 - [ ] `tests/helpers/pty.rs::read_until_prompt` regex `\$ ` mis-matches
       yosh's syntax-highlight repaint output, which emits a transient
       `$ <partial>` after every keystroke. `capture_until_sentinel`

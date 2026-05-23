@@ -250,7 +250,6 @@ impl Repl {
             // Try to parse
             match classify_parse(&input_buffer, &self.executor.env.aliases) {
                 ParseStatus::Complete(commands) => {
-                    // Add to history before executing
                     let histsize: usize = self
                         .executor
                         .env
@@ -266,10 +265,6 @@ impl Repl {
                         .unwrap_or("ignoreboth")
                         .to_string();
                     let cmd_text = input_buffer.trim_end().to_string();
-                    self.executor
-                        .env
-                        .history
-                        .add(&cmd_text, histsize, &histcontrol);
 
                     for cmd in &commands {
                         let status = self.executor.exec_complete_command(cmd);
@@ -278,6 +273,16 @@ impl Repl {
                             break;
                         }
                     }
+
+                    // Record AFTER execution so `fc` resolving "previous
+                    // command" sees the user's prior input, not the fc
+                    // command itself. `exit` is still captured: the
+                    // break above falls through to this add call.
+                    self.executor
+                        .env
+                        .history
+                        .add(&cmd_text, histsize, &histcontrol);
+
                     input_buffer.clear();
                 }
                 ParseStatus::Incomplete => {

@@ -102,27 +102,17 @@ mod fc {
 
     #[test]
     fn editor_dash_e() {
-        // Note: yosh's `fc` adds the running `fc ...` command to history
-        // BEFORE executing it (see src/interactive/mod.rs:268-272), which
-        // means a bare `fc -e cat` would target the fc command itself,
-        // causing infinite recursion (stack overflow) when fc re-executes
-        // the contents. POSIX excludes the fc invocation itself from being
-        // its own target; this is a yosh bug tracked separately. Until it
-        // is fixed, we pass the operand `echo` so fc's prefix-match
-        // resolution selects the seeded `echo seedline` entry, not the
-        // fc command. That still exercises the -e flag's editor-selection
-        // logic, which is what this test asserts.
+        // Bare `fc -e cat`: cat reads the tempfile (no edits), exits 0;
+        // fc then re-executes the previous (seeded) history entry. We
+        // mute the re-execution's stdio and check only the exit status.
         let (mut session, _tmpdir) = spawn_yosh();
         wait_for_prompt(&mut session);
 
         run_and_drain(&mut session, "echo seedline");
 
-        // `cat` reads the tempfile (no edits), exits 0; fc then re-executes
-        // the seeded `echo seedline`. We use </dev/null and >/dev/null to
-        // mute re-execution side effects; only the exit status matters.
         let out = capture_until_sentinel(
             &mut session,
-            "fc -e cat echo </dev/null >/dev/null 2>&1; echo RC=$?",
+            "fc -e cat </dev/null >/dev/null 2>&1; echo RC=$?",
         );
 
         assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
@@ -134,12 +124,7 @@ mod fc {
     #[test]
     fn no_args_uses_editor() {
         // Bare `fc` with FCEDIT=cat: cat reads tempfile, exits 0; fc
-        // re-executes the previous command. We check exit status only.
-        //
-        // Same caveat as editor_dash_e: a literal bare `fc` would target
-        // itself (yosh adds it to history first), so we pass `echo` as
-        // the prefix specifier. This still exercises the
-        // "no -e option → use FCEDIT/EDITOR" branch of fc.
+        // re-executes the previous command. Check exit status only.
         let (mut session, _tmpdir) = spawn_yosh();
         wait_for_prompt(&mut session);
 
@@ -148,7 +133,32 @@ mod fc {
 
         let out = capture_until_sentinel(
             &mut session,
-            "fc echo </dev/null >/dev/null 2>&1; echo RC=$?",
+            "fc </dev/null >/dev/null 2>&1; echo RC=$?",
+        );
+
+        assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
+
+        session.send_line("exit").unwrap();
+        let _ = session.expect(Eof);
+    }
+
+    #[test]
+    fn bare_fc_does_not_recurse() {
+        // Regression: bare `fc` with FCEDIT=cat used to stack-overflow
+        // yosh because Repl::run added the fc command to history BEFORE
+        // running it, so fc's "previous command" resolved to itself and
+        // re-entered fc indefinitely. Hoisting history.add to after
+        // exec_complete_command fixes this — fc now sees the pre-fc
+        // history and resolves to the user's actual prior command.
+        let (mut session, _tmpdir) = spawn_yosh();
+        wait_for_prompt(&mut session);
+
+        run_and_drain(&mut session, "export FCEDIT=cat");
+        run_and_drain(&mut session, "echo seedline");
+
+        let out = capture_until_sentinel(
+            &mut session,
+            "fc </dev/null >/dev/null 2>&1; echo RC=$?",
         );
 
         assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
@@ -165,11 +175,6 @@ mod fcedit {
     fn used_by_fc() {
         // FCEDIT=cat → fc invokes cat as editor → cat reads tempfile,
         // exits 0 → fc re-executes the previous command.
-        //
-        // Pass `echo` as a prefix-match operand so fc resolves to the
-        // seeded `echo seedline` history entry, NOT the fc command
-        // itself. This works around yosh's eager history-add-before-
-        // execute behavior (src/interactive/mod.rs:268-272).
         let (mut session, _tmpdir) = spawn_yosh();
         wait_for_prompt(&mut session);
 
@@ -178,7 +183,7 @@ mod fcedit {
 
         let out = capture_until_sentinel(
             &mut session,
-            "fc echo </dev/null >/dev/null 2>&1; echo RC=$?",
+            "fc </dev/null >/dev/null 2>&1; echo RC=$?",
         );
 
         assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
@@ -192,9 +197,6 @@ mod fcedit {
         // FCEDIT and EDITOR removed → fc falls back to /bin/ed. We
         // verify /bin/ed exits 0 when given an empty stdin (probed
         // platform-side; see SP6 design §6).
-        //
-        // Pass `echo` as a prefix-match operand for the same reason as
-        // used_by_fc (see that test's comment).
         let (mut session, _tmpdir) = spawn_yosh_with_env(&[("FCEDIT", None), ("EDITOR", None)]);
         wait_for_prompt(&mut session);
 
@@ -202,7 +204,7 @@ mod fcedit {
 
         let out = capture_until_sentinel(
             &mut session,
-            "fc echo </dev/null >/dev/null 2>&1; echo RC=$?",
+            "fc </dev/null >/dev/null 2>&1; echo RC=$?",
         );
 
         assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
