@@ -51,7 +51,7 @@ fn expand_part_literal(s: &str, fields: &mut [ExpandedField], in_double_quote: b
     if in_double_quote {
         fields.last_mut().unwrap().push_quoted(s);
     } else {
-        fields.last_mut().unwrap().push_expanded(s);
+        fields.last_mut().unwrap().push_literal(s);
     }
 }
 

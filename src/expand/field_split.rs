@@ -465,4 +465,43 @@ mod tests {
         let input = vec![unquoted("À")];
         assert_eq!(values(split(&env, input)), vec!["À"]);
     }
+
+    // ── Literal bytes are not split (POSIX XCU §2.6.5) ──
+
+    #[test]
+    fn test_literal_colon_not_split() {
+        // SP3 follow-up #1: literal text must not be field-split.
+        // Without push_literal wiring in pipeline.rs, the equivalent
+        // unit-level check exercises the field_split predicate directly.
+        let env = env_with_ifs(":");
+        let mut f = ExpandedField::new();
+        f.push_literal("a::b");
+        assert_eq!(values(split(&env, vec![f])), vec!["a::b"]);
+    }
+
+    #[test]
+    fn test_literal_then_expansion_split_only_in_expansion() {
+        // Mixed origin: literal "a::" (protected) + expansion "b:c" (subject).
+        // POSIX result: ["a::b", "c"].
+        let env = env_with_ifs(":");
+        let mut f = ExpandedField::new();
+        f.push_literal("a::");
+        f.push_expanded("b:c");
+        assert_eq!(values(split(&env, vec![f])), vec!["a::b", "c"]);
+    }
+
+    #[test]
+    fn test_literal_then_expansion_then_literal_round_trip() {
+        // L "x:" + E "a:b" + L ":y" with IFS=":"
+        // Expected fields: ["x:a", "b", ":y"]
+        //   - literal "x:" — both bytes split-protected, stay together
+        //   - expansion "a:b" — colon splits → "a" then start of next field "b"
+        //   - literal ":y" — both bytes split-protected, stay together with prior "b"
+        let env = env_with_ifs(":");
+        let mut f = ExpandedField::new();
+        f.push_literal("x:");
+        f.push_expanded("a:b");
+        f.push_literal(":y");
+        assert_eq!(values(split(&env, vec![f])), vec!["x:a", "b:y"]);
+    }
 }
