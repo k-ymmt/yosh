@@ -49,16 +49,6 @@ retained below for tracking.
 
 ### SP3 follow-ups (non-blocking)
 
-- [ ] Word-splitting applied to literal command argv tokens — uncovered
-      during SP3 Task 5 manual smoke. `IFS=:; echo a::b` produces three
-      args (`a`, ``, `b`) joined by `echo` into `a  b`, instead of the
-      single POSIX-literal `a::b`. POSIX XCU §2.6.5 restricts field
-      splitting to results of parameter/command/arithmetic expansion,
-      not to literal text. The `printf "a::b\n" | { read ... }` variant
-      works correctly because the IFS is consumed by `read`, not by the
-      expander on the literal. Likely fix in `src/expand/field_split.rs`
-      or in the simple-command expansion path before `field_split::split`
-      is called. Verified `read` itself is unaffected.
 - [ ] `split_fields` terminator-consume branches are mildly redundant
       (`src/builtin/read.rs:200-213`). The `is_sep` and `else` (ws-only)
       branches both end with the same `while is_ws(...)` consume loop;
