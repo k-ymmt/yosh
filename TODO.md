@@ -218,6 +218,15 @@ retained below for tracking.
 
 ### SP6 follow-ups (non-blocking)
 
+- [ ] POSIX-strict reading of "fc shall not be entered into the history list"
+      not implemented. After the 2026-05-23 hoist of `history.add` past
+      `exec_complete_command`, the fc command itself still ends up in
+      history (just delayed). Up-arrow navigation surfaces the fc invocation,
+      which matches user mental models but deviates from POSIX rationale.
+      Future implementation: lightly parse `cmd_text` in `Repl::run` and
+      skip `history.add` when the command starts with `fc ` (or is bare
+      `fc`). Trade-off: up-arrow can no longer recall the fc invocation
+      (`src/interactive/mod.rs`).
 - [ ] `tests/helpers/pty.rs::read_until_prompt` regex `\$ ` mis-matches
       yosh's syntax-highlight repaint output, which emits a transient
       `$ <partial>` after every keystroke. `capture_until_sentinel`
