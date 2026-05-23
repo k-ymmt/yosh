@@ -493,10 +493,10 @@ mod tests {
     #[test]
     fn test_literal_then_expansion_then_literal_round_trip() {
         // L "x:" + E "a:b" + L ":y" with IFS=":"
-        // Expected fields: ["x:a", "b", ":y"]
+        // Expected fields: ["x:a", "b:y"]
         //   - literal "x:" — both bytes split-protected, stay together
-        //   - expansion "a:b" — colon splits → "a" then start of next field "b"
-        //   - literal ":y" — both bytes split-protected, stay together with prior "b"
+        //   - expansion "a:b" — only the unquoted ':' splits → ends field 1 ("x:a"), starts field 2 ("b")
+        //   - literal ":y" — both bytes split-protected, attach to current field → "b:y"
         let env = env_with_ifs(":");
         let mut f = ExpandedField::new();
         f.push_literal("x:");
