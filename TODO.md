@@ -312,6 +312,75 @@ retained below for tracking.
       `docs/superpowers/specs/2026-05-21-locale-support-design.md`
       §2.3 documents this as the intended branch point.
 
+### 2026-05-23 literal-argv word-splitting follow-ups (non-blocking)
+
+- [ ] `test_literal_colon_not_split` doc-comment is stale —
+      `src/expand/field_split.rs:478` says "Without push_literal
+      wiring in pipeline.rs" but the wiring landed in `addff32`.
+      Rephrase to "Pins field_split predicate behavior independently
+      of pipeline.rs wiring." Code-review follow-up from Task 2 of
+      the literal-argv word-splitting fix (spec
+      `docs/superpowers/specs/2026-05-23-literal-argv-word-splitting-fix-design.md`).
+- [ ] `append_char` local var naming `split_p` / `glob_p` — the `_p`
+      suffix adds no information. Drop to `split` / `glob` in the
+      directly-following `match (split_p, glob_p)` for readability
+      (`src/expand/field_split.rs:207-209`). Code-review follow-up
+      from Task 1.
+- [ ] Redundant `i = i` in format args — `"byte {i} split-protected",
+      i = i` at `src/expand/mod.rs:572-573` (and the
+      glob-protected sibling). `{i}` already captures `i` from
+      scope; drop the named arg. Code-review follow-up from Task 1.
+- [ ] `all_quoted` uses `.clone()` for both masks
+      (`src/expand/mod.rs:113-117`), which implies shared state —
+      precisely what the two-mask refactor repudiates. Two
+      `vec![u64::MAX; needed_words]` calls would be equivalent and
+      clearer in intent. Cosmetic. Code-review follow-up from Task 1.
+- [ ] `set_mask_range` (`src/expand/mod.rs:130-143`) has a per-bit
+      inner loop with no word-aligned fast path. For long literal /
+      quoted runs (common in real shell input) the `/64 + %64 +
+      shift` per byte is wasted. Switch to a word-aligned middle
+      block plus head/tail edges — measurably faster if/when
+      `cargo bench` shows expand pressure. Code-review follow-up
+      from Task 1 (Important).
+- [ ] Test gap: no direct assertion that the
+      `append_char (true, false) → push_literal` arm preserves
+      per-byte attributes through field splitting. Add a unit test
+      like `f.push_literal("a*"); f.push_expanded(" b");` with
+      `IFS=" "`, split, then assert `is_glob_protected(0)=false` on
+      the resulting first field so a future regression that routed
+      this byte through `push_expanded` (value would still match,
+      but downstream pathname expansion would glob a literal byte)
+      is caught (`src/expand/field_split.rs::tests`). Final-review
+      follow-up from the branch (4366bc9..6d57c52).
+- [ ] Test gap: UTF-8 multi-byte content through `push_literal` is
+      uncovered. `push_expanded` and `push_quoted` already have
+      multi-byte UTF-8 tests (`test_utf8_*`, `test_utf8_quoted_not_split`);
+      add `push_literal("日本")` + IFS-splittable expansion mix for
+      symmetry. Cheap (`src/expand/field_split.rs::tests`). Final-review
+      follow-up from the branch.
+- [ ] `literal_glob_metachar_still_globs.sh` (`e2e/posix_spec/2_06_05_field_splitting/`)
+      silently relies on `mktemp -d` succeeding. If it ever fails,
+      `d` is empty, `cd ""` lands in `$HOME`, and `echo *.tmpext`
+      prints the literal `*.tmpext` — the test still fails loudly
+      via EXPECT_OUTPUT mismatch, but with a misleading reason. Add
+      `d=$(mktemp -d) || exit 1` to surface the real failure. Code-review
+      follow-up from Task 3.
+- [ ] `e2e/run_tests.sh` heredoc EXPECT_OUTPUT parser (lines
+      204-211) silently strips a leading `"# "` from each body line.
+      If a future contributor writes a body line as bare `#` (no
+      trailing space) the strip leaves the `#` and silently
+      mismatches. Either add a defensive parser check ("body lines
+      must start with `# `") or document the convention prominently
+      at runner entry. Code-review follow-up from Task 3.
+- [ ] `literal_glob_metachar_still_globs.sh` POSIX_REF cites only
+      `2.6.5 Field Splitting`, but the test exercises the
+      interaction with `2.6.6 Pathname Expansion`. Extend to
+      `POSIX_REF: 2.6.5 Field Splitting (interaction with 2.6.6
+      Pathname Expansion)` for discoverability — a contributor
+      browsing by pathname-expansion reference would otherwise miss
+      this test (`e2e/posix_spec/2_06_05_field_splitting/literal_glob_metachar_still_globs.sh`).
+      Code-review follow-up from Task 3.
+
 ## Job Control: Known Limitations
 
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
