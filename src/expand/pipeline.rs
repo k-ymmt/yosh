@@ -51,7 +51,7 @@ fn expand_part_literal(s: &str, fields: &mut [ExpandedField], in_double_quote: b
     if in_double_quote {
         fields.last_mut().unwrap().push_quoted(s);
     } else {
-        fields.last_mut().unwrap().push_unquoted(s);
+        fields.last_mut().unwrap().push_expanded(s);
     }
 }
 
@@ -105,7 +105,7 @@ fn expand_part_command_sub(
     if in_double_quote {
         fields.last_mut().unwrap().push_quoted(&output);
     } else {
-        fields.last_mut().unwrap().push_unquoted(&output);
+        fields.last_mut().unwrap().push_expanded(&output);
     }
 }
 
@@ -120,7 +120,7 @@ fn expand_part_arith_sub(
             if in_double_quote {
                 fields.last_mut().unwrap().push_quoted(&result);
             } else {
-                fields.last_mut().unwrap().push_unquoted(&result);
+                fields.last_mut().unwrap().push_expanded(&result);
             }
             Ok(())
         }
@@ -176,10 +176,10 @@ fn expand_param_to_fields(
             }
             for (i, p) in params.iter().enumerate() {
                 if i == 0 {
-                    fields.last_mut().unwrap().push_unquoted(p);
+                    fields.last_mut().unwrap().push_expanded(p);
                 } else {
                     fields.push(ExpandedField::new());
-                    fields.last_mut().unwrap().push_unquoted(p);
+                    fields.last_mut().unwrap().push_expanded(p);
                 }
             }
         }
@@ -190,7 +190,7 @@ fn expand_param_to_fields(
             if in_double_quote {
                 fields.last_mut().unwrap().push_quoted(&value);
             } else {
-                fields.last_mut().unwrap().push_unquoted(&value);
+                fields.last_mut().unwrap().push_expanded(&value);
             }
         }
     }
@@ -225,9 +225,9 @@ mod tests {
         assert_eq!(fields[0].value, "a");
         assert_eq!(fields[1].value, "b");
         assert_eq!(fields[2].value, "c");
-        assert!((0..fields[0].value.len()).all(|i| !fields[0].is_quoted(i)));
-        assert!((0..fields[1].value.len()).all(|i| !fields[1].is_quoted(i)));
-        assert!((0..fields[2].value.len()).all(|i| !fields[2].is_quoted(i)));
+        assert!((0..fields[0].value.len()).all(|i| !fields[0].is_split_protected(i)));
+        assert!((0..fields[1].value.len()).all(|i| !fields[1].is_split_protected(i)));
+        assert!((0..fields[2].value.len()).all(|i| !fields[2].is_split_protected(i)));
     }
 
     #[test]

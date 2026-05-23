@@ -21,15 +21,24 @@ use crate::parser::ast::Word;
 // ─── ExpandedField ──────────────────────────────────────────────────────────
 
 /// A word that has been through parameter/command/arithmetic expansion.
-/// Each byte has a corresponding bit in `quoted_mask`:
-///   bit set   = came from a quoted context → protected from field splitting and glob.
-///   bit clear = unquoted → subject to field splitting and pathname expansion.
+/// Each byte has two independent attribute bits:
+///   - `split_protected_mask`: byte must NOT be split on an IFS character
+///     (set for quoted bytes and for `Literal`-origin bytes).
+///   - `glob_protected_mask`: byte must NOT be treated as a glob metachar
+///     (set for quoted bytes only; `Literal`-origin bytes are glob-subject).
+///
+/// The two masks are independent. The POSIX byte classification is:
+///   - `push_quoted`   → split-protected, glob-protected, was_quoted=true
+///   - `push_literal`  → split-protected, glob-subject  (POSIX: literal text)
+///   - `push_expanded` → split-subject,   glob-subject  (POSIX: $var, $(...), $((...)))
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpandedField {
     pub value: String,
-    /// Packed bitset: 1 bit per byte of `value`. Bit set = quoted (protected).
-    quoted_mask: Vec<u64>,
-    /// True if any quoting context was applied to this field (even if value is empty).
+    /// Packed bitset: 1 bit per byte. Bit set = protected from IFS splitting.
+    split_protected_mask: Vec<u64>,
+    /// Packed bitset: 1 bit per byte. Bit set = protected from glob expansion.
+    glob_protected_mask: Vec<u64>,
+    /// True if any quoting context applied to this field (even if value is empty).
     /// POSIX requires that quoted empty strings like `''` and `""` produce a
     /// zero-length field rather than being removed.
     pub was_quoted: bool,
@@ -39,64 +48,97 @@ impl ExpandedField {
     pub fn new() -> Self {
         Self {
             value: String::new(),
-            quoted_mask: Vec::new(),
+            split_protected_mask: Vec::new(),
+            glob_protected_mask: Vec::new(),
             was_quoted: false,
         }
     }
 
-    /// Check if byte at `byte_index` is quoted (protected from splitting/glob).
-    pub fn is_quoted(&self, byte_index: usize) -> bool {
-        let word = byte_index / 64;
-        let bit = byte_index % 64;
-        self.quoted_mask
-            .get(word)
-            .is_some_and(|w| w & (1u64 << bit) != 0)
+    /// True iff byte `i` must not be split on an IFS character.
+    pub fn is_split_protected(&self, byte_index: usize) -> bool {
+        bit_set(&self.split_protected_mask, byte_index)
     }
 
-    /// Append `s` marking each byte as **quoted** (protected).
+    /// True iff byte `i` must not be treated as a glob metacharacter.
+    pub fn is_glob_protected(&self, byte_index: usize) -> bool {
+        bit_set(&self.glob_protected_mask, byte_index)
+    }
+
+    /// Append `s` from a quoted context (single quotes, double quotes,
+    /// escaped chars, tilde expansion). Bytes are protected from both
+    /// field splitting and glob expansion; `was_quoted` becomes true.
     pub fn push_quoted(&mut self, s: &str) {
         let start = self.value.len();
         self.value.push_str(s);
-        self.set_range(start, s.len(), true);
+        set_mask_range(&mut self.split_protected_mask, start, s.len());
+        set_mask_range(&mut self.glob_protected_mask, start, s.len());
         self.was_quoted = true;
     }
 
-    /// Append `s` marking each byte as **unquoted** (splittable/globbable).
-    pub fn push_unquoted(&mut self, s: &str) {
+    /// Append `s` from a literal (un-quoted, non-expansion) text part.
+    /// Bytes are protected from field splitting (POSIX XCU §2.6.5 restricts
+    /// splitting to expansion results only) but remain glob-subject so that
+    /// a literal `*.rs` still triggers pathname expansion.
+    pub fn push_literal(&mut self, s: &str) {
         let start = self.value.len();
         self.value.push_str(s);
-        self.set_range(start, s.len(), false);
+        set_mask_range(&mut self.split_protected_mask, start, s.len());
+        // glob_protected_mask intentionally not touched: literal bytes remain
+        // glob-subject.
+    }
+
+    /// Append `s` from an expansion (parameter, command sub, arithmetic).
+    /// Bytes are subject to both field splitting and glob expansion.
+    pub fn push_expanded(&mut self, s: &str) {
+        let start = self.value.len();
+        self.value.push_str(s);
+        // Neither mask updated: both default 0 (subject) bits are correct.
+        // We still need to ensure mask length covers `value.len()` if a later
+        // caller queries `is_*_protected` past the previous mask end —
+        // the predicates fall back to false (subject) when reading past the
+        // mask, so no explicit resize is needed for correctness.
+        let _ = start;
     }
 
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
     }
 
-    /// Create a field with all bytes marked as quoted.
+    /// Create a field with all bytes marked protected from both splitting
+    /// and glob expansion (used for glob-match results that must not be
+    /// re-split or re-globbed).
     pub fn all_quoted(value: String) -> Self {
         let len = value.len();
         let needed_words = len.div_ceil(64);
         let mask = vec![u64::MAX; needed_words];
         Self {
             value,
-            quoted_mask: mask,
+            split_protected_mask: mask.clone(),
+            glob_protected_mask: mask,
             was_quoted: false,
         }
     }
+}
 
-    fn set_range(&mut self, start: usize, len: usize, quoted: bool) {
-        if len == 0 {
-            return;
-        }
-        let end = start + len;
-        let needed_words = end.div_ceil(64);
-        self.quoted_mask.resize(needed_words, 0);
-        if quoted {
-            for i in start..end {
-                self.quoted_mask[i / 64] |= 1u64 << (i % 64);
-            }
-        }
-        // unquoted: bits are already 0 from resize
+#[inline]
+fn bit_set(mask: &[u64], byte_index: usize) -> bool {
+    let word = byte_index / 64;
+    let bit = byte_index % 64;
+    mask.get(word).is_some_and(|w| w & (1u64 << bit) != 0)
+}
+
+#[inline]
+fn set_mask_range(mask: &mut Vec<u64>, start: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let end = start + len;
+    let needed_words = end.div_ceil(64);
+    if mask.len() < needed_words {
+        mask.resize(needed_words, 0);
+    }
+    for i in start..end {
+        mask[i / 64] |= 1u64 << (i % 64);
     }
 }
 
@@ -474,5 +516,62 @@ mod tests {
             })],
         };
         assert_eq!(expand_word_to_string(&mut env, &word2).unwrap(), "");
+    }
+
+    #[test]
+    fn push_literal_marks_split_protected_only() {
+        let mut f = ExpandedField::new();
+        f.push_literal("ab");
+        assert!(f.is_split_protected(0));
+        assert!(f.is_split_protected(1));
+        assert!(!f.is_glob_protected(0));
+        assert!(!f.is_glob_protected(1));
+        assert!(!f.was_quoted);
+    }
+
+    #[test]
+    fn push_quoted_marks_both_and_was_quoted() {
+        let mut f = ExpandedField::new();
+        f.push_quoted("ab");
+        assert!(f.is_split_protected(0));
+        assert!(f.is_split_protected(1));
+        assert!(f.is_glob_protected(0));
+        assert!(f.is_glob_protected(1));
+        assert!(f.was_quoted);
+    }
+
+    #[test]
+    fn push_expanded_marks_neither() {
+        let mut f = ExpandedField::new();
+        f.push_expanded("ab");
+        assert!(!f.is_split_protected(0));
+        assert!(!f.is_split_protected(1));
+        assert!(!f.is_glob_protected(0));
+        assert!(!f.is_glob_protected(1));
+        assert!(!f.was_quoted);
+    }
+
+    #[test]
+    fn mixed_push_per_byte_independence() {
+        // L|E|Q sequence — verify each byte keeps its own attributes
+        let mut f = ExpandedField::new();
+        f.push_literal("a");
+        f.push_expanded("b");
+        f.push_quoted("c");
+        assert_eq!(f.value, "abc");
+        assert!(f.is_split_protected(0) && !f.is_glob_protected(0)); // a: literal
+        assert!(!f.is_split_protected(1) && !f.is_glob_protected(1)); // b: expanded
+        assert!(f.is_split_protected(2) && f.is_glob_protected(2)); // c: quoted
+        assert!(f.was_quoted);
+    }
+
+    #[test]
+    fn all_quoted_marks_both() {
+        let f = ExpandedField::all_quoted("abc".to_string());
+        for i in 0..3 {
+            assert!(f.is_split_protected(i), "byte {i} split-protected", i = i);
+            assert!(f.is_glob_protected(i), "byte {i} glob-protected", i = i);
+        }
+        assert!(!f.was_quoted);
     }
 }

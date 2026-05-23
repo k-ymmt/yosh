@@ -46,7 +46,7 @@ pub fn expand(_env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField>
 fn has_unquoted_glob_chars(field: &ExpandedField) -> bool {
     let bytes = field.value.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
-        if !field.is_quoted(i) && matches!(b, b'*' | b'?' | b'[') {
+        if !field.is_glob_protected(i) && matches!(b, b'*' | b'?' | b'[') {
             return true;
         }
     }
@@ -199,7 +199,7 @@ mod tests {
 
     fn unquoted(s: &str) -> ExpandedField {
         let mut f = ExpandedField::new();
-        f.push_unquoted(s);
+        f.push_expanded(s);
         f
     }
 
@@ -320,5 +320,40 @@ mod tests {
         // case and this regression guard protects it across the fast-path
         // refactor.
         assert_eq!(values(result), vec!["hello", "world", "*.rs"]);
+    }
+
+    #[test]
+    fn literal_asterisk_still_globs() {
+        // POSIX: literal `*` triggers pathname expansion. push_literal
+        // marks bytes split-protected but glob-subject — glob still fires.
+        let mut f = ExpandedField::new();
+        f.push_literal("*.rs");
+        assert!(
+            has_unquoted_glob_chars(&f),
+            "literal '*' must be glob-subject"
+        );
+    }
+
+    #[test]
+    fn quoted_asterisk_does_not_glob() {
+        // Regression pin: push_quoted marks bytes both split- and
+        // glob-protected, so `*` is treated as literal.
+        let mut f = ExpandedField::new();
+        f.push_quoted("*.rs");
+        assert!(
+            !has_unquoted_glob_chars(&f),
+            "quoted '*' must NOT be glob-subject"
+        );
+    }
+
+    #[test]
+    fn expanded_asterisk_globs() {
+        // Sanity: expansion result with `*` is also glob-subject.
+        let mut f = ExpandedField::new();
+        f.push_expanded("*.rs");
+        assert!(
+            has_unquoted_glob_chars(&f),
+            "expanded '*' must be glob-subject"
+        );
     }
 }

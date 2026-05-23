@@ -102,7 +102,7 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
     let mut i = 0;
     while i < len {
         let b = bytes[i];
-        let quoted = field.is_quoted(i);
+        let quoted = field.is_split_protected(i);
 
         let is_ws = !quoted && ifs_ws.contains(&b);
         let is_nws = !quoted && ifs_nws.contains(&b);
@@ -188,16 +188,14 @@ fn needs_splitting(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8]) -> bool
         .value
         .bytes()
         .enumerate()
-        .any(|(i, b)| !field.is_quoted(i) && (ifs_ws.contains(&b) || ifs_nws.contains(&b)))
+        .any(|(i, b)| !field.is_split_protected(i) && (ifs_ws.contains(&b) || ifs_nws.contains(&b)))
 }
 
 /// Append the UTF-8 character starting at byte position `i` in `source` to
-/// `dest`, preserving quoting. Returns the byte length of the character.
+/// `dest`, preserving the byte's `(split_protected, glob_protected)` attribute
+/// pair via the push method matching its origin classification.
 ///
-/// Caller must ensure `i` is on a UTF-8 character boundary. All bytes of a
-/// single character share the same `quoted_mask` bit (push_quoted and
-/// push_unquoted always append a complete `&str`), so testing `is_quoted(i)`
-/// on the lead byte covers the entire character.
+/// Caller must ensure `i` is on a UTF-8 character boundary.
 #[inline]
 fn append_char(dest: &mut ExpandedField, source: &ExpandedField, i: usize) -> usize {
     let ch_len = source.value[i..]
@@ -206,10 +204,15 @@ fn append_char(dest: &mut ExpandedField, source: &ExpandedField, i: usize) -> us
         .expect("i on char boundary")
         .len_utf8();
     let slice = &source.value[i..i + ch_len];
-    if source.is_quoted(i) {
-        dest.push_quoted(slice);
-    } else {
-        dest.push_unquoted(slice);
+    let split_p = source.is_split_protected(i);
+    let glob_p = source.is_glob_protected(i);
+    match (split_p, glob_p) {
+        (true, true) => dest.push_quoted(slice),
+        (true, false) => dest.push_literal(slice),
+        (false, false) => dest.push_expanded(slice),
+        // Not produced by the current push API; routed as expanded for
+        // forward compatibility. No test required.
+        (false, true) => dest.push_expanded(slice),
     }
     ch_len
 }
@@ -242,7 +245,7 @@ mod tests {
 
     fn unquoted(s: &str) -> ExpandedField {
         let mut f = ExpandedField::new();
-        f.push_unquoted(s);
+        f.push_expanded(s);
         f
     }
 
@@ -311,7 +314,7 @@ mod tests {
     fn test_empty_ifs_drops_empty_fields() {
         let env = env_with_ifs("");
         let mut empty = ExpandedField::new();
-        empty.push_unquoted("");
+        empty.push_expanded("");
         let input = vec![empty, unquoted("hello")];
         assert_eq!(values(split(&env, input)), vec!["hello"]);
     }
@@ -331,9 +334,9 @@ mod tests {
     fn test_mixed_quoted_unquoted() {
         let env = env_with_ifs(" ");
         let mut f = ExpandedField::new();
-        f.push_unquoted("foo ");
+        f.push_expanded("foo ");
         f.push_quoted("bar baz");
-        f.push_unquoted(" qux");
+        f.push_expanded(" qux");
         let result = split(&env, vec![f]);
         assert_eq!(values(result), vec!["foo", "bar baz", "qux"]);
     }
@@ -367,7 +370,7 @@ mod tests {
     fn test_fast_path_mixed_quoted_unquoted_no_ifs() {
         let env = env_with_ifs(" ");
         let mut f = ExpandedField::new();
-        f.push_unquoted("foo");
+        f.push_expanded("foo");
         f.push_quoted("bar");
         assert_eq!(values(split(&env, vec![f])), vec!["foobar"]);
     }
@@ -398,7 +401,7 @@ mod tests {
         // cannot silently widen if a future caller bypasses that filter.
         let env = env_with_ifs(" \t\n");
         let mut empty = ExpandedField::new();
-        empty.push_unquoted("");
+        empty.push_expanded("");
         let result = split(&env, vec![empty, unquoted("hello")]);
         assert_eq!(result.len(), 2);
         assert!(result[0].value.is_empty());
