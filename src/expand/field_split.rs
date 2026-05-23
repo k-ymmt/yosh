@@ -210,8 +210,12 @@ fn append_char(dest: &mut ExpandedField, source: &ExpandedField, i: usize) -> us
         (true, true) => dest.push_quoted(slice),
         (true, false) => dest.push_literal(slice),
         (false, false) => dest.push_expanded(slice),
-        // Not produced by the current push API; routed as expanded for
-        // forward compatibility. No test required.
+        // Reserved for a future per-byte attribute that decouples
+        // glob-protection from split-protection (e.g. an unquoted brace-
+        // expansion region whose glob status is overridden separately).
+        // Currently unreachable through `push_quoted` / `push_literal` /
+        // `push_expanded`. We route as expanded rather than panicking so
+        // an isolated mask-mutation bug elsewhere can't crash expansion.
         (false, true) => dest.push_expanded(slice),
     }
     ch_len

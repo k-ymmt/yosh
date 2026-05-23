@@ -88,16 +88,14 @@ impl ExpandedField {
     }
 
     /// Append `s` from an expansion (parameter, command sub, arithmetic).
-    /// Bytes are subject to both field splitting and glob expansion.
+    /// Bytes are subject to both field splitting and glob expansion
+    /// (POSIX XCU §2.6.5: only expansion results are split).
+    ///
+    /// Neither mask is updated: the predicates fall back to `false` (subject)
+    /// when reading past the mask end, so leaving the bits implicit is both
+    /// correct and avoids per-push allocation.
     pub fn push_expanded(&mut self, s: &str) {
-        let start = self.value.len();
         self.value.push_str(s);
-        // Neither mask updated: both default 0 (subject) bits are correct.
-        // We still need to ensure mask length covers `value.len()` if a later
-        // caller queries `is_*_protected` past the previous mask end —
-        // the predicates fall back to false (subject) when reading past the
-        // mask, so no explicit resize is needed for correctness.
-        let _ = start;
     }
 
     pub fn is_empty(&self) -> bool {
