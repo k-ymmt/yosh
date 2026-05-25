@@ -1135,6 +1135,27 @@ mod tests {
     }
 
     #[test]
+    fn export_operand_then_dash_p_is_invalid_identifier() {
+        // `export foo -p`: `-p` is not matched anywhere (export already
+        // uses `args[0] == "-p"`), so foo is exported and `-p` is
+        // rejected as a bad identifier (rc=1). Symmetric counterpart to
+        // readonly_operand_then_dash_p_is_invalid_identifier.
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "export",
+            &["foo".to_string(), "-p".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 1);
+        assert!(executor
+            .env
+            .vars
+            .get_var("foo")
+            .map(|v| v.exported)
+            .unwrap_or(false));
+    }
+
+    #[test]
     fn readonly_double_dash_then_assignment_succeeds() {
         let mut executor = Executor::new("yosh", vec![]);
         let status = exec_special_builtin(
