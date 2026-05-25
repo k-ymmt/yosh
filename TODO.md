@@ -12,7 +12,6 @@ retained below for tracking.
 - [ ] `exit_child` doc comment (`src/exec/mod.rs:24`) says "Use ONLY after fork() in the child branch, never in the shell parent", but SP1 G5b added a top-level non-interactive call site in `src/exec/simple.rs` (BuiltinKind::Special redirect-error). Either update the doc to permit non-interactive shell exit, or introduce a dedicated `exit_shell(status)` helper.
 - [ ] `builtin_exec` absolute-path branch (`cmd.contains('/')`) has no dedicated unit/e2e test. `exec_keeps_env.sh` covers the PATH-walk branch only. Add a focused test like `export m=v; exec /bin/sh -c 'echo $m'` (`src/builtin/special.rs::builtin_exec`).
 - [ ] `export -p foo=v` silently drops `foo=v` operand (the `-p` branch prints and returns). Pre-existing, made more visible by SP1 G2's stricter validation. Either accept operands after `-p` or document the limitation (`src/builtin/special.rs::builtin_export`).
-- [ ] `export -- foo=v` and `readonly -- foo=v` now report `--` as not a valid identifier (visible regression after SP1 G2's strict gate). Should consume `--` as POSIX end-of-options before validation (`src/builtin/special.rs::builtin_export`, `::builtin_readonly`).
 - [ ] `e2e/posix_spec/8_env_vars/PATH_search.sh` and `e2e/builtin/job_spec_prefix.sh` intermittently TIMEOUT under full-suite load (pass standalone). Observed twice during SP1 closure runs. Likely fork/wait timing under contention; investigate or bump per-test timeout (`e2e/run_tests.sh`).
 
 ### SP2 follow-ups (non-blocking)
