@@ -82,6 +82,16 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
     }
 }
 
+// POSIX XBD §12.2 Utility Syntax Guideline 10: `--` marks end of options.
+// Shared by export / readonly / unset to keep operand validation consistent.
+fn consume_end_of_options(args: &[String], idx: usize) -> usize {
+    if args.get(idx).map(String::as_str) == Some("--") {
+        idx + 1
+    } else {
+        idx
+    }
+}
+
 fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() || args[0] == "-p" {
         // Print all exported variables in POSIX re-input format
@@ -1033,5 +1043,35 @@ mod tests {
         let status = exec_special_builtin("break", &["7".to_string()], &mut executor);
         assert_eq!(status, 0);
         assert_eq!(executor.env.exec.flow_control, Some(FlowControl::Break(2)));
+    }
+
+    #[test]
+    fn consume_end_of_options_skips_double_dash() {
+        let args = vec!["--".to_string(), "foo".to_string()];
+        assert_eq!(consume_end_of_options(&args, 0), 1);
+    }
+
+    #[test]
+    fn consume_end_of_options_leaves_idx_when_not_double_dash() {
+        let args = vec!["foo".to_string()];
+        assert_eq!(consume_end_of_options(&args, 0), 0);
+    }
+
+    #[test]
+    fn consume_end_of_options_handles_empty_args() {
+        let args: Vec<String> = vec![];
+        assert_eq!(consume_end_of_options(&args, 0), 0);
+    }
+
+    #[test]
+    fn consume_end_of_options_handles_idx_at_double_dash_mid_array() {
+        let args = vec!["-f".to_string(), "--".to_string(), "x".to_string()];
+        assert_eq!(consume_end_of_options(&args, 1), 2);
+    }
+
+    #[test]
+    fn consume_end_of_options_handles_idx_out_of_range() {
+        let args = vec!["foo".to_string()];
+        assert_eq!(consume_end_of_options(&args, 5), 5);
     }
 }
