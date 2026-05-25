@@ -183,9 +183,11 @@ fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError>
 
 fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     // POSIX §2.14.11: "When invoked with no arguments or with the -p
-    // option, readonly shall write...". bash/dash treat -p as a listing
-    // trigger that suppresses any operand processing.
-    if args.is_empty() || args.iter().any(|a| a == "-p") {
+    // option, readonly shall write...". Only `-p` in the first position
+    // triggers listing; `-p` after operands or after `--` (end of
+    // options, XBD §12.2 Guideline 10) is validated as a bad identifier.
+    // Mirrors builtin_export.
+    if args.is_empty() || args[0] == "-p" {
         let readonly_vars: Vec<(String, String)> = env
             .vars
             .vars_iter()
@@ -1171,19 +1173,53 @@ mod tests {
     }
 
     #[test]
-    fn readonly_double_dash_then_dash_p_triggers_listing() {
-        // Current implementation uses `args.iter().any(|a| a == "-p")` for the
-        // listing trigger, so `-p` anywhere in args (including after `--`)
-        // wins and produces rc=0. A stricter reading would route `-p` after
-        // `--` through the operand validator (which would reject it as a
-        // bad identifier); that is a possible follow-up and not in scope here.
+    fn readonly_double_dash_then_dash_p_is_invalid_identifier() {
+        // `--` ends options (XBD §12.2 Guideline 10), so the trailing
+        // `-p` is validated as an operand and rejected as a bad
+        // identifier — mirrors
+        // export_double_dash_then_dash_p_is_invalid_identifier.
         let mut executor = Executor::new("yosh", vec![]);
         let status = exec_special_builtin(
             "readonly",
             &["--".to_string(), "-p".to_string()],
             &mut executor,
         );
+        assert_eq!(status, 1);
+    }
+
+    #[test]
+    fn readonly_p_then_double_dash_remains_listing() {
+        // Regression guard: `readonly -p --` triggers listing because
+        // `args[0] == "-p"` matches first; helper is never reached.
+        // Mirrors export_p_then_double_dash_remains_listing.
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "readonly",
+            &["-p".to_string(), "--".to_string()],
+            &mut executor,
+        );
         assert_eq!(status, 0);
+    }
+
+    #[test]
+    fn readonly_operand_then_dash_p_is_invalid_identifier() {
+        // `readonly foo -p`: `-p` is no longer matched anywhere in args,
+        // so foo is set readonly and `-p` is rejected as a bad
+        // identifier (rc=1). Symmetric with export's operand-then-option
+        // handling.
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "readonly",
+            &["foo".to_string(), "-p".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 1);
+        assert!(executor
+            .env
+            .vars
+            .get_var("foo")
+            .map(|v| v.readonly)
+            .unwrap_or(false));
     }
 
     #[test]
