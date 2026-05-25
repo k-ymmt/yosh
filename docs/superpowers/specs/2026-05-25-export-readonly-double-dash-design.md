@@ -97,6 +97,12 @@ most bash-compatible reading is to keep the existing listing condition
 unchanged (a `-p` *after* `--` is then treated as a bad identifier, matching
 bash). No behavior change for valid inputs.
 
+> **Update (2026-05-25 follow-up):** This deferral is resolved by
+> `2026-05-25-readonly-dash-p-listing-symmetry-design.md`. The listing
+> condition was changed to `args[0] == "-p"` (first-position only, like
+> export), so `readonly -- -p` now yields rc=1 (bad identifier) and is
+> symmetric with `export -- -p`.
+
 ### 3.4 `builtin_unset` changes
 
 Existing inline branch in the flag-parse loop:
@@ -131,6 +137,12 @@ builtins route through the same helper.
 | `unset -- foo` | foo unset, rc=0 | already works (inline `--` handling) | works (refactored) |
 | `unset -f -- foo` | function foo unset, rc=0 | already works | works |
 | `unset -v -- -f` | rc=1, `-f` identifier error | already works | works |
+
+> **Update (2026-05-25 follow-up):** the `readonly -- -p` row's
+> "Post-fix yosh = listing rc=0" reflects this spec's scope only. The
+> asymmetry was later resolved in
+> `2026-05-25-readonly-dash-p-listing-symmetry-design.md`; current
+> behavior is `-p` identifier error rc=1.
 
 ## 5. Tests
 
