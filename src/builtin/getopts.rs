@@ -78,10 +78,24 @@ pub fn builtin_getopts(args: &[String], env: &mut ShellEnv) -> Result<i32, Shell
 
     let step = step_getopts(spec, &operands_refs, optind_in, subindex_in, silent);
 
-    let _ = env.assign_var(parsed.var_name, step.var_value);
+    // Pre-check all readonly targets so a failure aborts BEFORE any
+    // assign_var / subindex write — otherwise a readonly `opt` would
+    // silently advance OPTIND, leaving callers with inconsistent state.
+    // bash returns rc=1 with `<name>: readonly variable` on this path.
+    for target in [parsed.var_name, "OPTARG", "OPTIND"] {
+        if env.vars.is_readonly(target) {
+            eprintln!("yosh: getopts: {}: readonly variable", target);
+            return Ok(1);
+        }
+    }
+
+    env.assign_var(parsed.var_name, step.var_value)
+        .expect("var_name readonly was pre-checked");
     let optarg_value = step.optarg.unwrap_or_default();
-    let _ = env.assign_var("OPTARG", optarg_value);
-    let _ = env.assign_var("OPTIND", step.optind.to_string());
+    env.assign_var("OPTARG", optarg_value)
+        .expect("OPTARG readonly was pre-checked");
+    env.assign_var("OPTIND", step.optind.to_string())
+        .expect("OPTIND readonly was pre-checked");
     env.vars.set_getopts_subindex(step.subindex);
 
     if let Some(msg) = step.stderr {
@@ -488,5 +502,57 @@ mod tests {
         let mut env = make_env();
         let rc = super::builtin_getopts(&s(&["a", "1foo"]), &mut env).unwrap();
         assert_eq!(rc, 2);
+    }
+
+    #[test]
+    fn builtin_readonly_var_name_emits_diagnostic_and_rc_one() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["-a".into()]);
+        env.vars.set("opt", "initial").unwrap();
+        env.vars.set_readonly("opt");
+        let rc = super::builtin_getopts(&s(&["a", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 1);
+        // var_name preserves its prior value, no partial write.
+        assert_eq!(env.vars.get("opt"), Some("initial"));
+    }
+
+    #[test]
+    fn builtin_readonly_var_name_does_not_advance_optind() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["-a".into()]);
+        // ShellEnv::new seeds OPTIND="1"; after a readonly-var_name
+        // abort the value must stay "1" so a script can fix `opt` and
+        // re-call getopts from the same logical position.
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
+        env.vars.set_readonly("opt");
+        let rc = super::builtin_getopts(&s(&["a", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 1);
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
+    }
+
+    #[test]
+    fn builtin_readonly_optind_emits_diagnostic_and_rc_one() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["-a".into()]);
+        env.vars.set("OPTIND", "1").unwrap();
+        env.vars.set_readonly("OPTIND");
+        let rc = super::builtin_getopts(&s(&["a", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 1);
+        // opt must not be written when OPTIND would fail downstream.
+        assert_eq!(env.vars.get("opt"), None);
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
+    }
+
+    #[test]
+    fn builtin_readonly_optarg_emits_diagnostic_and_rc_one() {
+        let mut env = make_env();
+        env.vars
+            .set_positional_params(vec!["-a".into(), "value".into()]);
+        env.vars.set("OPTARG", "prev").unwrap();
+        env.vars.set_readonly("OPTARG");
+        let rc = super::builtin_getopts(&s(&["a:", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 1);
+        assert_eq!(env.vars.get("opt"), None);
+        assert_eq!(env.vars.get("OPTARG"), Some("prev"));
     }
 }

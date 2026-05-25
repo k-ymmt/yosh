@@ -127,16 +127,6 @@ retained below for tracking.
       the end-of-options branch to skip the write entirely)
       (`src/builtin/getopts.rs:74-75`). Final-review follow-up from
       SP4 Task 6.
-- [ ] `let _ = env.assign_var(parsed.var_name, …)` and the two
-      following `assign_var` calls in `builtin_getopts` silently
-      discard readonly errors. If the user has `readonly opt`, calling
-      `getopts a opt` advances OPTIND without assigning `opt`, leaving
-      state inconsistent. POSIX does not mandate the behavior; bash
-      emits `getopts: opt: readonly variable` and returns non-zero.
-      Either capture the Err and surface a diagnostic + rc=2, or
-      pre-check `is_readonly` before any side effects
-      (`src/builtin/getopts.rs:73-76`). Final-review follow-up from
-      SP4 Task 6.
 - [ ] `step_getopts` casts a stack byte to `char` via `bytes[cursor]
       as char`, which silently misinterprets non-ASCII UTF-8 bytes
       (e.g. `-é` yields the byte `0xC3` as a char). POSIX option chars

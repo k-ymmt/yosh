@@ -330,6 +330,19 @@ impl VarStore {
         self.scopes[0].vars.insert(name.to_string(), var);
     }
 
+    /// Return true if `name` resolves to a readonly variable in any
+    /// scope (rev-walk matches the resolution order of `set` / `unset`).
+    /// Allows callers (e.g. `getopts`) to dry-run an assignment without
+    /// mutating state.
+    pub fn is_readonly(&self, name: &str) -> bool {
+        for scope in self.scopes.iter().rev() {
+            if let Some(var) = scope.vars.get(name) {
+                return var.readonly;
+            }
+        }
+        false
+    }
+
     /// Return only exported variables as (name, value) pairs.
     /// Later scopes shadow earlier ones. Result is cached until next mutation.
     pub fn environ(&mut self) -> &[(String, String)] {
@@ -415,6 +428,17 @@ mod tests {
         store.set_readonly("FOO");
         let result = store.unset("FOO");
         assert!(result.is_err());
+        assert_eq!(store.get("FOO"), Some("bar"));
+    }
+
+    #[test]
+    fn is_readonly_reports_readonly_state_without_mutation() {
+        let mut store = VarStore::new();
+        assert!(!store.is_readonly("FOO"));
+        store.set("FOO", "bar").unwrap();
+        assert!(!store.is_readonly("FOO"));
+        store.set_readonly("FOO");
+        assert!(store.is_readonly("FOO"));
         assert_eq!(store.get("FOO"), Some("bar"));
     }
 
