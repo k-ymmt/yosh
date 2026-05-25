@@ -200,8 +200,9 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         return Ok(0);
     }
 
+    let start = consume_end_of_options(args, 0);
     let mut status = 0;
-    for arg in args {
+    for arg in &args[start..] {
         let name = match arg.find('=') {
             Some(pos) => &arg[..pos],
             None => arg.as_str(),
@@ -1115,6 +1116,67 @@ mod tests {
         // The listing branch returns early before the helper is reached.
         let mut executor = Executor::new("yosh", vec![]);
         let status = exec_special_builtin("export", &["-p".to_string()], &mut executor);
+        assert_eq!(status, 0);
+    }
+
+    #[test]
+    fn readonly_double_dash_then_assignment_succeeds() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "readonly",
+            &["--".to_string(), "foo=ok".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 0);
+        assert_eq!(executor.env.vars.get("foo"), Some("ok"));
+        assert!(executor
+            .env
+            .vars
+            .get_var("foo")
+            .map(|v| v.readonly)
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn readonly_double_dash_alone_is_noop_rc0() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let before = executor
+            .env
+            .vars
+            .vars_iter()
+            .filter(|(_, v)| v.readonly)
+            .count();
+        let status = exec_special_builtin("readonly", &["--".to_string()], &mut executor);
+        assert_eq!(status, 0);
+        let after = executor
+            .env
+            .vars
+            .vars_iter()
+            .filter(|(_, v)| v.readonly)
+            .count();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn readonly_double_dash_then_dash_p_triggers_listing() {
+        // Current implementation uses `args.iter().any(|a| a == "-p")` for the
+        // listing trigger, so `-p` anywhere in args (including after `--`)
+        // wins and produces rc=0. A stricter reading would route `-p` after
+        // `--` through the operand validator (which would reject it as a
+        // bad identifier); that is a possible follow-up and not in scope here.
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "readonly",
+            &["--".to_string(), "-p".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 0);
+    }
+
+    #[test]
+    fn readonly_dash_p_alone_remains_listing() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin("readonly", &["-p".to_string()], &mut executor);
         assert_eq!(status, 0);
     }
 }
