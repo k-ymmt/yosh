@@ -1120,6 +1120,19 @@ mod tests {
     }
 
     #[test]
+    fn export_p_then_double_dash_remains_listing() {
+        // Regression guard: `export -p --` triggers listing because
+        // `args[0] == "-p"` matches first; helper is never reached.
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "export",
+            &["-p".to_string(), "--".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 0);
+    }
+
+    #[test]
     fn readonly_double_dash_then_assignment_succeeds() {
         let mut executor = Executor::new("yosh", vec![]);
         let status = exec_special_builtin(

@@ -127,6 +127,7 @@ builtins route through the same helper.
 | `export -p` | listing rc=0 | unchanged | unchanged |
 | `export -p --` | listing rc=0 (listing branch fires on `args[0]=="-p"`) | listing rc=0 | listing rc=0 |
 | `readonly -- foo=v` | foo readonly, rc=0 | `--` identifier error rc=1 (foo still assigned + readonly) | foo readonly, rc=0 |
+| `readonly -- -p` | (asymmetric vs export) listing rc=0 | listing rc=0 (because `args.iter().any(\|a\| a == "-p")` matches `-p` anywhere) | listing rc=0 (unchanged — `any(...)` listing condition kept per §3.3; stricter handling is a follow-up) |
 | `unset -- foo` | foo unset, rc=0 | already works (inline `--` handling) | works (refactored) |
 | `unset -f -- foo` | function foo unset, rc=0 | already works | works |
 | `unset -v -- -f` | rc=1, `-f` identifier error | already works | works |
