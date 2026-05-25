@@ -140,7 +140,7 @@ fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError>
     while idx < args.len() {
         let arg = args[idx].as_str();
         if arg == "--" {
-            idx += 1;
+            idx = consume_end_of_options(args, idx);
             break;
         }
         if arg == "-" || !arg.starts_with('-') || arg.len() == 1 {
@@ -1178,5 +1178,43 @@ mod tests {
         let mut executor = Executor::new("yosh", vec![]);
         let status = exec_special_builtin("readonly", &["-p".to_string()], &mut executor);
         assert_eq!(status, 0);
+    }
+
+    #[test]
+    fn unset_double_dash_unsets_following_name() {
+        let mut executor = Executor::new("yosh", vec![]);
+        executor.env.vars.set("foo", "v").unwrap();
+        let status = exec_special_builtin(
+            "unset",
+            &["--".to_string(), "foo".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 0);
+        assert_eq!(executor.env.vars.get("foo"), None);
+    }
+
+    #[test]
+    fn unset_f_then_double_dash_unsets_function() {
+        let mut executor = Executor::new("yosh", vec![]);
+        executor.eval_string("foo() { :; }");
+        let status = exec_special_builtin(
+            "unset",
+            &["-f".to_string(), "--".to_string(), "foo".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 0);
+        assert!(!executor.env.functions.contains_key("foo"));
+    }
+
+    #[test]
+    fn unset_v_then_double_dash_invalid_operand() {
+        // After `-v --`, `-f` is an operand and must fail identifier validation.
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "unset",
+            &["-v".to_string(), "--".to_string(), "-f".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 1);
     }
 }
