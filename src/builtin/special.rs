@@ -103,8 +103,9 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
         return Ok(0);
     }
 
+    let start = consume_end_of_options(args, 0);
     let mut status = 0;
-    for arg in args {
+    for arg in &args[start..] {
         let name = match arg.find('=') {
             Some(pos) => &arg[..pos],
             None => arg.as_str(),
@@ -1073,5 +1074,47 @@ mod tests {
     fn consume_end_of_options_handles_idx_out_of_range() {
         let args = vec!["foo".to_string()];
         assert_eq!(consume_end_of_options(&args, 5), 5);
+    }
+
+    #[test]
+    fn export_double_dash_then_assignment_succeeds() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "export",
+            &["--".to_string(), "foo=hi".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 0);
+        assert_eq!(executor.env.vars.get("foo"), Some("hi"));
+    }
+
+    #[test]
+    fn export_double_dash_alone_is_noop_rc0() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let before = executor.env.vars.environ().len();
+        let status = exec_special_builtin("export", &["--".to_string()], &mut executor);
+        assert_eq!(status, 0);
+        let after = executor.env.vars.environ().len();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn export_double_dash_then_dash_p_is_invalid_identifier() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "export",
+            &["--".to_string(), "-p".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 1);
+    }
+
+    #[test]
+    fn export_dash_p_alone_remains_listing() {
+        // Regression guard: -p as the only arg still triggers listing rc=0.
+        // The listing branch returns early before the helper is reached.
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin("export", &["-p".to_string()], &mut executor);
+        assert_eq!(status, 0);
     }
 }
