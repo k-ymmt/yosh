@@ -16,9 +16,9 @@ fn match_pat(pat: &str, s: &str) -> bool {
         None => s.is_empty(),
 
         Some('*') => {
-            // Try matching the rest of the pattern against every suffix of s,
-            // including the empty suffix (the loop tries the empty string just
-            // before `chars().next()` returns None and we give up).
+            // Try matching `rest` against every suffix of s — s itself is the
+            // first candidate, the empty string the last; once rem is exhausted
+            // (chars().next() == None) we have tried them all and give up.
             let rest = pat_chars.as_str();
             let mut rem = s;
             loop {
@@ -83,8 +83,9 @@ fn match_pat(pat: &str, s: &str) -> bool {
 }
 
 /// Parse a bracket expression starting *after* the opening `[`.
-/// Returns `Some((bytes_consumed_including_closing_bracket, did_match))` on
-/// success, or `None` if the bracket is malformed (no closing `]`).
+/// Returns `Some((bytes_consumed, did_match))` on success, or `None` if the
+/// bracket is malformed (no closing `]`). `bytes_consumed` counts bytes from
+/// the start of `pat` (just after the opening `[`) through the closing `]`.
 ///
 /// `bytes_consumed` is a byte length into `pat`, so the caller advances with
 /// `&pat[bytes_consumed..]`. `ch` is the character from the string being
@@ -112,9 +113,12 @@ fn parse_bracket(pat: &str, ch: Option<char>) -> Option<(usize, bool)> {
             break;
         }
 
+        // The remainder of the class body after the current member char.
+        let after_c0 = &rest[c0.len_utf8()..];
+
         // POSIX character class [:class:]
-        if c0 == '[' && rest[c0.len_utf8()..].starts_with(':') {
-            let after_open = &rest[c0.len_utf8() + ':'.len_utf8()..];
+        if c0 == '[' && after_c0.starts_with(':') {
+            let after_open = &after_c0[':'.len_utf8()..];
             if let Some((consumed, class)) = try_parse_posix_class(after_open) {
                 members.push(BracketItem::Class(class));
                 rest = &after_open[consumed..];
@@ -124,7 +128,6 @@ fn parse_bracket(pat: &str, ch: Option<char>) -> Option<(usize, bool)> {
         }
 
         // Range: x-y  (only if '-' is followed by another non-']' char).
-        let after_c0 = &rest[c0.len_utf8()..];
         if let Some('-') = after_c0.chars().next() {
             let after_dash = &after_c0['-'.len_utf8()..];
             if let Some(hi) = after_dash.chars().next() {
@@ -144,6 +147,9 @@ fn parse_bracket(pat: &str, ch: Option<char>) -> Option<(usize, bool)> {
         return None;
     }
 
+    // When `ch` is None (empty subject), no member matches; a negated class
+    // would then report `true`, but the caller's `[` arm rejects an empty
+    // subject before using this result, so the bracket never matches "".
     let inner_match = ch
         .map(|c| members.iter().any(|m| m.matches(c)))
         .unwrap_or(false);
