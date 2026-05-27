@@ -555,6 +555,122 @@ fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
     Ok(0)
 }
 
+/// Parsed action for the `ulimit` builtin (POSIX-minimal `-f`).
+#[derive(Debug, PartialEq)]
+enum UlimitAction {
+    /// Report the current soft file-size limit.
+    Show,
+    /// Set the file-size limit to N 512-byte blocks.
+    SetBlocks(u64),
+    /// Set the file-size limit to unlimited.
+    SetUnlimited,
+}
+
+/// Argument-parse failures for `ulimit`. All map to exit status 1.
+#[derive(Debug, PartialEq)]
+enum UlimitArgError {
+    UnknownOption(String),
+    InvalidNumber(String),
+    TooManyArgs,
+}
+
+/// Parse `ulimit [-f] [blocks]` arguments. Pure: no syscalls.
+///
+/// Option detection applies only to the leading token. A leading `-f` is the
+/// only accepted option; any other leading token starting with `-` (and not
+/// exactly `-`) is an unknown option. Remaining tokens are operands, where a
+/// leading `-` is not an option (so `-f -5` is an invalid number, not an
+/// option). At most one operand is allowed.
+fn parse_ulimit(args: &[String]) -> Result<UlimitAction, UlimitArgError> {
+    let mut i = 0;
+    if let Some(first) = args.first() {
+        if first == "-f" {
+            i = 1;
+        } else if first.starts_with('-') && first != "-" {
+            return Err(UlimitArgError::UnknownOption(first.clone()));
+        }
+    }
+    match &args[i..] {
+        [] => Ok(UlimitAction::Show),
+        [op] => {
+            if op == "unlimited" {
+                Ok(UlimitAction::SetUnlimited)
+            } else {
+                op.parse::<u64>()
+                    .map(UlimitAction::SetBlocks)
+                    .map_err(|_| UlimitArgError::InvalidNumber(op.clone()))
+            }
+        }
+        _ => Err(UlimitArgError::TooManyArgs),
+    }
+}
+
+/// POSIX `ulimit -f` operates in 512-byte blocks.
+const BLOCK_SIZE: libc::rlim_t = 512;
+
+/// Render a soft file-size limit (in bytes) as a POSIX block count, or
+/// `"unlimited"` for `RLIM_INFINITY`.
+fn format_fsize_limit(rlim_cur: libc::rlim_t) -> String {
+    if rlim_cur == libc::RLIM_INFINITY {
+        "unlimited".to_string()
+    } else {
+        (rlim_cur / BLOCK_SIZE).to_string()
+    }
+}
+
+/// `ulimit [-f] [blocks]` — query or set the file-size limit (POSIX-minimal).
+pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
+    let action = match parse_ulimit(args) {
+        Ok(a) => a,
+        Err(UlimitArgError::UnknownOption(o)) => {
+            eprintln!("yosh: ulimit: {o}: invalid option");
+            return Ok(1);
+        }
+        Err(UlimitArgError::InvalidNumber(n)) => {
+            eprintln!("yosh: ulimit: {n}: invalid number");
+            return Ok(1);
+        }
+        Err(UlimitArgError::TooManyArgs) => {
+            eprintln!("yosh: ulimit: too many arguments");
+            return Ok(1);
+        }
+    };
+
+    match action {
+        UlimitAction::Show => {
+            let mut rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            // SAFETY: `rl` is a valid, aligned rlimit; RLIMIT_FSIZE is a valid
+            // resource id. getrlimit only writes into `rl`.
+            let rc = unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut rl) };
+            if rc != 0 {
+                eprintln!("yosh: ulimit: {}", std::io::Error::last_os_error());
+                return Ok(1);
+            }
+            println!("{}", format_fsize_limit(rl.rlim_cur));
+            Ok(0)
+        }
+        UlimitAction::SetBlocks(n) => set_fsize(n.saturating_mul(BLOCK_SIZE)),
+        UlimitAction::SetUnlimited => set_fsize(libc::RLIM_INFINITY),
+    }
+}
+
+/// Set both the soft and hard `RLIMIT_FSIZE` to `bytes`. Setting both when no
+/// `-H`/`-S` selector is given matches bash, ksh, and dash.
+fn set_fsize(bytes: libc::rlim_t) -> Result<i32, ShellError> {
+    let rl = libc::rlimit {
+        rlim_cur: bytes,
+        rlim_max: bytes,
+    };
+    // SAFETY: `rl` is a valid rlimit; RLIMIT_FSIZE is a valid resource id.
+    // setrlimit only reads `rl`.
+    let rc = unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &rl) };
+    if rc != 0 {
+        eprintln!("yosh: ulimit: {}", std::io::Error::last_os_error());
+        return Ok(1);
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -812,5 +928,98 @@ mod tests {
         let (target, from_cdpath) = resolve_target(Some("regular_file"), &env).unwrap();
         assert_eq!(target, "regular_file");
         assert!(!from_cdpath);
+    }
+
+    // ── parse_ulimit ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_ulimit_show() {
+        assert_eq!(parse_ulimit(&s(&[])), Ok(UlimitAction::Show));
+        assert_eq!(parse_ulimit(&s(&["-f"])), Ok(UlimitAction::Show));
+    }
+
+    #[test]
+    fn test_parse_ulimit_set_blocks() {
+        assert_eq!(parse_ulimit(&s(&["-f", "100"])), Ok(UlimitAction::SetBlocks(100)));
+        assert_eq!(parse_ulimit(&s(&["100"])), Ok(UlimitAction::SetBlocks(100)));
+    }
+
+    #[test]
+    fn test_parse_ulimit_unlimited() {
+        assert_eq!(parse_ulimit(&s(&["-f", "unlimited"])), Ok(UlimitAction::SetUnlimited));
+        assert_eq!(parse_ulimit(&s(&["unlimited"])), Ok(UlimitAction::SetUnlimited));
+    }
+
+    #[test]
+    fn test_parse_ulimit_unknown_option() {
+        assert_eq!(
+            parse_ulimit(&s(&["-Z"])),
+            Err(UlimitArgError::UnknownOption("-Z".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_ulimit_invalid_number() {
+        assert_eq!(
+            parse_ulimit(&s(&["-f", "abc"])),
+            Err(UlimitArgError::InvalidNumber("abc".to_string()))
+        );
+        assert_eq!(
+            parse_ulimit(&s(&["-f", "-5"])),
+            Err(UlimitArgError::InvalidNumber("-5".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_ulimit_too_many_args() {
+        assert_eq!(parse_ulimit(&s(&["-f", "1", "2"])), Err(UlimitArgError::TooManyArgs));
+    }
+
+    // ── format_fsize_limit ───────────────────────────────────────────
+
+    #[test]
+    fn test_format_fsize_limit() {
+        assert_eq!(format_fsize_limit(libc::RLIM_INFINITY), "unlimited");
+        assert_eq!(format_fsize_limit(51200), "100"); // 51200 / 512
+        assert_eq!(format_fsize_limit(0), "0");
+    }
+
+    // ── builtin_ulimit ───────────────────────────────────────────────
+
+    #[test]
+    fn test_ulimit_show_returns_ok() {
+        // Read-only path: succeeds without altering any limit.
+        assert_eq!(builtin_ulimit(&s(&["-f"])), Ok(0));
+    }
+
+    #[test]
+    fn test_ulimit_unknown_option_returns_one() {
+        assert_eq!(builtin_ulimit(&s(&["-Z"])), Ok(1));
+    }
+
+    #[test]
+    fn test_ulimit_invalid_number_returns_one() {
+        assert_eq!(builtin_ulimit(&s(&["-f", "abc"])), Ok(1));
+    }
+
+    #[test]
+    fn test_ulimit_set_to_current_hard_is_safe() {
+        // Setting the limit to the current HARD value is safe inside the shared
+        // test process: soft can only rise to hard (never causes SIGXFSZ), hard
+        // stays unchanged, and it never fails with EPERM. This exercises the
+        // setrlimit success path without lowering any limit for sibling tests.
+        let mut rl = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `rl` is a valid, aligned rlimit; getrlimit only writes into it.
+        let rc = unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut rl) };
+        assert_eq!(rc, 0);
+        let operand = if rl.rlim_max == libc::RLIM_INFINITY {
+            "unlimited".to_string()
+        } else {
+            (rl.rlim_max / BLOCK_SIZE).to_string()
+        };
+        assert_eq!(builtin_ulimit(&s(&["-f", &operand])), Ok(0));
     }
 }
