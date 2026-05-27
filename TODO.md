@@ -300,6 +300,12 @@ retained below for tracking.
       character class / `test` string-comparison call sites. Spec
       `docs/superpowers/specs/2026-05-21-locale-support-design.md`
       §2.3 documents this as the intended branch point.
+- [ ] `clippy::collapsible_if` warning at `src/expand/pattern.rs:85` — the
+      `if pat[i] == '[' && … { if let Some((consumed, class)) =
+      try_parse_posix_class(…) { … } }` nesting can collapse to a let-chain
+      (`&&` in edition 2024). Surfaced during the 2026-05-26 ulimit
+      verification `cargo clippy` run; the only lib clippy warning in the
+      tree. Collapse it (or `#[allow]` with rationale).
 
 ### 2026-05-23 literal-argv word-splitting follow-ups (non-blocking)
 
@@ -380,7 +386,7 @@ retained below for tracking.
 
 ## Code Format Drift
 
-- [ ] Add `cargo fmt --all -- --check` step to a GitHub Actions workflow so the workspace stays drift-free after the 2026-05-03 sweep. Workspace is currently fmt-clean but no CI enforcement exists; new contributions can re-introduce drift silently. Pair with `cargo clippy --all-targets -- -D warnings` if a lint gate is also wanted (`.github/workflows/`).
+- [ ] Add `cargo fmt --all -- --check` step to a GitHub Actions workflow so the workspace stays drift-free. No CI enforcement exists and drift has already re-appeared since the 2026-05-03 sweep — as of 2026-05-26, `cargo fmt --all -- --check` reports drift in `tests/pty_posix.rs`, `tests/pty_interactive.rs`, `src/builtin/special.rs`, and `src/env/locale.rs`. Do a `cargo fmt --all` sweep first, then add the gate. Pair with `cargo clippy --all-targets -- -D warnings` if a lint gate is also wanted (note the pre-existing `collapsible_if` warning in `src/expand/pattern.rs:85` must be cleared first) (`.github/workflows/`).
 
 ## History: Known Limitations
 
@@ -478,6 +484,7 @@ retained below for tracking.
 - [ ] `Executor` API visibility tightening (post-split follow-up) — five `pub` methods on `Executor` are candidates for `pub(crate)` since their callers are all in-crate: `Executor::exec_command` (only `pipeline.rs` + tests), `exec_and_or` (internal-only), `exec_program` (used by `expand/command_sub.rs`, `bin/yosh-dhat.rs`, `builtin/special.rs`), `exec_complete_command` (used by `compound.rs`, `interactive/mod.rs`, `main.rs`), and `display_job_notifications` (only `interactive/mod.rs` + `control.rs::exec_complete_command`). Mirrors the 2026-05-05 parser-visibility-tightening pattern. Surfaced during the 2026-05-05 exec/mod.rs split final review (`src/exec/control.rs`, `src/exec/job_control.rs`).
 - [ ] `assignment_rhs_backslash_tilde_after_colon_stays_literal` (`src/parser/simple.rs:311`) still uses the loose `!any(matches!(p, Tilde(_)))` form — sibling test to `assignment_rhs_param_then_escaped_tilde_stays_literal` (line 321) which was tightened on 2026-05-10 to a structural `assert_eq!`. Apply the same treatment so a `/bin` segment drop or shape regression is caught at unit-test level. Code-review follow-up from 2026-05-10 POSIX TODO cleanup branch.
 - [ ] `readonly_p_then_double_dash_remains_listing` and `export_p_then_double_dash_remains_listing` test comments (`src/builtin/special.rs`) say "helper is never reached" but do not note *why* `--` is harmless: the listing branch returns `Ok(0)` before `consume_end_of_options` is called, so the `--` operand is silently ignored. A one-line addition to each comment would make them self-contained. Cosmetic. Code-review follow-up from 2026-05-25 readonly -p listing-symmetry branch.
+- [ ] `ulimit` `-f` block arithmetic assumes `libc::rlim_t == u64` — `BLOCK_SIZE: libc::rlim_t = 512` and `SetBlocks(n: u64).saturating_mul(BLOCK_SIZE)` (`src/builtin/regular.rs`) compile only where `rlim_t` is `u64` (macOS, 64-bit Linux). On 32-bit Linux `rlim_t` is `u32`, making the `u64 * u32` a type error. Not a runtime risk and the project has no Linux CI / targets macOS, but if a 32-bit target is ever added, type `BLOCK_SIZE` as `u64` and cast at the `set_fsize` / `format_fsize_limit` call sites. Final-review follow-up from 2026-05-26 ulimit native -f branch.
 
 ## Future: Release Skill Enhancements
 
