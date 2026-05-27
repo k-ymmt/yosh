@@ -480,4 +480,36 @@ mod tests {
         assert!(matches("[[:alpha]", "["));
         assert!(!matches("[[:alpha]", "z"));
     }
+
+    // ── Multibyte (UTF-8) boundary tests ──
+    // These pass on the &[char] implementation and guard the &str rewrite
+    // against splitting a multibyte char at a non-char-boundary byte offset.
+    #[test]
+    fn multibyte_literal_and_star() {
+        assert!(matches("日*", "日本語"));
+        assert!(matches("*語", "日本語"));
+        assert!(matches("日本語", "日本語"));
+        assert!(!matches("日*", "本日"));
+    }
+
+    #[test]
+    fn multibyte_question() {
+        assert!(matches("?", "あ"));
+        assert!(!matches("?", "あい"));
+        assert!(matches("a?c", "aあc"));
+    }
+
+    #[test]
+    fn multibyte_bracket_range() {
+        // あ=U+3042, か=U+304B, ん=U+3093, ン=U+30F3 (katakana, out of range)
+        assert!(matches("[あ-ん]", "か"));
+        assert!(!matches("[あ-ん]", "ン"));
+        assert!(matches("[0-9]語", "5語"));
+    }
+
+    #[test]
+    fn multibyte_backslash_trailing() {
+        assert!(matches("あ\\", "あ\\"));
+        assert!(matches("\\あ", "あ"));
+    }
 }
