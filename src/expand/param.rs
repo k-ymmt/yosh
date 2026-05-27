@@ -433,6 +433,79 @@ mod tests {
         assert_eq!(result, "a/b/c");
     }
 
+    // ── Multibyte boundary safety (added for the Layer-2 &str rewrite) ──
+    #[test]
+    fn test_strip_short_suffix_multibyte_ascii_pat() {
+        let mut env = make_env();
+        env.vars.set("V", "日本語.txt").unwrap();
+        let result = expand(
+            &mut env,
+            &ParamExpr::StripShortSuffix("V".to_string(), Word::literal(".txt")),
+        )
+        .unwrap();
+        assert_eq!(result, "日本語");
+    }
+
+    #[test]
+    fn test_strip_short_prefix_multibyte_literal() {
+        let mut env = make_env();
+        env.vars.set("V", "日本語").unwrap();
+        let result = expand(
+            &mut env,
+            &ParamExpr::StripShortPrefix("V".to_string(), Word::literal("日")),
+        )
+        .unwrap();
+        assert_eq!(result, "本語");
+    }
+
+    #[test]
+    fn test_strip_short_suffix_multibyte_literal() {
+        let mut env = make_env();
+        env.vars.set("V", "日本語").unwrap();
+        let result = expand(
+            &mut env,
+            &ParamExpr::StripShortSuffix("V".to_string(), Word::literal("語")),
+        )
+        .unwrap();
+        assert_eq!(result, "日本");
+    }
+
+    #[test]
+    fn test_strip_long_prefix_multibyte_star() {
+        let mut env = make_env();
+        env.vars.set("V", "あいうえお").unwrap();
+        let result = expand(
+            &mut env,
+            &ParamExpr::StripLongPrefix("V".to_string(), Word::literal("*う")),
+        )
+        .unwrap();
+        assert_eq!(result, "えお");
+    }
+
+    #[test]
+    fn test_strip_long_suffix_multibyte_star_all() {
+        let mut env = make_env();
+        env.vars.set("V", "日本語").unwrap();
+        let result = expand(
+            &mut env,
+            &ParamExpr::StripLongSuffix("V".to_string(), Word::literal("*")),
+        )
+        .unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_short_prefix_multibyte_question() {
+        let mut env = make_env();
+        env.vars.set("V", "あい").unwrap();
+        let result = expand(
+            &mut env,
+            &ParamExpr::StripShortPrefix("V".to_string(), Word::literal("?")),
+        )
+        .unwrap();
+        assert_eq!(result, "い");
+    }
+
     // ── Length (${#name}) ──
     #[test]
     fn test_length() {
