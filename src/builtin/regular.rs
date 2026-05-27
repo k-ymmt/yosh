@@ -1020,9 +1020,11 @@ mod tests {
     #[test]
     fn test_ulimit_set_to_current_hard_is_safe() {
         // Setting the limit to the current HARD value is safe inside the shared
-        // test process: soft can only rise to hard (never causes SIGXFSZ), hard
-        // stays unchanged, and it never fails with EPERM. This exercises the
-        // setrlimit success path without lowering any limit for sibling tests.
+        // test process: soft only ever rises toward hard (never causes SIGXFSZ),
+        // and it never fails with EPERM. In normal environments RLIMIT_FSIZE is
+        // RLIM_INFINITY, so this is a true no-op; with a finite, non-512-aligned
+        // hard limit it could round the hard limit down by <512 bytes, which is
+        // harmless. This exercises the setrlimit success path.
         let mut rl = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
