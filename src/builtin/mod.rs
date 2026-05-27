@@ -16,7 +16,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "break", ":", "continue", ".", "eval", "exec", "exit", "export", "readonly", "return", "set",
     "shift", "times", "trap", "unset", "fc", // Regular builtins
     "cd", "command", "echo", "true", "false", "alias", "unalias", "kill", "wait", "fg", "bg",
-    "jobs", "umask", "test", "[", "type", "hash", "read", "getopts",
+    "jobs", "umask", "ulimit", "test", "[", "type", "hash", "read", "getopts",
 ];
 
 /// Classification of a command name as a POSIX builtin kind.
@@ -37,9 +37,8 @@ pub fn classify_builtin(name: &str) -> BuiltinKind {
         "break" | ":" | "continue" | "." | "eval" | "exec" | "exit" | "export" | "readonly"
         | "return" | "set" | "shift" | "times" | "trap" | "unset" | "fc" => BuiltinKind::Special,
         "cd" | "command" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait"
-        | "fg" | "bg" | "jobs" | "umask" | "test" | "[" | "type" | "hash" | "read" | "getopts" => {
-            BuiltinKind::Regular
-        }
+        | "fg" | "bg" | "jobs" | "umask" | "ulimit" | "test" | "[" | "type" | "hash" | "read"
+        | "getopts" => BuiltinKind::Regular,
         _ => BuiltinKind::NotBuiltin,
     }
 }
@@ -52,6 +51,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "false" => Ok(1),
         "echo" => regular::builtin_echo(args),
         "umask" => regular::builtin_umask(args),
+        "ulimit" => regular::builtin_ulimit(args),
         "alias" => regular::builtin_alias(args, env),
         "unalias" => regular::builtin_unalias(args, env),
         "kill" => regular::builtin_kill(args, env.process.shell_pgid),
@@ -158,6 +158,11 @@ mod tests {
     #[test]
     fn test_classify_fc() {
         assert!(matches!(classify_builtin("fc"), BuiltinKind::Special));
+    }
+
+    #[test]
+    fn test_classify_ulimit() {
+        assert!(matches!(classify_builtin("ulimit"), BuiltinKind::Regular));
     }
 
     #[test]
