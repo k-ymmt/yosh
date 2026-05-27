@@ -638,7 +638,10 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
 
     match action {
         UlimitAction::Show => {
-            let mut rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            let mut rl = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
             // SAFETY: `rl` is a valid, aligned rlimit; RLIMIT_FSIZE is a valid
             // resource id. getrlimit only writes into `rl`.
             let rc = unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut rl) };
@@ -940,14 +943,23 @@ mod tests {
 
     #[test]
     fn test_parse_ulimit_set_blocks() {
-        assert_eq!(parse_ulimit(&s(&["-f", "100"])), Ok(UlimitAction::SetBlocks(100)));
+        assert_eq!(
+            parse_ulimit(&s(&["-f", "100"])),
+            Ok(UlimitAction::SetBlocks(100))
+        );
         assert_eq!(parse_ulimit(&s(&["100"])), Ok(UlimitAction::SetBlocks(100)));
     }
 
     #[test]
     fn test_parse_ulimit_unlimited() {
-        assert_eq!(parse_ulimit(&s(&["-f", "unlimited"])), Ok(UlimitAction::SetUnlimited));
-        assert_eq!(parse_ulimit(&s(&["unlimited"])), Ok(UlimitAction::SetUnlimited));
+        assert_eq!(
+            parse_ulimit(&s(&["-f", "unlimited"])),
+            Ok(UlimitAction::SetUnlimited)
+        );
+        assert_eq!(
+            parse_ulimit(&s(&["unlimited"])),
+            Ok(UlimitAction::SetUnlimited)
+        );
     }
 
     #[test]
@@ -972,7 +984,10 @@ mod tests {
 
     #[test]
     fn test_parse_ulimit_too_many_args() {
-        assert_eq!(parse_ulimit(&s(&["-f", "1", "2"])), Err(UlimitArgError::TooManyArgs));
+        assert_eq!(
+            parse_ulimit(&s(&["-f", "1", "2"])),
+            Err(UlimitArgError::TooManyArgs)
+        );
     }
 
     // ── format_fsize_limit ───────────────────────────────────────────
