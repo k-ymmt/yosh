@@ -14,7 +14,7 @@
 1. **Shell function call path** — `exec_function_call_200` (10.15 ms, ~50 µs/call) is now only ~2.1× slower per operation than `exec_for_loop_200` (4.83 ms, ~24 µs/iter). The residual overhead is an order of magnitude smaller than the `[` fix impact, but still worth investigating per §4.2.
 2. ~~**`expand::pathname::expand` always allocates a new Vec**~~ — **Fixed 2026-04-21** via non-glob fast-path (§4.3). Formerly 14k calls / 2.94 MB at rank #1; now 2,002 calls / 430.1 KB at rank #4 (pathname.rs:29 aggregate: 4.41 MB → 430.1 KB, −90.3%).
 3. ~~**`expand::field_split::emit`** — new top bytes-allocator post-fastpath: 4.63 MB / 21,051 calls across three dhat sites (ranks #1, #2, #7)~~ — **Fixed 2026-04-21** via `split()` fast path (§4.7). 4.63 MB → 209.5 KB (−95.6% bytes, −99.9% calls). W2 total: 11.39 MB → 6.78 MB (−40.5%).
-4. **`expand::pattern::matches`** — now rank #1 remaining site: 1.00 MB / 34,034 calls at `pattern.rs:11:39` plus 250.2 KB / 16,016 calls at `pattern.rs:10:42`. Top by both bytes and call count (§4.4, new P0).
+4. ~~**`expand::pattern::matches`**~~ — **Fixed 2026-05-27** via the `&str` zero-alloc matcher rewrite. Was rank #1 by both bytes and calls at HEAD (~1.66 MB / ~66,000 calls). W2 total fell 8.34 MB → 6.50 MB (−22.0 %); eliminated from the Top-12. See §4.4 "Fix applied" and the Amendment 2026-05-27 in §7.
 5. **`VarStore::build_environ`** — no longer a significant cost in W2 now that external-`[` forks are eliminated. Deferred unless a future workload resurfaces it.
 
 **Recommended next-project order:** §5.2.
@@ -334,7 +334,7 @@ Implemented fix candidate #1 (fast-path pass-through). Added a guard at the top 
 
 Remaining top allocation source at HEAD is now `field_split::emit` (see §5.2).
 
-### 4.4. `expand::pattern::matches` called ~50k times for W2
+### 4.4. `expand::pattern::matches` called ~50k times for W2 (fixed 2026-05-27)
 
 **Location:** `src/expand/pattern.rs:10-11` (rank #1 + #3 by call count at HEAD; 1.00 MB + 250 KB bytes).
 
@@ -347,7 +347,54 @@ Remaining top allocation source at HEAD is now `field_split::emit` (see §5.2).
 1. **Cache compiled patterns keyed by source string.** A small LRU (even 16 entries) would catch the W2 reuse completely. Implementation has to handle escaping correctly.
 2. **Pass pre-compiled patterns through the expand pipeline** instead of recompiling at each site. Larger refactor.
 
-**TODO.md cross-check:** not present. P2.
+**Re-measurement and correction (HEAD `1f9f4b4`, 2026-05-27):** the W2 dhat
+profile was re-captured at HEAD (the §1–§3 figures were from 2026-04-21).
+`pattern::matches` was confirmed as the #1 allocation site by **both** bytes
+and calls: 1.28 MB / 43,043 calls at `pattern.rs:11` plus 312.8 KB / 20,020 +
+65.6 KB / 2,800 calls at `pattern.rs:10` — together **~1.66 MB / ~66,000
+calls**, ~20 % of the W2 total (8.34 MB / 264,143 blocks). Reading the actual
+code corrected the §4.4 "Suspected cause" above: the two allocations are
+`pattern.chars().collect()` (`pat`, line 10) and `string.chars().collect()`
+(`s`, line 11) — **not** pattern *compilation*. The dominant site (line 11,
+1.28 MB) is the *subject string* `s`, which varies on every call, so fix
+candidate #1 (cache compiled patterns) would not have addressed it. The
+correct fix targets the per-call `Vec<char>` materialization itself.
+
+**Fix applied (2026-05-27):**
+
+Rewrote the recursive matcher (`match_pat` / `parse_bracket` /
+`try_parse_posix_class`) to operate directly on `&str` via char-boundary byte
+offsets (`char.len_utf8()` advances, `str::find`, `Chars::as_str`),
+eliminating both per-call `Vec<char>` allocations with **no new dependency**.
+The public `matches(&str, &str) -> bool` signature is unchanged; char-level
+semantics are preserved exactly. Guarded by the existing 36 ASCII unit tests
+plus 4 new multibyte boundary tests. See commits `e77c9a9` (rewrite) +
+`1f9f4b4` (code-review dedup), spec
+`docs/superpowers/specs/2026-05-27-pattern-matches-zero-alloc-design.md`, and
+plan `docs/superpowers/plans/2026-05-27-pattern-matches-zero-alloc.md`.
+
+**Measured impact (W2, after vs before at HEAD):**
+- `pattern::matches` **eliminated from the Top-12** by both bytes and calls
+  (was rank #1 on both).
+- W2 total allocation: 8.34 MB → **6.50 MB** (−1.84 MB, **−22.0 %**); total
+  blocks: 264,143 → **193,080** (−71,063, **−26.9 %**). The block delta
+  matches the ~66k eliminated `matches` allocation events.
+- Criterion (same session): `exec_param_expansion_200` — the only one of the
+  three `exec_*` benches that exercises pattern matching (`${VAR#…}` /
+  `${VAR%…}`) — improved **−71 %** (p = 0.00) vs the prior baseline, while the
+  pattern-free `exec_function_call_200` (−6 %, p = 0.15, no change) and
+  `exec_bracket_loop_200` (−5 %) stayed flat. Absolute times this session are
+  inflated ~5–6× by concurrent build load (Criterion warned about sample
+  completion), so the cross-bench *differential* is the signal, not the
+  absolute numbers — consistent with dhat being the reliable metric on macOS
+  (§2.4). W2 stdout/stderr verified bit-identical to the pre-fix baseline.
+- New top W2 allocation sites are now `pathname::expand` (slow path, 617.8 KB
+  / 2,002) and `expand_word_to_fields` (594.3 KB / 8,008) — both far below the
+  former `pattern::matches` peak.
+
+**TODO.md cross-check:** completed 2026-05-27; no open entry. A follow-up for
+the `strip_prefix` / `strip_suffix` Layer-2 allocation amplifier was recorded
+(see §5.3).
 
 ### 4.5. Observation: interactive-smoke completion at ~50 % of in-session samples
 
@@ -414,7 +461,7 @@ Effort classification:
 | 4.2 — function-call 2.1× ratio | **Medium** (revised at HEAD from High) | **Medium** (needs root-cause bench work first) | **P1** | Ratio collapsed from 187× to 2.1× after §4.1 fix; still worth sub-bench investigation but no longer urgent. |
 | 4.3 — `pathname::expand` non-glob alloc | **Medium** (~2.94 MB at rank #1 pre-fastpath) | **Low** (5-line fast path) | **done** | Completed 2026-04-21 via non-glob fast-path. W2 total −17.3%, pathname::expand hotspot eliminated from Top-10. See `docs/superpowers/specs/2026-04-21-pathname-expand-fast-path-design.md` and `610043e`. |
 | 4.7 — `field_split::emit` fast path | **High** (4.63 MB → 209.5 KB = −95.6% at the site; W2 total −40.5%) | **Low** (+1 helper, 3-line guard) | **done** | Completed 2026-04-21 via `split()` fast path. Hit rate 10,998/11,000 on W2. See `docs/superpowers/specs/2026-04-21-field-split-fast-path-design.md` and commit `ff7cd21`. |
-| 4.4 — `pattern::matches` recompilation | **Medium** (~1.25 MB, 50k calls; promoted to P0 after §4.7 landed — now rank #1 by both bytes and calls) | **Medium** (cache + invalidation) | **P0** | Promoted from P1 after §4.7 landed — now §5.2 item 1. Top remaining allocation AND call-count site. |
+| 4.4 — `pattern::matches` per-call `Vec<char>` | **High** (~1.66 MB / ~66k calls at HEAD = ~20 % of W2 bytes) | **Medium** (&str matcher rewrite) | **done** | Completed 2026-05-27 via `&str` zero-alloc rewrite. W2 total −22.0 %; `pattern::matches` eliminated from Top-12. Original "recompilation" diagnosis corrected — the #1 site was the subject-string `Vec<char>`, not pattern compilation. See §4.4 "Fix applied" and commits `e77c9a9` / `1f9f4b4`. |
 | 4.5 — interactive completion ratio | **Inconclusive** | n/a | **defer** | Not a finding; `complete_common_prefix` is no longer in the W3 Top-10 at HEAD. |
 
 ### 5.2 Next-project queue
@@ -425,16 +472,27 @@ In order (revised after §4.7 fast-path landed 2026-04-21):
 
 **Deviation from spec (§4.3 amendment):** the spec `docs/superpowers/specs/2026-04-21-pathname-expand-fast-path-design.md` §8 anticipated promoting §4.4 (`pattern::matches`) to P0. Post-measurement after §4.3, `field_split::emit` emerged as a higher-impact target and was assigned P0 instead; `pattern::matches` was assigned P1. After §4.7 landed, `pattern::matches` is now promoted to P0 as originally anticipated. Recorded here for auditability.
 
-1. **P0 — Fix 4.4 `pattern::matches` recompilation.** Estimated: 2 days. Promoted from P1 after §4.7 landed — now the top remaining allocation AND call-count site (1.00 MB / 34,034 calls at `pattern.rs:11:39` plus 250 KB / 16,016 calls at `pattern.rs:10:42`).
-2. **P1 — Add the fine-grained function-call sub-benches from 4.2 candidate #1**, then act on whatever they reveal (likely the `catch_unwind` replacement). Estimated: half a day for sub-benches, 1–3 days for the follow-up fix.
+1. ~~**P0 — Fix 4.4 `pattern::matches`.**~~ **Completed 2026-05-27** via the
+   `&str` zero-alloc matcher rewrite (W2 total −22.0 %; eliminated from the
+   dhat Top-12). See §4.4 "Fix applied".
+2. **P0 (next) — Add the fine-grained function-call sub-benches from 4.2
+   candidate #1**, then act on whatever they reveal (likely the `catch_unwind`
+   replacement). Estimated: half a day for sub-benches, 1–3 days for the
+   follow-up fix. Promoted to the head of the queue now that §4.4 has landed.
+3. **P2 — `strip_prefix` / `strip_suffix` Layer-2 amplifier** (new, 2026-05-27).
+   These build an O(n) `String` per cut point and call `pattern::matches` O(n)
+   times per `${VAR#…}` / `${VAR%…}`. Now that `match_pat` is `&str`-based, they
+   can pass sub-slices directly and skip the intermediate `String` builds. See
+   §5.3 and TODO.md.
 
 ### 5.3 Items to add to TODO.md
 
 - ~~`build_env_vars` / `environ().to_vec()` cloning per command execution (§4.1)~~ — **Completed 2026-04-21** via `[` / `test` builtin promotion; verified at HEAD `2261638`.
 - ~~`pathname::expand` Vec allocation with no glob chars (§4.3)~~ — **Completed 2026-04-21** via non-glob fast-path (`610043e`); dropped from #1 dhat site to rank #4 at 430.1 KB.
 - ~~Investigate `field_split::emit (src/expand/field_split.rs:180:9)` allocation pattern~~ — **Completed 2026-04-21** via `split()` fast path (`ff7cd21`); dhat aggregate dropped 4.63 MB → 209.5 KB. Slow-path UTF-8 `append_byte` panic discovered during regression testing; recorded under TODO.md **Known Bugs**.
-- `exec_function_call` residual 2.1× overhead ratio vs arithmetic loop (§4.2) — **P1**, with sub-bench prerequisite.
-- `pattern::matches` recompilation (§4.4) — **P0** (promoted from P1 after §4.7 landed).
+- `exec_function_call` residual 2.1× overhead ratio vs arithmetic loop (§4.2) — **P0 (next)**, with sub-bench prerequisite. Promoted after §4.4 landed.
+- ~~`pattern::matches` per-call `Vec<char>` (§4.4)~~ — **Completed 2026-05-27** via the `&str` zero-alloc matcher rewrite (`e77c9a9` / `1f9f4b4`); W2 total −22.0 %, eliminated from the dhat Top-12.
+- `strip_prefix` / `strip_suffix` Layer-2 allocation amplifier (`src/expand/param.rs`) — **P2** (new 2026-05-27). O(n) `String` per cut point + O(n) `matches` calls per `${VAR#…}` / `${VAR%…}`; now addressable by passing `&str` sub-slices since `match_pat` is `&str`-based.
 - Slow-path UTF-8 handling in `append_byte` — **[TOP PRIORITY]** as recorded in TODO.md `## Known Bugs` (discovered while writing field-split fast-path regression tests).
 
 The existing `LINENO update allocates a String per command` entry should stay but be noted as subordinate to the remaining expansion-pipeline findings.
@@ -550,3 +608,5 @@ The original report (§1–§3, §4.2–§4.5) is measurement-only. **No product
 **Amendment 2026-04-21 (§4.3):** The `pathname::expand` non-glob fast-path was implemented at commit `610043e` per `docs/superpowers/specs/2026-04-21-pathname-expand-fast-path-design.md`. W2 total allocation fell from 13.78 MB to 11.39 MB (−17.3%); the `pathname::expand:29:20` hotspot (pre-fastpath rank #1) was eliminated from the Top-10. The new top bytes-allocator is `field_split::emit` (§5.2 P0 queue). See §4.3 "Fix applied" block and updated §5.1 / §5.2 / §5.3.
 
 **Amendment 2026-04-21 (§4.7):** The `field_split::split` fast path was implemented at commit `ff7cd21` per `docs/superpowers/specs/2026-04-21-field-split-fast-path-design.md`. W2 total allocation fell from 11.39 MB to 6.78 MB (−40.5%); the `field_split::emit:180:9` hotspot (pre-fix ranks #1/#2/#7 totaling 4.63 MB) collapsed to a single rank #5 entry at 209.5 KB. `pattern::matches` (§4.4) is promoted to P0 in the §5.2 queue. Regression testing also exposed a pre-existing slow-path UTF-8 slicing bug in `append_byte`, recorded under TODO.md `## Known Bugs`.
+
+**Amendment 2026-05-27 (§4.4):** The W2 dhat profile was re-captured at HEAD (the §1–§3 figures date to 2026-04-21; ~5 weeks of builtin work had landed since). `pattern::matches` was confirmed as the #1 allocation site by both bytes and calls (~1.66 MB / ~66,000 calls, ~20 % of the 8.34 MB W2 total). Reading the code corrected the §4.4 diagnosis: the two allocations are `chars().collect()` of the pattern and the *subject string* — not pattern compilation — so the originally-proposed LRU pattern cache would not have touched the dominant (subject-string) site. The fix (commits `e77c9a9` + `1f9f4b4`, spec/plan dated 2026-05-27) rewrote `match_pat` / `parse_bracket` / `try_parse_posix_class` to operate on `&str` via char-boundary byte offsets, removing both per-call `Vec<char>` allocations with no new dependency. W2 total allocation fell from 8.34 MB to 6.50 MB (−22.0 %); blocks 264,143 → 193,080 (−26.9 %); `pattern::matches` left the dhat Top-12 entirely; W2 stdout/stderr bit-identical. The §5.2 queue now heads with §4.2 (function-call sub-benches), and a new §4.4-derived follow-up (`strip_prefix` / `strip_suffix` Layer-2 amplifier) was added to §5.3 and TODO.md. Unlike the original measurement-only report, this amendment modified production code (`src/expand/pattern.rs`).
