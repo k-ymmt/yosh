@@ -479,23 +479,6 @@ retained below for tracking.
 - [ ] `assignment_rhs_backslash_tilde_after_colon_stays_literal` (`src/parser/simple.rs:311`) still uses the loose `!any(matches!(p, Tilde(_)))` form — sibling test to `assignment_rhs_param_then_escaped_tilde_stays_literal` (line 321) which was tightened on 2026-05-10 to a structural `assert_eq!`. Apply the same treatment so a `/bin` segment drop or shape regression is caught at unit-test level. Code-review follow-up from 2026-05-10 POSIX TODO cleanup branch.
 - [ ] `readonly_p_then_double_dash_remains_listing` and `export_p_then_double_dash_remains_listing` test comments (`src/builtin/special.rs`) say "helper is never reached" but do not note *why* `--` is harmless: the listing branch returns `Ok(0)` before `consume_end_of_options` is called, so the `--` operand is silently ignored. A one-line addition to each comment would make them self-contained. Cosmetic. Code-review follow-up from 2026-05-25 readonly -p listing-symmetry branch.
 
-## Future: POSIX Required Builtin Implementation
-
-The following XCU §1.4 required builtins are not implemented as native
-yosh builtins. yosh currently falls through to the system's
-`/usr/bin/<name>` POSIX shell wrappers, which works for external
-commands and basic option parsing but cannot see yosh's session state
-(aliases, functions, in-shell variables). The XFAIL tests added in
-2026-05-13 (`e2e/posix_spec/4_required_builtin/`) serve as the
-behavioral acceptance spec for each native implementation. When a
-native builtin is implemented, the corresponding XFAIL tests should
-become PASS; remove the `# XFAIL:` line at that point.
-
-- [ ] `ulimit [-f] [num]` — resource-limit query/set. Currently uses
-      `/usr/bin/ulimit`. XFAIL tests:
-      `e2e/posix_spec/4_required_builtin/ulimit_*.sh` (1 of 3 remains XFAIL
-      — unknown-option case)
-
 ## Future: Release Skill Enhancements
 
 - [ ] `phase_push` remote tag upsert — currently only checks local tag existence; if the same tag already exists on origin, `git push origin <tag>` rejects. Add `git ls-remote --exit-code --tags origin <tag>` check before pushing (`.claude/skills/release/scripts/release.sh`)
