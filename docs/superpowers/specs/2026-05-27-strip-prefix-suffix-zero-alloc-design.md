@@ -206,3 +206,34 @@ must pass on the rewrite; a raw-byte-index bug would panic):
 - `src/expand/pattern.rs::matches` (`&str`-based consumer, unchanged)
 - `benches/exec_bench.rs::exec_param_expansion_200`, `benches/data/script_heavy.sh` Section C
 - dhat profile: `target/perf/dhat-heap-w2.json` (regenerate per Layer-1 §2)
+
+## 10. Results (measured)
+
+**Date:** 2026-05-27 — implemented in commit `d26be5f`.
+
+- **dhat W2 (gate 4):** total blocks `193,080` → `189,680`
+  (**−3,400, −1.76 %**); total bytes `6,500,801` → `6,437,406`
+  (−63,395, −0.98 %). The entire block reduction is strip-attributed: the
+  `src/expand/param.rs` strip sites fell from ~3,800 allocations (the
+  per-call `Vec<char>` at `strip_prefix:213` / `strip_suffix:185` plus the
+  per-cut and result `String` collects at `:228` / `:230` / `:200` / `:202`)
+  to **400** — only the single result `.to_string()` in each function's
+  closure (`:214` / `:198`) remains. dhat is deterministic, so −3,400 is
+  exact. The W2 value is 11 chars, so this is the *floor* of the win; long
+  inputs avoid the old O(n²) `String` builds entirely.
+  (Note: the W2 run completes in ~10 s; an earlier >2 h "hang" was CPU
+  contention from a concurrent build, not the workload.)
+- **Criterion `exec_param_expansion_200` (gate 5):** median `~56.6 ms` →
+  `~56.9 ms` (+0.5 %; `p = 0.89`, no change detected). The 11-char value
+  keeps the wall-clock delta within noise — the allocation count, not
+  wall-time, is the signal for this workload.
+- **W2 bit-identical (gate 3):** stdout and stderr byte-for-byte identical
+  to the pre-change baseline.
+- **Tests:** full `cargo test` green; e2e `2_06_02_parameter_expansion`
+  16/16 green (incl. `remove_prefix/suffix_{longest,shortest}`); 6 multibyte
+  strip tests green.
+
+Allocation per strip operation is now exactly one `String` (the result),
+down from `1 Vec<char> + O(n) String builds + 1 result String`. The larger
+algorithmic win (no O(n²) `String` builds for long inputs) is not exercised
+by W2's short strings but applies to real-world long values.
