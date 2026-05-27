@@ -179,60 +179,47 @@ fn expand_special(env: &ShellEnv, sp: &SpecialParam) -> String {
     }
 }
 
+/// All char-boundary byte offsets of `v`, ascending: `0, b1, …, v.len()`.
+///
+/// `DoubleEndedIterator` so callers iterate longest-first via `rev()` or
+/// shortest-first forward. For an empty string this yields just `[0]`.
+fn boundaries(v: &str) -> impl DoubleEndedIterator<Item = usize> + '_ {
+    v.char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(v.len()))
+}
+
 /// Remove a suffix matching `pat` from `value`.
 /// If `longest` is true, try the longest match; otherwise the shortest.
 fn strip_suffix(value: &str, pat: &str, longest: bool) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    let n = chars.len();
-
-    if longest {
-        // Try from index 0 upward (largest possible suffix = whole string)
-        for start in 0..=n {
-            let suffix: String = chars[start..].iter().collect();
-            if pattern::matches(pat, &suffix) {
-                let prefix: String = chars[..start].iter().collect();
-                return prefix;
-            }
-        }
+    // `matches` is anchored (full match), so test each candidate suffix slice.
+    // `start` is a char-boundary byte offset; the suffix is `value[start..]`.
+    let cut =
+        |start: usize| pattern::matches(pat, &value[start..]).then(|| value[..start].to_string());
+    let found = if longest {
+        // smallest start = longest suffix first
+        boundaries(value).find_map(cut)
     } else {
-        // Try from index n downward (smallest possible suffix)
-        for start in (0..=n).rev() {
-            let suffix: String = chars[start..].iter().collect();
-            if pattern::matches(pat, &suffix) {
-                let prefix: String = chars[..start].iter().collect();
-                return prefix;
-            }
-        }
-    }
-    value.to_string()
+        // largest start = shortest suffix first
+        boundaries(value).rev().find_map(cut)
+    };
+    found.unwrap_or_else(|| value.to_string())
 }
 
 /// Remove a prefix matching `pat` from `value`.
 /// If `longest` is true, try the longest match; otherwise the shortest.
 fn strip_prefix(value: &str, pat: &str, longest: bool) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    let n = chars.len();
-
-    if longest {
-        // Try from n down to 0 (largest prefix first)
-        for end in (0..=n).rev() {
-            let prefix: String = chars[..end].iter().collect();
-            if pattern::matches(pat, &prefix) {
-                let suffix: String = chars[end..].iter().collect();
-                return suffix;
-            }
-        }
+    // `matches` is anchored (full match), so test each candidate prefix slice.
+    // `end` is a char-boundary byte offset; the prefix is `value[..end]`.
+    let cut = |end: usize| pattern::matches(pat, &value[..end]).then(|| value[end..].to_string());
+    let found = if longest {
+        // largest end = longest prefix first
+        boundaries(value).rev().find_map(cut)
     } else {
-        // Try from 0 upward (smallest prefix first)
-        for end in 0..=n {
-            let prefix: String = chars[..end].iter().collect();
-            if pattern::matches(pat, &prefix) {
-                let suffix: String = chars[end..].iter().collect();
-                return suffix;
-            }
-        }
-    }
-    value.to_string()
+        // smallest end = shortest prefix first
+        boundaries(value).find_map(cut)
+    };
+    found.unwrap_or_else(|| value.to_string())
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
