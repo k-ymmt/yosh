@@ -7,97 +7,137 @@
 ///   `\x`     — escaped literal `x`
 ///   everything else — literal match
 pub fn matches(pattern: &str, string: &str) -> bool {
-    let pat: Vec<char> = pattern.chars().collect();
-    let s: Vec<char> = string.chars().collect();
-    match_pat(&pat, &s)
+    match_pat(pattern, string)
 }
 
-fn match_pat(pat: &[char], s: &[char]) -> bool {
-    match pat.first() {
+fn match_pat(pat: &str, s: &str) -> bool {
+    let mut pat_chars = pat.chars();
+    match pat_chars.next() {
         None => s.is_empty(),
 
         Some('*') => {
-            // Try matching the rest of the pattern against every suffix of s.
-            let rest = &pat[1..];
-            for i in 0..=s.len() {
-                if match_pat(rest, &s[i..]) {
+            // Try matching the rest of the pattern against every suffix of s,
+            // including the empty suffix (the loop tries the empty string just
+            // before `chars().next()` returns None and we give up).
+            let rest = pat_chars.as_str();
+            let mut rem = s;
+            loop {
+                if match_pat(rest, rem) {
                     return true;
                 }
+                match rem.chars().next() {
+                    Some(c) => rem = &rem[c.len_utf8()..],
+                    None => return false,
+                }
             }
-            false
         }
 
-        Some('?') => !s.is_empty() && match_pat(&pat[1..], &s[1..]),
+        Some('?') => match s.chars().next() {
+            Some(c) => match_pat(pat_chars.as_str(), &s[c.len_utf8()..]),
+            None => false,
+        },
 
         Some('[') => {
-            // Find the closing ']'
-            if let Some((consumed, matched_char)) = parse_bracket(&pat[1..], s.first().copied()) {
-                // Bracket expressions always match exactly one character
-                !s.is_empty() && matched_char && match_pat(&pat[1 + consumed..], &s[1..])
+            let after_bracket = pat_chars.as_str();
+            let s_first = s.chars().next();
+            if let Some((consumed, matched_char)) = parse_bracket(after_bracket, s_first) {
+                // Bracket expressions always match exactly one character.
+                match s_first {
+                    Some(c) if matched_char => {
+                        match_pat(&after_bracket[consumed..], &s[c.len_utf8()..])
+                    }
+                    _ => false,
+                }
             } else {
-                // Malformed bracket — treat '[' as literal
-                !s.is_empty() && s[0] == '[' && match_pat(&pat[1..], &s[1..])
+                // Malformed bracket — treat '[' as a literal.
+                match s.chars().next() {
+                    Some('[') => match_pat(after_bracket, &s['['.len_utf8()..]),
+                    _ => false,
+                }
             }
         }
 
         Some('\\') => {
-            // '\x' matches literal 'x'
-            if pat.len() >= 2 {
-                !s.is_empty() && s[0] == pat[1] && match_pat(&pat[2..], &s[1..])
-            } else {
-                // trailing backslash — match literal backslash
-                !s.is_empty() && s[0] == '\\' && match_pat(&pat[1..], &s[1..])
+            let after_bs = pat_chars.as_str();
+            match after_bs.chars().next() {
+                // '\x' matches literal 'x'.
+                Some(pc) => match s.chars().next() {
+                    Some(sc) if sc == pc => {
+                        match_pat(&after_bs[pc.len_utf8()..], &s[sc.len_utf8()..])
+                    }
+                    _ => false,
+                },
+                // Trailing backslash — match a literal backslash.
+                None => match s.chars().next() {
+                    Some('\\') => match_pat(after_bs, &s['\\'.len_utf8()..]),
+                    _ => false,
+                },
             }
         }
 
-        Some(&c) => !s.is_empty() && s[0] == c && match_pat(&pat[1..], &s[1..]),
+        Some(c) => match s.chars().next() {
+            Some(sc) if sc == c => match_pat(pat_chars.as_str(), &s[sc.len_utf8()..]),
+            _ => false,
+        },
     }
 }
 
 /// Parse a bracket expression starting *after* the opening `[`.
-/// Returns `Some((chars_consumed_including_closing_bracket, did_match))` on
+/// Returns `Some((bytes_consumed_including_closing_bracket, did_match))` on
 /// success, or `None` if the bracket is malformed (no closing `]`).
 ///
-/// `ch` is the character from the string being matched (if any).
-fn parse_bracket(pat: &[char], ch: Option<char>) -> Option<(usize, bool)> {
+/// `bytes_consumed` is a byte length into `pat`, so the caller advances with
+/// `&pat[bytes_consumed..]`. `ch` is the character from the string being
+/// matched (if any).
+fn parse_bracket(pat: &str, ch: Option<char>) -> Option<(usize, bool)> {
     if pat.is_empty() {
         return None;
     }
 
-    let mut i = 0;
-    let negate = pat[0] == '!';
+    let mut rest = pat;
+    let negate = rest.starts_with('!');
     if negate {
-        i += 1;
+        rest = &rest['!'.len_utf8()..];
     }
 
-    // Allow ']' as the first character inside the class (treated as literal)
     let mut members: Vec<BracketItem> = Vec::new();
     let mut found_close = false;
 
-    while i < pat.len() {
-        if pat[i] == ']' && !members.is_empty() {
-            // Found the closing bracket
-            i += 1;
+    while let Some(c0) = rest.chars().next() {
+        // Closing ']' (but not when it would make an empty class — a leading
+        // ']' is treated as a literal member).
+        if c0 == ']' && !members.is_empty() {
+            rest = &rest[c0.len_utf8()..];
             found_close = true;
             break;
         }
+
         // POSIX character class [:class:]
-        if pat[i] == '[' && i + 1 < pat.len() && pat[i + 1] == ':' {
-            if let Some((consumed, class)) = try_parse_posix_class(&pat[i + 2..]) {
+        if c0 == '[' && rest[c0.len_utf8()..].starts_with(':') {
+            let after_open = &rest[c0.len_utf8() + ':'.len_utf8()..];
+            if let Some((consumed, class)) = try_parse_posix_class(after_open) {
                 members.push(BracketItem::Class(class));
-                i += 2 + consumed;
+                rest = &after_open[consumed..];
                 continue;
             }
-            // Fall through to literal handling on malformed class
+            // Fall through to literal handling on a malformed class.
         }
-        // Range: x-y  (only if there is a '-' followed by another char before ']')
-        if i + 2 < pat.len() && pat[i + 1] == '-' && pat[i + 2] != ']' {
-            members.push(BracketItem::Range(pat[i], pat[i + 2]));
-            i += 3;
-        } else {
-            members.push(BracketItem::Char(pat[i]));
-            i += 1;
+
+        // Range: x-y  (only if '-' is followed by another non-']' char).
+        let after_c0 = &rest[c0.len_utf8()..];
+        if let Some('-') = after_c0.chars().next() {
+            let after_dash = &after_c0['-'.len_utf8()..];
+            if let Some(hi) = after_dash.chars().next() {
+                if hi != ']' {
+                    members.push(BracketItem::Range(c0, hi));
+                    rest = &after_dash[hi.len_utf8()..];
+                    continue;
+                }
+            }
         }
+
+        members.push(BracketItem::Char(c0));
+        rest = &rest[c0.len_utf8()..];
     }
 
     if !found_close {
@@ -109,9 +149,8 @@ fn parse_bracket(pat: &[char], ch: Option<char>) -> Option<(usize, bool)> {
         .unwrap_or(false);
     let result = if negate { !inner_match } else { inner_match };
 
-    // Consume includes negate flag + all member chars + closing ']' = i
-    // (i already accounts for everything from the char after '[' through ']')
-    Some((i, result))
+    let consumed = pat.len() - rest.len();
+    Some((consumed, result))
 }
 
 enum BracketItem {
@@ -175,24 +214,17 @@ const POSIX_CLASSES: &[(&str, PosixClass)] = &[
 
 /// Try to parse a `[:class:]` POSIX character-class form.
 ///
-/// `pat` is the slice starting AFTER the opening `[:` (i.e., the
-/// first character of the class name). Returns `Some((consumed,
-/// class))` where `consumed` covers the class name and the trailing
-/// `:]` (so the caller advances by `2 + consumed` from the opening
-/// `[`).
-fn try_parse_posix_class(pat: &[char]) -> Option<(usize, PosixClass)> {
-    let mut end = 0;
-    while end + 1 < pat.len() {
-        if pat[end] == ':' && pat[end + 1] == ']' {
-            let name: String = pat[..end].iter().collect();
-            for (n, c) in POSIX_CLASSES {
-                if name == *n {
-                    return Some((end + 2, *c));
-                }
-            }
-            return None;
+/// `pat` is the slice starting AFTER the opening `[:` (i.e., the first
+/// character of the class name). Returns `Some((bytes_consumed, class))`
+/// where `bytes_consumed` covers the class name and the trailing `:]` (so the
+/// caller advances by that many bytes from the first name character).
+fn try_parse_posix_class(pat: &str) -> Option<(usize, PosixClass)> {
+    let pos = pat.find(":]")?;
+    let name = &pat[..pos];
+    for (n, c) in POSIX_CLASSES {
+        if name == *n {
+            return Some((pos + ":]".len(), *c));
         }
-        end += 1;
     }
     None
 }
