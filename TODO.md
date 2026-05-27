@@ -384,10 +384,6 @@ retained below for tracking.
 - [ ] Task 7 (`fg` job-termios replay) has no direct PTY assertion — Task 9/10 verify end-state only (Task 6 shell-restore). On macOS/BSD, `/bin/cat`'s `read()` inherits `SIG_DFL` for SIGCONT and BSD does not auto-restart `read()` without `SA_RESTART`, so cat exits with EINTR immediately after `fg`. Linux auto-restarts `read()` on terminals for `SIG_DFL` signals, masking this asymmetry. Revisit by using a sleep/read-loop helper that retries on EINTR, or by reading `tcgetattr` directly via the PTY master between `fg\r` and cat's exit (the diagnosis details currently live in the `DEVIATION` comment of `test_pty_termios_preserved_across_suspend_fg` in `tests/pty_interactive.rs`).
 - [ ] `JobTable.shell_tmodes` is a one-time startup snapshot — `stty` invoked at the interactive prompt modifies the real terminal but not the cached snapshot, so the post-foreground shell-restore overwrites user-applied `stty` changes (`src/interactive/mod.rs` + `src/env/jobs/mod.rs`). Matches glibc manual behavior; revisit if user reports surface.
 
-## Code Format Drift
-
-- [ ] Add `cargo fmt --all -- --check` step to a GitHub Actions workflow so the workspace stays drift-free. No CI enforcement exists and drift has already re-appeared since the 2026-05-03 sweep — as of 2026-05-26, `cargo fmt --all -- --check` reports drift in `tests/pty_posix.rs`, `tests/pty_interactive.rs`, `src/builtin/special.rs`, and `src/env/locale.rs`. Do a `cargo fmt --all` sweep first, then add the gate. Pair with `cargo clippy --all-targets -- -D warnings` if a lint gate is also wanted (note the pre-existing `collapsible_if` warning in `src/expand/pattern.rs:85` must be cleared first) (`.github/workflows/`).
-
 ## History: Known Limitations
 
 - [ ] `suggest()` linear scan performance — iterates all history entries on each keystroke; acceptable for HISTSIZE ≤ 500, may need caching or indexing for larger histories (`src/interactive/history.rs`)
