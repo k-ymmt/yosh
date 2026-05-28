@@ -198,6 +198,13 @@ impl Executor {
                     },
                     None => String::new(),
                 };
+                // Trace before the variable is set so a readonly-failure still
+                // produces the trace line (bash behaviour). Nested command-sub
+                // traces inside `value` have already fired during expansion.
+                if self.env.mode.options.xtrace {
+                    let prefix = xtrace_prefix(&mut self.env);
+                    eprintln!("{}{}={}", prefix, assignment.name, value);
+                }
                 // If the value expansion contained a command substitution, $?
                 // now reflects its exit status. Record it regardless of whether
                 // the delta was non-zero — the substitution may coincidentally
