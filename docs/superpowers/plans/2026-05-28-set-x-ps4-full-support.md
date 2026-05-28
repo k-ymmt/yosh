@@ -601,15 +601,28 @@ Expected: same pass count as before plus 3 new PS4 tests; no new failures.
 
 - [ ] **Step 3: Manual smoke check**
 
-Run:
+PS4 MUST be **single-quoted** so `$LINENO` is stored literally and re-expanded per
+trace. (Double-quoting `PS4="@$LINENO+ "` expands `$LINENO` once at assignment time —
+line 1 — so every trace shows `@1+`; this matches bash and is correct, just not what
+this check demonstrates.)
+
 ```bash
-printf 'PS4="@$LINENO+ "\nset -x\necho a\nh() { echo b; }\nh\n' | ./target/debug/yosh
+cat > /tmp/ps4smoke.sh <<'EOF'
+PS4='@$LINENO+ '
+set -x
+echo a
+h() { echo b; }
+h
+EOF
+./target/debug/yosh /tmp/ps4smoke.sh
 ```
-Input lines: `echo a` = line 3, `h` = line 5, `echo b` (body of `h`) = line 4.
+Lines: `echo a` = 3, `h` = 5, `echo b` (body of `h`) = 4.
 Expected on **stderr** (PS4 first char `@`; top level 1×, inside `h` level 2×):
 ```
 @3+ echo a
 @5+ h
 @@4+ echo b
 ```
-Expected on **stdout**: `a` then `b`. Confirm the inner `echo b` trace line begins with the first character doubled (`@@`) and that `$LINENO` resolved to numbers.
+Expected on **stdout**: `a` then `b`. Confirm the inner `echo b` trace line begins with
+the first character doubled (`@@`) — this is yosh's function/dot nesting replication
+(bash 3.2 shows a single `@4` here; the doubling is a deliberate design divergence).
