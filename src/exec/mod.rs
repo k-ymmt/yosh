@@ -100,6 +100,7 @@ impl Executor {
         let content = std::fs::read_to_string(path).ok()?;
         let prev_dot_script = self.env.mode.in_dot_script;
         self.env.mode.in_dot_script = true;
+        self.env.exec.indirection_level += 1;
         let status = match crate::parser::Parser::new_with_aliases(&content, &self.env.aliases)
             .parse_program()
         {
@@ -108,6 +109,7 @@ impl Executor {
                 if let Some(crate::env::FlowControl::Return(code)) = self.env.exec.flow_control {
                     self.env.exec.flow_control = None;
                     self.env.mode.in_dot_script = prev_dot_script;
+                    self.env.exec.indirection_level -= 1;
                     return Some(code);
                 }
                 s
@@ -118,6 +120,7 @@ impl Executor {
             }
         };
         self.env.mode.in_dot_script = prev_dot_script;
+        self.env.exec.indirection_level -= 1;
         Some(status)
     }
 
@@ -329,5 +332,36 @@ mod tests {
         let result = exec.source_file(&path);
         std::fs::remove_file(&path).ok();
         assert_eq!(result, Some(2));
+    }
+
+    #[test]
+    fn indirection_level_balanced_after_function_call() {
+        use crate::parser::Parser;
+        let mut exec = Executor::new("yosh", vec![]);
+        let prog = Parser::new("f() { :; }; f").parse_program().unwrap();
+        exec.exec_program(&prog);
+        assert_eq!(exec.env.exec.indirection_level, 0);
+    }
+
+    #[test]
+    fn indirection_level_balanced_after_dot_script() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, ":").unwrap();
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.source_file(tmp.path());
+        assert_eq!(exec.env.exec.indirection_level, 0);
+    }
+
+    #[test]
+    fn indirection_level_balanced_after_dot_script_early_return() {
+        // A `return` inside a sourced script takes the early-return path in
+        // source_file; the decrement on that path must still fire.
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "return 0").unwrap();
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.source_file(tmp.path());
+        assert_eq!(exec.env.exec.indirection_level, 0);
     }
 }

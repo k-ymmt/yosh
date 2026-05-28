@@ -15,4 +15,9 @@ pub struct ExecState {
     /// Used by `break` / `continue` to detect out-of-loop usage and to
     /// clamp `n` against the outermost loop (POSIX §2.14.1 / §2.14.5).
     pub loop_depth: usize,
+    /// Number of nested function-call and dot-script invocations currently
+    /// on the stack. Used only to replicate the first character of PS4 in
+    /// `set -x` trace output (POSIX "levels of indirection"). Subshells and
+    /// command substitutions are NOT counted.
+    pub indirection_level: usize,
 }
