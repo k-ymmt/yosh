@@ -53,8 +53,37 @@ fn expand_assignment_builtin_args(
     Ok(out)
 }
 
-fn xtrace_prefix(env: &ShellEnv) -> &str {
-    env.vars.get("PS4").unwrap_or("+ ")
+/// Build the `set -x` trace prefix from PS4.
+///
+/// PS4 is expanded (parameter/command/arithmetic) like a double-quoted
+/// string, then its first character appears `indirection_level + 1` times
+/// total (the original plus one per nesting level) to indicate
+/// function/dot-script nesting (POSIX XCU 2.5.3).
+/// `$?` is preserved across any command substitution inside PS4.
+fn xtrace_prefix(env: &mut ShellEnv) -> String {
+    let raw = env.vars.get("PS4").unwrap_or("+ ").to_string();
+
+    // Expand PS4 without letting a command substitution clobber $? for the
+    // command being traced (bash preserves it).
+    let saved_status = env.exec.last_exit_status;
+    let expanded = crate::expand::expand_dquoted(env, &raw);
+    env.exec.last_exit_status = saved_status;
+
+    let level = env.exec.indirection_level;
+    if level == 0 || expanded.is_empty() {
+        return expanded;
+    }
+
+    // Replicate only the first character `level + 1` times total.
+    let mut chars = expanded.chars();
+    let first = chars.next().expect("non-empty checked above");
+    let rest = chars.as_str();
+    let mut out = String::with_capacity(expanded.len() + level * first.len_utf8());
+    for _ in 0..=level {
+        out.push(first);
+    }
+    out.push_str(rest);
+    out
 }
 
 impl Executor {
@@ -197,7 +226,8 @@ impl Executor {
         }
 
         if self.env.mode.options.xtrace && !expanded.is_empty() {
-            eprintln!("{}{}", xtrace_prefix(&self.env), expanded.join(" "));
+            let prefix = xtrace_prefix(&mut self.env);
+            eprintln!("{}{}", prefix, expanded.join(" "));
         }
 
         let mut expanded_iter = expanded.into_iter();
@@ -860,14 +890,69 @@ mod tests {
     fn test_xtrace_prefix_uses_ps4_when_set() {
         let mut env = ShellEnv::new("yosh", vec![]);
         env.vars.set("PS4", "TRACE> ").unwrap();
-        assert_eq!(xtrace_prefix(&env), "TRACE> ");
+        assert_eq!(xtrace_prefix(&mut env), "TRACE> ");
     }
 
     #[test]
     fn test_xtrace_prefix_default_when_ps4_unset() {
-        let env = ShellEnv::new("yosh", vec![]);
+        let mut env = ShellEnv::new("yosh", vec![]);
         // PS4 is not set by ShellEnv::new, so the helper falls back to "+ ".
-        assert_eq!(xtrace_prefix(&env), "+ ");
+        assert_eq!(xtrace_prefix(&mut env), "+ ");
+    }
+
+    #[test]
+    fn test_xtrace_prefix_expands_parameter() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars.set("LINENO", "42").unwrap();
+        env.vars.set("PS4", "L$LINENO> ").unwrap();
+        assert_eq!(xtrace_prefix(&mut env), "L42> ");
+    }
+
+    #[test]
+    fn test_xtrace_prefix_expands_last_exit_status() {
+        // `$?` inside PS4 expands to the saved status (then is restored).
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.exec.last_exit_status = 7;
+        env.vars.set("PS4", "$?> ").unwrap();
+        assert_eq!(xtrace_prefix(&mut env), "7> ");
+        assert_eq!(env.exec.last_exit_status, 7);
+    }
+
+    #[test]
+    fn test_xtrace_prefix_replicates_first_char_by_level() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars.set("PS4", "+ ").unwrap();
+        env.exec.indirection_level = 0;
+        assert_eq!(xtrace_prefix(&mut env), "+ ");
+        env.exec.indirection_level = 1;
+        assert_eq!(xtrace_prefix(&mut env), "++ ");
+        env.exec.indirection_level = 2;
+        assert_eq!(xtrace_prefix(&mut env), "+++ ");
+    }
+
+    #[test]
+    fn test_xtrace_prefix_replicates_only_first_char_multichar() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars.set("PS4", "TRACE> ").unwrap();
+        env.exec.indirection_level = 1;
+        assert_eq!(xtrace_prefix(&mut env), "TTRACE> ");
+    }
+
+    #[test]
+    fn test_xtrace_prefix_empty_ps4_stays_empty() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars.set("PS4", "").unwrap();
+        env.exec.indirection_level = 3;
+        assert_eq!(xtrace_prefix(&mut env), "");
+    }
+
+    #[test]
+    fn test_xtrace_prefix_preserves_exit_status() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.exec.last_exit_status = 7;
+        env.vars.set("PS4", "$(exit 3)> ").unwrap();
+        let _ = xtrace_prefix(&mut env);
+        assert_eq!(env.exec.last_exit_status, 7);
     }
 
     #[test]
