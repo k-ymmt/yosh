@@ -191,6 +191,29 @@ pub fn expand_word_to_string(env: &mut ShellEnv, word: &Word) -> crate::error::R
         .join(" "))
 }
 
+/// Parse `raw` as the body of a double-quoted word and expand it
+/// (parameter expansion, command substitution, arithmetic expansion;
+/// no field splitting, no pathname expansion). On lexer/parser or
+/// expansion error, fall back to returning `raw` unchanged.
+///
+/// Shared by PS1/PS2 prompt expansion and `set -x` PS4 expansion.
+pub fn expand_dquoted(env: &mut ShellEnv, raw: &str) -> String {
+    // Wrap in double quotes so the lexer yields a double-quoted Word.
+    // Note: a `raw` containing an unescaped `"` is silently truncated by the
+    // lexer rather than triggering the fallback; this matches historical
+    // prompt.rs behavior and is acceptable for prompt/PS4 values.
+    let input = format!("\"{}\"", raw);
+    let mut lexer = crate::lexer::Lexer::new(&input);
+    let word = match lexer.next_token() {
+        Ok(tok) => match tok.token {
+            crate::lexer::token::Token::Word(word) => word,
+            _ => return raw.to_string(),
+        },
+        Err(_) => return raw.to_string(),
+    };
+    expand_word_to_string(env, &word).unwrap_or_else(|_| raw.to_string())
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -571,5 +594,36 @@ mod tests {
             assert!(f.is_glob_protected(i), "byte {i} glob-protected", i = i);
         }
         assert!(!f.was_quoted);
+    }
+
+    #[test]
+    fn expand_dquoted_expands_parameter() {
+        let mut env = make_env();
+        env.vars.set("x", "hi").unwrap();
+        assert_eq!(expand_dquoted(&mut env, "v=$x"), "v=hi");
+    }
+
+    #[test]
+    fn expand_dquoted_unset_param_is_empty() {
+        let mut env = make_env();
+        assert_eq!(expand_dquoted(&mut env, "[$nope]"), "[]");
+    }
+
+    #[test]
+    fn expand_dquoted_plain_literal_unchanged() {
+        let mut env = make_env();
+        assert_eq!(expand_dquoted(&mut env, "+ "), "+ ");
+    }
+
+    // Command substitution that produces stdout (e.g. `$(echo ok)`) cannot be
+    // asserted here: libtest captures the forked builtin's Rust-level stdout
+    // before it reaches the OS pipe, so the substitution reads back empty. The
+    // path works at runtime (verified via `echo "x=$(echo ok)"`) and exit-status
+    // propagation is covered by simple.rs command-sub tests.
+
+    #[test]
+    fn expand_dquoted_arithmetic() {
+        let mut env = make_env();
+        assert_eq!(expand_dquoted(&mut env, "$((1+2))"), "3");
     }
 }

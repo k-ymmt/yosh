@@ -1,9 +1,5 @@
 use super::display_width::display_width;
 use crate::env::ShellEnv;
-use crate::expand::expand_word_to_string;
-use crate::lexer::Lexer;
-use crate::lexer::token::Token;
-use crate::parser::ast::Word;
 
 /// Return the POSIX default prompt for the given variable name.
 fn default_prompt(var_name: &str) -> &'static str {
@@ -18,31 +14,6 @@ fn default_prompt(var_name: &str) -> &'static str {
         }
         "PS2" => "> ",
         _ => "",
-    }
-}
-
-/// Parse a raw prompt string as a double-quoted Word so that the expander
-/// will handle `$VAR`, `${VAR}`, `$(cmd)`, etc.
-///
-/// We wrap the raw value in `"..."` and feed it to the lexer, which returns
-/// a `Token::Word` whose parts come from the double-quoted context.
-fn parse_prompt_word(raw: &str) -> Word {
-    // Build a double-quoted string for the lexer.
-    let input = format!("\"{}\"", raw);
-    let mut lexer = Lexer::new(&input);
-    match lexer.next_token() {
-        Ok(tok) => {
-            if let Token::Word(word) = tok.token {
-                word
-            } else {
-                // Unexpected token type — fall back to literal
-                Word::literal(raw)
-            }
-        }
-        Err(_) => {
-            // Parse failure — fall back to literal
-            Word::literal(raw)
-        }
     }
 }
 
@@ -63,12 +34,9 @@ pub fn expand_prompt(env: &mut ShellEnv, var_name: &str) -> String {
         return String::new();
     }
 
-    // 3. Parse the prompt string as a double-quoted word.
-    let word = parse_prompt_word(&raw);
-
-    // 4. Expand via expand_word_to_string (no field splitting / glob).
-    //    Prompt expansion errors are non-fatal: fall back to the raw value.
-    expand_word_to_string(env, &word).unwrap_or(raw)
+    // 3. Expand as a double-quoted string (param/command-sub/arith).
+    //    Errors are non-fatal: expand_dquoted falls back to the raw value.
+    crate::expand::expand_dquoted(env, &raw)
 }
 
 /// Decomposed prompt for multi-line support.
