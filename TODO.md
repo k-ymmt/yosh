@@ -380,6 +380,7 @@ retained below for tracking.
 - [ ] Multiline editing — visual multiline editing with cursor movement across lines
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
+- [ ] `set -x` trace coverage is simple-commands-only — xtrace fires only in `exec_simple_command`'s non-assignment-only path, so compound commands (`if`/`for`/`while`/`case`), pipelines, and assignment-only commands (e.g. `+ x=1`) are not traced. bash traces all of these. Pre-existing; PS4 full-support spec §6 scoped this out (`docs/superpowers/specs/2026-05-28-set-x-ps4-full-support-design.md`, `src/exec/simple.rs`, `src/exec/compound.rs`).
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
 - [ ] Right-aligned prompt (`PS1_RIGHT`) — starship-style right-side prompt display based on terminal width (`src/interactive/line_editor.rs`)
@@ -468,6 +469,7 @@ retained below for tracking.
 - [ ] `assignment_rhs_backslash_tilde_after_colon_stays_literal` (`src/parser/simple.rs:311`) still uses the loose `!any(matches!(p, Tilde(_)))` form — sibling test to `assignment_rhs_param_then_escaped_tilde_stays_literal` (line 321) which was tightened on 2026-05-10 to a structural `assert_eq!`. Apply the same treatment so a `/bin` segment drop or shape regression is caught at unit-test level. Code-review follow-up from 2026-05-10 POSIX TODO cleanup branch.
 - [ ] `readonly_p_then_double_dash_remains_listing` and `export_p_then_double_dash_remains_listing` test comments (`src/builtin/special.rs`) say "helper is never reached" but do not note *why* `--` is harmless: the listing branch returns `Ok(0)` before `consume_end_of_options` is called, so the `--` operand is silently ignored. A one-line addition to each comment would make them self-contained. Cosmetic. Code-review follow-up from 2026-05-25 readonly -p listing-symmetry branch.
 - [ ] `ulimit` `-f` block arithmetic assumes `libc::rlim_t == u64` — `BLOCK_SIZE: libc::rlim_t = 512` and `SetBlocks(n: u64).saturating_mul(BLOCK_SIZE)` (`src/builtin/regular.rs`) compile only where `rlim_t` is `u64` (macOS, 64-bit Linux). On 32-bit Linux `rlim_t` is `u32`, making the `u64 * u32` a type error. Not a runtime risk and the project has no Linux CI / targets macOS, but if a 32-bit target is ever added, type `BLOCK_SIZE` as `u64` and cast at the `set_fsize` / `format_fsize_limit` call sites. Final-review follow-up from 2026-05-26 ulimit native -f branch.
+- [ ] `indirection_level_balanced_after_dot_script*` tests use `tempfile::NamedTempFile` while the sibling `source_file_*` tests use `std::env::temp_dir()` + `std::fs::write`/`remove_file`. The `NamedTempFile` style is cleaner (auto-cleanup) — unify the `source_file_*` tests onto it in a future pass for consistency (`src/exec/mod.rs`). Code-review follow-up from 2026-05-28 PS4 full-support branch.
 
 ## Future: Release Skill Enhancements
 
