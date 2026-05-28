@@ -1094,4 +1094,20 @@ mod tests {
 
         let _ = std::fs::remove_file(&tmp);
     }
+
+    #[test]
+    fn assignment_only_under_xtrace_returns_ok_and_sets_var() {
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+
+        // Verifies the assignment-only branch's control flow is unchanged
+        // by the trace insertion: variable assignment succeeds and the
+        // command returns exit status 0 with xtrace enabled.
+        let source = "set -x\nfoo=bar";
+        let prog = Parser::new(source).parse_program().unwrap();
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.exec_program(&prog);
+        assert_eq!(exec.env.vars.get("foo"), Some("bar"));
+        assert_eq!(exec.env.exec.last_exit_status, 0);
+    }
 }
