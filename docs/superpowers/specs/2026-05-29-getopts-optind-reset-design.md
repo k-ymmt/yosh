@@ -86,7 +86,8 @@ it does not broaden or tighten value parsing.
 Function scopes keep independent getopts state. `push_scope` continues
 to initialize a fresh `OPTIND=1` and `getopts_subindex=0` for the
 function body. A function-local `OPTIND=1` reset affects that current
-scope only. `pop_scope` continues to restore the caller's saved `OPTIND`.
+scope only. `pop_scope` continues to restore the caller's saved `OPTIND`
+without treating that internal restore as a new user reset in the caller.
 
 ## Testing
 
