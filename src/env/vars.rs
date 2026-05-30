@@ -34,6 +34,10 @@ struct Scope {
     /// POSIX `getopts` cursor within a stacked argv element (e.g. `-abc`).
     /// `0` means "advance to the next argv element on the next call."
     getopts_subindex: usize,
+    /// Successful writes to visible `OPTIND` in this scope.
+    optind_write_generation: u64,
+    /// Last `OPTIND` write generation observed by `getopts`.
+    getopts_observed_optind_generation: u64,
     /// `OPTIND` value snapshot saved on `push_scope`, restored on `pop_scope`.
     /// `None` outside any function call (global scope).
     saved_optind: Option<String>,
@@ -62,6 +66,8 @@ impl VarStore {
                 vars: HashMap::new(),
                 positional_params: Vec::new(),
                 getopts_subindex: 0,
+                optind_write_generation: 0,
+                getopts_observed_optind_generation: 0,
                 saved_optind: None,
             }],
             environ_cache: None,
@@ -79,6 +85,8 @@ impl VarStore {
                 vars,
                 positional_params: Vec::new(),
                 getopts_subindex: 0,
+                optind_write_generation: 0,
+                getopts_observed_optind_generation: 0,
                 saved_optind: None,
             }],
             environ_cache: None,
@@ -101,6 +109,8 @@ impl VarStore {
             vars: HashMap::new(),
             positional_params,
             getopts_subindex: 0,
+            optind_write_generation: 0,
+            getopts_observed_optind_generation: 0,
             saved_optind,
         });
         // Set OPTIND="1" in the new (top) scope so the function body
@@ -124,11 +134,13 @@ impl VarStore {
         assert!(self.scopes.len() > 1, "cannot pop the global scope");
         let popped = self.scopes.pop().unwrap();
         if let Some(prev_optind) = popped.saved_optind {
-            // Write back into the now-current scope chain. Use `set`
-            // so the value lands where OPTIND was originally defined
-            // (typically scope[0]). Readonly OPTIND is not supported
-            // and the assignment cannot fail in practice.
-            let _ = self.set("OPTIND", prev_optind);
+            // Write back into the now-current scope chain. Use `set` so
+            // the value lands where OPTIND was originally defined, then
+            // mark the internal restore as observed so it does not reset
+            // the caller's pending stacked-option cursor.
+            if self.set("OPTIND", prev_optind).is_ok() {
+                self.mark_getopts_observed_optind();
+            }
         }
     }
 
@@ -142,6 +154,20 @@ impl VarStore {
     /// Set the current scope's `getopts` stacked-options subcursor.
     pub fn set_getopts_subindex(&mut self, value: usize) {
         self.scopes.last_mut().unwrap().getopts_subindex = value;
+    }
+
+    /// Return true if `OPTIND` has been written since `getopts` last
+    /// observed the current scope's write generation.
+    pub fn optind_written_since_getopts(&self) -> bool {
+        let scope = self.scopes.last().unwrap();
+        scope.optind_write_generation != scope.getopts_observed_optind_generation
+    }
+
+    /// Mark the current scope's `OPTIND` write generation as observed by
+    /// `getopts`.
+    pub fn mark_getopts_observed_optind(&mut self) {
+        let scope = self.scopes.last_mut().unwrap();
+        scope.getopts_observed_optind_generation = scope.optind_write_generation;
     }
 
     /// Return the current scope depth. 1 = global scope only.
@@ -219,17 +245,18 @@ impl VarStore {
                     .vars
                     .insert(name.to_string(), Variable::new(value));
             }
+            self.note_optind_write(name);
             return Ok(());
         }
 
         // Search for existing variable in any scope (top to bottom).
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(existing) = scope.vars.get(name) {
+        for idx in (0..self.scopes.len()).rev() {
+            if let Some(existing) = self.scopes[idx].vars.get(name) {
                 if existing.readonly {
                     return Err(format!("{}: readonly variable", name));
                 }
                 let exported = existing.exported;
-                scope.vars.insert(
+                self.scopes[idx].vars.insert(
                     name.to_string(),
                     Variable {
                         value,
@@ -237,6 +264,7 @@ impl VarStore {
                         readonly: false,
                     },
                 );
+                self.note_optind_write(name);
                 return Ok(());
             }
         }
@@ -245,6 +273,7 @@ impl VarStore {
         self.scopes[0]
             .vars
             .insert(name.to_string(), Variable::new(value));
+        self.note_optind_write(name);
         Ok(())
     }
 
@@ -258,13 +287,13 @@ impl VarStore {
         self.environ_cache = None;
         let value = value.into();
 
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(existing) = scope.vars.get(name) {
+        for idx in (0..self.scopes.len()).rev() {
+            if let Some(existing) = self.scopes[idx].vars.get(name) {
                 if existing.readonly {
                     return Err(format!("{}: readonly variable", name));
                 }
                 let exported = existing.exported || allexport;
-                scope.vars.insert(
+                self.scopes[idx].vars.insert(
                     name.to_string(),
                     Variable {
                         value,
@@ -272,6 +301,7 @@ impl VarStore {
                         readonly: false,
                     },
                 );
+                self.note_optind_write(name);
                 return Ok(());
             }
         }
@@ -281,7 +311,15 @@ impl VarStore {
             var.exported = true;
         }
         self.scopes[0].vars.insert(name.to_string(), var);
+        self.note_optind_write(name);
         Ok(())
+    }
+
+    fn note_optind_write(&mut self, name: &str) {
+        if name == "OPTIND" {
+            let scope = self.scopes.last_mut().unwrap();
+            scope.optind_write_generation = scope.optind_write_generation.wrapping_add(1);
+        }
     }
 
     /// Unset a variable. Returns an error if the variable is readonly.
@@ -582,5 +620,57 @@ mod tests {
 
         store.pop_scope();
         assert_eq!(store.getopts_subindex(), 7);
+    }
+
+    #[test]
+    fn optind_write_since_getopts_detects_same_value_assignment() {
+        let mut store = VarStore::new();
+        store.set("OPTIND", "1").unwrap();
+        store.mark_getopts_observed_optind();
+        assert!(!store.optind_written_since_getopts());
+
+        store.set("OPTIND", "1").unwrap();
+        assert!(store.optind_written_since_getopts());
+    }
+
+    #[test]
+    fn optind_write_since_getopts_detects_assignment_with_options() {
+        let mut store = VarStore::new();
+        store.set("OPTIND", "1").unwrap();
+        store.mark_getopts_observed_optind();
+        assert!(!store.optind_written_since_getopts());
+
+        store.set_with_options("OPTIND", "1", false).unwrap();
+        assert!(store.optind_written_since_getopts());
+    }
+
+    #[test]
+    fn optind_write_generation_is_scope_local() {
+        let mut store = VarStore::new();
+        store.set("OPTIND", "1").unwrap();
+        store.mark_getopts_observed_optind();
+
+        store.push_scope(vec![]);
+        assert!(!store.optind_written_since_getopts());
+        store.set("OPTIND", "1").unwrap();
+        assert!(store.optind_written_since_getopts());
+
+        store.pop_scope();
+        assert!(!store.optind_written_since_getopts());
+    }
+
+    #[test]
+    fn pop_scope_optind_restore_does_not_trigger_caller_reset() {
+        let mut store = VarStore::new();
+        store.set("OPTIND", "1").unwrap();
+        store.set_getopts_subindex(2);
+        store.mark_getopts_observed_optind();
+
+        store.push_scope(vec![]);
+        store.set("OPTIND", "1").unwrap();
+
+        store.pop_scope();
+        assert_eq!(store.getopts_subindex(), 2);
+        assert!(!store.optind_written_since_getopts());
     }
 }

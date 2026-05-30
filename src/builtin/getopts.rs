@@ -74,7 +74,11 @@ pub fn builtin_getopts(args: &[String], env: &mut ShellEnv) -> Result<i32, Shell
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|n| *n >= 1)
         .unwrap_or(1);
-    let subindex_in = env.vars.getopts_subindex();
+    let subindex_in = if env.vars.optind_written_since_getopts() {
+        0
+    } else {
+        env.vars.getopts_subindex()
+    };
 
     let step = step_getopts(spec, &operands_refs, optind_in, subindex_in, silent);
 
@@ -97,6 +101,7 @@ pub fn builtin_getopts(args: &[String], env: &mut ShellEnv) -> Result<i32, Shell
     env.assign_var("OPTIND", step.optind.to_string())
         .expect("OPTIND readonly was pre-checked");
     env.vars.set_getopts_subindex(step.subindex);
+    env.vars.mark_getopts_observed_optind();
 
     if let Some(msg) = step.stderr {
         eprintln!("yosh: getopts: {}", msg);
@@ -479,6 +484,45 @@ mod tests {
         assert_eq!(rc2, 0);
         assert_eq!(env.vars.get("opt"), Some("b"));
         assert_eq!(env.vars.get("OPTIND"), Some("2"));
+    }
+
+    #[test]
+    fn builtin_optind_reset_to_one_restarts_stacked_option() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["-ab".into()]);
+        let args = s(&["ab", "opt"]);
+
+        let rc1 = super::builtin_getopts(&args, &mut env).unwrap();
+        assert_eq!(rc1, 0);
+        assert_eq!(env.vars.get("opt"), Some("a"));
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
+
+        env.vars.set("OPTIND", "1").unwrap();
+
+        let rc2 = super::builtin_getopts(&args, &mut env).unwrap();
+        assert_eq!(rc2, 0);
+        assert_eq!(env.vars.get("opt"), Some("a"));
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
+    }
+
+    #[test]
+    fn builtin_optind_reset_does_not_change_subindex_on_readonly_error() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["-ab".into()]);
+        let args = s(&["ab", "opt"]);
+
+        let rc1 = super::builtin_getopts(&args, &mut env).unwrap();
+        assert_eq!(rc1, 0);
+        assert_eq!(env.vars.get("opt"), Some("a"));
+        assert_eq!(env.vars.getopts_subindex(), 2);
+
+        env.vars.set("OPTIND", "1").unwrap();
+        env.vars.set("OPTARG", "prev").unwrap();
+        env.vars.set_readonly("OPTARG");
+
+        let rc2 = super::builtin_getopts(&args, &mut env).unwrap();
+        assert_eq!(rc2, 1);
+        assert_eq!(env.vars.getopts_subindex(), 2);
     }
 
     #[test]

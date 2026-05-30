@@ -86,29 +86,14 @@ retained below for tracking.
 
 ### SP4 follow-ups (non-blocking)
 
-- [ ] User-reset semantics for `OPTIND` — POSIX `getopts` allows
-      restarting argument parsing by setting `OPTIND=1` mid-iteration
-      (XCU `getopts` rationale). Current native impl does NOT detect
-      the user writing `OPTIND="1"` when the previous call left
-      OPTIND already at "1" (e.g. mid-stacked `-ab`); state therefore
-      continues stacking. Workaround: scripts can write `OPTIND=2`
-      followed by `OPTIND=1` to force a detected change, but this is
-      not POSIX. Proper fix requires either (a) hooking
-      `VarStore::set("OPTIND", _)` to reset `getopts_subindex` (rejected
-      during SP4 for layering reasons), or (b) tracking
-      `last_optind_written` on the scope. None of the 9 SP4 XFAIL
-      targets exercised this; closed test
-      `builtin_user_resets_optind_to_one` dropped from `src/builtin/getopts.rs`
-      tests as out-of-scope. Pre-decided during SP4 final review.
-- [ ] `Scope.saved_optind` restore path (`src/env/vars.rs::pop_scope`)
-      silently discards `set()` errors with a stale rationale comment
-      ("Readonly OPTIND is not supported and the assignment cannot fail
-      in practice"). User scripts CAN make OPTIND readonly via
-      `readonly OPTIND=5`, in which case `set` returns Err on pop.
-      Behavior is still correct (the readonly value IS the saved one,
-      so the discard is a no-op), but the comment overstates the
-      precondition. Tighten to acknowledge the readonly-OPTIND fail-safe.
-      Code-review follow-up from SP4 Task 1.
+- [ ] `getopts` OPTIND reset implementation verification is pending:
+      `cargo test` / `cargo check` repeatedly hung while compiling
+      `yosh-plugin-manager` (`rustc` sleeping at 0% CPU) during the
+      2026-05-30 implementation session. No stuck cargo/rustc process
+      was left running. Re-run `cargo test -p yosh --lib env::vars::tests`,
+      `cargo test -p yosh --lib builtin::getopts::tests`, `cargo build`,
+      and `./e2e/run_tests.sh --filter=getopts_optind_reset_stacked`
+      once the build hang is resolved.
 - [ ] Edge-case test coverage: nested function-call OPTIND save/restore
       (push → push → set OPTIND → pop sees inner saved → pop sees outer
       saved), and readonly-OPTIND push/pop round-trip. Both are real
