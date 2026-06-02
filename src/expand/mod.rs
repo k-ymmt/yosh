@@ -102,6 +102,25 @@ impl ExpandedField {
         self.value.is_empty()
     }
 
+    /// Return the field value as bytes.
+    ///
+    /// Stage 1 still stores valid UTF-8 in `String`; callers that reason about
+    /// split/glob masks should go through this byte-facing API so later raw
+    /// byte storage has one obvious migration point.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.value.as_bytes()
+    }
+
+    /// Return the field length in bytes, matching mask indexing.
+    pub fn byte_len(&self) -> usize {
+        self.value.len()
+    }
+
+    /// Consume the field and return its current UTF-8 value.
+    pub fn into_string(self) -> String {
+        self.value
+    }
+
     /// Create a field with all bytes marked protected from both splitting
     /// and glob expansion (used for glob-match results that must not be
     /// re-split or re-globbed).
@@ -570,6 +589,41 @@ mod tests {
         assert!(!f.is_glob_protected(0));
         assert!(!f.is_glob_protected(1));
         assert!(!f.was_quoted);
+    }
+
+    #[test]
+    fn expanded_field_byte_access_reports_utf8_bytes() {
+        let mut f = ExpandedField::new();
+        f.push_literal("日*");
+
+        assert_eq!(f.byte_len(), "日*".len());
+        assert_eq!(f.as_bytes(), "日*".as_bytes());
+        assert_eq!(f.into_string(), "日*");
+    }
+
+    #[test]
+    fn expanded_field_masks_are_indexed_by_byte() {
+        let mut f = ExpandedField::new();
+        f.push_quoted("日");
+        f.push_literal("*");
+        f.push_expanded(" 本");
+
+        assert_eq!(f.byte_len(), "日* 本".len());
+
+        for i in 0.."日".len() {
+            assert!(f.is_split_protected(i), "byte {i} split-protected");
+            assert!(f.is_glob_protected(i), "byte {i} glob-protected");
+        }
+
+        let star = "日".len();
+        assert!(f.is_split_protected(star));
+        assert!(!f.is_glob_protected(star));
+
+        let expanded_start = star + 1;
+        for i in expanded_start..f.byte_len() {
+            assert!(!f.is_split_protected(i), "byte {i} split-subject");
+            assert!(!f.is_glob_protected(i), "byte {i} glob-subject");
+        }
     }
 
     #[test]
