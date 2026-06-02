@@ -1,20 +1,20 @@
 use std::ffi::CString;
 
-use nix::unistd::{ForkResult, execvp, fork};
+use nix::unistd::{execvp, fork, ForkResult};
 
 use crate::builtin::special::exec_special_builtin;
-use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
-use crate::env::ShellEnv;
+use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
 use crate::env::jobs;
+use crate::env::ShellEnv;
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::expand::expand_words;
-use crate::parser::Parser;
 use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
+use crate::parser::Parser;
 use crate::signal;
 
-use super::Executor;
 use super::command::wait_child;
 use super::redirect::RedirectState;
+use super::Executor;
 
 /// For export/readonly, re-process each Word argument by trying to parse
 /// it as an Assignment first. Words that successfully parse as `NAME=value`
@@ -84,6 +84,27 @@ fn xtrace_prefix(env: &mut ShellEnv) -> String {
     }
     out.push_str(rest);
     out
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExecCStringError {
+    CommandName,
+    Argument(String),
+}
+
+fn build_exec_cstrings(
+    cmd: &str,
+    args: &[String],
+) -> Result<(CString, Vec<CString>), ExecCStringError> {
+    let c_cmd = CString::new(cmd).map_err(|_| ExecCStringError::CommandName)?;
+    let mut c_args = Vec::with_capacity(args.len() + 1);
+    c_args.push(c_cmd.clone());
+    for arg in args {
+        let c_arg =
+            CString::new(arg.as_str()).map_err(|_| ExecCStringError::Argument(arg.clone()))?;
+        c_args.push(c_arg);
+    }
+    Ok((c_cmd, c_args))
 }
 
 impl Executor {
@@ -515,25 +536,17 @@ impl Executor {
         env_vars: &[(String, String)],
         redirects: &[crate::parser::ast::Redirect],
     ) -> i32 {
-        // Build argv CStrings
-        let c_cmd = match CString::new(cmd) {
-            Ok(s) => s,
-            Err(_) => {
+        let (c_cmd, c_args) = match build_exec_cstrings(cmd, args) {
+            Ok(v) => v,
+            Err(ExecCStringError::CommandName) => {
                 eprintln!("yosh: {}: invalid command name", cmd);
                 return 127;
             }
-        };
-        let mut c_args: Vec<CString> = Vec::with_capacity(args.len() + 1);
-        c_args.push(c_cmd.clone());
-        for a in args {
-            match CString::new(a.as_str()) {
-                Ok(s) => c_args.push(s),
-                Err(_) => {
-                    eprintln!("yosh: {}: invalid argument", a);
-                    return 1;
-                }
+            Err(ExecCStringError::Argument(arg)) => {
+                eprintln!("yosh: {}: invalid argument", arg);
+                return 1;
             }
-        }
+        };
 
         let monitor = self.env.mode.options.monitor;
         let shell_pgid = self.env.process.shell_pgid;
@@ -670,7 +683,7 @@ impl Executor {
     /// - Brief (`-v`) / Verbose (`-V`) → print and return exit status
     /// - Execute (`-p` or no flag) → handled in later tasks (returns 1 for now)
     pub(crate) fn builtin_command(&mut self, args: &[String]) -> i32 {
-        use crate::builtin::command::{Verbosity, parse_flags, render_brief, render_verbose};
+        use crate::builtin::command::{parse_flags, render_brief, render_verbose, Verbosity};
 
         let parsed = match parse_flags(args) {
             Ok(p) => p,
@@ -715,7 +728,7 @@ impl Executor {
     /// preference over functions, but builtins are part of the utility set.
     pub(crate) fn exec_command_with_default_path(&mut self, name: &str, args: &[String]) -> i32 {
         use crate::builtin::special::exec_special_builtin;
-        use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
+        use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
         use crate::env::default_path::default_path;
 
         // If `name` is a builtin, run the builtin (POSIX: command -p still
@@ -735,7 +748,7 @@ impl Executor {
             BuiltinKind::NotBuiltin => {}
         }
 
-        use crate::exec::command::{PathLookup, lookup_in_path};
+        use crate::exec::command::{lookup_in_path, PathLookup};
 
         let dp = default_path(&self.env).to_string();
         match lookup_in_path(name, &dp, &mut self.env.utility_hash) {
@@ -757,7 +770,7 @@ impl Executor {
     /// parser saw `command` itself, not the expanded alias).
     pub(crate) fn exec_command_skip_functions(&mut self, name: &str, args: &[String]) -> i32 {
         use crate::builtin::special::exec_special_builtin;
-        use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
+        use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
 
         // Builtins take precedence over external; functions are deliberately
         // skipped.
@@ -776,7 +789,7 @@ impl Executor {
         }
 
         // External: resolve via $PATH (not the POSIX default path).
-        use crate::exec::command::{PathLookup, lookup_in_path};
+        use crate::exec::command::{lookup_in_path, PathLookup};
 
         let path_var = self
             .env
@@ -892,6 +905,32 @@ fn param_has_command_sub(p: &ParamExpr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_exec_cstrings_accepts_valid_utf8_args() {
+        let args = vec!["arg".to_string(), "日本".to_string()];
+        let (cmd, argv) = build_exec_cstrings("echo", &args).expect("valid args");
+
+        assert_eq!(cmd.as_bytes(), b"echo");
+        assert_eq!(argv.len(), 3);
+        assert_eq!(argv[0].as_bytes(), b"echo");
+        assert_eq!(argv[1].as_bytes(), b"arg");
+        assert_eq!(argv[2].as_bytes(), "日本".as_bytes());
+    }
+
+    #[test]
+    fn build_exec_cstrings_rejects_nul_in_command_name() {
+        let args = Vec::new();
+        let err = build_exec_cstrings("bad\0cmd", &args).unwrap_err();
+        assert_eq!(err, ExecCStringError::CommandName);
+    }
+
+    #[test]
+    fn build_exec_cstrings_rejects_nul_in_argument() {
+        let args = vec!["bad\0arg".to_string()];
+        let err = build_exec_cstrings("echo", &args).unwrap_err();
+        assert_eq!(err, ExecCStringError::Argument("bad\0arg".to_string()));
+    }
 
     #[test]
     fn test_xtrace_prefix_uses_ps4_when_set() {
