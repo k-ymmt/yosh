@@ -28,7 +28,7 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
     if ifs.is_empty() {
         return fields
             .into_iter()
-            .filter(|f| !f.value.is_empty() || f.was_quoted)
+            .filter(|f| f.byte_len() != 0 || f.was_quoted)
             .collect();
     }
 
@@ -84,8 +84,8 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
         AfterNws,
     }
 
-    let bytes = field.value.as_bytes();
-    let len = bytes.len();
+    let bytes = field.as_bytes();
+    let len = field.byte_len();
 
     // A quoted empty field (e.g. '' or "") should be preserved as-is.
     if len == 0 && field.was_quoted {
@@ -185,8 +185,9 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
 /// so we can return the input Vec as-is without any allocation.
 fn needs_splitting(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8]) -> bool {
     field
-        .value
-        .bytes()
+        .as_bytes()
+        .iter()
+        .copied()
         .enumerate()
         .any(|(i, b)| !field.is_split_protected(i) && (ifs_ws.contains(&b) || ifs_nws.contains(&b)))
 }
@@ -507,5 +508,46 @@ mod tests {
         f.push_expanded("a:b");
         f.push_literal(":y");
         assert_eq!(values(split(&env, vec![f])), vec!["x:a", "b:y"]);
+    }
+
+    #[test]
+    fn split_preserves_quoted_multibyte_masks() {
+        let env = env_with_ifs(":");
+        let mut f = ExpandedField::new();
+        f.push_quoted("日:本");
+
+        let result = split(&env, vec![f]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].value, "日:本");
+        for i in 0..result[0].byte_len() {
+            assert!(result[0].is_split_protected(i), "byte {i} split-protected");
+            assert!(result[0].is_glob_protected(i), "byte {i} glob-protected");
+        }
+    }
+
+    #[test]
+    fn split_preserves_literal_multibyte_as_split_protected_glob_subject() {
+        let env = env_with_ifs(":");
+        let mut f = ExpandedField::new();
+        f.push_literal("日:本*");
+
+        let result = split(&env, vec![f]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].value, "日:本*");
+        for i in 0..result[0].byte_len() {
+            assert!(result[0].is_split_protected(i), "byte {i} split-protected");
+        }
+        let star = "日:本".len();
+        assert!(!result[0].is_glob_protected(star));
+    }
+
+    #[test]
+    fn split_expanded_multibyte_remains_split_subject() {
+        let env = env_with_ifs(":");
+        let mut f = ExpandedField::new();
+        f.push_expanded("日:本");
+
+        let result = split(&env, vec![f]);
+        assert_eq!(values(result), vec!["日", "本"]);
     }
 }
