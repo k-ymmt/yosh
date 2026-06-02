@@ -19,6 +19,12 @@ retained below for tracking.
 
 ### SP1 follow-ups (non-blocking)
 
+- [ ] `tests/cli_help.rs` CLICOLOR_FORCE tests fail standalone:
+      `help_color_forced_with_clicolor_force` and
+      `help_clicolor_force_overrides_clicolor_zero` do not observe ANSI
+      escapes even with `CLICOLOR_FORCE=1`. Discovered during 2026-06-03
+      POSIX byte semantics stage-1 verification; unrelated to the byte
+      semantics change set.
 - [ ] `exec_function_call` does not clear `env.exec.loop_depth` on entry, so `break`/`continue` inside a function called from a loop affects the caller's loop. Matches dash; bash treats it as out-of-loop. Decide intent and either save/restore `loop_depth` on function entry or document the deviation (`src/exec/function.rs`).
 - [ ] `loop_depth` bump/restore in `exec_for` / `exec_loop` is not panic-safe — `_inner` panics would skip the decrement. Currently fine because yosh uses `Result`, but a small `LoopDepthGuard` RAII drop guard would harden it (`src/exec/compound.rs`).
 - [ ] `exit_child` doc comment (`src/exec/mod.rs:24`) says "Use ONLY after fork() in the child branch, never in the shell parent", but SP1 G5b added a top-level non-interactive call site in `src/exec/simple.rs` (BuiltinKind::Special redirect-error). Either update the doc to permit non-interactive shell exit, or introduce a dedicated `exit_shell(status)` helper.
