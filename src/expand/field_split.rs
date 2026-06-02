@@ -515,14 +515,16 @@ mod tests {
         let env = env_with_ifs(":");
         let mut f = ExpandedField::new();
         f.push_quoted("日:本");
+        f.push_expanded(":x");
 
         let result = split(&env, vec![f]);
-        assert_eq!(result.len(), 1);
+        assert_eq!(result.len(), 2);
         assert_eq!(result[0].value, "日:本");
         for i in 0..result[0].byte_len() {
             assert!(result[0].is_split_protected(i), "byte {i} split-protected");
             assert!(result[0].is_glob_protected(i), "byte {i} glob-protected");
         }
+        assert_eq!(result[1].value, "x");
     }
 
     #[test]
@@ -530,15 +532,16 @@ mod tests {
         let env = env_with_ifs(":");
         let mut f = ExpandedField::new();
         f.push_literal("日:本*");
+        f.push_expanded(":x");
 
         let result = split(&env, vec![f]);
-        assert_eq!(result.len(), 1);
+        assert_eq!(result.len(), 2);
         assert_eq!(result[0].value, "日:本*");
         for i in 0..result[0].byte_len() {
             assert!(result[0].is_split_protected(i), "byte {i} split-protected");
+            assert!(!result[0].is_glob_protected(i), "byte {i} glob-subject");
         }
-        let star = "日:本".len();
-        assert!(!result[0].is_glob_protected(star));
+        assert_eq!(result[1].value, "x");
     }
 
     #[test]
