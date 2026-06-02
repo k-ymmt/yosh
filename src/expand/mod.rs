@@ -183,7 +183,7 @@ pub fn expand_word(env: &mut ShellEnv, word: &Word) -> crate::error::Result<Vec<
     Ok(fields
         .into_iter()
         .filter(|f| !f.is_empty() || f.was_quoted)
-        .map(|f| f.value)
+        .map(ExpandedField::into_string)
         .collect())
 }
 
@@ -205,7 +205,7 @@ pub fn expand_word_to_string(env: &mut ShellEnv, word: &Word) -> crate::error::R
     // double quotes can produce multiple — join them with a space in that case).
     Ok(fields
         .into_iter()
-        .map(|f| f.value)
+        .map(ExpandedField::into_string)
         .collect::<Vec<_>>()
         .join(" "))
 }
