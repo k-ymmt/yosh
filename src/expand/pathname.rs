@@ -44,8 +44,7 @@ pub fn expand(_env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField>
 /// Return `true` if the field contains at least one unquoted glob metachar
 /// (`*`, `?`, `[`).
 fn has_unquoted_glob_chars(field: &ExpandedField) -> bool {
-    let bytes = field.value.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
+    for (i, &b) in field.as_bytes().iter().enumerate() {
         if !field.is_glob_protected(i) && matches!(b, b'*' | b'?' | b'[') {
             return true;
         }
@@ -355,5 +354,32 @@ mod tests {
             has_unquoted_glob_chars(&f),
             "expanded '*' must be glob-subject"
         );
+    }
+
+    #[test]
+    fn multibyte_literal_star_remains_glob_subject() {
+        let mut f = ExpandedField::new();
+        f.push_literal("日*");
+
+        assert_eq!(f.byte_len(), "日*".len());
+        assert!(has_unquoted_glob_chars(&f));
+    }
+
+    #[test]
+    fn multibyte_quoted_star_is_glob_protected() {
+        let mut f = ExpandedField::new();
+        f.push_quoted("日*");
+
+        assert_eq!(f.byte_len(), "日*".len());
+        assert!(!has_unquoted_glob_chars(&f));
+    }
+
+    #[test]
+    fn multibyte_expanded_question_remains_glob_subject() {
+        let mut f = ExpandedField::new();
+        f.push_expanded("本?");
+
+        assert_eq!(f.byte_len(), "本?".len());
+        assert!(has_unquoted_glob_chars(&f));
     }
 }
