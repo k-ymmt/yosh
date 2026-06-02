@@ -1,5 +1,17 @@
 # TODO
 
+## Future: POSIX Byte Semantics
+
+- [ ] Complete full non-UTF-8 shell input, argv, paths, and environment value
+      support. Stage 1 established byte-oriented expansion-field APIs and
+      regression tests around byte-index split/glob protection, plus a
+      centralized UTF-8 `CString` boundary for external exec. Remaining work:
+      migrate shell source input away from `read_to_string`; move AST word
+      storage, variables, positional parameters, aliases, traps, and functions
+      toward byte buffers plus quote/protection metadata; carry `OsString` or
+      raw bytes through paths and process boundaries; and decide plugin API byte
+      semantics. Keep this open until invalid UTF-8 data is preserved end to end.
+
 ## E2E XFAIL Roadmap Follow-ups
 
 Roadmap closed 2026-05-17. Non-blocking follow-ups from SP1–SP6
