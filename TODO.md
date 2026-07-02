@@ -1,5 +1,229 @@
 # TODO
 
+## Audit 2026-07-02: Security / Correctness / Performance
+
+Findings from a three-lens codebase audit (security, POSIX correctness,
+performance). Behavioral items were verified against the debug binary on
+2026-07-02; code-pinned items cite the exact offending line. Items already
+tracked elsewhere (break/continue `loop_depth` across functions — see the
+SP1 follow-up above; plugin `is_symlink` — see the plugin follow-up below)
+are intentionally omitted here.
+
+### Security / Robustness
+
+- [ ] SECURITY(medium): Arithmetic `/` and `%` panic and abort the shell on
+      `INT_MIN / -1` — operands can come from untrusted variables/positional
+      params (verified: `x=-9223372036854775808; echo $((x / -1))` panics at
+      the divide, even in release). Only division-by-zero is guarded; the
+      overflow case is not. Guard both operators (and the compound-assignment
+      `/=` / `%=` siblings) with a checked-div returning `INT_MIN` per C
+      semantics or an arithmetic error (`src/expand/arith.rs:446`,
+      `src/expand/arith.rs:453`, `src/expand/arith.rs:577`,
+      `src/expand/arith.rs:581`).
+- [ ] SECURITY(high): Plugin `files` capability performs raw `std::fs`
+      operations on any attacker-supplied absolute path with only the coarse
+      `CAP_FILES_READ` / `CAP_FILES_WRITE` bit as a gate — no path confinement,
+      no root-dir scoping, symlinks followed. A plugin granted file-read can
+      read `~/.ssh/id_rsa`; file-write can overwrite/`remove_dir_all` anywhere
+      the user can, despite module/linker comments claiming a "plugin sandbox".
+      The manager crate has a `sandbox_root` concept (see plugin follow-ups);
+      the production host does not enforce it. Decide the intended capability
+      model and either confine paths to a configured root or document that
+      `files` is a full-filesystem grant (`src/plugin/host/files.rs:24`,
+      `src/plugin/host/files.rs:85`, `src/plugin/host/files.rs:141`).
+- [ ] SECURITY(low): `host_filesystem_set_cwd` lets a plugin (CAP_FILESYSTEM)
+      mutate the whole shell process's cwd via `std::env::set_current_dir`, a
+      global side effect that changes relative-path resolution for all
+      subsequent host commands, not just the plugin (`src/plugin/host/filesystem.rs:20`).
+- [ ] SECURITY(low): `commands:exec` allowlist matches the literal, unresolved
+      `program` string, but `Command::new(program)` then PATH-resolves relative
+      names against the shell's full inherited environment, so `git:*` executes
+      whatever `git` PATH resolves to — a PATH-injection surface if PATH is
+      attacker-influenced (`src/plugin/host/commands.rs:53`).
+- [ ] SECURITY(low): `noclobber` (`>` under `set -C`) uses a TOCTOU
+      `Path::exists()` check followed by `open(O_CREAT|O_TRUNC)` without
+      `O_EXCL`, so a file created in the race window is clobbered and a symlink
+      target is followed — defeating the overwrite protection. Use
+      `O_CREAT|O_EXCL` and act on `EEXIST` (`src/exec/redirect.rs:80`).
+- [ ] Heredoc bodies larger than the pipe buffer (~64 KiB) deadlock: the whole
+      body is written to the pipe with `write_all` before any reader is
+      attached, so a large heredoc blocks the shell forever (verified hang on a
+      200 KB heredoc). Real shells spool via a temp file or a writer process
+      (`src/exec/redirect.rs:194`).
+
+### Correctness (POSIX deviations)
+
+- [ ] Unquoted `$*` joins positional parameters with a hardcoded space instead
+      of the first char of IFS, so `IFS=:; set a b c; for x in $*` yields the
+      single field `a b c` instead of three fields (verified) (`src/expand/param.rs:171`).
+- [ ] The word argument of `${x:-w}` / `${x:=w}` / `${x:?w}` / `${x:+w}` is
+      expanded via `expand_word_to_string`, discarding quote metadata; an
+      unquoted `${x:-"a b"}` then field-splits into `a`,`b` instead of the
+      single field POSIX requires (verified: `set -- ${x:-"a b"}` gives `$#`=2)
+      (`src/expand/param.rs:54`).
+- [ ] `set -u` (nounset) is only enforced for `ParamExpr::Simple`; expanding an
+      unset positional (`$1`) or special parameter yields empty with no
+      error/exit (verified: `set -u; echo "[$1]"` → `[]` exit 0), whereas POSIX
+      treats it as an expansion error (`src/expand/param.rs:22`).
+- [ ] Unquoted here-document bodies only do a plain `${name}` lookup;
+      conditional (`${x:-def}`), length (`${#x}`), and strip forms are not
+      applied, so `${x:-default}` in a heredoc expands to empty
+      (`src/expand/heredoc.rs:62`).
+- [ ] Under `set -e`, a `!`-negated pipeline still triggers errexit exit
+      (verified: `set -e; ! true` terminates before the next command), but POSIX
+      exempts pipelines beginning with `!` (`src/exec/control.rs:183`).
+- [ ] Under `set -e`, a nonzero result from a non-final component of an AND-OR
+      list triggers errexit exit (verified: `set -e; false && true` terminates),
+      but only the last command of the list is subject to `-e`
+      (`src/exec/control.rs:183`).
+- [ ] In monitor mode (`set -m`) a multi-command pipeline's exit status comes
+      from the last process *reaped* (completion order) rather than the last
+      command in the pipeline, so `set -m; sleep 0.3 | false` reports `$?`=0
+      instead of 1 (verified) (`src/exec/pipeline.rs:151`).
+- [ ] `test`/`[` 3-argument parsing checks `!` negation (and `( )` grouping)
+      before checking whether `$2` is a binary primary, so `[ ! = x ]` errors
+      with "unknown operator" (exit 2) instead of comparing the strings `!` and
+      `x` (exit 1) per POSIX §2.14 (verified) (`src/builtin/test.rs:63`).
+- [ ] `exit`/`return` with a non-numeric argument returns an error without
+      terminating, so `exit foo; echo after` prints the diagnostic and then runs
+      `after` (verified); POSIX requires termination with status 2
+      (`src/builtin/special.rs:67`).
+- [ ] Reserved words (`fi`, `done`, `then`, `else`, `elif`, `do`, `esac`, `}`)
+      are accepted as ordinary command names in command position, so bare `done`
+      runs "command not found" instead of the syntax error POSIX §2.4 requires
+      (verified) (`src/parser/simple.rs:22`).
+- [ ] A trailing pipe or logical operator with no following command (`echo hi |`,
+      `true &&`) is accepted and builds a pipeline with a phantom empty command
+      instead of a syntax error (verified: `echo hi |` exits 0)
+      (`src/parser/simple.rs:63`).
+- [ ] The `for … in` word list is terminated on `do` even without a preceding
+      `;`/newline, so `for i in a b do echo x; done` is misparsed (loops over
+      `a b`, verified prints `x x`) instead of raising a syntax error
+      (`src/parser/compound.rs:167`).
+
+#### Byte-semantics instances (concrete cases for the POSIX Byte Semantics work below)
+
+- [ ] Here-document body expansion emits ordinary bytes via `bytes[i] as char`,
+      decoding each UTF-8 byte as Latin-1; a heredoc containing `日本語` is
+      corrupted to mojibake (`src/expand/heredoc.rs:170`).
+- [ ] `read` builds field/remainder strings with `b.value as char`, decoding raw
+      input bytes as Latin-1; non-ASCII input like `café` is stored corrupted
+      (`src/builtin/read.rs:265` and lines 247, 282, 308).
+- [ ] `$'\xHH'` / `$'\NNN'` octal build a `char` from the numeric value, so
+      `$'\xe9'` produces the two UTF-8 bytes of U+00E9 rather than the single
+      byte `0xe9` that POSIX/other shells emit (`src/lexer/word.rs:582`).
+- [ ] Command substitution reads child output with `read_to_string`, so output
+      containing an invalid-UTF-8 byte is discarded entirely with a
+      "stream did not contain valid UTF-8" error instead of captured as bytes
+      (`src/expand/command_sub.rs:85`).
+- [ ] Pathname expansion lists directory entries via `to_string_lossy`, so files
+      with non-UTF-8 names cannot be matched or are returned corrupted
+      (`src/expand/pathname.rs:173`).
+
+### Performance
+
+Strongest per-command win is the executor exec/environ-cache cluster (the first
+four items reinforce each other): `$LINENO` write → cache thrash → per-command
+environ rebuild → `execvp` re-walking PATH.
+
+- [ ] PERF: `set("LINENO", …)` runs on every simple command — allocates a value
+      `String`, allocates a fresh `"LINENO"` key on insert, and clears
+      `environ_cache`, single-handedly defeating the exported-env cache for
+      external execs. Store LINENO as an integer field and intercept `$LINENO`
+      in `expand::param`, or update in place without invalidating the cache
+      (`src/exec/simple.rs:113`).
+- [ ] PERF: `set`/`set_with_options` invalidate `environ_cache` unconditionally,
+      even for non-exported writes (loop counters, temp vars); only clear the
+      cache when the written variable is/was exported (`src/env/vars.rs:225`,
+      `src/env/vars.rs:287`).
+- [ ] PERF: `set` re-inserts a new `Variable` with a freshly allocated key
+      (`name.to_string()`) to update an existing variable in both the fast path
+      and multi-scope loop, re-hashing and re-allocating the key each write; use
+      `get_mut` to mutate `value` in place (`src/env/vars.rs:235`,
+      `src/env/vars.rs:259`).
+- [ ] PERF: `build_environ` builds a temporary `HashMap<String, &Variable>`
+      cloning every variable name plus every exported value on each rebuild;
+      since the cache is invalidated per command, this runs per external exec —
+      iterate scopes top-down with a `HashSet` of seen keys and clone only
+      exported entries once (`src/env/vars.rs:393`).
+- [ ] PERF: `build_env_vars` clones the entire exported environ with
+      `environ().to_vec()` on every external command, then applies prefix
+      assignments via O(assignments × env) linear `find`; skip the clone when
+      there are no prefix assignments and merge via a map otherwise
+      (`src/exec/simple.rs:515`).
+- [ ] PERF: the external-exec path calls `execvp`, which re-splits `$PATH` and
+      stats every directory in the child on every command, bypassing the
+      existing `utility_hash` cache; resolve via `find_in_path` in the parent and
+      `execv` the absolute path (`src/exec/simple.rs:593`).
+- [ ] PERF: `cmd_str_for_hooks` collects all args into a `Vec<&str>` and
+      `join(" ")`s them for every simple command even when no pre/post-exec
+      plugin hooks are registered; gate the string build on hooks being
+      registered (`src/exec/simple.rs:266`).
+- [ ] PERF: field-splitting `split()` allocates a fresh IFS `String` plus two
+      `Vec<u8>` on every word expansion — even the fast path where nothing
+      splits (`ls foo bar`). Read IFS by reference / short-circuit before
+      allocating when IFS is default (`src/expand/field_split.rs:9`,
+      `src/expand/field_split.rs:36`).
+- [ ] PERF: `strip_prefix`/`strip_suffix` run an anchored `pattern::matches` at
+      every char boundary — the common `${x##*/}` / `${x%.*}` idioms are O(n²)+;
+      add a fast path for literal (metachar-free) patterns and anchored
+      prefix/suffix scanning (`src/expand/param.rs:194`, `src/expand/param.rs:211`).
+      (Related to the already-tracked strip re-parse item under Code Quality.)
+- [ ] PERF: `parse_bracket` allocates a fresh `Vec<BracketItem>` and re-parses
+      the class body on every call; a leading `*` retries `rest` against every
+      suffix so `*[abc]x` re-parses the bracket O(n) times per match. Pre-parse
+      the pattern into tokens once (`src/expand/pattern.rs:104`).
+- [ ] PERF: `redraw` classifies each character with
+      `spans.iter().find(...)` inside the per-char loop → O(n·spans) per redraw;
+      spans are sorted and non-overlapping, so advance a single span-cursor
+      index alongside the char index (`src/interactive/line_editor.rs:602`).
+- [ ] PERF: `redraw` clears and fully repaints every row on every keystroke,
+      re-emitting all escape/style sequences even when only the tail past the
+      cursor changed; use the scanner's `diff_pos` to repaint from the first
+      changed column (`src/interactive/line_editor.rs:576`).
+- [ ] PERF: `redraw` re-sums `UnicodeWidthChar::width` over the whole buffer and
+      the whole cursor prefix (two O(n) scans) on every keystroke; maintain
+      incremental prefix/total width totals as the buffer is edited
+      (`src/interactive/line_editor.rs:639`).
+- [ ] PERF: highlight `scan` clones the full result into the cache every
+      keystroke (`prev_spans = spans.clone()`, `prev_input = current.to_vec()`),
+      and its append fast-path still clones all prior spans before extending;
+      reuse the owned buffer/spans via `std::mem::take` and push only the newly
+      scanned tail (`src/interactive/highlight_scanner/mod.rs:113`,
+      `src/interactive/highlight_scanner/mod.rs:96`).
+- [ ] PERF: `update_suggestion` builds a fresh full-line `String` via
+      `self.buffer()` on every keystroke before the prefix compare, including
+      pure cursor-movement keys that can't change the suggestion; skip the build
+      for actions that can't affect the suggestion (`src/interactive/line_editor.rs:412`).
+- [ ] PERF: `next_token` dequeues alias tokens with `first().cloned()` +
+      `remove(0)` — an O(n) front-shift plus a full token clone per queued token;
+      use a `VecDeque` (`pop_front`) (`src/lexer/alias.rs:8`).
+- [ ] PERF: `try_read_io_number` and `parse_command`'s assignment look-ahead call
+      `save_state()` for every digit-/word-led command, cloning the
+      `alias_token_queue` Vec and `expanding_aliases` HashSet though only the
+      scalar cursor is needed; snapshot just `pos`/`line`/`column` for the common
+      no-op restore (`src/lexer/scanner.rs:306`, `src/parser/mod.rs:270`).
+- [ ] PERF: parser double-clones the current Word token
+      (`&self.current.token.clone()` then `word.clone()`) in
+      `parse_simple_command` / `expect_word` / `parse_command`, cloning every
+      `WordPart` String twice per command word; restructure to a single move via
+      `std::mem::replace` (`src/parser/simple.rs:22`, `src/parser/word.rs:8`,
+      `src/parser/mod.rs:270`).
+- [ ] PERF: `try_parse_assignment` clones the entire first literal String
+      (`WordPart::Literal(s) => s.clone()`) for every command word checked but
+      only `.find('=')` + slices it; bind `&str` instead (`src/parser/simple.rs:95`).
+- [ ] PERF: `is_complete_command_end` / `is_compound_command_start` recompute
+      `as_literal()` up to 8 times per call (once per `is_reserved`) inside the
+      per-command-boundary parse loop; compute the literal `&str` once and
+      `match` on it (`src/parser/mod.rs:310`).
+- [ ] PERF: `read_word_parts` rebuilds the whole `parts` Vec via
+      `.into_iter().filter(...).collect()` on every word just to drop
+      empty-Literal entries that only appear with rare line continuations; skip
+      the rebuild when no empty literal was produced (`src/lexer/word.rs:136`).
+- [ ] PERF: `read_heredoc_body` allocates a fresh `String` per body line for the
+      delimiter comparison (`trim_start_matches('\t').to_string()` /
+      `line.clone()`); compare against a `&str` borrow (`src/lexer/heredoc.rs:62`).
+
 ## Future: POSIX Byte Semantics
 
 - [ ] Complete full non-UTF-8 shell input, argv, paths, and environment value
