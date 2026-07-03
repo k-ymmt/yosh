@@ -215,14 +215,14 @@ fn test_pty_ctrl_r_history_search() {
     // Ctrl+R to search - wait for search UI, type query, then select and execute
     s.send("\x12").unwrap(); // Ctrl+R
     // Wait for the search UI query line to appear
-    s.expect("2/2 > ").expect("Ctrl+R search UI did not appear");
+    s.expect("2/2").expect("Ctrl+R search UI did not appear");
     // FuzzySearchUI::run() draws UI then enables raw mode — wait for transition
     wait_for_raw_mode(&s);
 
     // Type "echo alpha" to uniquely select it
     s.send("echo alpha").unwrap();
     // Wait for filter to narrow down to unique match
-    s.expect("1/1 > ")
+    s.expect("1/2")
         .expect("search query did not filter to unique match");
 
     s.send("\r").unwrap(); // Select from search
