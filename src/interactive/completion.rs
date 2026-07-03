@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-use super::fuzzy_search::filter_and_sort;
+use super::fuzzy_search::{ScoredCandidate, filter_and_sort};
 use super::terminal::Terminal;
 
 /// Scan leftward from `cursor` to find the start of the completion word.
@@ -275,7 +275,7 @@ pub struct CompletionUI {
     query: Vec<char>,
     selected: usize,
     scroll_offset: usize,
-    candidates: Vec<(i64, String)>,
+    candidates: Vec<ScoredCandidate>,
     max_visible: usize,
 }
 
@@ -295,7 +295,14 @@ impl CompletionUI {
             query: Vec::new(),
             selected: 0,
             scroll_offset: 0,
-            candidates: candidates.iter().cloned().map(|c| (0, c)).collect(),
+            candidates: candidates
+                .iter()
+                .map(|c| ScoredCandidate {
+                    score: 0,
+                    text: c.clone(),
+                    positions: Vec::new(),
+                })
+                .collect(),
             max_visible,
         };
 
@@ -342,8 +349,8 @@ impl CompletionUI {
     fn handle_key(&mut self, key: KeyEvent, all_candidates: &[String]) -> CompletionAction {
         match (key.code, key.modifiers) {
             (KeyCode::Enter, _) | (KeyCode::Tab, _) => {
-                if let Some((_score, value)) = self.candidates.get(self.selected) {
-                    CompletionAction::Select(value.clone())
+                if let Some(cand) = self.candidates.get(self.selected) {
+                    CompletionAction::Select(cand.text.clone())
                 } else {
                     CompletionAction::Cancel
                 }
@@ -399,7 +406,14 @@ impl CompletionUI {
     fn update_candidates(&mut self, all_candidates: &[String]) {
         let query: String = self.query.iter().collect();
         if query.is_empty() {
-            self.candidates = all_candidates.iter().cloned().map(|c| (0, c)).collect();
+            self.candidates = all_candidates
+                .iter()
+                .map(|c| ScoredCandidate {
+                    score: 0,
+                    text: c.clone(),
+                    positions: Vec::new(),
+                })
+                .collect();
         } else {
             self.candidates = filter_and_sort(&query, all_candidates);
         }
@@ -435,7 +449,7 @@ impl CompletionUI {
         // Draw candidates in reverse order (highest index = top of UI)
         for i in (visible_range).rev() {
             term.clear_current_line()?;
-            let (_score, ref line) = self.candidates[i];
+            let line = &self.candidates[i].text;
             let display: String = line.chars().take(width.saturating_sub(2)).collect();
             if i == self.selected {
                 term.set_reverse(true)?;

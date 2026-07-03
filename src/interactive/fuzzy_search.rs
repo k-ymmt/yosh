@@ -2,7 +2,6 @@
 #[derive(Debug)]
 pub struct FuzzyMatch {
     pub score: i64,
-    #[allow(dead_code)]
     pub positions: Vec<usize>,
 }
 
@@ -75,13 +74,28 @@ pub fn fuzzy_match(query: &str, target: &str) -> Option<FuzzyMatch> {
     Some(FuzzyMatch { score, positions })
 }
 
+/// A candidate with its fuzzy score and matched char indices (ascending).
+#[derive(Debug, Clone)]
+pub struct ScoredCandidate {
+    pub score: i64,
+    pub text: String,
+    pub positions: Vec<usize>,
+}
+
 /// Filter entries by fuzzy match and return sorted by score descending.
-pub fn filter_and_sort(query: &str, entries: &[String]) -> Vec<(i64, String)> {
-    let mut results: Vec<(i64, String)> = entries
+/// The sort is stable: equal scores keep the input order.
+pub fn filter_and_sort(query: &str, entries: &[String]) -> Vec<ScoredCandidate> {
+    let mut results: Vec<ScoredCandidate> = entries
         .iter()
-        .filter_map(|entry| fuzzy_match(query, entry).map(|m| (m.score, entry.clone())))
+        .filter_map(|entry| {
+            fuzzy_match(query, entry).map(|m| ScoredCandidate {
+                score: m.score,
+                text: entry.clone(),
+                positions: m.positions,
+            })
+        })
         .collect();
-    results.sort_by(|a, b| b.0.cmp(&a.0));
+    results.sort_by(|a, b| b.score.cmp(&a.score));
     results
 }
 
@@ -99,7 +113,7 @@ pub struct FuzzySearchUI {
     query: Vec<char>,
     selected: usize,
     scroll_offset: usize,
-    candidates: Vec<(i64, String)>,
+    candidates: Vec<ScoredCandidate>,
     max_visible: usize,
 }
 
@@ -117,7 +131,14 @@ impl FuzzySearchUI {
             query: Vec::new(),
             selected: 0,
             scroll_offset: 0,
-            candidates: entries.iter().cloned().map(|e| (0, e)).collect(),
+            candidates: entries
+                .iter()
+                .map(|e| ScoredCandidate {
+                    score: 0,
+                    text: e.clone(),
+                    positions: Vec::new(),
+                })
+                .collect(),
             max_visible,
         };
         ui.candidates.reverse(); // newest first
@@ -168,8 +189,8 @@ impl FuzzySearchUI {
     fn handle_key(&mut self, key: KeyEvent, entries: &[String]) -> SearchAction {
         match (key.code, key.modifiers) {
             (KeyCode::Enter, _) => {
-                if let Some((_score, line)) = self.candidates.get(self.selected) {
-                    SearchAction::Select(line.clone())
+                if let Some(cand) = self.candidates.get(self.selected) {
+                    SearchAction::Select(cand.text.clone())
                 } else {
                     SearchAction::Cancel
                 }
@@ -230,7 +251,14 @@ impl FuzzySearchUI {
     fn update_candidates(&mut self, entries: &[String]) {
         let query: String = self.query.iter().collect();
         if query.is_empty() {
-            self.candidates = entries.iter().cloned().map(|e| (0, e)).collect();
+            self.candidates = entries
+                .iter()
+                .map(|e| ScoredCandidate {
+                    score: 0,
+                    text: e.clone(),
+                    positions: Vec::new(),
+                })
+                .collect();
             self.candidates.reverse();
         } else {
             self.candidates = filter_and_sort(&query, entries);
@@ -267,7 +295,7 @@ impl FuzzySearchUI {
         // Draw candidates in reverse order (highest index = top of UI)
         for i in (visible_range).rev() {
             term.clear_current_line()?;
-            let (_score, ref line) = self.candidates[i];
+            let line = &self.candidates[i].text;
             let display: String = line.chars().take(width.saturating_sub(2)).collect();
             if i == self.selected {
                 term.set_reverse(true)?;
@@ -389,9 +417,26 @@ mod tests {
         ];
         let results = filter_and_sort("gco", &entries);
         assert!(!results.is_empty());
-        assert!(results[0].1.contains("checkout"));
+        assert!(results[0].text.contains("checkout"));
         for w in results.windows(2) {
-            assert!(w[0].0 >= w[1].0);
+            assert!(w[0].score >= w[1].score);
         }
+    }
+
+    #[test]
+    fn test_filter_and_sort_positions() {
+        let entries = vec!["git checkout".to_string()];
+        let results = filter_and_sort("gco", &entries);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "git checkout");
+        // g=0, c=4 (start of "checkout"), o=9 (greedy scan)
+        assert_eq!(results[0].positions, vec![0, 4, 9]);
+    }
+
+    #[test]
+    fn test_filter_and_sort_empty_query_no_positions() {
+        let entries = vec!["anything".to_string()];
+        let results = filter_and_sort("", &entries);
+        assert!(results[0].positions.is_empty());
     }
 }
