@@ -52,7 +52,6 @@ pub trait Terminal {
     fn set_fg_color(&mut self, color: Color) -> io::Result<()>;
 
     /// Set background color.
-    #[allow(dead_code)] // used by the selector renderer (Task 4); mocks implement it
     fn set_bg_color(&mut self, color: Color) -> io::Result<()>;
 
     /// Reset all text styling (color, bold, dim, underline, reverse).

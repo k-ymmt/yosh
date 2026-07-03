@@ -7,14 +7,13 @@
 //! the best candidate, drawn at the bottom (nearest the query line).
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::style::Color;
 use std::io;
 use unicode_width::UnicodeWidthChar;
 
 use super::display_width::display_width;
 use super::fuzzy_search::{ScoredCandidate, filter_and_sort};
 use super::terminal::Terminal;
-
-// (Task 4 adds `use crossterm::style::Color;` when colored rendering lands.)
 
 /// How candidate rows are styled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +62,6 @@ pub struct SelectorUI {
     candidates: Vec<ScoredCandidate>,
     max_visible: usize,
     total: usize,
-    #[allow(dead_code)]
     opts: SelectorOptions,
 }
 
@@ -318,40 +316,97 @@ impl SelectorUI {
         let budget = width.saturating_sub(2); // 2 columns for the pointer prefix
         let (char_count, truncated) = fit_to_width(&cand.text, budget);
 
-        // Legacy look (colors disabled): "> " + reverse video.
+        if !self.opts.colors {
+            // Legacy look: "> " + reverse video for the selected row.
+            if is_selected {
+                term.set_reverse(true)?;
+                term.write_str("> ")?;
+            } else {
+                term.write_str("  ")?;
+            }
+            let mut text: String = cand.text.chars().take(char_count).collect();
+            if truncated {
+                text.push('…');
+            }
+            term.write_str(&text)?;
+            if is_selected {
+                term.set_reverse(false)?;
+            }
+            return Ok(());
+        }
+
+        // fzf-style: pointer + background on the selected row, matched query
+        // chars in cyan, directories in blue.
         if is_selected {
-            term.set_reverse(true)?;
-            term.write_str("> ")?;
+            term.set_bg_color(Color::DarkGrey)?;
+            term.set_bold(true)?;
+            term.set_fg_color(Color::Cyan)?;
+            term.write_str("\u{276F} ")?; // ❯
         } else {
             term.write_str("  ")?;
         }
-        let mut text: String = cand.text.chars().take(char_count).collect();
+
+        let is_dir = self.opts.item_style == ItemStyle::Path && cand.text.ends_with('/');
+        let base = if is_dir { Color::Blue } else { Color::Reset };
+        term.set_fg_color(base)?;
+
+        for (ci, ch) in cand.text.chars().take(char_count).enumerate() {
+            let matched = cand.positions.binary_search(&ci).is_ok();
+            if matched {
+                term.set_fg_color(Color::Cyan)?;
+                if !is_selected {
+                    term.set_bold(true)?;
+                }
+                term.write_char(ch)?;
+                if !is_selected {
+                    term.set_bold(false)?;
+                }
+                term.set_fg_color(base)?;
+            } else {
+                term.write_char(ch)?;
+            }
+        }
         if truncated {
-            text.push('…');
+            term.write_char('…')?;
         }
-        term.write_str(&text)?;
-        if is_selected {
-            term.set_reverse(false)?;
-        }
+        // Reset clears fg, bg, and bold together (Attribute::Reset).
+        term.reset_style()?;
         Ok(())
     }
 
     fn draw_separator<T: Terminal>(&self, term: &mut T, width: usize) -> io::Result<()> {
         term.clear_current_line()?;
         let sep: String = "\u{2500}".repeat(width.min(40));
-        term.write_str(&format!("  {}\r\n", sep))?;
+        if self.opts.colors {
+            term.set_dim(true)?;
+            term.write_str(&format!("  {}", sep))?;
+            term.set_dim(false)?;
+            term.write_str("\r\n")?;
+        } else {
+            term.write_str(&format!("  {}\r\n", sep))?;
+        }
         Ok(())
     }
 
     fn draw_query_line<T: Terminal>(&self, term: &mut T) -> io::Result<()> {
         term.clear_current_line()?;
         let query_str: String = self.query.iter().collect();
-        term.write_str(&format!(
-            "  {}/{} > {}",
-            self.candidates.len(),
-            self.total,
-            query_str
-        ))?;
+        if self.opts.colors {
+            term.write_str("  ")?;
+            term.set_fg_color(Color::Yellow)?;
+            term.write_str(&format!("{}/{}", self.candidates.len(), self.total))?;
+            term.set_fg_color(Color::Cyan)?;
+            term.write_str(" \u{276F} ")?; // ❯
+            term.set_fg_color(Color::Reset)?;
+            term.write_str(&query_str)?;
+        } else {
+            term.write_str(&format!(
+                "  {}/{} > {}",
+                self.candidates.len(),
+                self.total,
+                query_str
+            ))?;
+        }
         Ok(())
     }
 
@@ -540,6 +595,13 @@ mod tests {
         SelectorOptions {
             item_style: ItemStyle::Plain,
             colors: false,
+        }
+    }
+
+    fn color_opts(style: ItemStyle) -> SelectorOptions {
+        SelectorOptions {
+            item_style: style,
+            colors: true,
         }
     }
 
@@ -764,5 +826,104 @@ mod tests {
         let _ =
             SelectorUI::run(&items(&["日本語のファイル名.rs"]), plain_opts(), &mut term).unwrap();
         assert!(term.dump().contains('…'), "output: {}", term.dump());
+    }
+
+    // ── colored rendering ───────────────────────────────────────────
+
+    #[test]
+    fn test_colors_selected_row_has_bg_and_pointer() {
+        let mut term = MockTerm::new(vec![MockTerm::key(KeyCode::Esc)]);
+        let _ =
+            SelectorUI::run(&items(&["a", "b"]), color_opts(ItemStyle::Plain), &mut term).unwrap();
+        let out = term.dump();
+        assert!(out.contains("[BG:DarkGrey]"), "output: {}", out);
+        assert!(out.contains("❯ "), "output: {}", out);
+        assert!(
+            !out.contains("[REV]"),
+            "reverse video must not be used: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_colors_matched_chars_cyan() {
+        let mut events = MockTerm::chars("b");
+        events.push(MockTerm::key(KeyCode::Esc));
+        let mut term = MockTerm::new(events);
+        let _ = SelectorUI::run(&items(&["abc"]), color_opts(ItemStyle::Plain), &mut term).unwrap();
+        // After typing "b", the row for "abc" must switch to cyan right
+        // before writing the matched char 'b'.
+        let out = term.dump();
+        assert!(out.contains("[FG:Cyan]b"), "output: {}", out);
+    }
+
+    #[test]
+    fn test_colors_directory_blue_in_path_style() {
+        let mut term = MockTerm::new(vec![MockTerm::key(KeyCode::Esc)]);
+        let _ = SelectorUI::run(
+            &items(&["src/", "main.rs"]),
+            color_opts(ItemStyle::Path),
+            &mut term,
+        )
+        .unwrap();
+        assert!(term.dump().contains("[FG:Blue]"), "output: {}", term.dump());
+    }
+
+    #[test]
+    fn test_colors_plain_style_no_blue() {
+        // History entries ending in '/' must NOT be colored as directories.
+        let mut term = MockTerm::new(vec![MockTerm::key(KeyCode::Esc)]);
+        let _ = SelectorUI::run(
+            &items(&["ls src/"]),
+            color_opts(ItemStyle::Plain),
+            &mut term,
+        )
+        .unwrap();
+        assert!(
+            !term.dump().contains("[FG:Blue]"),
+            "output: {}",
+            term.dump()
+        );
+    }
+
+    #[test]
+    fn test_colors_count_yellow_and_filtered_total() {
+        let mut events = MockTerm::chars("ban");
+        events.push(MockTerm::key(KeyCode::Esc));
+        let mut term = MockTerm::new(events);
+        let _ = SelectorUI::run(
+            &items(&["apple.txt", "banana.txt", "cherry.txt"]),
+            color_opts(ItemStyle::Plain),
+            &mut term,
+        )
+        .unwrap();
+        let out = term.dump();
+        // filtered=1, total=3 — the old code printed "1/1"; this must be "1/3".
+        assert!(out.contains("[FG:Yellow]1/3"), "output: {}", out);
+    }
+
+    #[test]
+    fn test_no_colors_keeps_legacy_look() {
+        let mut term = MockTerm::new(vec![MockTerm::key(KeyCode::Esc)]);
+        let _ = SelectorUI::run(&items(&["a", "b"]), plain_opts(), &mut term).unwrap();
+        let out = term.dump();
+        assert!(out.contains("[REV]"), "output: {}", out);
+        assert!(out.contains("> "), "output: {}", out);
+        assert!(!out.contains("[FG:"), "no colors expected: {}", out);
+        assert!(!out.contains("[BG:"), "no bg expected: {}", out);
+    }
+
+    #[test]
+    fn test_plain_count_shows_filtered_and_total() {
+        let mut events = MockTerm::chars("ban");
+        events.push(MockTerm::key(KeyCode::Esc));
+        let mut term = MockTerm::new(events);
+        let _ = SelectorUI::run(
+            &items(&["apple.txt", "banana.txt", "cherry.txt"]),
+            plain_opts(),
+            &mut term,
+        )
+        .unwrap();
+        assert!(term.dump().contains("1/3 > ban"), "output: {}", term.dump());
     }
 }
