@@ -7,22 +7,148 @@
 ///   `\x`     — escaped literal `x`
 ///   everything else — literal match
 pub fn matches(pattern: &str, string: &str) -> bool {
-    match_pat(pattern, string)
+    let tokens = parse_pattern(pattern);
+    match_tokens(&tokens, string)
 }
 
-fn match_pat(pat: &str, s: &str) -> bool {
-    let mut pat_chars = pat.chars();
-    match pat_chars.next() {
+/// A single parsed pattern element. The pattern string is tokenized once
+/// per `matches()` call so that `*`'s suffix-retry loop (which re-attempts
+/// the remaining pattern against every suffix of the subject) walks a
+/// pre-parsed token slice instead of re-parsing bracket expressions (and
+/// re-allocating their `Vec<BracketItem>`) on every retry. See TODO PERF
+/// item 10 / task-2 brief for the O(n) `*[abc]x` re-parse this replaces.
+enum PatternToken {
+    /// A literal character, from an ordinary pattern char or a `\x` escape.
+    Literal(char),
+    /// `?` — matches any single character.
+    Any,
+    /// `*` — matches any string (including empty).
+    Star,
+    /// A bracket expression `[...]` / `[!...]`, pre-parsed into members.
+    Bracket {
+        negate: bool,
+        members: Vec<BracketItem>,
+    },
+}
+
+/// Tokenize a full pattern string into a `Vec<PatternToken>`, parsing each
+/// bracket expression exactly once. Malformed brackets (no closing `]`) and
+/// backslash-escapes are resolved into `Literal` tokens here so the matcher
+/// never has to touch the original `&str` representation again.
+fn parse_pattern(pat: &str) -> Vec<PatternToken> {
+    let mut tokens = Vec::new();
+    let mut chars = pat.chars();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => tokens.push(PatternToken::Star),
+            '?' => tokens.push(PatternToken::Any),
+            '[' => {
+                let rest = chars.as_str();
+                if let Some((consumed, negate, members)) = parse_bracket(rest) {
+                    tokens.push(PatternToken::Bracket { negate, members });
+                    chars = rest[consumed..].chars();
+                } else {
+                    // Malformed bracket — treat '[' as a literal.
+                    tokens.push(PatternToken::Literal('['));
+                }
+            }
+            '\\' => match chars.next() {
+                Some(pc) => tokens.push(PatternToken::Literal(pc)),
+                // Trailing backslash — literal backslash.
+                None => tokens.push(PatternToken::Literal('\\')),
+            },
+            c => tokens.push(PatternToken::Literal(c)),
+        }
+    }
+
+    tokens
+}
+
+/// Classification of a pattern's shape, used by callers (e.g.
+/// `param::strip_prefix` / `strip_suffix`) to pick an O(1)/O(n) anchored
+/// fast path instead of the general O(n) boundary-scan + backtracking
+/// matcher. Only patterns built entirely from literal characters (ordinary
+/// chars and `\x` escapes — no `*`, `?`, or `[...]`) qualify; anything else
+/// falls back to `General` so behavior for bracket/`?`-bearing patterns is
+/// unchanged.
+pub enum PatternShape {
+    /// No metacharacters at all — an exact literal string.
+    Literal(String),
+    /// A single leading `*` followed by a literal remainder, e.g. the
+    /// `${x##*/}` / `${x#*/}` idiom's pattern `*/`.
+    StarThenLiteral(String),
+    /// A literal followed by a single trailing `*`, e.g. the
+    /// `${x%.*}` / `${x%%.*}` idiom's pattern `.*`.
+    LiteralThenStar(String),
+    /// Anything else (multiple `*`, `?`, bracket expressions, or a `*` not
+    /// at an end) — callers must use the general matcher.
+    General,
+}
+
+/// Classify `pat`'s shape for fast-path dispatch. See `PatternShape`.
+pub fn classify(pat: &str) -> PatternShape {
+    let tokens = parse_pattern(pat);
+    let Some(lit) = literal_run(&tokens) else {
+        return PatternShape::General;
+    };
+    let has_leading_star = matches!(tokens.first(), Some(PatternToken::Star));
+    let has_trailing_star = matches!(tokens.last(), Some(PatternToken::Star));
+    if has_leading_star {
+        PatternShape::StarThenLiteral(lit)
+    } else if has_trailing_star {
+        PatternShape::LiteralThenStar(lit)
+    } else {
+        // No `*` at all (empty tokens counts as the empty literal too).
+        PatternShape::Literal(lit)
+    }
+}
+
+/// If `tokens` is either all-`Literal` or a single leading/trailing `Star`
+/// plus all-`Literal` otherwise, return the concatenated literal value.
+/// Returns `None` for anything containing `Any`, `Bracket`, more than one
+/// `Star`, or a `Star` that isn't strictly at the first/last position.
+fn literal_run(tokens: &[PatternToken]) -> Option<String> {
+    let star_count = tokens
+        .iter()
+        .filter(|t| matches!(t, PatternToken::Star))
+        .count();
+    if star_count > 1 {
+        return None;
+    }
+    if star_count == 1 {
+        let is_edge_star = matches!(tokens.first(), Some(PatternToken::Star))
+            || matches!(tokens.last(), Some(PatternToken::Star));
+        if !is_edge_star {
+            return None;
+        }
+    }
+
+    let mut lit = String::new();
+    for t in tokens {
+        match t {
+            PatternToken::Literal(c) => lit.push(*c),
+            PatternToken::Star => {} // skip; position already validated above
+            PatternToken::Any | PatternToken::Bracket { .. } => return None,
+        }
+    }
+    Some(lit)
+}
+
+/// Match a pre-parsed token slice against `s`, recursively — mirrors the
+/// original char-by-char `match_pat` but operates on `PatternToken`s so
+/// bracket expressions are matched from their pre-parsed `members`
+/// (no re-parsing) even when `*`'s retry loop calls back into this
+/// function once per suffix of `s`.
+fn match_tokens(tokens: &[PatternToken], s: &str) -> bool {
+    match tokens.first() {
         None => s.is_empty(),
 
-        Some('*') => {
-            // Try matching `rest` against every suffix of s — s itself is the
-            // first candidate, the empty string the last; once rem is exhausted
-            // (chars().next() == None) we have tried them all and give up.
-            let rest = pat_chars.as_str();
+        Some(PatternToken::Star) => {
+            let rest = &tokens[1..];
             let mut rem = s;
             loop {
-                if match_pat(rest, rem) {
+                if match_tokens(rest, rem) {
                     return true;
                 }
                 match rem.chars().next() {
@@ -32,65 +158,37 @@ fn match_pat(pat: &str, s: &str) -> bool {
             }
         }
 
-        Some('?') => match s.chars().next() {
-            Some(c) => match_pat(pat_chars.as_str(), &s[c.len_utf8()..]),
+        Some(PatternToken::Any) => match s.chars().next() {
+            Some(c) => match_tokens(&tokens[1..], &s[c.len_utf8()..]),
             None => false,
         },
 
-        Some('[') => {
-            let after_bracket = pat_chars.as_str();
-            let s_first = s.chars().next();
-            if let Some((consumed, matched_char)) = parse_bracket(after_bracket, s_first) {
-                // Bracket expressions always match exactly one character.
-                match s_first {
-                    Some(c) if matched_char => {
-                        match_pat(&after_bracket[consumed..], &s[c.len_utf8()..])
-                    }
-                    _ => false,
-                }
-            } else {
-                // Malformed bracket — treat '[' as a literal.
-                match s.chars().next() {
-                    Some('[') => match_pat(after_bracket, &s['['.len_utf8()..]),
-                    _ => false,
+        Some(PatternToken::Bracket { negate, members }) => match s.chars().next() {
+            Some(c) => {
+                let inner_match = members.iter().any(|m| m.matches(c));
+                let result = if *negate { !inner_match } else { inner_match };
+                if result {
+                    match_tokens(&tokens[1..], &s[c.len_utf8()..])
+                } else {
+                    false
                 }
             }
-        }
+            None => false,
+        },
 
-        Some('\\') => {
-            let after_bs = pat_chars.as_str();
-            match after_bs.chars().next() {
-                // '\x' matches literal 'x'.
-                Some(pc) => match s.chars().next() {
-                    Some(sc) if sc == pc => {
-                        match_pat(&after_bs[pc.len_utf8()..], &s[sc.len_utf8()..])
-                    }
-                    _ => false,
-                },
-                // Trailing backslash — match a literal backslash.
-                None => match s.chars().next() {
-                    Some('\\') => match_pat(after_bs, &s['\\'.len_utf8()..]),
-                    _ => false,
-                },
-            }
-        }
-
-        Some(c) => match s.chars().next() {
-            Some(sc) if sc == c => match_pat(pat_chars.as_str(), &s[sc.len_utf8()..]),
+        Some(PatternToken::Literal(pc)) => match s.chars().next() {
+            Some(sc) if sc == *pc => match_tokens(&tokens[1..], &s[sc.len_utf8()..]),
             _ => false,
         },
     }
 }
 
 /// Parse a bracket expression starting *after* the opening `[`.
-/// Returns `Some((bytes_consumed, did_match))` on success, or `None` if the
-/// bracket is malformed (no closing `]`). `bytes_consumed` counts bytes from
-/// the start of `pat` (just after the opening `[`) through the closing `]`.
-///
-/// `bytes_consumed` is a byte length into `pat`, so the caller advances with
-/// `&pat[bytes_consumed..]`. `ch` is the character from the string being
-/// matched (if any).
-fn parse_bracket(pat: &str, ch: Option<char>) -> Option<(usize, bool)> {
+/// Returns `Some((bytes_consumed, negate, members))` on success, or `None`
+/// if the bracket is malformed (no closing `]`). `bytes_consumed` counts
+/// bytes from the start of `pat` (just after the opening `[`) through the
+/// closing `]`, so the caller advances with `&pat[bytes_consumed..]`.
+fn parse_bracket(pat: &str) -> Option<(usize, bool, Vec<BracketItem>)> {
     if pat.is_empty() {
         return None;
     }
@@ -147,16 +245,8 @@ fn parse_bracket(pat: &str, ch: Option<char>) -> Option<(usize, bool)> {
         return None;
     }
 
-    // When `ch` is None (empty subject), no member matches; a negated class
-    // would then report `true`, but the caller's `[` arm rejects an empty
-    // subject before using this result, so the bracket never matches "".
-    let inner_match = ch
-        .map(|c| members.iter().any(|m| m.matches(c)))
-        .unwrap_or(false);
-    let result = if negate { !inner_match } else { inner_match };
-
     let consumed = pat.len() - rest.len();
-    Some((consumed, result))
+    Some((consumed, negate, members))
 }
 
 enum BracketItem {
@@ -549,5 +639,92 @@ mod tests {
     fn multibyte_backslash_trailing() {
         assert!(matches("あ\\", "あ\\"));
         assert!(matches("\\あ", "あ"));
+    }
+
+    // ── Leading-`*` + bracket suffix-retry (Task 2 PERF item 10) ──
+    // Pins behavior for the `*[abc]x` re-parse-per-retry pattern flagged by
+    // the audit: `*` retries the remaining tokens against every suffix of
+    // `s`, so a bracket immediately after `*` gets matched once per retry.
+    // Locks correctness under the pre-parsed-tokens refactor.
+
+    #[test]
+    fn star_then_bracket_then_literal_matches() {
+        assert!(matches("*[abc]x", "abcx"));
+        assert!(matches("*[abc]x", "zzzbx"));
+        assert!(matches("*[abc]x", "ax"));
+        assert!(!matches("*[abc]x", "zzzdx"));
+        assert!(!matches("*[abc]x", "x"));
+    }
+
+    #[test]
+    fn star_then_bracket_then_literal_no_match_when_bracket_never_satisfied() {
+        // Every suffix retry must independently re-check the bracket;
+        // this pins that the pre-parsed token isn't accidentally consumed
+        // or mutated across retries.
+        assert!(!matches("*[xyz]x", "aaaaaaaaaa"));
+    }
+
+    #[test]
+    fn star_then_negated_bracket_then_literal() {
+        assert!(matches("*[!abc]x", "dx"));
+        assert!(!matches("*[!abc]x", "ax"));
+    }
+
+    #[test]
+    fn star_then_posix_class_bracket_retries_correctly() {
+        // Exercises the POSIX-class bracket variant (allocates a
+        // `Vec<BracketItem>` in `parse_bracket`) under the same retry loop.
+        assert!(matches("*[[:digit:]]x", "abc5x"));
+        assert!(!matches("*[[:digit:]]x", "abcYx"));
+    }
+
+    #[test]
+    fn star_then_range_bracket_multiple_retries() {
+        // Longer prefix forces many suffix retries before the bracket
+        // finally matches, exercising the re-parse-per-retry hot path.
+        assert!(matches("*[0-9]end", "aaaaaaaaaaaaaaaa5end"));
+        assert!(!matches("*[0-9]end", "aaaaaaaaaaaaaaaaend"));
+    }
+
+    #[test]
+    fn double_star_then_bracket() {
+        // Two consecutive `*` tokens both retry against the same bracket
+        // token that follows.
+        assert!(matches("**[abc]", "xyzzyb"));
+        assert!(matches("**[abc]", "a"));
+    }
+
+    #[test]
+    fn star_then_malformed_bracket_falls_back_to_literal() {
+        // No closing `]` — parse_bracket returns None once at tokenize
+        // time; the `[` becomes a Literal token reused across all retries.
+        assert!(matches("*[abc", "xx[abc"));
+        assert!(!matches("*[abc", "xxabc"));
+    }
+
+    #[test]
+    fn star_then_bracket_with_escaped_literal_member() {
+        // `[a\]b]` — backslash is not special inside brackets (POSIX),
+        // so this is parsed as members a, \, b with the first `]` closing.
+        // Confirms bracket member parsing is unaffected by pre-parsing.
+        assert!(matches("*[abc]*", "xxbxx"));
+    }
+
+    // ── Literal pattern via escapes (Task 2 PERF item 9 support) ──
+    // These patterns contain only escaped metacharacters and must be
+    // treated as fully literal by any "metachar-free" fast-path detector
+    // built on top of `pattern::matches` / a shared literal-scan helper.
+
+    #[test]
+    fn escaped_metachars_are_literal_not_wildcards() {
+        assert!(matches("\\*\\?\\[", "*?["));
+        assert!(!matches("\\*\\?\\[", "abc"));
+    }
+
+    #[test]
+    fn mixed_escaped_and_unescaped_metachar() {
+        // Escaped '*' is literal; the second bare '*' is a wildcard.
+        assert!(matches("\\**", "*anything"));
+        assert!(!matches("\\**", "xanything"));
     }
 }
