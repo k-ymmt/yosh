@@ -15,6 +15,11 @@ use super::display_width::display_width;
 use super::fuzzy_search::{ScoredCandidate, filter_and_sort};
 use super::terminal::Terminal;
 
+/// Background of the selected row (256-color navy).
+const SELECTED_BG: Color = Color::AnsiValue(18);
+/// Fuzzy-matched character highlight (256-color amber).
+const MATCH_FG: Color = Color::AnsiValue(214);
+
 /// How candidate rows are styled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemStyle {
@@ -336,9 +341,9 @@ impl SelectorUI {
         }
 
         // fzf-style: pointer + background on the selected row, matched query
-        // chars in cyan, directories in blue.
+        // chars in amber, directories in blue.
         if is_selected {
-            term.set_bg_color(Color::DarkGrey)?;
+            term.set_bg_color(SELECTED_BG)?;
             term.set_bold(true)?;
             term.set_fg_color(Color::Cyan)?;
             term.write_str("\u{276F} ")?; // ❯
@@ -353,7 +358,7 @@ impl SelectorUI {
         for (ci, ch) in cand.text.chars().take(char_count).enumerate() {
             let matched = cand.positions.binary_search(&ci).is_ok();
             if matched {
-                term.set_fg_color(Color::Cyan)?;
+                term.set_fg_color(MATCH_FG)?;
                 if !is_selected {
                     term.set_bold(true)?;
                 }
@@ -836,7 +841,7 @@ mod tests {
         let _ =
             SelectorUI::run(&items(&["a", "b"]), color_opts(ItemStyle::Plain), &mut term).unwrap();
         let out = term.dump();
-        assert!(out.contains("[BG:DarkGrey]"), "output: {}", out);
+        assert!(out.contains("[BG:AnsiValue(18)]"), "output: {}", out);
         assert!(out.contains("❯ "), "output: {}", out);
         assert!(
             !out.contains("[REV]"),
@@ -846,15 +851,15 @@ mod tests {
     }
 
     #[test]
-    fn test_colors_matched_chars_cyan() {
+    fn test_colors_matched_chars_amber() {
         let mut events = MockTerm::chars("b");
         events.push(MockTerm::key(KeyCode::Esc));
         let mut term = MockTerm::new(events);
         let _ = SelectorUI::run(&items(&["abc"]), color_opts(ItemStyle::Plain), &mut term).unwrap();
-        // After typing "b", the row for "abc" must switch to cyan right
-        // before writing the matched char 'b'.
+        // After typing "b", the row for "abc" must switch to the amber match
+        // color right before writing the matched char 'b'.
         let out = term.dump();
-        assert!(out.contains("[FG:Cyan]b"), "output: {}", out);
+        assert!(out.contains("[FG:AnsiValue(214)]b"), "output: {}", out);
     }
 
     #[test]
