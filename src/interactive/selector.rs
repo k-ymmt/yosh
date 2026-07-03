@@ -15,8 +15,8 @@ use super::display_width::display_width;
 use super::fuzzy_search::{ScoredCandidate, filter_and_sort};
 use super::terminal::Terminal;
 
-/// Background of the selected row (256-color navy).
-const SELECTED_BG: Color = Color::AnsiValue(18);
+/// Background of the selected row (256-color light navy blue).
+const SELECTED_BG: Color = Color::AnsiValue(25);
 /// Fuzzy-matched character highlight (256-color amber).
 const MATCH_FG: Color = Color::AnsiValue(214);
 
@@ -855,7 +855,7 @@ mod tests {
         let _ =
             SelectorUI::run(&items(&["a", "b"]), color_opts(ItemStyle::Plain), &mut term).unwrap();
         let out = term.dump();
-        assert!(out.contains("[BG:AnsiValue(18)]"), "output: {}", out);
+        assert!(out.contains("[BG:AnsiValue(25)]"), "output: {}", out);
         assert!(out.contains("❯ "), "output: {}", out);
         assert!(
             !out.contains("[REV]"),
