@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use super::Lexer;
 use super::token::{SpannedToken, Token};
 use crate::error;
@@ -5,8 +7,7 @@ use crate::error;
 impl Lexer {
     pub fn next_token(&mut self) -> error::Result<SpannedToken> {
         // Return queued tokens from alias expansion first
-        if let Some(tok) = self.alias_token_queue.first().cloned() {
-            self.alias_token_queue.remove(0);
+        if let Some(tok) = self.alias_token_queue.pop_front() {
             // Update check_alias based on this queued token
             self.update_check_alias_after(&tok.token);
             return Ok(tok);
@@ -36,28 +37,27 @@ impl Lexer {
             alias_lexer.expanding_aliases = self.expanding_aliases.clone();
             alias_lexer.check_alias = true;
 
-            let mut tokens = Vec::new();
+            let mut tokens: VecDeque<SpannedToken> = VecDeque::new();
             loop {
                 let t = alias_lexer.next_token()?;
                 if t.token == Token::Eof {
                     break;
                 }
-                tokens.push(t);
+                tokens.push_back(t);
             }
 
             // Merge back any recursion-prevention state
             self.expanding_aliases = alias_lexer.expanding_aliases;
 
-            if tokens.is_empty() {
+            let Some(first) = tokens.pop_front() else {
                 // Alias expanded to nothing, get next token
                 if trailing_space {
                     self.check_alias = true;
                 }
                 return self.next_token();
-            }
+            };
 
             // Return the first token, queue the rest
-            let first = tokens.remove(0);
             self.alias_token_queue = tokens;
             self.update_check_alias_after(&first.token);
 

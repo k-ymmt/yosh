@@ -58,11 +58,11 @@ impl Lexer {
                 self.advance(); // consume newline
             }
 
-            // Strip leading tabs if <<-
-            let check_line = if hd.strip_tabs {
-                line.trim_start_matches('\t').to_string()
+            // Strip leading tabs if <<- (borrowed comparison, no allocation)
+            let check_line: &str = if hd.strip_tabs {
+                line.trim_start_matches('\t')
             } else {
-                line.clone()
+                &line
             };
 
             // Check if this is the delimiter line

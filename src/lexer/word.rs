@@ -132,11 +132,16 @@ impl Lexer {
             parts.push(WordPart::Literal(literal));
         }
 
-        // filter out empty Literal("") parts (from line continuations)
-        let parts = parts
-            .into_iter()
-            .filter(|p| !matches!(p, WordPart::Literal(s) if s.is_empty()))
-            .collect();
+        // Filter out empty Literal("") parts (produced by \<newline> line
+        // continuations between two other parts, e.g. `$x\<newline>y`). This
+        // is rare, so only pay for the rebuild when such a part actually
+        // exists.
+        if parts
+            .iter()
+            .any(|p| matches!(p, WordPart::Literal(s) if s.is_empty()))
+        {
+            parts.retain(|p| !matches!(p, WordPart::Literal(s) if s.is_empty()));
+        }
 
         Ok(parts)
     }
