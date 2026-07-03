@@ -103,247 +103,30 @@ pub fn filter_and_sort(query: &str, entries: &[String]) -> Vec<ScoredCandidate> 
 // Fuzzy search UI (Ctrl+R)
 // ---------------------------------------------------------------------------
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::io;
 
 use super::history::History;
+use super::selector::{ItemStyle, SelectorOptions, SelectorUI, colors_enabled};
 use super::terminal::Terminal;
 
-pub struct FuzzySearchUI {
-    query: Vec<char>,
-    selected: usize,
-    scroll_offset: usize,
-    candidates: Vec<ScoredCandidate>,
-    max_visible: usize,
-}
+/// Ctrl+R history search. Thin wrapper over the shared [`SelectorUI`].
+pub struct FuzzySearchUI;
 
 impl FuzzySearchUI {
     pub fn run<T: Terminal>(history: &History, term: &mut T) -> io::Result<Option<String>> {
-        let entries = history.entries();
-        if entries.is_empty() {
-            return Ok(None);
-        }
-
-        let (_, term_height) = term.size()?;
-        let max_visible = ((term_height as f32) * 0.4).max(3.0) as usize;
-
-        let mut ui = FuzzySearchUI {
-            query: Vec::new(),
-            selected: 0,
-            scroll_offset: 0,
-            candidates: entries
-                .iter()
-                .map(|e| ScoredCandidate {
-                    score: 0,
-                    text: e.clone(),
-                    positions: Vec::new(),
-                })
-                .collect(),
-            max_visible,
-        };
-        ui.candidates.reverse(); // newest first
-
-        let draw_lines = ui.max_visible + 2; // candidates + separator + query
-        term.hide_cursor()?;
-        for _ in 0..draw_lines {
-            term.write_str("\r\n")?;
-        }
-        term.move_up(draw_lines as u16)?;
-        ui.draw(term)?;
-
-        // Enable raw mode for character-by-character input in the search UI.
-        // The caller (read_line_loop) disabled raw mode before invoking us.
-        term.enable_raw_mode()?;
-        let result = ui.run_loop(term, entries, draw_lines);
-        // Disable raw mode regardless of result so the caller can re-enable.
-        let _ = term.disable_raw_mode();
-        let _ = term.show_cursor();
-        result
+        // Newest first: SelectorUI treats index 0 as the best candidate, and
+        // filter_and_sort's stable sort keeps this order for equal scores.
+        let mut entries: Vec<String> = history.entries().to_vec();
+        entries.reverse();
+        SelectorUI::run(
+            &entries,
+            SelectorOptions {
+                item_style: ItemStyle::Plain,
+                colors: colors_enabled(),
+            },
+            term,
+        )
     }
-
-    fn run_loop<T: Terminal>(
-        &mut self,
-        term: &mut T,
-        entries: &[String],
-        draw_lines: usize,
-    ) -> io::Result<Option<String>> {
-        loop {
-            term.flush()?;
-            if let Event::Key(key_event) = term.read_event()? {
-                match self.handle_key(key_event, entries) {
-                    SearchAction::Continue => {}
-                    SearchAction::Select(line) => {
-                        self.clear_ui(term, draw_lines)?;
-                        return Ok(Some(line));
-                    }
-                    SearchAction::Cancel => {
-                        self.clear_ui(term, draw_lines)?;
-                        return Ok(None);
-                    }
-                }
-                self.draw(term)?;
-            }
-        }
-    }
-
-    fn handle_key(&mut self, key: KeyEvent, entries: &[String]) -> SearchAction {
-        match (key.code, key.modifiers) {
-            (KeyCode::Enter, _) => {
-                if let Some(cand) = self.candidates.get(self.selected) {
-                    SearchAction::Select(cand.text.clone())
-                } else {
-                    SearchAction::Cancel
-                }
-            }
-            (KeyCode::Esc, _) => SearchAction::Cancel,
-            (KeyCode::Char('g'), m) if m.contains(KeyModifiers::CONTROL) => SearchAction::Cancel,
-            (KeyCode::Up, _) => {
-                if self.selected + 1 < self.candidates.len() {
-                    self.selected += 1;
-                    self.adjust_scroll();
-                }
-                SearchAction::Continue
-            }
-            (KeyCode::Char('p'), m) if m.contains(KeyModifiers::CONTROL) => {
-                if self.selected + 1 < self.candidates.len() {
-                    self.selected += 1;
-                    self.adjust_scroll();
-                }
-                SearchAction::Continue
-            }
-            (KeyCode::Char('r'), m) if m.contains(KeyModifiers::CONTROL) => {
-                if self.selected + 1 < self.candidates.len() {
-                    self.selected += 1;
-                    self.adjust_scroll();
-                }
-                SearchAction::Continue
-            }
-            (KeyCode::Down, _) => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    self.adjust_scroll();
-                }
-                SearchAction::Continue
-            }
-            (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    self.adjust_scroll();
-                }
-                SearchAction::Continue
-            }
-            (KeyCode::Backspace, _) => {
-                if !self.query.is_empty() {
-                    self.query.pop();
-                    self.update_candidates(entries);
-                }
-                SearchAction::Continue
-            }
-            (KeyCode::Char(ch), m) if !m.contains(KeyModifiers::CONTROL) => {
-                self.query.push(ch);
-                self.update_candidates(entries);
-                SearchAction::Continue
-            }
-            _ => SearchAction::Continue,
-        }
-    }
-
-    fn update_candidates(&mut self, entries: &[String]) {
-        let query: String = self.query.iter().collect();
-        if query.is_empty() {
-            self.candidates = entries
-                .iter()
-                .map(|e| ScoredCandidate {
-                    score: 0,
-                    text: e.clone(),
-                    positions: Vec::new(),
-                })
-                .collect();
-            self.candidates.reverse();
-        } else {
-            self.candidates = filter_and_sort(&query, entries);
-        }
-        self.selected = 0;
-        self.scroll_offset = 0;
-    }
-
-    fn adjust_scroll(&mut self) {
-        if self.selected >= self.scroll_offset + self.max_visible {
-            self.scroll_offset = self.selected - self.max_visible + 1;
-        }
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        }
-    }
-
-    fn draw<T: Terminal>(&self, term: &mut T) -> io::Result<()> {
-        let (term_width, _) = term.size()?;
-        let width = term_width as usize;
-
-        term.move_to_column(0)?;
-
-        let visible_end = (self.scroll_offset + self.max_visible).min(self.candidates.len());
-        let visible_range = self.scroll_offset..visible_end;
-        let visible_count = visible_range.len();
-
-        // Fill empty lines if fewer candidates than max_visible
-        for _ in 0..(self.max_visible - visible_count) {
-            term.clear_current_line()?;
-            term.write_str("\r\n")?;
-        }
-
-        // Draw candidates in reverse order (highest index = top of UI)
-        for i in (visible_range).rev() {
-            term.clear_current_line()?;
-            let line = &self.candidates[i].text;
-            let display: String = line.chars().take(width.saturating_sub(2)).collect();
-            if i == self.selected {
-                term.set_reverse(true)?;
-                term.write_str(&format!("> {}", display))?;
-                term.set_reverse(false)?;
-            } else {
-                term.write_str(&format!("  {}", display))?;
-            }
-            term.write_str("\r\n")?;
-        }
-
-        // Separator
-        term.clear_current_line()?;
-        let sep: String = "\u{2500}".repeat(width.min(40));
-        term.write_str(&format!("  {}\r\n", sep))?;
-
-        // Query line
-        term.clear_current_line()?;
-        let query_str: String = self.query.iter().collect();
-        let total = self.candidates.len();
-        term.write_str(&format!("  {}/{} > {}", total, total, query_str))?;
-
-        // Move back to top of the UI area.
-        // We wrote (max_visible + 1) newlines: max_visible for candidate rows
-        // (including padding) and 1 for the separator.  The query line has no
-        // trailing newline, so the cursor sits on line (max_visible + 1).
-        let total_lines = self.max_visible + 1;
-        term.move_up(total_lines as u16)?;
-        term.flush()?;
-        Ok(())
-    }
-
-    fn clear_ui<T: Terminal>(&self, term: &mut T, draw_lines: usize) -> io::Result<()> {
-        term.move_to_column(0)?;
-        for _ in 0..draw_lines {
-            term.clear_current_line()?;
-            term.write_str("\r\n")?;
-        }
-        term.move_up(draw_lines as u16)?;
-        term.flush()?;
-        Ok(())
-    }
-}
-
-enum SearchAction {
-    Continue,
-    Select(String),
-    Cancel,
 }
 
 // ---------------------------------------------------------------------------
