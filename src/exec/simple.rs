@@ -1,6 +1,6 @@
 use std::ffi::CString;
 
-use nix::unistd::{ForkResult, execvp, fork};
+use nix::unistd::{ForkResult, execv, fork};
 
 use crate::builtin::special::exec_special_builtin;
 use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
@@ -92,25 +92,71 @@ enum ExecCStringError {
     Argument(String),
 }
 
-fn build_exec_cstrings(
-    cmd: &str,
+/// Build C-string argv for `execv` on an already-resolved
+/// absolute path: the first element returned is the path to pass as the
+/// syscall's file argument, while `argv[0]` (the first entry of the
+/// returned Vec) stays `display_name` (the original, unresolved command
+/// name) — matching what `execvp(cmd, ...)` would have set argv[0] to.
+fn build_exec_cstrings_for_path(
+    path: &std::path::Path,
+    display_name: &str,
     args: &[String],
 ) -> Result<(CString, Vec<CString>), ExecCStringError> {
-    let c_cmd = CString::new(cmd).map_err(|_| ExecCStringError::CommandName)?;
+    let c_path = CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| ExecCStringError::CommandName)?;
+    let c_argv0 = CString::new(display_name).map_err(|_| ExecCStringError::CommandName)?;
     let mut c_args = Vec::with_capacity(args.len() + 1);
-    c_args.push(c_cmd.clone());
+    c_args.push(c_argv0);
     for arg in args {
         let c_arg =
             CString::new(arg.as_str()).map_err(|_| ExecCStringError::Argument(arg.clone()))?;
         c_args.push(c_arg);
     }
-    Ok((c_cmd, c_args))
+    Ok((c_path, c_args))
+}
+
+/// Outcome of resolving a command name to an executable file before fork.
+enum ResolvedExec {
+    Executable(std::path::PathBuf),
+    NotExecutable,
+    NotFound,
+}
+
+/// Resolve `cmd` to an absolute executable path, mirroring the search
+/// order `execvp` performs internally: if `cmd` contains `/`, it is used
+/// directly (no PATH search, no cache); otherwise each `$PATH` entry is
+/// searched in order, consulting/populating `utility_hash` for the
+/// found-and-executable case (same cache `hash`/`command -v` rely on).
+fn resolve_exec_path(
+    cmd: &str,
+    vars: &crate::env::vars::VarStore,
+    utility_hash: &mut std::collections::HashMap<String, std::path::PathBuf>,
+) -> ResolvedExec {
+    use super::command::is_executable_file;
+
+    if cmd.contains('/') {
+        let path = std::path::Path::new(cmd);
+        return if is_executable_file(path) {
+            ResolvedExec::Executable(path.to_path_buf())
+        } else if path.is_file() {
+            ResolvedExec::NotExecutable
+        } else {
+            ResolvedExec::NotFound
+        };
+    }
+
+    let path_var = vars.get("PATH").unwrap_or("").to_string();
+    match super::command::lookup_in_path(cmd, &path_var, utility_hash) {
+        super::command::PathLookup::Executable(p) => ResolvedExec::Executable(p),
+        super::command::PathLookup::NotExecutable(_) => ResolvedExec::NotExecutable,
+        super::command::PathLookup::NotFound => ResolvedExec::NotFound,
+    }
 }
 
 impl Executor {
     /// Execute a simple command (assignments, builtins, or external programs).
     pub(crate) fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> Result<i32, ShellError> {
-        let _ = self.env.vars.set("LINENO", cmd.line.to_string());
+        self.env.exec.lineno = cmd.line;
 
         // Expand ONLY the command name first, so we can dispatch to an
         // assignment-aware expansion for export/readonly. A single early
@@ -262,11 +308,18 @@ impl Executor {
         let command_name = expanded_iter.next().unwrap();
         let args: Vec<String> = expanded_iter.collect();
 
-        // Build command string for hooks
-        let cmd_str_for_hooks = std::iter::once(command_name.as_str())
-            .chain(args.iter().map(|s| s.as_str()))
-            .collect::<Vec<_>>()
-            .join(" ");
+        // Build command string for hooks — only when some loaded plugin
+        // actually registered pre-exec or post-exec, since this joined
+        // string is otherwise built and immediately discarded on every
+        // single simple command.
+        let cmd_str_for_hooks = if self.plugins.has_exec_hooks() {
+            std::iter::once(command_name.as_str())
+                .chain(args.iter().map(|s| s.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            String::new()
+        };
         self.plugins
             .call_pre_exec(&mut self.env, &cmd_str_for_hooks);
 
@@ -507,45 +560,76 @@ impl Executor {
         }
     }
 
-    /// Merge exported shell variables with command-specific assignments.
+    /// Expand command-specific prefix assignments to (name, value) pairs.
+    ///
+    /// This does NOT merge with the exported environ — that merge happens
+    /// just before `execv` in `exec_external_with_redirects`, so the
+    /// common case (no prefix assignments on the command) never clones
+    /// `environ()` at all. When there are assignments, they are applied
+    /// as overrides on top of `environ()` (last-wins, matching the
+    /// previous `iter_mut().find()` replace-or-push behavior).
     pub(crate) fn build_env_vars(
         &mut self,
         assignments: &[Assignment],
     ) -> crate::error::Result<Vec<(String, String)>> {
-        let mut vars = self.env.vars.environ().to_vec();
+        let mut vars = Vec::with_capacity(assignments.len());
         for assign in assignments {
             let value = match assign.value.as_ref() {
                 Some(w) => crate::expand::expand_word_to_string(&mut self.env, w)?,
                 None => String::new(),
             };
-            // Replace existing or push new
-            if let Some(entry) = vars.iter_mut().find(|(k, _)| k == &assign.name) {
-                entry.1 = value;
-            } else {
-                vars.push((assign.name.clone(), value));
-            }
+            vars.push((assign.name.clone(), value));
         }
         Ok(vars)
     }
 
     /// Fork, apply redirects in child, exec the command, wait in parent.
+    ///
+    /// `env_overrides` are prefix-assignment (name, value) pairs from the
+    /// command itself (e.g. `FOO=bar cmd`); they are NOT pre-merged with
+    /// the shell's exported environ (see `build_env_vars`). The merge
+    /// happens here, in the child, right before `setenv` — the common
+    /// case of no prefix assignments then never touches `environ()`'s
+    /// cached Vec at all beyond the borrow needed to iterate it.
+    ///
+    /// The command is resolved to an absolute path in the parent (via
+    /// `find_in_path`, consulting/populating `utility_hash`) before
+    /// forking, and the child calls `execv` on the resolved path instead
+    /// of `execvp` — avoiding a redundant PATH re-walk in the child.
+    /// `cmd` containing `/` bypasses PATH search entirely (POSIX exec
+    /// semantics), matching `execvp`'s own behavior.
     pub(crate) fn exec_external_with_redirects(
         &mut self,
         cmd: &str,
         args: &[String],
-        env_vars: &[(String, String)],
+        env_overrides: &[(String, String)],
         redirects: &[crate::parser::ast::Redirect],
     ) -> i32 {
-        let (c_cmd, c_args) = match build_exec_cstrings(cmd, args) {
-            Ok(v) => v,
-            Err(ExecCStringError::CommandName) => {
-                eprintln!("yosh: {}: invalid command name", cmd);
+        let resolved = resolve_exec_path(cmd, &self.env.vars, &mut self.env.utility_hash);
+
+        let (c_cmd, c_args) = match &resolved {
+            ResolvedExec::NotFound => {
+                // No executable file candidate exists anywhere in the
+                // search — nothing to fork/exec. Matches the exit code
+                // `execvp`'s ENOENT branch previously produced.
+                eprintln!("yosh: {}: command not found", cmd);
                 return 127;
             }
-            Err(ExecCStringError::Argument(arg)) => {
-                eprintln!("yosh: {}: invalid argument", arg);
-                return 1;
+            ResolvedExec::NotExecutable => {
+                eprintln!("yosh: {}: permission denied", cmd);
+                return 126;
             }
+            ResolvedExec::Executable(path) => match build_exec_cstrings_for_path(path, cmd, args) {
+                Ok(v) => v,
+                Err(ExecCStringError::CommandName) => {
+                    eprintln!("yosh: {}: invalid command name", cmd);
+                    return 127;
+                }
+                Err(ExecCStringError::Argument(arg)) => {
+                    eprintln!("yosh: {}: invalid argument", arg);
+                    return 1;
+                }
+            },
         };
 
         let monitor = self.env.mode.options.monitor;
@@ -582,7 +666,18 @@ impl Executor {
                 // that lock at fork() time, the child inherits the locked
                 // state and deadlocks — the lock holder thread does not exist
                 // in the child.
-                for (k, v) in env_vars {
+                //
+                // The exported environ is applied first, then `env_overrides`
+                // (command prefix assignments) on top, so overrides win —
+                // matching the previous merged-Vec's replace-or-push order.
+                for (k, v) in self.env.vars.environ() {
+                    if let (Ok(c_key), Ok(c_val)) =
+                        (CString::new(k.as_str()), CString::new(v.as_str()))
+                    {
+                        unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
+                    }
+                }
+                for (k, v) in env_overrides {
                     if let (Ok(c_key), Ok(c_val)) =
                         (CString::new(k.as_str()), CString::new(v.as_str()))
                     {
@@ -590,7 +685,14 @@ impl Executor {
                     }
                 }
 
-                let err = execvp(&c_cmd, &c_args).unwrap_err();
+                // execv (not execvp): the path was already resolved via
+                // PATH search in the parent (resolve_exec_path), so the
+                // child does not need to re-walk PATH. A TOCTOU race
+                // (file removed/permissions changed between the parent's
+                // check and this exec) is still possible, so errno is
+                // handled the same way execvp's failure was handled
+                // before this change.
+                let err = execv(&c_cmd, &c_args).unwrap_err();
                 use nix::errno::Errno;
                 let exit_code = match err {
                     Errno::ENOENT => {
@@ -907,29 +1009,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_exec_cstrings_accepts_valid_utf8_args() {
+    fn build_exec_cstrings_for_path_accepts_valid_utf8_args() {
         let args = vec!["arg".to_string(), "日本".to_string()];
-        let (cmd, argv) = build_exec_cstrings("echo", &args).expect("valid args");
+        let path = std::path::Path::new("/bin/echo");
+        let (c_path, argv) = build_exec_cstrings_for_path(path, "echo", &args).expect("valid args");
 
-        assert_eq!(cmd.as_bytes(), b"echo");
+        assert_eq!(c_path.as_bytes(), b"/bin/echo");
         assert_eq!(argv.len(), 3);
+        // argv[0] stays the display name, not the resolved path.
         assert_eq!(argv[0].as_bytes(), b"echo");
         assert_eq!(argv[1].as_bytes(), b"arg");
         assert_eq!(argv[2].as_bytes(), "日本".as_bytes());
     }
 
     #[test]
-    fn build_exec_cstrings_rejects_nul_in_command_name() {
+    fn build_exec_cstrings_for_path_rejects_nul_in_display_name() {
         let args = Vec::new();
-        let err = build_exec_cstrings("bad\0cmd", &args).unwrap_err();
+        let path = std::path::Path::new("/bin/echo");
+        let err = build_exec_cstrings_for_path(path, "bad\0cmd", &args).unwrap_err();
         assert_eq!(err, ExecCStringError::CommandName);
     }
 
     #[test]
-    fn build_exec_cstrings_rejects_nul_in_argument() {
+    fn build_exec_cstrings_for_path_rejects_nul_in_argument() {
         let args = vec!["bad\0arg".to_string()];
-        let err = build_exec_cstrings("echo", &args).unwrap_err();
+        let path = std::path::Path::new("/bin/echo");
+        let err = build_exec_cstrings_for_path(path, "echo", &args).unwrap_err();
         assert_eq!(err, ExecCStringError::Argument("bad\0arg".to_string()));
+    }
+
+    #[test]
+    fn resolve_exec_path_direct_slash_bypasses_path_search() {
+        // A cmd containing '/' must resolve directly, ignoring $PATH.
+        let mut store = crate::env::vars::VarStore::new();
+        store.set("PATH", "").unwrap();
+        let mut cache = std::collections::HashMap::new();
+        match resolve_exec_path("/bin/sh", &store, &mut cache) {
+            ResolvedExec::Executable(p) => assert_eq!(p, std::path::Path::new("/bin/sh")),
+            _ => panic!("expected /bin/sh to resolve directly"),
+        }
+        // Direct-path resolution must not populate the PATH cache.
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn resolve_exec_path_not_found_for_missing_slash_path() {
+        let mut store = crate::env::vars::VarStore::new();
+        store.set("PATH", "").unwrap();
+        let mut cache = std::collections::HashMap::new();
+        match resolve_exec_path("/no/such/binary_xyz", &store, &mut cache) {
+            ResolvedExec::NotFound => {}
+            _ => panic!("expected NotFound"),
+        }
+    }
+
+    #[test]
+    fn resolve_exec_path_uses_path_search_and_populates_cache() {
+        let mut store = crate::env::vars::VarStore::new();
+        let path_var = std::env::var("PATH").unwrap_or_else(|_| "/bin:/usr/bin".to_string());
+        store.set("PATH", path_var).unwrap();
+        let mut cache = std::collections::HashMap::new();
+        match resolve_exec_path("sh", &store, &mut cache) {
+            ResolvedExec::Executable(p) => assert!(p.ends_with("sh")),
+            _ => panic!("expected 'sh' to resolve via PATH"),
+        }
+        assert!(cache.contains_key("sh"));
     }
 
     #[test]
@@ -949,7 +1093,7 @@ mod tests {
     #[test]
     fn test_xtrace_prefix_expands_parameter() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        env.vars.set("LINENO", "42").unwrap();
+        env.exec.lineno = 42;
         env.vars.set("PS4", "L$LINENO> ").unwrap();
         assert_eq!(xtrace_prefix(&mut env), "L42> ");
     }

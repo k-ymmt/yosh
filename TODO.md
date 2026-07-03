@@ -81,43 +81,6 @@ this audit were all resolved on 2026-07-03.
 
 ### Performance
 
-Strongest per-command win is the executor exec/environ-cache cluster (the first
-four items reinforce each other): `$LINENO` write → cache thrash → per-command
-environ rebuild → `execvp` re-walking PATH.
-
-- [ ] PERF: `set("LINENO", …)` runs on every simple command — allocates a value
-      `String`, allocates a fresh `"LINENO"` key on insert, and clears
-      `environ_cache`, single-handedly defeating the exported-env cache for
-      external execs. Store LINENO as an integer field and intercept `$LINENO`
-      in `expand::param`, or update in place without invalidating the cache
-      (`src/exec/simple.rs:113`).
-- [ ] PERF: `set`/`set_with_options` invalidate `environ_cache` unconditionally,
-      even for non-exported writes (loop counters, temp vars); only clear the
-      cache when the written variable is/was exported (`src/env/vars.rs:225`,
-      `src/env/vars.rs:287`).
-- [ ] PERF: `set` re-inserts a new `Variable` with a freshly allocated key
-      (`name.to_string()`) to update an existing variable in both the fast path
-      and multi-scope loop, re-hashing and re-allocating the key each write; use
-      `get_mut` to mutate `value` in place (`src/env/vars.rs:235`,
-      `src/env/vars.rs:259`).
-- [ ] PERF: `build_environ` builds a temporary `HashMap<String, &Variable>`
-      cloning every variable name plus every exported value on each rebuild;
-      since the cache is invalidated per command, this runs per external exec —
-      iterate scopes top-down with a `HashSet` of seen keys and clone only
-      exported entries once (`src/env/vars.rs:393`).
-- [ ] PERF: `build_env_vars` clones the entire exported environ with
-      `environ().to_vec()` on every external command, then applies prefix
-      assignments via O(assignments × env) linear `find`; skip the clone when
-      there are no prefix assignments and merge via a map otherwise
-      (`src/exec/simple.rs:515`).
-- [ ] PERF: the external-exec path calls `execvp`, which re-splits `$PATH` and
-      stats every directory in the child on every command, bypassing the
-      existing `utility_hash` cache; resolve via `find_in_path` in the parent and
-      `execv` the absolute path (`src/exec/simple.rs:593`).
-- [ ] PERF: `cmd_str_for_hooks` collects all args into a `Vec<&str>` and
-      `join(" ")`s them for every simple command even when no pre/post-exec
-      plugin hooks are registered; gate the string build on hooks being
-      registered (`src/exec/simple.rs:266`).
 - [ ] PERF: field-splitting `split()` allocates a fresh IFS `String` plus two
       `Vec<u8>` on every word expansion — even the fast path where nothing
       splits (`ls foo bar`). Read IFS by reference / short-circuit before

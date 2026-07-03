@@ -16,12 +16,17 @@ pub(crate) fn is_executable_file(p: &std::path::Path) -> bool {
     )
 }
 
+/// Resolve one `:`-separated `$PATH` component to a search directory.
+/// POSIX XBD §8.3: a zero-length prefix (leading `:`, trailing `:`, or
+/// `::` between two colons) is a legacy synonym for the current working
+/// directory.
+fn path_component_dir(dir: &str) -> &str {
+    if dir.is_empty() { "." } else { dir }
+}
+
 fn walk_path(cmd: &str, path_var: &str) -> Option<PathBuf> {
     for dir in path_var.split(':') {
-        if dir.is_empty() {
-            continue;
-        }
-        let candidate = PathBuf::from(dir).join(cmd);
+        let candidate = PathBuf::from(path_component_dir(dir)).join(cmd);
         if is_executable_file(&candidate) {
             return Some(candidate);
         }
@@ -83,10 +88,7 @@ pub fn lookup_in_path(
     }
     let mut seen_non_exec: Option<PathBuf> = None;
     for dir in path_var.split(':') {
-        if dir.is_empty() {
-            continue;
-        }
-        let candidate = PathBuf::from(dir).join(cmd);
+        let candidate = PathBuf::from(path_component_dir(dir)).join(cmd);
         if !candidate.is_file() {
             continue;
         }
@@ -145,6 +147,36 @@ mod tests {
         let mut cache = HashMap::new();
         let result = find_in_path("nonexistent_cmd_12345", path_var, &mut cache);
         assert!(result.is_none());
+    }
+
+    /// POSIX XBD §8.3: a zero-length PATH prefix (leading `:`, trailing
+    /// `:`, or `::`) means "the current working directory." Verified via
+    /// the pure `path_component_dir` helper rather than an actual `chdir`
+    /// (which would race with other tests running in parallel threads).
+    #[test]
+    fn path_component_dir_empty_means_dot() {
+        assert_eq!(path_component_dir(""), ".");
+        assert_eq!(path_component_dir("/usr/bin"), "/usr/bin");
+    }
+
+    #[test]
+    fn lookup_in_path_empty_component_means_cwd() {
+        // lookup_in_path never chdirs; this proves the empty PATH
+        // component is actually searched (not skipped) by using a
+        // relative name that resolves under "." from the crate root
+        // (wherever `cargo test` runs from) — Cargo.toml exists there
+        // but is not executable, so PathLookup::NotExecutable proves the
+        // empty component's directory (".") was checked, whereas the
+        // pre-fix behavior (skipping empty components entirely) would
+        // have produced NotFound instead.
+        let mut cache = HashMap::new();
+        match lookup_in_path("Cargo.toml", ":/nonexistent_dir_xyz", &mut cache) {
+            PathLookup::NotExecutable(_) => {}
+            other => panic!(
+                "expected NotExecutable (proves empty component searched cwd), got {:?}",
+                other
+            ),
+        }
     }
 
     #[test]

@@ -702,6 +702,20 @@ impl PluginManager {
         self.plugins.iter().any(|p| p.provides_command(name))
     }
 
+    /// True if any loaded plugin both holds the pre-exec or post-exec
+    /// capability and implements the corresponding hook. Callers use this
+    /// to skip building the joined command string passed to
+    /// `call_pre_exec` / `call_post_exec` when no plugin would ever
+    /// receive it (the common case: no plugins loaded, or none register
+    /// these hooks).
+    pub fn has_exec_hooks(&self) -> bool {
+        self.plugins.iter().any(|p| {
+            (p.capabilities & CAP_HOOK_PRE_EXEC != 0 && p.implements_hook(HookName::PreExec))
+                || (p.capabilities & CAP_HOOK_POST_EXEC != 0
+                    && p.implements_hook(HookName::PostExec))
+        })
+    }
+
     /// Engine fingerprint used in cache key tuples. Exposed for the manager
     /// in Task 5 so it precompiles into a key matching the host's runtime.
     #[allow(dead_code)] // public manager API; consumed by yosh-plugin sync
@@ -956,6 +970,15 @@ pub mod test_helpers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_exec_hooks_false_with_no_plugins_loaded() {
+        // The common case this gate targets: no plugins loaded at all, so
+        // callers should skip building the joined command string passed
+        // to call_pre_exec / call_post_exec.
+        let mgr = PluginManager::new();
+        assert!(!mgr.has_exec_hooks());
+    }
 
     #[test]
     fn parse_pre_prompt_timeout_unset_returns_ok_default() {

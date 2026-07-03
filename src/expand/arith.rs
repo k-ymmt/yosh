@@ -69,7 +69,24 @@ fn arith_var_lookup(env: &ShellEnv, name: &str) -> String {
         }
     }
 
+    // LINENO is a computed pseudo-variable backed by `env.exec.lineno`,
+    // not a real `VarStore` entry (see `ExecState::lineno`).
+    if name == "LINENO" {
+        return env.exec.lineno.to_string();
+    }
+
     // Regular variable
+    env.vars.get(name).unwrap_or("0").to_string()
+}
+
+/// Look up a bare identifier (`name` in `$((name))`, without a leading
+/// `$`) for the tokenizer's variable-reference path. Intercepts `LINENO`
+/// the same way as `arith_var_lookup`; unset regular variables default
+/// to "0".
+fn arith_name_lookup(env: &ShellEnv, name: &str) -> String {
+    if name == "LINENO" {
+        return env.exec.lineno.to_string();
+    }
     env.vars.get(name).unwrap_or("0").to_string()
 }
 
@@ -566,7 +583,7 @@ impl<'a> ArithParser<'a> {
         // Check for compound assignment operators: +=, -=, *=, /=, %=, <<=, >>=, &=, ^=, |=
         if let Some(compound_op) = self.try_compound_assign_op() {
             let rhs = self.ternary()?;
-            let cur = self.env.vars.get(&name).unwrap_or("0").to_string();
+            let cur = arith_name_lookup(self.env, &name);
             let cur_val = cur.trim().parse::<i64>().unwrap_or(0);
             let val = match compound_op {
                 CompoundOp::Add => cur_val.wrapping_add(rhs),
@@ -592,7 +609,12 @@ impl<'a> ArithParser<'a> {
                 CompoundOp::Xor => cur_val ^ rhs,
                 CompoundOp::Or => cur_val | rhs,
             };
-            let _ = self.env.vars.set(&name, val.to_string());
+            // LINENO is a computed pseudo-variable (see `ExecState::lineno`);
+            // an assignment reads back the current line but does not
+            // persist (matches bash: `$((LINENO+=1))` does not "stick").
+            if name != "LINENO" {
+                let _ = self.env.vars.set(&name, val.to_string());
+            }
             return Ok(val);
         }
 
@@ -603,13 +625,15 @@ impl<'a> ArithParser<'a> {
         {
             self.pos += 1; // consume '='
             let val = self.ternary()?;
-            // Assign into env
-            let _ = self.env.vars.set(&name, val.to_string());
+            // Assign into env (LINENO: see comment above)
+            if name != "LINENO" {
+                let _ = self.env.vars.set(&name, val.to_string());
+            }
             return Ok(val);
         }
 
         // Variable lookup
-        let raw = self.env.vars.get(&name).unwrap_or("0").to_string();
+        let raw = arith_name_lookup(self.env, &name);
         let val = raw.trim().parse::<i64>().unwrap_or(0);
         Ok(val)
     }
@@ -686,6 +710,34 @@ mod tests {
     #[test]
     fn test_addition() {
         assert_eq!(evaluate(&mut env(), "1 + 2"), Ok("3".to_string()));
+    }
+
+    // ── LINENO (computed pseudo-variable, TODO PERF item 1) ──
+
+    #[test]
+    fn test_lineno_bare_identifier() {
+        let mut e = env();
+        e.exec.lineno = 9;
+        assert_eq!(evaluate(&mut e, "LINENO"), Ok("9".to_string()));
+    }
+
+    #[test]
+    fn test_lineno_dollar_form() {
+        let mut e = env();
+        e.exec.lineno = 9;
+        assert_eq!(evaluate(&mut e, "$LINENO"), Ok("9".to_string()));
+    }
+
+    #[test]
+    fn test_lineno_arith_does_not_persist_assignment() {
+        let mut e = env();
+        e.exec.lineno = 5;
+        assert_eq!(evaluate(&mut e, "LINENO += 1"), Ok("6".to_string()));
+        // Must not have materialized a real VarStore entry.
+        assert_eq!(e.vars.get("LINENO"), None);
+        // The computed pseudo-variable is unaffected by the arithmetic
+        // "assignment" (bash: `$((LINENO+=1))` does not stick either).
+        assert_eq!(e.exec.lineno, 5);
     }
 
     #[test]

@@ -19,7 +19,7 @@ impl Executor {
         compound: &CompoundCommand,
         redirects: &[Redirect],
     ) -> Result<i32, ShellError> {
-        let _ = self.env.vars.set("LINENO", compound.line.to_string());
+        self.env.exec.lineno = compound.line;
 
         let saved = self
             .apply_temp_assignments(&compound.assignments)

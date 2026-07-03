@@ -20,4 +20,13 @@ pub struct ExecState {
     /// `set -x` trace output (POSIX "levels of indirection"). Subshells and
     /// command substitutions are NOT counted.
     pub indirection_level: usize,
+    /// Source line of the simple/compound command currently executing.
+    /// Backs `$LINENO`. Stored as a plain integer (not a `VarStore` entry)
+    /// so that the per-command write does not invalidate the exported-
+    /// environ cache: `$LINENO` is intercepted directly in
+    /// `expand::param` rather than surfaced as a real shell variable
+    /// (matches bash/dash: not listed by `set`, not exportable, and a
+    /// user assignment/readonly does not "stick" — the next command
+    /// overwrites it).
+    pub lineno: usize,
 }

@@ -438,7 +438,7 @@ mod tests {
             line: 5,
         };
         let _ = exec.exec_simple_command(&cmd);
-        assert_eq!(exec.env.vars.get("LINENO"), Some("5"));
+        assert_eq!(exec.env.exec.lineno, 5);
     }
 
     #[test]
@@ -469,15 +469,15 @@ mod tests {
         };
         let _ = exec.exec_compound_command(&cmd, &[]);
         // Inner SimpleCommand (line 11) runs last, so LINENO ends at 11.
-        assert_eq!(exec.env.vars.get("LINENO"), Some("11"));
+        assert_eq!(exec.env.exec.lineno, 11);
     }
 
     #[test]
     fn exec_compound_subshell_sets_lineno_on_entry() {
         // yosh forks the subshell body into a child process, so the parent's
-        // env.vars is never modified by the child's execution. After the
-        // subshell compound is entered (setting LINENO to 7), the parent waits
-        // for the child and its LINENO remains at the compound's line (7).
+        // env.exec.lineno is never modified by the child's execution. After
+        // the subshell compound is entered (setting LINENO to 7), the parent
+        // waits for the child and its LINENO remains at the compound's line (7).
         let mut exec = Executor::new("yosh", vec![]);
         let cmd = CompoundCommand {
             kind: CompoundCommandKind::Subshell {
@@ -503,6 +503,6 @@ mod tests {
             assignments: vec![],
         };
         let _ = exec.exec_compound_command(&cmd, &[]);
-        assert_eq!(exec.env.vars.get("LINENO"), Some("7"));
+        assert_eq!(exec.env.exec.lineno, 7);
     }
 }

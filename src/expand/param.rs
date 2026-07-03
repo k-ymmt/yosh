@@ -6,8 +6,8 @@ use crate::parser::ast::{ParamExpr, SpecialParam};
 pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<String> {
     match param {
         // ── Simple variable ──────────────────────────────────────────────
-        ParamExpr::Simple(name) => match env.vars.get(name) {
-            Some(val) => Ok(val.to_string()),
+        ParamExpr::Simple(name) => match lookup_var(env, name) {
+            Some(val) => Ok(val),
             None => {
                 if env.mode.options.nounset {
                     eprintln!("yosh: {}: parameter not set", name);
@@ -37,7 +37,9 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
 
         // ── ${#name} — character count ───────────────────────────────────
         ParamExpr::Length(name) => {
-            let len = env.vars.get(name).map(|v| v.chars().count()).unwrap_or(0);
+            let len = lookup_var(env, name)
+                .map(|v| v.chars().count())
+                .unwrap_or(0);
             Ok(len.to_string())
         }
 
@@ -47,7 +49,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             word,
             null_check,
         } => {
-            let val = env.vars.get(name).map(|s| s.to_string());
+            let val = lookup_var(env, name);
             let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
             if is_unset_or_null {
                 match word.as_ref() {
@@ -65,14 +67,21 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             word,
             null_check,
         } => {
-            let val = env.vars.get(name).map(|s| s.to_string());
+            let val = lookup_var(env, name);
             let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
             if is_unset_or_null {
                 let new_val = match word.as_ref() {
                     Some(w) => expand_word_to_string(env, w)?,
                     None => String::new(),
                 };
-                let _ = env.vars.set(name, &new_val);
+                // LINENO is a computed pseudo-variable (see `lookup_var`);
+                // assigning it here would resurrect a real `VarStore`
+                // entry and thrash the environ cache on every command.
+                // Matches bash: `${LINENO:=x}` reads the current line but
+                // does not make the assignment stick.
+                if name != "LINENO" {
+                    let _ = env.vars.set(name, &new_val);
+                }
                 Ok(new_val)
             } else {
                 Ok(val.unwrap_or_default())
@@ -85,7 +94,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             word,
             null_check,
         } => {
-            let val = env.vars.get(name).map(|s| s.to_string());
+            let val = lookup_var(env, name);
             let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
             if is_unset_or_null {
                 let msg = match word.as_ref() {
@@ -108,7 +117,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             word,
             null_check,
         } => {
-            let val = env.vars.get(name).map(|s| s.to_string());
+            let val = lookup_var(env, name);
             let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
             if is_unset_or_null {
                 // Not set (or null with colon) — return empty
@@ -124,28 +133,28 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
 
         // ── ${name%pattern} — remove shortest suffix ─────────────────────
         ParamExpr::StripShortSuffix(name, pattern_word) => {
-            let value = env.vars.get(name).unwrap_or("").to_string();
+            let value = lookup_var(env, name).unwrap_or_default();
             let pat = expand_word_to_string(env, pattern_word)?;
             Ok(strip_suffix(&value, &pat, false))
         }
 
         // ── ${name%%pattern} — remove longest suffix ──────────────────────
         ParamExpr::StripLongSuffix(name, pattern_word) => {
-            let value = env.vars.get(name).unwrap_or("").to_string();
+            let value = lookup_var(env, name).unwrap_or_default();
             let pat = expand_word_to_string(env, pattern_word)?;
             Ok(strip_suffix(&value, &pat, true))
         }
 
         // ── ${name#pattern} — remove shortest prefix ─────────────────────
         ParamExpr::StripShortPrefix(name, pattern_word) => {
-            let value = env.vars.get(name).unwrap_or("").to_string();
+            let value = lookup_var(env, name).unwrap_or_default();
             let pat = expand_word_to_string(env, pattern_word)?;
             Ok(strip_prefix(&value, &pat, false))
         }
 
         // ── ${name##pattern} — remove longest prefix ──────────────────────
         ParamExpr::StripLongPrefix(name, pattern_word) => {
-            let value = env.vars.get(name).unwrap_or("").to_string();
+            let value = lookup_var(env, name).unwrap_or_default();
             let pat = expand_word_to_string(env, pattern_word)?;
             Ok(strip_prefix(&value, &pat, true))
         }
@@ -153,6 +162,17 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Resolve a variable by name, intercepting `LINENO` as a computed
+/// pseudo-variable backed by `env.exec.lineno` rather than a real
+/// `VarStore` entry (see `ExecState::lineno` doc comment for rationale).
+/// All other names delegate to `VarStore::get`.
+fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
+    if name == "LINENO" {
+        return Some(env.exec.lineno.to_string());
+    }
+    env.vars.get(name).map(|s| s.to_string())
+}
 
 fn is_unset_or_null_inner(val: &Option<String>, null_check: bool) -> bool {
     match val {
@@ -252,6 +272,67 @@ mod tests {
             expand(&mut env, &ParamExpr::Simple("UNSET_XYZ".to_string())).unwrap(),
             ""
         );
+    }
+
+    // ── LINENO (computed pseudo-variable, TODO PERF item 1) ──
+
+    #[test]
+    fn test_lineno_reads_exec_state_not_varstore() {
+        let mut env = make_env();
+        env.exec.lineno = 42;
+        assert_eq!(
+            expand(&mut env, &ParamExpr::Simple("LINENO".to_string())).unwrap(),
+            "42"
+        );
+        // Must not have materialized a real VarStore entry.
+        assert_eq!(env.vars.get("LINENO"), None);
+    }
+
+    #[test]
+    fn test_lineno_length() {
+        let mut env = make_env();
+        env.exec.lineno = 12345;
+        assert_eq!(
+            expand(&mut env, &ParamExpr::Length("LINENO".to_string())).unwrap(),
+            "5"
+        );
+    }
+
+    #[test]
+    fn test_lineno_default_form_reads_current_value() {
+        // ${LINENO:-x} — LINENO is always "set", so the default word is
+        // never used.
+        let mut env = make_env();
+        env.exec.lineno = 7;
+        let result = expand(
+            &mut env,
+            &ParamExpr::Default {
+                name: "LINENO".to_string(),
+                word: Some(Word::literal("fallback")),
+                null_check: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(result, "7");
+    }
+
+    #[test]
+    fn test_lineno_assign_form_does_not_persist() {
+        // ${LINENO:=x} reads the current line but must not create a real
+        // VarStore entry (would defeat the environ-cache gating).
+        let mut env = make_env();
+        env.exec.lineno = 3;
+        let result = expand(
+            &mut env,
+            &ParamExpr::Assign {
+                name: "LINENO".to_string(),
+                word: Some(Word::literal("ignored")),
+                null_check: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(result, "3");
+        assert_eq!(env.vars.get("LINENO"), None);
     }
 
     // ── Assign (${name:=word}) ──

@@ -71,6 +71,7 @@ impl ShellEnv {
                 flow_control: None,
                 loop_depth: 0,
                 indirection_level: 0,
+                lineno: 0,
             },
             process: ProcessState {
                 shell_pid: getpid(),
