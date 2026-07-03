@@ -319,7 +319,7 @@ impl SelectorUI {
         width: usize,
     ) -> io::Result<()> {
         let budget = width.saturating_sub(2); // 2 columns for the pointer prefix
-        let (char_count, truncated) = fit_to_width(&cand.text, budget);
+        let (char_count, used_cols, truncated) = fit_to_width(&cand.text, budget);
 
         if !self.opts.colors {
             // Legacy look: "> " + reverse video for the selected row.
@@ -373,6 +373,17 @@ impl SelectorUI {
         }
         if truncated {
             term.write_char('…')?;
+        }
+        if is_selected {
+            // Extend the background to the full terminal width: pad the
+            // remaining columns with spaces while the row background is
+            // still active. Writing through the last column is safe under
+            // deferred auto-wrap.
+            let drawn = used_cols + if truncated { 1 } else { 0 };
+            let pad = budget.saturating_sub(drawn);
+            if pad > 0 {
+                term.write_str(&" ".repeat(pad))?;
+            }
         }
         // Reset clears fg, bg, and bold together (Attribute::Reset).
         term.reset_style()?;
@@ -440,12 +451,15 @@ fn unfiltered(items: &[String]) -> Vec<ScoredCandidate> {
 
 /// How many leading chars of `s` fit in `budget` display columns.
 ///
-/// Returns `(char_count, truncated)`. When the whole string fits, count is
-/// `s.chars().count()` and truncated is false. Otherwise the count fits in
-/// `budget - 1` columns, leaving one column for the '…' marker.
-fn fit_to_width(s: &str, budget: usize) -> (usize, bool) {
-    if display_width(s) <= budget {
-        return (s.chars().count(), false);
+/// Returns `(char_count, used_cols, truncated)`. When the whole string
+/// fits, count is `s.chars().count()`, `used_cols` its full display width,
+/// and truncated is false. Otherwise the counted chars fit in `budget - 1`
+/// columns, leaving one column for the '…' marker; `used_cols` excludes
+/// that marker.
+fn fit_to_width(s: &str, budget: usize) -> (usize, usize, bool) {
+    let total = display_width(s);
+    if total <= budget {
+        return (s.chars().count(), total, false);
     }
     let limit = budget.saturating_sub(1);
     let mut used = 0;
@@ -458,7 +472,7 @@ fn fit_to_width(s: &str, budget: usize) -> (usize, bool) {
         used += w;
         count += 1;
     }
-    (count, true)
+    (count, used, true)
 }
 
 #[cfg(test)]
@@ -807,20 +821,20 @@ mod tests {
 
     #[test]
     fn test_fit_to_width_ascii_fits() {
-        assert_eq!(fit_to_width("hello", 10), (5, false));
+        assert_eq!(fit_to_width("hello", 10), (5, 5, false));
     }
 
     #[test]
     fn test_fit_to_width_ascii_truncates() {
-        // budget 5 → 4 chars + ellipsis
-        assert_eq!(fit_to_width("hello!", 5), (4, true));
+        // budget 5 → 4 chars (4 cols) + ellipsis
+        assert_eq!(fit_to_width("hello!", 5), (4, 4, true));
     }
 
     #[test]
     fn test_fit_to_width_cjk() {
-        // "日本語" = 6 columns; budget 5 → chars fitting 4 cols = 2 chars + ellipsis
-        assert_eq!(fit_to_width("日本語", 5), (2, true));
-        assert_eq!(fit_to_width("日本語", 6), (3, false));
+        // "日本語" = 6 columns; budget 5 → 2 chars = 4 cols + ellipsis
+        assert_eq!(fit_to_width("日本語", 5), (2, 4, true));
+        assert_eq!(fit_to_width("日本語", 6), (3, 6, false));
     }
 
     #[test]
@@ -930,5 +944,66 @@ mod tests {
         )
         .unwrap();
         assert!(term.dump().contains("1/3 > ban"), "output: {}", term.dump());
+    }
+
+    // ── full-width selected row ─────────────────────────────────────
+
+    #[test]
+    fn test_colors_selected_row_padded_to_full_width() {
+        // width 20 → text budget 18; "abc" uses 3 cols → 15 padding spaces
+        // before the style reset, so the navy background reaches the right
+        // edge of the terminal.
+        let mut term = MockTerm::with_size(vec![MockTerm::key(KeyCode::Esc)], 20, 24);
+        let _ = SelectorUI::run(&items(&["abc"]), color_opts(ItemStyle::Plain), &mut term).unwrap();
+        let out = term.dump();
+        assert!(
+            out.contains(&format!("abc{}[RESET]", " ".repeat(15))),
+            "output: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_colors_unselected_row_not_padded() {
+        // Only the selected row carries a background, so only it is padded.
+        // "abc" is selected (index 0); "xy" is unselected and must be
+        // followed immediately by the style reset.
+        let mut term = MockTerm::with_size(vec![MockTerm::key(KeyCode::Esc)], 20, 24);
+        let _ = SelectorUI::run(
+            &items(&["abc", "xy"]),
+            color_opts(ItemStyle::Plain),
+            &mut term,
+        )
+        .unwrap();
+        assert!(term.dump().contains("xy[RESET]"), "output: {}", term.dump());
+    }
+
+    #[test]
+    fn test_colors_truncated_selected_row_padding_accounts_for_ellipsis() {
+        // width 10 → budget 8; "abcdefghij" (10 cols) truncates to 7 chars,
+        // and '…' brings the drawn width to exactly 8 → zero padding.
+        let mut term = MockTerm::with_size(vec![MockTerm::key(KeyCode::Esc)], 10, 24);
+        let _ = SelectorUI::run(
+            &items(&["abcdefghij"]),
+            color_opts(ItemStyle::Plain),
+            &mut term,
+        )
+        .unwrap();
+        assert!(term.dump().contains("…[RESET]"), "output: {}", term.dump());
+    }
+
+    #[test]
+    fn test_colors_cjk_truncated_selected_row_padded_remainder() {
+        // width 12 → budget 10; "日本語のファイル" (16 cols) truncates to
+        // 4 chars = 8 cols (a 5th would exceed limit 9); '…' makes 9 drawn
+        // cols → exactly 1 padding space closes the 10-col budget.
+        let mut term = MockTerm::with_size(vec![MockTerm::key(KeyCode::Esc)], 12, 24);
+        let _ = SelectorUI::run(
+            &items(&["日本語のファイル"]),
+            color_opts(ItemStyle::Plain),
+            &mut term,
+        )
+        .unwrap();
+        assert!(term.dump().contains("… [RESET]"), "output: {}", term.dump());
     }
 }
