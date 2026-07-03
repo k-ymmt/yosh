@@ -16,6 +16,51 @@ use super::kill_ring::KillRing;
 use super::terminal::Terminal;
 use super::undo::UndoManager;
 
+/// Return the highlight style covering char index `i`, advancing `span_idx`
+/// forward as needed.
+///
+/// `spans` must be sorted by `start` and non-overlapping (true of every
+/// `HighlightScanner::scan` result — spans are pushed in left-to-right scan
+/// order). Callers must invoke this with strictly increasing `i` across a
+/// single pass and share the same `span_idx` across calls, mirroring how
+/// `redraw` walks the buffer once per char. `span_idx` may end up pointing
+/// past a span whose range doesn't include `i` (e.g. gaps between spans);
+/// that's fine — the `Some(sp) if ...` guard falls through to `Default`
+/// without advancing past spans that still might cover a later `i`.
+fn style_at_advancing(spans: &[ColorSpan], span_idx: &mut usize, i: usize) -> HighlightStyle {
+    while *span_idx < spans.len() && spans[*span_idx].end <= i {
+        *span_idx += 1;
+    }
+    match spans.get(*span_idx) {
+        Some(sp) if sp.start <= i && i < sp.end => sp.style,
+        _ => HighlightStyle::Default,
+    }
+}
+
+/// Find the first char index in `[0, limit)` where the highlight style
+/// produced by `old_spans` differs from `new_spans`, or `limit` if they
+/// agree on the whole range.
+///
+/// Used to cap the diff-based partial-repaint start column: even when the
+/// characters in `[0, limit)` are identical between renders, a scanner
+/// re-classification (e.g. a quote becoming closed) can change which style
+/// applies to that unchanged text, and that region must still be repainted.
+fn style_diff_pos(old_spans: &[ColorSpan], new_spans: &[ColorSpan], limit: usize) -> usize {
+    if old_spans.is_empty() && new_spans.is_empty() {
+        return limit;
+    }
+    let mut old_idx = 0;
+    let mut new_idx = 0;
+    for i in 0..limit {
+        let old_style = style_at_advancing(old_spans, &mut old_idx, i);
+        let new_style = style_at_advancing(new_spans, &mut new_idx, i);
+        if old_style != new_style {
+            return i;
+        }
+    }
+    limit
+}
+
 /// A minimal line-editing buffer used by the interactive REPL.
 ///
 /// The buffer stores characters as a `Vec<char>` so that cursor
@@ -33,6 +78,29 @@ pub struct LineEditor {
     last_action: EditAction,
     last_was_insert: bool,
     prev_total_rows: usize,
+    /// Cached total display width of `buf`, invalidated (`None`) on every
+    /// buffer mutation and lazily recomputed the next time it's needed.
+    /// Avoids re-summing `UnicodeWidthChar::width` over the whole buffer on
+    /// every keystroke, including pure cursor-movement keys that don't
+    /// touch `buf` at all.
+    cached_total_width: Option<usize>,
+    /// Bumped every time `buf`'s *content* changes (not on pure cursor
+    /// movement). Used to detect whether a previously computed suggestion
+    /// is still valid for the current buffer content, so cursor-only
+    /// actions (which can still hide/reveal the suggestion depending on
+    /// whether the cursor is at the end of the buffer) don't need to
+    /// re-run `History::suggest` — only re-derive it from the cache.
+    buf_generation: u64,
+    /// The `(buf_generation, result)` pair last passed to `History::suggest`,
+    /// so `update_suggestion` can reuse the result when `buf_generation`
+    /// hasn't changed instead of rebuilding `self.buffer()` and re-querying
+    /// history on every keystroke.
+    suggestion_cache: Option<(u64, Option<String>)>,
+    /// `(buf, spans)` as last painted to the screen by `redraw`, used to
+    /// find the first column that actually needs repainting. `None` before
+    /// the first `redraw` call (or after anything that invalidates the
+    /// on-screen state wholesale, e.g. `clear`).
+    prev_render: Option<(Vec<char>, Vec<ColorSpan>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +130,10 @@ impl LineEditor {
             last_action: EditAction::Noop,
             last_was_insert: false,
             prev_total_rows: 0,
+            cached_total_width: None,
+            buf_generation: 0,
+            suggestion_cache: None,
+            prev_render: None,
         }
     }
 
@@ -92,6 +164,8 @@ impl LineEditor {
         self.last_was_insert = false;
         self.undo.clear();
         self.prev_total_rows = 0;
+        self.invalidate_width_cache();
+        self.prev_render = None;
     }
 
     /// Insert a character at the current cursor position and advance
@@ -99,6 +173,7 @@ impl LineEditor {
     pub fn insert_char(&mut self, ch: char) {
         self.buf.insert(self.pos, ch);
         self.pos += 1;
+        self.invalidate_width_cache();
     }
 
     /// Delete the character immediately before the cursor (like the
@@ -107,6 +182,7 @@ impl LineEditor {
         if self.pos > 0 {
             self.pos -= 1;
             self.buf.remove(self.pos);
+            self.invalidate_width_cache();
         }
     }
 
@@ -116,6 +192,7 @@ impl LineEditor {
     pub fn delete(&mut self) {
         if self.pos < self.buf.len() {
             self.buf.remove(self.pos);
+            self.invalidate_width_cache();
         }
     }
 
@@ -175,6 +252,7 @@ impl LineEditor {
     pub fn kill_to_end(&mut self) -> String {
         let killed: String = self.buf[self.pos..].iter().collect();
         self.buf.truncate(self.pos);
+        self.invalidate_width_cache();
         killed
     }
 
@@ -183,6 +261,7 @@ impl LineEditor {
         let killed: String = self.buf[..self.pos].iter().collect();
         self.buf.drain(..self.pos);
         self.pos = 0;
+        self.invalidate_width_cache();
         killed
     }
 
@@ -192,6 +271,7 @@ impl LineEditor {
         self.move_backward_word();
         let killed: String = self.buf[self.pos..old_pos].iter().collect();
         self.buf.drain(self.pos..old_pos);
+        self.invalidate_width_cache();
         killed
     }
 
@@ -208,6 +288,7 @@ impl LineEditor {
         }
         let killed: String = self.buf[old_pos..end].iter().collect();
         self.buf.drain(old_pos..end);
+        self.invalidate_width_cache();
         killed
     }
 
@@ -225,6 +306,8 @@ impl LineEditor {
             self.buf.swap(self.pos - 1, self.pos);
             self.pos += 1;
         }
+        // A swap can't change the total display width (same multiset of
+        // chars), so the cache stays valid — no invalidation needed.
     }
 
     /// Transpose the two words around the cursor (Alt+T).
@@ -290,6 +373,7 @@ impl LineEditor {
 
         self.buf.splice(w1s..w2e, replacement);
         self.pos = w1s + word2.len() + sep.len() + word1.len();
+        // Reordering existing chars can't change the total display width.
     }
 
     /// Convert the next word to uppercase (Alt+U).
@@ -305,6 +389,7 @@ impl LineEditor {
                 .unwrap_or(self.buf[self.pos]);
             self.pos += 1;
         }
+        self.invalidate_width_cache();
     }
 
     /// Convert the next word to lowercase (Alt+L).
@@ -320,6 +405,7 @@ impl LineEditor {
                 .unwrap_or(self.buf[self.pos]);
             self.pos += 1;
         }
+        self.invalidate_width_cache();
     }
 
     /// Capitalize the next word: first char uppercase, rest lowercase (Alt+C).
@@ -344,6 +430,7 @@ impl LineEditor {
             }
             self.pos += 1;
         }
+        self.invalidate_width_cache();
     }
 
     /// Insert text at the current cursor position. Returns (start, len) for yank tracking.
@@ -355,6 +442,7 @@ impl LineEditor {
             self.buf.insert(self.pos + i, ch);
         }
         self.pos += len;
+        self.invalidate_width_cache();
         (start, len)
     }
 
@@ -365,6 +453,7 @@ impl LineEditor {
         if self.pos > start {
             self.pos = start;
         }
+        self.invalidate_width_cache();
     }
 
     /// Return the current suggestion text, if any.
@@ -378,6 +467,7 @@ impl LineEditor {
         if let Some(suggestion) = self.suggestion.take() {
             self.buf.extend(suggestion.chars());
             self.pos = self.buf.len();
+            self.invalidate_width_cache();
         }
     }
 
@@ -398,6 +488,7 @@ impl LineEditor {
             // Append the accepted portion to the buffer
             self.buf.extend(&chars[..i]);
             self.pos = self.buf.len();
+            self.invalidate_width_cache();
             // Keep remaining suggestion, if any
             if i < chars.len() {
                 self.suggestion = Some(chars[i..].iter().collect());
@@ -405,11 +496,68 @@ impl LineEditor {
         }
     }
 
+    /// Invalidate width/suggestion caches that depend on buffer *content*.
+    /// Must be called by every method that mutates `self.buf`'s contents
+    /// (not just cursor position). Bumping `buf_generation` here — rather
+    /// than at each call site individually — is what lets `update_suggestion`
+    /// tell "buffer changed" apart from "only the cursor moved" without
+    /// having to enumerate every `EditAction` that can mutate `buf`.
+    fn invalidate_width_cache(&mut self) {
+        self.cached_total_width = None;
+        self.buf_generation += 1;
+    }
+
+    /// Return `(prefix_width, total_width)`: the display width of
+    /// `buf[..pos]` and of the whole buffer, computed together in a single
+    /// pass instead of the two independent `UnicodeWidthChar::width` scans
+    /// `redraw` used to run per keystroke. The total width is cached and
+    /// reused across calls while the buffer is unchanged (e.g. pure cursor
+    /// movement, which never invalidates the cache), so a pure cursor move
+    /// only pays for a fresh prefix-width scan, not a second full-buffer
+    /// scan.
+    fn buf_prefix_and_total_width(&mut self) -> (usize, usize) {
+        if let Some(total) = self.cached_total_width {
+            let prefix: usize = self.buf[..self.pos]
+                .iter()
+                .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                .sum();
+            return (prefix, total);
+        }
+        let mut prefix = 0usize;
+        let mut total = 0usize;
+        for (i, c) in self.buf.iter().enumerate() {
+            let w = UnicodeWidthChar::width(*c).unwrap_or(0);
+            total += w;
+            if i < self.pos {
+                prefix += w;
+            }
+        }
+        self.cached_total_width = Some(total);
+        (prefix, total)
+    }
+
     /// Update the autosuggestion based on the current buffer state.
     /// Only suggests when the cursor is at the end of a non-empty buffer.
+    ///
+    /// Pure cursor movement (and any other action that leaves `buf`'s
+    /// content unchanged) never bumps `buf_generation`, so once a
+    /// suggestion has been computed for the current content it's reused
+    /// from `suggestion_cache` instead of rebuilding `self.buffer()` and
+    /// re-running `History::suggest` on every keystroke — including keys
+    /// that can't possibly change what the suggestion *would* be, even
+    /// though they can still change whether it's *shown* (moving the
+    /// cursor away from the end of the buffer hides it, exactly as before).
     fn update_suggestion(&mut self, history: &History) {
         if self.pos == self.buf.len() && !self.buf.is_empty() {
-            self.suggestion = history.suggest(&self.buffer());
+            if let Some((cached_gen, cached)) = &self.suggestion_cache
+                && *cached_gen == self.buf_generation
+            {
+                self.suggestion = cached.clone();
+                return;
+            }
+            let result = history.suggest(&self.buffer());
+            self.suggestion_cache = Some((self.buf_generation, result.clone()));
+            self.suggestion = result;
         } else {
             self.suggestion = None;
         }
@@ -525,6 +673,7 @@ impl LineEditor {
                             if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
                                 self.buf = line.chars().collect();
                                 self.pos = self.buf.len();
+                                self.invalidate_width_cache();
                             }
                             term.enable_raw_mode()?;
                             term.move_to_column(0)?;
@@ -534,6 +683,11 @@ impl LineEditor {
                                 term.write_str("\r\n")?;
                             }
                             term.write_str(prompt)?;
+                            // The screen was repainted outside of redraw's own
+                            // bookkeeping; force a full repaint next time so
+                            // the diff-based partial repaint doesn't assume a
+                            // stale on-screen state.
+                            self.prev_render = None;
                         }
                         KeyAction::ClearScreen => {
                             term.clear_all()?;
@@ -542,6 +696,7 @@ impl LineEditor {
                                 term.write_str("\r\n")?;
                             }
                             term.write_str(prompt)?;
+                            self.prev_render = None;
                         }
                         KeyAction::TabComplete | KeyAction::Continue => {}
                     }
@@ -550,6 +705,10 @@ impl LineEditor {
                     self.redraw(term, prompt, prompt_width, &[], tw)?;
                 }
                 Event::Resize(_cols, _rows) => {
+                    // Terminal dimensions changed, invalidating all cached
+                    // row/column math from the previous render; force a full
+                    // repaint.
+                    self.prev_render = None;
                     let (tw, _) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
                     self.redraw(term, prompt, prompt_width, &[], tw)?;
@@ -572,88 +731,169 @@ impl LineEditor {
         let tw = term_width as usize;
         let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
 
-        // Move cursor up to the prompt's last_line row (start of content)
-        if self.prev_total_rows > 0 {
-            term.move_up(self.prev_total_rows as u16)?;
-        }
-        term.move_to_column(0)?;
-
-        // Clear all rows from previous render
-        for i in 0..=self.prev_total_rows {
-            if i > 0 {
-                term.move_down(1)?;
-            }
-            term.clear_current_line()?;
-        }
-        // Move back up to start
-        if self.prev_total_rows > 0 {
-            term.move_up(self.prev_total_rows as u16)?;
-        }
-
-        // Repaint the prompt
-        term.move_to_column(0)?;
-        term.write_str(prompt)?;
-
-        // Write the buffer with or without highlighting
-        if spans.is_empty() {
-            term.write_str(&self.buffer())?;
-        } else {
-            let mut current_style = HighlightStyle::Default;
-            for (i, ch) in self.buf.iter().enumerate() {
-                let new_style = spans
-                    .iter()
-                    .find(|sp| sp.start <= i && i < sp.end)
-                    .map(|sp| sp.style)
-                    .unwrap_or(HighlightStyle::Default);
-                if new_style != current_style {
-                    if current_style != HighlightStyle::Default {
-                        term.reset_style()?;
-                    }
-                    apply_style(term, new_style)?;
-                    current_style = new_style;
-                }
-                term.write_char(*ch)?;
-            }
-            if current_style != HighlightStyle::Default {
-                term.reset_style()?;
-            }
-        }
-
-        // Draw suggestion
-        let suggestion_width: usize;
-        if let Some(ref suggestion) = self.suggestion
-            && self.pos == self.buf.len()
-        {
-            term.set_dim(true)?;
-            term.write_str(suggestion)?;
-            term.set_dim(false)?;
-            suggestion_width = suggestion
+        // Precompute the width/row info the new-render needs regardless of
+        // which repaint strategy is chosen below.
+        let (buf_pos_width, buf_total_width) = self.buf_prefix_and_total_width();
+        let suggestion_active = self.suggestion.is_some() && self.pos == self.buf.len();
+        let suggestion_width: usize = if suggestion_active {
+            self.suggestion
+                .as_ref()
+                .unwrap()
                 .chars()
                 .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
-                .sum();
+                .sum()
         } else {
-            suggestion_width = 0;
-        }
-
-        // Calculate total display width and rows
-        let buf_total_width: usize = self
-            .buf
-            .iter()
-            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-            .sum();
+            0
+        };
         let content_width = prompt_width + buf_total_width + suggestion_width;
         let total_rows = if tw > 0 && content_width > 0 {
             (content_width.saturating_sub(1)) / tw
         } else {
             0
         };
+
+        // Decide whether a partial repaint (from the first changed column)
+        // is safe, or whether to fall back to the full clear+repaint.
+        //
+        // Partial repaint is restricted to the single-row, no-wrap case:
+        // both the previous and the new render must fit on one row. This
+        // sidesteps the multi-row cursor-positioning math (move_up/move_down
+        // per wrapped row) entirely, which is where a partial-repaint bug
+        // would be both easiest to introduce and hardest to notice. Content
+        // that wraps keeps the previous (correctness-proven) full-repaint
+        // behavior.
+        //
+        // The repaint start column is also capped by the first position
+        // where the *style* differs from the previous render, not just
+        // where the *character* differs: highlighting can retroactively
+        // recolor already-typed, unchanged characters (e.g. typing the
+        // closing quote of `echo 'hello` flips the whole `'hello` run from
+        // an unclosed-quote Error span to a normal String span even though
+        // none of those characters changed). Using only a character-level
+        // diff would miss that recoloring.
+        let partial_repaint_start = self
+            .prev_render
+            .as_ref()
+            .and_then(|(prev_buf, prev_spans)| {
+                if self.prev_total_rows != 0 || total_rows != 0 {
+                    return None;
+                }
+                let char_diff = prev_buf
+                    .iter()
+                    .zip(self.buf.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or_else(|| prev_buf.len().min(self.buf.len()));
+                let style_diff = style_diff_pos(prev_spans, spans, char_diff);
+                Some(style_diff)
+            });
+
+        if let Some(start) = partial_repaint_start {
+            // ---- Partial repaint: rewrite only from `start` onward ----
+            let prefix_width: usize = self.buf[..start]
+                .iter()
+                .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                .sum();
+            term.move_to_column(col(prompt_width + prefix_width))?;
+            term.clear_until_newline()?;
+
+            let mut span_idx = 0;
+            let mut current_style = HighlightStyle::Default;
+            if !spans.is_empty() {
+                // Seed span_idx/current_style as if we'd walked from 0, so
+                // the first char written at `start` gets the right style
+                // without re-walking (and re-emitting escapes for) the
+                // unchanged prefix.
+                current_style = style_at_advancing(spans, &mut span_idx, start);
+                if current_style != HighlightStyle::Default {
+                    apply_style(term, current_style)?;
+                }
+            }
+            for (i, ch) in self.buf.iter().enumerate().skip(start) {
+                if !spans.is_empty() {
+                    let new_style = style_at_advancing(spans, &mut span_idx, i);
+                    if new_style != current_style {
+                        if current_style != HighlightStyle::Default {
+                            term.reset_style()?;
+                        }
+                        apply_style(term, new_style)?;
+                        current_style = new_style;
+                    }
+                }
+                term.write_char(*ch)?;
+            }
+            if current_style != HighlightStyle::Default {
+                term.reset_style()?;
+            }
+
+            if suggestion_active {
+                term.set_dim(true)?;
+                term.write_str(self.suggestion.as_deref().unwrap_or(""))?;
+                term.set_dim(false)?;
+            }
+        } else {
+            // ---- Full clear + repaint (original behavior) ----
+            // Move cursor up to the prompt's last_line row (start of content)
+            if self.prev_total_rows > 0 {
+                term.move_up(self.prev_total_rows as u16)?;
+            }
+            term.move_to_column(0)?;
+
+            // Clear all rows from previous render
+            for i in 0..=self.prev_total_rows {
+                if i > 0 {
+                    term.move_down(1)?;
+                }
+                term.clear_current_line()?;
+            }
+            // Move back up to start
+            if self.prev_total_rows > 0 {
+                term.move_up(self.prev_total_rows as u16)?;
+            }
+
+            // Repaint the prompt
+            term.move_to_column(0)?;
+            term.write_str(prompt)?;
+
+            // Write the buffer with or without highlighting
+            if spans.is_empty() {
+                term.write_str(&self.buffer())?;
+            } else {
+                // Spans are produced in left-to-right scan order (sorted,
+                // non-overlapping — see HighlightScanner::scan_from), so a
+                // single advancing cursor into `spans` (see
+                // `style_at_advancing`) replaces the previous per-char
+                // `spans.iter().find(...)` linear search, turning
+                // classification from O(n*spans) into O(n + spans).
+                let mut current_style = HighlightStyle::Default;
+                let mut span_idx = 0;
+                for (i, ch) in self.buf.iter().enumerate() {
+                    let new_style = style_at_advancing(spans, &mut span_idx, i);
+                    if new_style != current_style {
+                        if current_style != HighlightStyle::Default {
+                            term.reset_style()?;
+                        }
+                        apply_style(term, new_style)?;
+                        current_style = new_style;
+                    }
+                    term.write_char(*ch)?;
+                }
+                if current_style != HighlightStyle::Default {
+                    term.reset_style()?;
+                }
+            }
+
+            // Draw suggestion
+            if suggestion_active {
+                term.set_dim(true)?;
+                term.write_str(self.suggestion.as_deref().unwrap_or(""))?;
+                term.set_dim(false)?;
+            }
+        }
+
         self.prev_total_rows = total_rows;
+        self.prev_render = Some((self.buf.clone(), spans.to_vec()));
 
         // Position cursor at self.pos
-        let buf_pos_width: usize = self.buf[..self.pos]
-            .iter()
-            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-            .sum();
         let cursor_total = prompt_width + buf_pos_width;
         let cursor_row = if tw > 0 { cursor_total / tw } else { 0 };
         let cursor_col = if tw > 0 {
@@ -873,6 +1113,7 @@ impl LineEditor {
                     if let Some((buf, pos)) = self.undo.undo() {
                         self.buf = buf;
                         self.pos = pos;
+                        self.invalidate_width_cache();
                     }
                 }
                 KeyAction::Continue
@@ -901,6 +1142,7 @@ impl LineEditor {
                     if let Some(line) = history.navigate_up(&self.buffer()) {
                         self.buf = line.chars().collect();
                         self.pos = self.buf.len();
+                        self.invalidate_width_cache();
                     }
                 }
                 self.suggestion = None;
@@ -911,6 +1153,7 @@ impl LineEditor {
                     if let Some(line) = history.navigate_down() {
                         self.buf = line.chars().collect();
                         self.pos = self.buf.len();
+                        self.invalidate_width_cache();
                     }
                 }
                 self.suggestion = None;
@@ -1034,6 +1277,7 @@ impl LineEditor {
                             if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
                                 self.buf = line.chars().collect();
                                 self.pos = self.buf.len();
+                                self.invalidate_width_cache();
                             }
                             term.enable_raw_mode()?;
                             term.move_to_column(0)?;
@@ -1043,6 +1287,7 @@ impl LineEditor {
                                 term.write_str("\r\n")?;
                             }
                             term.write_str(prompt)?;
+                            self.prev_render = None;
                         }
                         KeyAction::TabComplete => {
                             term.reset_style()?;
@@ -1055,6 +1300,7 @@ impl LineEditor {
                                 term.write_str("\r\n")?;
                             }
                             term.write_str(prompt)?;
+                            self.prev_render = None;
                         }
                         KeyAction::Continue => {}
                     }
@@ -1064,6 +1310,7 @@ impl LineEditor {
                     self.redraw(term, prompt, prompt_width, &spans, tw)?;
                 }
                 Event::Resize(_cols, _rows) => {
+                    self.prev_render = None;
                     let (tw, _) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
@@ -1150,6 +1397,7 @@ impl LineEditor {
                 term.write_str("\r\n")?;
             }
             term.write_str(prompt)?;
+            self.prev_render = None;
         }
 
         Ok(())
@@ -1169,5 +1417,120 @@ impl LineEditor {
             self.buf.insert(char_start + i, ch);
         }
         self.pos = char_start + rep_len;
+        self.invalidate_width_cache();
+    }
+}
+
+#[cfg(test)]
+mod redraw_helper_tests {
+    use super::*;
+
+    /// Reference implementation matching the pre-optimization behavior
+    /// (`spans.iter().find(...)` per char): O(n*spans) but trivially
+    /// correct, used as an oracle for `style_at_advancing`.
+    fn naive_style_at(spans: &[ColorSpan], i: usize) -> HighlightStyle {
+        spans
+            .iter()
+            .find(|sp| sp.start <= i && i < sp.end)
+            .map(|sp| sp.style)
+            .unwrap_or(HighlightStyle::Default)
+    }
+
+    fn span(start: usize, end: usize, style: HighlightStyle) -> ColorSpan {
+        ColorSpan { start, end, style }
+    }
+
+    /// Assert that walking `len` chars with the advancing cursor produces
+    /// the same style sequence as the naive per-char `find`.
+    fn assert_equivalent(spans: &[ColorSpan], len: usize) {
+        let mut span_idx = 0;
+        for i in 0..len {
+            let got = style_at_advancing(spans, &mut span_idx, i);
+            let want = naive_style_at(spans, i);
+            assert_eq!(got, want, "mismatch at i={i} for spans={spans:?}");
+        }
+    }
+
+    #[test]
+    fn empty_spans_all_default() {
+        assert_equivalent(&[], 10);
+    }
+
+    #[test]
+    fn single_span_covering_prefix() {
+        let spans = vec![span(0, 4, HighlightStyle::CommandValid)];
+        assert_equivalent(&spans, 10);
+    }
+
+    #[test]
+    fn single_span_in_middle_with_gaps() {
+        let spans = vec![span(3, 6, HighlightStyle::Variable)];
+        assert_equivalent(&spans, 10);
+    }
+
+    #[test]
+    fn adjacent_spans_no_gap() {
+        let spans = vec![
+            span(0, 4, HighlightStyle::CommandValid),
+            span(4, 9, HighlightStyle::Default),
+            span(9, 13, HighlightStyle::Operator),
+        ];
+        assert_equivalent(&spans, 15);
+    }
+
+    #[test]
+    fn spans_with_gaps_between() {
+        let spans = vec![
+            span(0, 2, HighlightStyle::Keyword),
+            span(5, 7, HighlightStyle::String),
+            span(10, 12, HighlightStyle::Error),
+        ];
+        assert_equivalent(&spans, 15);
+    }
+
+    #[test]
+    fn span_at_very_end() {
+        let spans = vec![span(8, 10, HighlightStyle::Comment)];
+        assert_equivalent(&spans, 10);
+    }
+
+    #[test]
+    fn many_small_spans_pseudo_random_layout() {
+        // Deterministic pseudo-random-ish layout: alternating short spans
+        // and gaps of varying length, covering a range of styles.
+        let styles = [
+            HighlightStyle::CommandValid,
+            HighlightStyle::CommandInvalid,
+            HighlightStyle::Keyword,
+            HighlightStyle::Operator,
+            HighlightStyle::Redirect,
+            HighlightStyle::String,
+            HighlightStyle::DoubleString,
+            HighlightStyle::Variable,
+            HighlightStyle::CommandSub,
+            HighlightStyle::ArithSub,
+            HighlightStyle::Comment,
+            HighlightStyle::Error,
+            HighlightStyle::Assignment,
+            HighlightStyle::Tilde,
+        ];
+        let mut spans = Vec::new();
+        let mut pos = 0usize;
+        for (idx, style) in styles.iter().enumerate() {
+            let span_len = (idx % 3) + 1; // 1..=3
+            let gap = idx % 4; // 0..=3
+            pos += gap;
+            spans.push(span(pos, pos + span_len, *style));
+            pos += span_len;
+        }
+        assert_equivalent(&spans, pos + 10);
+    }
+
+    #[test]
+    fn single_char_spans_tightly_packed() {
+        let spans: Vec<ColorSpan> = (0..20)
+            .map(|i| span(i, i + 1, HighlightStyle::Default))
+            .collect();
+        assert_equivalent(&spans, 25);
     }
 }

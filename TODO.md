@@ -81,28 +81,13 @@ this audit were all resolved on 2026-07-03.
 
 ### Performance
 
-- [ ] PERF: `redraw` classifies each character with
-      `spans.iter().find(...)` inside the per-char loop → O(n·spans) per redraw;
-      spans are sorted and non-overlapping, so advance a single span-cursor
-      index alongside the char index (`src/interactive/line_editor.rs:602`).
-- [ ] PERF: `redraw` clears and fully repaints every row on every keystroke,
-      re-emitting all escape/style sequences even when only the tail past the
-      cursor changed; use the scanner's `diff_pos` to repaint from the first
-      changed column (`src/interactive/line_editor.rs:576`).
-- [ ] PERF: `redraw` re-sums `UnicodeWidthChar::width` over the whole buffer and
-      the whole cursor prefix (two O(n) scans) on every keystroke; maintain
-      incremental prefix/total width totals as the buffer is edited
-      (`src/interactive/line_editor.rs:639`).
-- [ ] PERF: highlight `scan` clones the full result into the cache every
-      keystroke (`prev_spans = spans.clone()`, `prev_input = current.to_vec()`),
-      and its append fast-path still clones all prior spans before extending;
-      reuse the owned buffer/spans via `std::mem::take` and push only the newly
-      scanned tail (`src/interactive/highlight_scanner/mod.rs:113`,
-      `src/interactive/highlight_scanner/mod.rs:96`).
-- [ ] PERF: `update_suggestion` builds a fresh full-line `String` via
-      `self.buffer()` on every keystroke before the prefix compare, including
-      pure cursor-movement keys that can't change the suggestion; skip the build
-      for actions that can't affect the suggestion (`src/interactive/line_editor.rs:412`).
+- [ ] PERF: `redraw`'s diff-based partial repaint (added to replace the
+      always-full clear+repaint) only engages when both the previous and
+      the new render fit on a single terminal row; any input that wraps to
+      multiple rows still falls back to a full clear+repaint every
+      keystroke. Extending the partial-repaint path to the multi-row case
+      would need wrapped-row-aware cursor positioning
+      (`src/interactive/line_editor.rs` `redraw`).
 - [ ] PERF: `next_token` dequeues alias tokens with `first().cloned()` +
       `remove(0)` — an O(n) front-shift plus a full token clone per queued token;
       use a `VecDeque` (`pop_front`) (`src/lexer/alias.rs:8`).
