@@ -37,6 +37,18 @@ fn test_exec_echo() {
 }
 
 #[test]
+fn test_exec_utf8_argument_bytes() {
+    let out = yosh_exec("printf %s 日本語 | od -An -tx1");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let bytes: Vec<&str> = stdout.split_whitespace().collect();
+    assert_eq!(
+        bytes,
+        ["e6", "97", "a5", "e6", "9c", "ac", "e8", "aa", "9e"]
+    );
+}
+
+#[test]
 fn test_exec_true_false() {
     assert!(yosh_exec("true").status.success());
     assert!(!yosh_exec("false").status.success());

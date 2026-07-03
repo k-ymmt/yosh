@@ -52,8 +52,7 @@ impl Lexer {
             // Read a line
             let mut line = String::new();
             while !self.at_end() && self.current_byte() != b'\n' {
-                line.push(self.current_byte() as char);
-                self.advance();
+                self.push_current_char(&mut line)?;
             }
             if !self.at_end() {
                 self.advance(); // consume newline

@@ -1,6 +1,6 @@
 use super::Lexer;
 use super::token::{Span, SpannedToken, Token};
-use crate::error;
+use crate::error::{self, ParseErrorKind, ShellError};
 
 impl Lexer {
     pub(crate) fn at_end(&self) -> bool {
@@ -35,6 +35,52 @@ impl Lexer {
             self.pos += 1;
         }
         ch
+    }
+
+    fn invalid_utf8_error(&self) -> ShellError {
+        ShellError::parse(
+            ParseErrorKind::UnexpectedToken,
+            self.line,
+            self.column,
+            "invalid UTF-8 in shell input",
+        )
+    }
+
+    fn current_utf8_char(&self) -> error::Result<(char, usize)> {
+        let first = self.current_byte();
+        let len = match first {
+            0x00..=0x7f => 1,
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => return Err(self.invalid_utf8_error()),
+        };
+        let end = self
+            .pos
+            .checked_add(len)
+            .filter(|end| *end <= self.input.len())
+            .ok_or_else(|| self.invalid_utf8_error())?;
+        let s = std::str::from_utf8(&self.input[self.pos..end])
+            .map_err(|_| self.invalid_utf8_error())?;
+        let ch = s.chars().next().ok_or_else(|| self.invalid_utf8_error())?;
+        Ok((ch, len))
+    }
+
+    pub(crate) fn advance_char(&mut self) -> error::Result<char> {
+        if self.current_byte() < 0x80 {
+            return Ok(self.advance() as char);
+        }
+
+        let (ch, len) = self.current_utf8_char()?;
+        self.pos += len;
+        self.column += 1;
+        Ok(ch)
+    }
+
+    pub(crate) fn push_current_char(&mut self, out: &mut String) -> error::Result<()> {
+        let ch = self.advance_char()?;
+        out.push(ch);
+        Ok(())
     }
 
     pub(crate) fn current_span(&self) -> Span {

@@ -59,8 +59,7 @@ impl Lexer {
                         parts.push(part);
                     }
                     _ => {
-                        literal.push(ch as char);
-                        self.advance();
+                        self.push_current_char(&mut literal)?;
                     }
                 }
             } else {
@@ -119,12 +118,11 @@ impl Lexer {
                         parts.push(part);
                     }
                     b'~' if parts.is_empty() && literal.is_empty() => {
-                        let part = self.read_tilde();
+                        let part = self.read_tilde()?;
                         parts.push(part);
                     }
                     _ => {
-                        literal.push(ch as char);
-                        self.advance();
+                        self.push_current_char(&mut literal)?;
                     }
                 }
             }
@@ -180,8 +178,7 @@ impl Lexer {
                 self.advance(); // consume closing '
                 break;
             }
-            content.push(ch as char);
-            self.advance();
+            self.push_current_char(&mut content)?;
         }
         Ok(WordPart::SingleQuoted(content))
     }
@@ -212,9 +209,8 @@ impl Lexer {
             // backslash (implementation-defined; yosh keeps it).
             return Ok(WordPart::Literal("\\".to_string()));
         }
-        let ch = self.current_byte();
-        self.advance();
-        Ok(WordPart::EscapedLiteral((ch as char).to_string()))
+        let ch = self.advance_char()?;
+        Ok(WordPart::EscapedLiteral(ch.to_string()))
     }
 
     /// Inside double quotes, `\` only escapes `$`, `` ` ``, `"`, `\`, and `<newline>`.
@@ -237,14 +233,14 @@ impl Lexer {
                 Ok(WordPart::Literal(String::new()))
             }
             _ => {
-                self.advance();
-                Ok(WordPart::Literal(format!("\\{}", ch as char)))
+                let ch = self.advance_char()?;
+                Ok(WordPart::Literal(format!("\\{}", ch)))
             }
         }
     }
 
     /// Reads `~` or `~user` at word start.
-    fn read_tilde(&mut self) -> WordPart {
+    fn read_tilde(&mut self) -> error::Result<WordPart> {
         self.advance(); // consume '~'
         let mut username = String::new();
         // read until metachar, whitespace, or '/'
@@ -253,13 +249,12 @@ impl Lexer {
             if Self::is_meta_or_whitespace(ch) || ch == b'/' {
                 break;
             }
-            username.push(ch as char);
-            self.advance();
+            self.push_current_char(&mut username)?;
         }
         if username.is_empty() {
-            WordPart::Tilde(None)
+            Ok(WordPart::Tilde(None))
         } else {
-            WordPart::Tilde(Some(username))
+            Ok(WordPart::Tilde(Some(username)))
         }
     }
 
@@ -536,24 +531,58 @@ impl Lexer {
                     break;
                 }
                 let esc = self.current_byte();
-                self.advance();
                 match esc {
-                    b'a' => content.push('\x07'),
-                    b'b' => content.push('\x08'),
-                    b'e' | b'E' => content.push('\x1B'),
-                    b'f' => content.push('\x0C'),
-                    b'n' => content.push('\n'),
-                    b'r' => content.push('\r'),
-                    b't' => content.push('\t'),
-                    b'v' => content.push('\x0B'),
-                    b'\\' => content.push('\\'),
-                    b'\'' => content.push('\''),
-                    b'"' => content.push('"'),
+                    b'a' => {
+                        self.advance();
+                        content.push('\x07');
+                    }
+                    b'b' => {
+                        self.advance();
+                        content.push('\x08');
+                    }
+                    b'e' | b'E' => {
+                        self.advance();
+                        content.push('\x1B');
+                    }
+                    b'f' => {
+                        self.advance();
+                        content.push('\x0C');
+                    }
+                    b'n' => {
+                        self.advance();
+                        content.push('\n');
+                    }
+                    b'r' => {
+                        self.advance();
+                        content.push('\r');
+                    }
+                    b't' => {
+                        self.advance();
+                        content.push('\t');
+                    }
+                    b'v' => {
+                        self.advance();
+                        content.push('\x0B');
+                    }
+                    b'\\' => {
+                        self.advance();
+                        content.push('\\');
+                    }
+                    b'\'' => {
+                        self.advance();
+                        content.push('\'');
+                    }
+                    b'"' => {
+                        self.advance();
+                        content.push('"');
+                    }
                     b'x' => {
+                        self.advance();
                         let val = self.read_hex_digits(2);
                         content.push(val as char);
                     }
                     b'c' => {
+                        self.advance();
                         // \cX — control character
                         if !self.at_end() {
                             let ctrl = self.current_byte();
@@ -562,6 +591,7 @@ impl Lexer {
                         }
                     }
                     b'0'..=b'7' => {
+                        self.advance();
                         // octal: up to 3 digits, first digit already consumed
                         let mut val = (esc - b'0') as u32;
                         for _ in 0..2 {
@@ -579,12 +609,11 @@ impl Lexer {
                     _ => {
                         // unknown escape: keep backslash and char
                         content.push('\\');
-                        content.push(esc as char);
+                        self.push_current_char(&mut content)?;
                     }
                 }
             } else {
-                content.push(ch as char);
-                self.advance();
+                self.push_current_char(&mut content)?;
             }
         }
         Ok(WordPart::DollarSingleQuoted(content))
@@ -657,12 +686,10 @@ impl Lexer {
                             expr.push('\\');
                             self.advance();
                             if !self.at_end() {
-                                expr.push(self.current_byte() as char);
-                                self.advance();
+                                self.push_current_char(&mut expr)?;
                             }
                         } else {
-                            expr.push(bch as char);
-                            self.advance();
+                            self.push_current_char(&mut expr)?;
                             if bch == b'`' {
                                 break;
                             }
@@ -695,8 +722,7 @@ impl Lexer {
                     }
                 }
                 _ => {
-                    expr.push(ch as char);
-                    self.advance();
+                    self.push_current_char(&mut expr)?;
                 }
             }
         }
@@ -750,8 +776,7 @@ impl Lexer {
                             ));
                         }
                         let qch = self.current_byte();
-                        content.push(qch as char);
-                        self.advance();
+                        self.push_current_char(&mut content)?;
                         if qch == b'\'' {
                             break;
                         }
@@ -780,18 +805,15 @@ impl Lexer {
                             content.push('\\');
                             self.advance();
                             if !self.at_end() {
-                                content.push(self.current_byte() as char);
-                                self.advance();
+                                self.push_current_char(&mut content)?;
                             }
                         } else {
-                            content.push(qch as char);
-                            self.advance();
+                            self.push_current_char(&mut content)?;
                         }
                     }
                 }
                 _ => {
-                    content.push(ch as char);
-                    self.advance();
+                    self.push_current_char(&mut content)?;
                 }
             }
         }
@@ -904,14 +926,12 @@ impl Lexer {
                         _ => {
                             // keep backslash literally
                             content.push('\\');
-                            content.push(esc as char);
-                            self.advance();
+                            self.push_current_char(&mut content)?;
                         }
                     }
                 }
                 _ => {
-                    content.push(ch as char);
-                    self.advance();
+                    self.push_current_char(&mut content)?;
                 }
             }
         }

@@ -240,6 +240,26 @@ mod tests {
     }
 
     #[test]
+    fn test_utf8_literals_preserved() {
+        let tokens = tokenize("printf 日本語 '単引用' \"二重引用\"");
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Word(Word::literal("printf")),
+                Token::Word(Word::literal("日本語")),
+                Token::Word(Word {
+                    parts: vec![WordPart::SingleQuoted("単引用".to_string())],
+                }),
+                Token::Word(Word {
+                    parts: vec![WordPart::DoubleQuoted(vec![WordPart::Literal(
+                        "二重引用".to_string()
+                    )])],
+                }),
+            ]
+        );
+    }
+
+    #[test]
     fn test_backslash_escape() {
         // `\<char>` unquoted escape now emits EscapedLiteral to preserve the
         // escape metadata for downstream tilde-prefix recognition (POSIX §2.6.1).
