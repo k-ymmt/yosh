@@ -28,5 +28,16 @@ pub struct ExecState {
     /// (matches bash/dash: not listed by `set`, not exportable, and a
     /// user assignment/readonly does not "stick" — the next command
     /// overwrites it).
+    ///
+    /// Edge case: `export LINENO` / `readonly LINENO` (bare, no `=`) still
+    /// go through `VarStore::export` / `set_readonly`, which create a
+    /// phantom `VarStore` entry (empty value) when the name isn't already
+    /// present — since `$LINENO` is never actually written there, this
+    /// entry then sits inert but exported/readonly. That phantom entry
+    /// exports as `LINENO=` (empty) to child environments, while `$LINENO`
+    /// itself keeps reading the live intercept (i.e. the exported child
+    /// sees a stale empty value, not the shell's current line). bash, by
+    /// contrast, exports the live numeric value. This divergence is
+    /// accepted rather than fixed.
     pub lineno: usize,
 }

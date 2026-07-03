@@ -72,7 +72,7 @@ fn parse_pattern(pat: &str) -> Vec<PatternToken> {
 /// chars and `\x` escapes — no `*`, `?`, or `[...]`) qualify; anything else
 /// falls back to `General` so behavior for bracket/`?`-bearing patterns is
 /// unchanged.
-pub enum PatternShape {
+pub(crate) enum PatternShape {
     /// No metacharacters at all — an exact literal string.
     Literal(String),
     /// A single leading `*` followed by a literal remainder, e.g. the
@@ -87,7 +87,7 @@ pub enum PatternShape {
 }
 
 /// Classify `pat`'s shape for fast-path dispatch. See `PatternShape`.
-pub fn classify(pat: &str) -> PatternShape {
+pub(crate) fn classify(pat: &str) -> PatternShape {
     let tokens = parse_pattern(pat);
     let Some(lit) = literal_run(&tokens) else {
         return PatternShape::General;

@@ -70,6 +70,34 @@ pub enum PathLookup {
     NotFound,
 }
 
+/// Walk each directory in `path_var`, without touching any cache, and
+/// report whether `cmd` exists and is executable.
+fn walk_path_lookup(cmd: &str, path_var: &str) -> PathLookup {
+    let mut seen_non_exec: Option<PathBuf> = None;
+    for dir in path_var.split(':') {
+        let candidate = PathBuf::from(path_component_dir(dir)).join(cmd);
+        if !candidate.is_file() {
+            continue;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(&candidate) {
+            Ok(meta) if meta.permissions().mode() & 0o111 != 0 => {
+                return PathLookup::Executable(candidate);
+            }
+            Ok(_) => {
+                if seen_non_exec.is_none() {
+                    seen_non_exec = Some(candidate);
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    match seen_non_exec {
+        Some(p) => PathLookup::NotExecutable(p),
+        None => PathLookup::NotFound,
+    }
+}
+
 /// Walk each directory in `path_var` and report whether `cmd` exists and
 /// is executable. Unlike [`find_in_path`], this distinguishes the
 /// "exists but not executable" case so callers can return the correct
@@ -86,32 +114,23 @@ pub fn lookup_in_path(
     {
         return PathLookup::Executable(cached.clone());
     }
-    let mut seen_non_exec: Option<PathBuf> = None;
-    for dir in path_var.split(':') {
-        let candidate = PathBuf::from(path_component_dir(dir)).join(cmd);
-        if !candidate.is_file() {
-            continue;
-        }
-        use std::os::unix::fs::PermissionsExt;
-        match std::fs::metadata(&candidate) {
-            Ok(meta) if meta.permissions().mode() & 0o111 != 0 => {
-                if !cmd.contains('/') {
-                    cache.insert(cmd.to_string(), candidate.clone());
-                }
-                return PathLookup::Executable(candidate);
-            }
-            Ok(_) => {
-                if seen_non_exec.is_none() {
-                    seen_non_exec = Some(candidate);
-                }
-            }
-            Err(_) => continue,
-        }
+    let result = walk_path_lookup(cmd, path_var);
+    if let PathLookup::Executable(p) = &result
+        && !cmd.contains('/')
+    {
+        cache.insert(cmd.to_string(), p.clone());
     }
-    match seen_non_exec {
-        Some(p) => PathLookup::NotExecutable(p),
-        None => PathLookup::NotFound,
-    }
+    result
+}
+
+/// Like [`lookup_in_path`], but never reads or writes the `utility_hash`
+/// cache. For use when `path_var` is a one-off override (e.g. a command's
+/// own `PATH=dir cmd` prefix assignment) rather than the shell's own
+/// `$PATH` that the cache is keyed against — a cache hit here could
+/// return a path found under a *different* PATH, and a cache insert here
+/// would poison lookups for the shell's own (uncorrelated) `$PATH`.
+pub fn lookup_in_path_uncached(cmd: &str, path_var: &str) -> PathLookup {
+    walk_path_lookup(cmd, path_var)
 }
 
 /// Wait for a child process and return its exit code.

@@ -549,6 +549,12 @@ impl LineEditor {
     /// cursor away from the end of the buffer hides it, exactly as before).
     fn update_suggestion(&mut self, history: &History) {
         if self.pos == self.buf.len() && !self.buf.is_empty() {
+            // Cache key is buf_generation alone — it does not account for
+            // `history` identity/content. This is safe only because the
+            // `History` instance is fixed for the duration of a single
+            // `read_line` call (the only caller of `update_suggestion`);
+            // if that ever changes (e.g. history mutated or swapped
+            // mid-call), this cache would need to invalidate on that too.
             if let Some((cached_gen, cached)) = &self.suggestion_cache
                 && *cached_gen == self.buf_generation
             {
