@@ -318,8 +318,17 @@ mod tests {
 
     #[test]
     fn test_lineno_assign_form_does_not_persist() {
-        // ${LINENO:=x} reads the current line but must not create a real
-        // VarStore entry (would defeat the environ-cache gating).
+        // ${LINENO:=x} must not create a real VarStore entry (would
+        // defeat the environ-cache gating).
+        //
+        // Coverage note: `lookup_var` always returns a non-empty value
+        // for LINENO (even line 0 stringifies to "0"), so the Assign
+        // arm's write branch is unreachable for LINENO and this test
+        // exercises only the read path — it passes with or without the
+        // `name != "LINENO"` guard, which is defense-in-depth. The
+        // reachable assignment path (arithmetic `$((LINENO=...))`) is
+        // covered by expand::arith::tests::
+        // test_lineno_arith_does_not_persist_assignment.
         let mut env = make_env();
         env.exec.lineno = 3;
         let result = expand(

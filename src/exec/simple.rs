@@ -138,7 +138,9 @@ fn resolve_exec_path(
         let path = std::path::Path::new(cmd);
         return if is_executable_file(path) {
             ResolvedExec::Executable(path.to_path_buf())
-        } else if path.is_file() {
+        } else if path.is_file() || path.is_dir() {
+            // Non-executable file, or a directory: execvp would have
+            // failed with EACCES/EISDIR → "permission denied", 126.
             ResolvedExec::NotExecutable
         } else {
             ResolvedExec::NotFound
@@ -701,6 +703,29 @@ impl Executor {
                     }
                     Errno::EACCES => {
                         eprintln!("yosh: {}: permission denied", cmd);
+                        126
+                    }
+                    Errno::ENOEXEC => {
+                        // POSIX execvp fallback that execv does not do
+                        // for us: an executable file the kernel refuses
+                        // to exec (no `#!` line / unrecognized format)
+                        // is re-run as a shell script:
+                        //   /bin/sh <resolved-path> <args...>
+                        // c_cmd is the resolved path; c_args[0] is the
+                        // display-name argv[0], replaced by the script
+                        // path in the sh invocation (matching libc
+                        // execvp, which passes the *file* to sh).
+                        match CString::new("/bin/sh") {
+                            Ok(sh) => {
+                                let mut sh_args = Vec::with_capacity(c_args.len() + 1);
+                                sh_args.push(sh.clone());
+                                sh_args.push(c_cmd.clone());
+                                sh_args.extend_from_slice(&c_args[1..]);
+                                let err2 = execv(&sh, &sh_args).unwrap_err();
+                                eprintln!("yosh: {}: {}", cmd, err2);
+                            }
+                            Err(_) => unreachable!("/bin/sh has no NUL"),
+                        }
                         126
                     }
                     _ => {

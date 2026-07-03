@@ -296,9 +296,11 @@ impl VarStore {
                 if existing.readonly {
                     return Err(format!("{}: readonly variable", name));
                 }
-                let was_exported = existing.exported;
-                let exported = was_exported || allexport;
-                if was_exported || exported {
+                // `exported` covers both cache-relevant cases: the var
+                // was already exported (value change alters environ()),
+                // or it becomes exported now via allexport.
+                let exported = existing.exported || allexport;
+                if exported {
                     self.environ_cache = None;
                 }
                 existing.value = value;
