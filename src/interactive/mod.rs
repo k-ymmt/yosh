@@ -12,6 +12,7 @@ pub mod kill_ring;
 pub mod line_editor;
 pub mod parse_status;
 pub mod prompt;
+pub mod selector;
 pub mod terminal;
 pub mod undo;
 
