@@ -3,14 +3,18 @@ use crate::env::ShellEnv;
 
 // ─── IFS helper ─────────────────────────────────────────────────────────────
 
-/// Return the IFS value:
+/// The POSIX default IFS value used when the variable is unset.
+const DEFAULT_IFS: &str = " \t\n";
+
+/// The whitespace-delimiter byte set for `DEFAULT_IFS` (all three bytes are
+/// IFS-whitespace; there are no non-whitespace delimiters).
+const DEFAULT_WS: &[u8] = b" \t\n";
+
+/// Return the IFS value by reference — no allocation:
 ///   - If IFS is set (even empty), return that string.
 ///   - If IFS is unset, return the POSIX default `" \t\n"`.
-fn get_ifs(env: &ShellEnv) -> String {
-    match env.vars.get("IFS") {
-        Some(ifs) => ifs.to_string(),
-        None => " \t\n".to_string(),
-    }
+fn get_ifs(env: &ShellEnv) -> &str {
+    env.vars.get("IFS").unwrap_or(DEFAULT_IFS)
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -30,6 +34,24 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
             .into_iter()
             .filter(|f| f.byte_len() != 0 || f.was_quoted)
             .collect();
+    }
+
+    // Fast path: when IFS is the POSIX default `" \t\n"`, the whitespace/
+    // non-whitespace partition is known statically (all-whitespace, no
+    // non-whitespace delimiters) — skip building the `ifs_ws`/`ifs_nws`
+    // Vecs entirely and check directly against the default set. This is
+    // the overwhelmingly common case (unset or default IFS) and avoids
+    // two small heap allocations per word expansion even before reaching
+    // the "does any field need splitting" check below.
+    if ifs == DEFAULT_IFS {
+        if fields.iter().all(|f| !needs_splitting(f, DEFAULT_WS, &[])) {
+            return fields;
+        }
+        let mut result = Vec::new();
+        for field in fields {
+            split_field(&field, DEFAULT_WS, &[], &mut result);
+        }
+        return result;
     }
 
     // Partition IFS characters.
@@ -353,6 +375,41 @@ mod tests {
         let env = env_with_ifs(":");
         let input = vec![unquoted("a::b")];
         assert_eq!(values(split(&env, input)), vec!["a", "", "b"]);
+    }
+
+    // ── Default-IFS static fast path (Task 2 PERF item 8) ──
+
+    #[test]
+    fn test_default_ifs_static_path_unset_no_split_needed() {
+        // Unset IFS resolves to DEFAULT_IFS and must take the static
+        // whitespace-only branch without allocating ifs_ws/ifs_nws Vecs.
+        let env = env_no_ifs();
+        let input = vec![unquoted("hello")];
+        assert_eq!(values(split(&env, input)), vec!["hello"]);
+    }
+
+    #[test]
+    fn test_default_ifs_static_path_unset_splits_on_whitespace() {
+        let env = env_no_ifs();
+        let input = vec![unquoted("  hello   world  ")];
+        assert_eq!(values(split(&env, input)), vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_default_ifs_static_path_explicit_default_string() {
+        // IFS explicitly set to the literal default string " \t\n" must
+        // behave identically to unset IFS via the same static branch.
+        let env = env_with_ifs(" \t\n");
+        let input = vec![unquoted("a\tb\nc")];
+        assert_eq!(values(split(&env, input)), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_default_ifs_static_path_quoted_whitespace_preserved() {
+        let env = env_no_ifs();
+        let mut f = ExpandedField::new();
+        f.push_quoted("a b");
+        assert_eq!(values(split(&env, vec![f])), vec!["a b"]);
     }
 
     // ── Fast-path coverage (§9.1 of fast-path spec) ──

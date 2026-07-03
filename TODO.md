@@ -81,20 +81,6 @@ this audit were all resolved on 2026-07-03.
 
 ### Performance
 
-- [ ] PERF: field-splitting `split()` allocates a fresh IFS `String` plus two
-      `Vec<u8>` on every word expansion — even the fast path where nothing
-      splits (`ls foo bar`). Read IFS by reference / short-circuit before
-      allocating when IFS is default (`src/expand/field_split.rs:9`,
-      `src/expand/field_split.rs:36`).
-- [ ] PERF: `strip_prefix`/`strip_suffix` run an anchored `pattern::matches` at
-      every char boundary — the common `${x##*/}` / `${x%.*}` idioms are O(n²)+;
-      add a fast path for literal (metachar-free) patterns and anchored
-      prefix/suffix scanning (`src/expand/param.rs:194`, `src/expand/param.rs:211`).
-      (Related to the already-tracked strip re-parse item under Code Quality.)
-- [ ] PERF: `parse_bracket` allocates a fresh `Vec<BracketItem>` and re-parses
-      the class body on every call; a leading `*` retries `rest` against every
-      suffix so `*[abc]x` re-parses the bracket O(n) times per match. Pre-parse
-      the pattern into tokens once (`src/expand/pattern.rs:104`).
 - [ ] PERF: `redraw` classifies each character with
       `spans.iter().find(...)` inside the per-char loop → O(n·spans) per redraw;
       spans are sorted and non-overlapping, so advance a single span-cursor
