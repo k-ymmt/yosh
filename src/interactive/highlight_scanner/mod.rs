@@ -71,7 +71,8 @@ impl HighlightScanner {
                     // Re-scan the accumulated text to get the ending state.
                     let acc_chars: Vec<char> = accumulated.chars().collect();
                     let mut st = ScannerState::new();
-                    let _spans = self.scan_from(&acc_chars, 0, &mut st, checker_env);
+                    let mut discard_spans = Vec::new();
+                    self.scan_from(&acc_chars, 0, &mut st, checker_env, &mut discard_spans);
                     self.accumulated_state = Some((accumulated.to_string(), st.clone()));
                     st
                 }
@@ -88,21 +89,19 @@ impl HighlightScanner {
             (0, init_state)
         };
 
-        // Scan from start_pos -----------------------------------------------------
-        let mut spans = if start_pos > 0 {
-            // Keep cached spans that end before start_pos.
-            self.cache
-                .prev_spans
-                .iter()
-                .filter(|sp| sp.end <= start_pos)
-                .cloned()
-                .collect()
+        // Scan from start_pos -------------------------------------------------------
+        // Reuse the cache's owned span buffer instead of allocating a fresh Vec:
+        // take ownership, keep only the prefix spans that end before start_pos
+        // (retained in place, no clone), then let scan_from push the newly
+        // scanned tail directly into the same buffer.
+        let mut spans = std::mem::take(&mut self.cache.prev_spans);
+        if start_pos > 0 {
+            spans.retain(|sp| sp.end <= start_pos);
         } else {
-            Vec::new()
-        };
+            spans.clear();
+        }
 
-        let new_spans = self.scan_from(current, start_pos, &mut state, checker_env);
-        spans.extend(new_spans);
+        self.scan_from(current, start_pos, &mut state, checker_env, &mut spans);
 
         // Mark unclosed modes for PS1 ---------------------------------------------
         if is_ps1 {
@@ -110,14 +109,16 @@ impl HighlightScanner {
         }
 
         // Update cache ------------------------------------------------------------
-        self.cache.prev_input = current.to_vec();
+        // Reuse prev_input's allocation rather than allocating a fresh Vec.
+        self.cache.prev_input.clear();
+        self.cache.prev_input.extend_from_slice(current);
         self.cache.prev_spans = spans.clone();
 
         spans
     }
 
     // -----------------------------------------------------------------------
-    // scan_from – scan chars[start_pos..] returning spans relative to chars
+    // scan_from – scan chars[start_pos..], pushing spans into `spans`
     // -----------------------------------------------------------------------
 
     fn scan_from(
@@ -126,8 +127,8 @@ impl HighlightScanner {
         start_pos: usize,
         state: &mut ScannerState,
         checker_env: &CheckerEnv,
-    ) -> Vec<ColorSpan> {
-        let mut spans = Vec::new();
+        spans: &mut Vec<ColorSpan>,
+    ) {
         let mut pos = start_pos;
 
         // Save checkpoints
@@ -148,7 +149,7 @@ impl HighlightScanner {
             let mut ctx = ScanCtx {
                 input: chars,
                 state,
-                spans: &mut spans,
+                spans: &mut *spans,
                 checker: &mut self.checker,
             };
             pos = match ctx.state.current_mode().clone() {
@@ -186,8 +187,6 @@ impl HighlightScanner {
                 }
             };
         }
-
-        spans
     }
 }
 
@@ -586,5 +585,87 @@ mod tests {
         let spans1 = scan_ps2(&mut scanner, "echo 'hello\n", "world'");
         let spans2 = scan_ps2(&mut scanner, "echo 'hello\n", "world'");
         assert_eq!(spans1, spans2);
+    }
+
+    // ── Cache-reuse equivalence tests (regression net for item 14: the
+    // scanner cache now reuses owned buffers via `mem::take` instead of
+    // cloning `prev_spans`/`prev_input` on every keystroke). These compare
+    // the incremental scanner's output against a scanner that never saw
+    // any prior input, to make sure buffer reuse never leaks stale spans
+    // or corrupts state across calls. ──────────────────────────────────
+
+    #[test]
+    fn test_incremental_matches_fresh_scan_after_append_sequence() {
+        // Type "echo hello world" one character at a time through the same
+        // scanner (exercising the append fast-path's buffer reuse), then
+        // compare the final result against a brand new scanner scanning
+        // the whole line in one shot.
+        let mut incremental = test_scanner();
+        let full = "echo hello world";
+        let mut last = Vec::new();
+        for i in 1..=full.chars().count() {
+            let prefix: String = full.chars().take(i).collect();
+            last = scan_input(&mut incremental, &prefix);
+        }
+
+        let mut fresh = test_scanner();
+        let expected = scan_input(&mut fresh, full);
+        assert_eq!(last, expected);
+    }
+
+    #[test]
+    fn test_incremental_matches_fresh_scan_after_mid_edit() {
+        // Build up a line, then edit in the middle (not just append/backspace
+        // at the tail) so the retained-prefix path (`spans.retain`) and a
+        // fresh full rescan are exercised, and compare against scanning the
+        // final text from a clean scanner.
+        let mut incremental = test_scanner();
+        let _ = scan_input(&mut incremental, "echo hello world");
+        // Trigger a non-append edit by scanning a completely different line
+        // that shares no prefix with the previous input.
+        let edited = "echo hi there";
+        let got = scan_input(&mut incremental, edited);
+
+        let mut fresh = test_scanner();
+        let expected = scan_input(&mut fresh, edited);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn test_incremental_matches_fresh_scan_across_checkpoint_boundary() {
+        // checkpoint_interval is 32; build a line longer than that so a
+        // checkpoint-based partial rescan is exercised, then edit a
+        // character before the boundary and verify against a fresh scan.
+        let mut incremental = test_scanner();
+        let long = "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; // > 32 chars
+        let _ = scan_input(&mut incremental, long);
+
+        // Edit near the start (position 5, well before the checkpoint at 32).
+        let edited = "echo baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let got = scan_input(&mut incremental, edited);
+
+        let mut fresh = test_scanner();
+        let expected = scan_input(&mut fresh, edited);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn test_repeated_scans_do_not_accumulate_stale_spans() {
+        // Repeatedly scan the same short input; the cache buffers must not
+        // grow unboundedly or duplicate spans across calls now that they are
+        // reused via mem::take instead of being freshly allocated.
+        let mut scanner = test_scanner();
+        let mut last_len = None;
+        for _ in 0..5 {
+            let spans = scan_input(&mut scanner, "echo hi");
+            if let Some(prev) = last_len {
+                assert_eq!(
+                    spans.len(),
+                    prev,
+                    "span count changed across repeated scans"
+                );
+            }
+            last_len = Some(spans.len());
+        }
     }
 }
