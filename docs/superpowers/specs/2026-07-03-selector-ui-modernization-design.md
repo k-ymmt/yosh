@@ -92,7 +92,7 @@ nearest the query line, matching current behavior):
 ```
   src/lexer/mod.rs
   src/lexer/word.rs
-❯ src/lexer/scanner.rs      <- selected: cyan pointer + DarkGrey background + bold
+❯ src/lexer/scanner.rs      <- selected: cyan pointer + navy background + bold
   src/builtin/              <- directories blue (ItemStyle::Path only)
   ──────────────────        <- separator: dim
   4/17 ❯ lex█               <- count yellow (filtered/total, bug fixed); prompt ❯ cyan
@@ -100,7 +100,20 @@ nearest the query line, matching current behavior):
 
 - Pointer uses `❯` (U+276F) instead of `▶` (U+25B6) because the latter is
   East-Asian-Ambiguous width and misaligns on CJK terminals.
-- Fuzzy-matched characters: cyan + bold, in both selected and unselected
+- Accent colors are module constants in `selector.rs` so they can be tuned
+  in one place (2026-07-03 revision; both assume 256-color support, which
+  is ubiquitous in modern terminals — `NO_COLOR` disables them entirely):
+  - `SELECTED_BG = Color::AnsiValue(18)` — navy background of the selected
+    row (was `DarkGrey`).
+  - `MATCH_FG = Color::AnsiValue(214)` — amber for fuzzy-matched
+    characters (was `Cyan`), chosen for contrast against the navy row.
+- The selected row's background extends to the full terminal width: after
+  the candidate text (and `…` marker), the remaining columns are filled
+  with spaces while the background color is active. `fit_to_width` returns
+  the consumed display columns to make the padding exact. Unselected rows
+  and the `NO_COLOR` legacy look are unchanged (text-width highlight only).
+  Writing through the last column is safe under deferred auto-wrap.
+- Fuzzy-matched characters: amber + bold, in both selected and unselected
   rows (rendered from `ScoredCandidate::positions`).
 - Truncation: display-width-aware via the existing `display_width.rs`
   helpers; a truncated candidate ends with `…`. CJK-safe.
