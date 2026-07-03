@@ -46,6 +46,12 @@ pub struct PluginEntry {
     /// permitted; matching is OR across the list.
     #[serde(default)]
     pub allowed_commands: Option<Vec<String>>,
+    /// Optional confinement root for the `files:read` / `files:write`
+    /// capabilities. When set, every `files` host call is restricted to
+    /// paths inside this directory (symlink-escape safe). When unset,
+    /// `files` is a full-filesystem grant. Supports `~/` expansion.
+    #[serde(default)]
+    pub files_root: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -297,6 +303,40 @@ allowed_commands = ["git status:*", "git rev-parse:*"]
                 "git rev-parse:*".to_string(),
             ])
         );
+    }
+
+    #[test]
+    fn parse_files_root_field() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "notes"
+path = "/tmp/notes.wasm"
+capabilities = ["files:read", "files:write"]
+files_root = "~/notes"
+"#
+        )
+        .unwrap();
+        let config = PluginConfig::load(f.path()).unwrap();
+        assert_eq!(config.plugin[0].files_root.as_deref(), Some("~/notes"));
+    }
+
+    #[test]
+    fn parse_missing_files_root_is_none() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "full-fs"
+path = "/tmp/x.wasm"
+"#
+        )
+        .unwrap();
+        let config = PluginConfig::load(f.path()).unwrap();
+        assert!(config.plugin[0].files_root.is_none());
     }
 
     #[test]

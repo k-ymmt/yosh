@@ -81,6 +81,8 @@ enabled = true
 | `enabled` | No | `true` (default) or `false` to disable without removing |
 | `capabilities` | No | List of permitted capabilities (default: all requested) |
 | `asset` | No | Custom asset filename for GitHub downloads |
+| `allowed_commands` | No | Argv patterns the `commands:exec` capability may run (default: none) |
+| `files_root` | No | Directory that confines `files:read`/`files:write` (default: unconfined) |
 
 #### Restricting Capabilities
 
@@ -106,8 +108,34 @@ Available capability strings:
 | `hooks:post_exec` | Run after each command |
 | `hooks:on_cd` | Run when the working directory changes |
 | `hooks:pre_prompt` | Run before the prompt is displayed |
+| `files:read` | Read files and directories (see `files_root` below) |
+| `files:write` | Create, modify, and delete files and directories (see `files_root` below) |
+| `commands:exec` | Run external commands matching `allowed_commands` |
 
 If a plugin calls a denied capability, yosh returns `Err(error-code::denied)` to the guest. There is no runtime overhead for permitted capabilities.
+
+#### Confining `files` Access
+
+**Without `files_root`, `files:read` / `files:write` grant access to the
+entire filesystem** — everything the shell user can read or write, the
+plugin can too. To confine a plugin to a directory:
+
+```toml
+[[plugin]]
+name = "notes-plugin"
+source = "github:someone/yosh-plugin-notes"
+version = "0.1.0"
+capabilities = ["files:read", "files:write"]
+files_root = "~/notes"
+```
+
+With `files_root` set, every `files` host call is restricted to paths
+inside that directory. Paths are canonicalized before the check, so
+`..` traversal and symlinks pointing outside the root are denied.
+Relative paths resolve against the root. `commands:exec` resolves
+relative program names through the shell's `$PATH` and runs matching
+commands with the shell's privileges; prefer absolute paths in
+`allowed_commands` patterns when the plugin is untrusted.
 
 #### Asset Filename
 

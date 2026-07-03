@@ -32,7 +32,34 @@ pub fn host_commands_exec(
         return Err(ErrorCode::PatternNotAllowed);
     }
 
-    spawn_with_timeout(program, &argv[1..], std::time::Duration::from_millis(1000))
+    // Resolve relative names against the *shell's* $PATH (ShellEnv) in
+    // the parent, matching how the shell executes a command typed at
+    // the prompt. Without this, Command::new would PATH-walk the
+    // process-inherited environment, which shell-level PATH assignments
+    // never update — so the allowlist would match one name while exec
+    // resolved it through a different, stale PATH.
+    let exec_program: String = if program.contains('/') {
+        program.to_string()
+    } else {
+        let found = ctx.bound_env_with(|env| {
+            let path_var = env
+                .vars
+                .get("PATH")
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            crate::exec::command::find_in_path(program, &path_var, &mut env.utility_hash)
+        })?;
+        match found {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None => return Err(ErrorCode::NotFound),
+        }
+    };
+
+    spawn_with_timeout(
+        &exec_program,
+        &argv[1..],
+        std::time::Duration::from_millis(1000),
+    )
 }
 
 pub fn deny_commands_exec() -> Result<ExecOutput, ErrorCode> {
@@ -207,6 +234,40 @@ mod tests {
         )
         .expect("sh should run to exit");
         assert_eq!(result.exit_code, 42);
+    }
+
+    #[test]
+    fn host_commands_exec_resolves_relative_program_via_shell_path() {
+        // Relative program names must resolve against the *shell's*
+        // $PATH (ShellEnv), not the process-inherited environment —
+        // yosh never writes shell PATH assignments back to the process
+        // env, so the two can diverge.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("yosh-exec-probe");
+        std::fs::write(&bin, "#!/bin/sh\necho probe-ok\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars
+            .set("PATH", dir.path().to_string_lossy().into_owned())
+            .unwrap();
+        let ctx = ctx_with_allowed(&mut env, &["yosh-exec-probe:*"]);
+        let result = host_commands_exec(&ctx, "yosh-exec-probe", &[])
+            .expect("relative name should resolve via the shell's PATH");
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, b"probe-ok\n");
+    }
+
+    #[test]
+    fn host_commands_exec_relative_not_in_shell_path_is_not_found() {
+        // A relative name absent from the shell's $PATH must fail with
+        // NotFound even if some process-env PATH would have found it.
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars.set("PATH", "/nonexistent-dir-yosh").unwrap();
+        let ctx = ctx_with_allowed(&mut env, &["echo:*"]);
+        let result = host_commands_exec(&ctx, "echo", &[Cow::Borrowed("hi")]);
+        assert!(matches!(result, Err(ErrorCode::NotFound)));
     }
 
     #[test]

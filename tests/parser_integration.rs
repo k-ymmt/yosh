@@ -500,6 +500,42 @@ fn test_heredoc_strip_tabs() {
 }
 
 #[test]
+fn test_heredoc_larger_than_pipe_buffer_no_deadlock() {
+    // A ~200 KB body exceeds any pipe buffer (~64 KiB). The shell must
+    // not block writing the whole body before a reader is attached.
+    let line = "0123456789abcdef".repeat(8); // 128 bytes
+    let body = format!("{}\n", line).repeat(1600); // 1600 * 129 bytes
+    let script = format!("wc -c <<EOF\n{}EOF", body);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yosh"))
+        .args(["-c", &script])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to spawn yosh");
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut s = String::new();
+        let _ = stdout.read_to_string(&mut s);
+        let _ = tx.send(s);
+    });
+
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(s) => {
+            let _ = child.wait();
+            assert_eq!(s.trim(), body.len().to_string());
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("large heredoc deadlocked (no output within 10s)");
+        }
+    }
+}
+
+#[test]
 fn test_heredoc_with_command_sub() {
     let out = yosh_exec("x=$(cat <<EOF\nhello\nEOF\n); echo $x");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
@@ -1149,6 +1185,36 @@ fn test_noclobber_override() {
     assert!(out.status.success());
     let content = std::fs::read_to_string(&file).unwrap();
     assert_eq!(content, "new\n");
+}
+
+#[test]
+fn test_noclobber_allows_non_regular_file() {
+    // POSIX: noclobber only blocks existing *regular* files; devices
+    // like /dev/null must remain writable under set -C.
+    let out = yosh_exec("set -C; echo x > /dev/null");
+    assert!(
+        out.status.success(),
+        "noclobber must not block /dev/null: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_noclobber_does_not_follow_dangling_symlink() {
+    // A dangling symlink defeats the old exists()-then-O_TRUNC check:
+    // exists() follows the link (false), then open(O_CREAT) creates the
+    // target through the link. With O_EXCL the open fails on the link.
+    let dir = helpers::TempDir::new();
+    let link = dir.path().join("link");
+    let target = dir.path().join("clobber-target");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let cmd = format!("set -C; echo new > {}", link.display());
+    let out = yosh_exec(&cmd);
+    assert!(!out.status.success());
+    assert!(
+        !target.exists(),
+        "noclobber must not create the symlink target"
+    );
 }
 
 #[test]

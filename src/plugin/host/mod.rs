@@ -57,6 +57,11 @@ pub struct HostContext {
     pub(super) wasi: WasiCtx,
     pub(super) resource_table: ResourceTable,
     pub(super) allowed_commands: Vec<CommandPattern>,
+    /// Optional confinement root for the `files` capability
+    /// (`plugins.toml` `files_root`). `None` means the capability is a
+    /// full-filesystem grant; `Some(root)` confines every `files` host
+    /// call to paths inside `root` (canonicalized, symlink-escape safe).
+    pub(super) files_root: Option<std::path::PathBuf>,
 }
 
 // SAFETY: `*mut ShellEnv` is `!Send` by default, but the pointer is only
@@ -82,6 +87,7 @@ impl HostContext {
             wasi,
             resource_table: ResourceTable::new(),
             allowed_commands: Vec::new(),
+            files_root: None,
         }
     }
 
@@ -186,6 +192,12 @@ pub(super) mod test_helpers {
             .iter()
             .map(|s| CommandPattern::parse(s).expect("valid pattern"))
             .collect();
+        ctx
+    }
+
+    pub fn ctx_with_files_root(env: &mut ShellEnv, root: &std::path::Path) -> HostContext {
+        let mut ctx = bound_env_ctx(env);
+        ctx.files_root = Some(root.to_path_buf());
         ctx
     }
 }

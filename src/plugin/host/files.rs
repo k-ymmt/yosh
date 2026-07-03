@@ -1,26 +1,71 @@
-//! `yosh:plugin/files` host imports — read/write/inspect filesystem
-//! within the plugin sandbox. Granted via CAP_FILES_READ /
-//! CAP_FILES_WRITE. None of these functions read or write `ShellEnv`,
-//! so the metadata guard delegates to `ensure_bound`.
+//! `yosh:plugin/files` host imports — read/write/inspect the
+//! filesystem. Granted via CAP_FILES_READ / CAP_FILES_WRITE. None of
+//! these functions read or write `ShellEnv`, so the metadata guard
+//! delegates to `ensure_bound`.
+//!
+//! Capability model: by default (`files_root` unset in `plugins.toml`)
+//! the `files` capability is a **full-filesystem grant** — every path
+//! the shell user can reach is reachable by the plugin. Setting
+//! `files_root = "<dir>"` on the plugin entry confines all eight
+//! functions to that directory: paths are canonicalized (resolving
+//! symlinks) and must stay inside the root, otherwise `Denied` is
+//! returned. Relative paths resolve against the root, not the process
+//! cwd. This mirrors the sandbox-mode semantics of
+//! `yosh-plugin-manager`'s test host.
 //!
 //! Error mapping table (see spec
 //! docs/superpowers/specs/2026-04-29-plugin-files-rw-capability-design.md
 //! §4):
 //! - empty path                 → InvalidArgument
+//! - escape from `files_root`   → Denied
 //! - std::io::ErrorKind::NotFound (read side) → NotFound
 //! - other I/O errors           → IoFailed
 
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use super::super::generated::yosh::plugin::files::{DirEntry, FileStat};
 use super::super::generated::yosh::plugin::types::ErrorCode;
 use super::HostContext;
 
+/// Resolve `path` against the plugin's `files_root`, if configured.
+/// Unconfined plugins get the path back verbatim (full-FS grant, see
+/// module docs). Confined plugins get the canonicalized real path, or
+/// `Denied` if it escapes the root. Canonicalization resolves symlinks,
+/// so a link inside the root pointing outside is also denied. For paths
+/// that do not exist yet (write/create), the parent is canonicalized
+/// and the final component re-joined.
+fn resolve(ctx: &HostContext, path: &str) -> Result<PathBuf, ErrorCode> {
+    let Some(root) = &ctx.files_root else {
+        return Ok(PathBuf::from(path));
+    };
+    let candidate = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        root.join(path)
+    };
+    let canon = match std::fs::canonicalize(&candidate) {
+        Ok(p) => p,
+        Err(_) => {
+            let parent = candidate.parent().ok_or(ErrorCode::Denied)?;
+            let parent_canon = std::fs::canonicalize(parent).map_err(|_| ErrorCode::Denied)?;
+            let file_name = candidate.file_name().ok_or(ErrorCode::Denied)?;
+            parent_canon.join(file_name)
+        }
+    };
+    if canon.starts_with(root) {
+        Ok(canon)
+    } else {
+        Err(ErrorCode::Denied)
+    }
+}
+
 pub fn host_files_read_file(ctx: &HostContext, path: &str) -> Result<Vec<u8>, ErrorCode> {
     ctx.ensure_bound()?;
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
+    let path = resolve(ctx, path)?;
     match std::fs::read(path) {
         Ok(bytes) => Ok(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ErrorCode::NotFound),
@@ -33,6 +78,7 @@ pub fn host_files_read_dir(ctx: &HostContext, path: &str) -> Result<Vec<DirEntry
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
+    let path = resolve(ctx, path)?;
     let iter = match std::fs::read_dir(path) {
         Ok(i) => i,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ErrorCode::NotFound),
@@ -57,6 +103,7 @@ pub fn host_files_metadata(ctx: &HostContext, path: &str) -> Result<FileStat, Er
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
+    let path = resolve(ctx, path)?;
     let md = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ErrorCode::NotFound),
@@ -82,6 +129,7 @@ pub fn host_files_write_file(ctx: &HostContext, path: &str, data: &[u8]) -> Resu
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
+    let path = resolve(ctx, path)?;
     std::fs::write(path, data).map_err(|_| ErrorCode::IoFailed)
 }
 
@@ -90,6 +138,7 @@ pub fn host_files_append_file(ctx: &HostContext, path: &str, data: &[u8]) -> Res
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
+    let path = resolve(ctx, path)?;
     use std::io::Write as _;
     let mut f = std::fs::OpenOptions::new()
         .create(true)
@@ -108,6 +157,7 @@ pub fn host_files_create_dir(
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
+    let path = resolve(ctx, path)?;
     let result = if recursive {
         std::fs::create_dir_all(path)
     } else {
@@ -121,6 +171,7 @@ pub fn host_files_remove_file(ctx: &HostContext, path: &str) -> Result<(), Error
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
+    let path = resolve(ctx, path)?;
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ErrorCode::NotFound),
@@ -137,6 +188,7 @@ pub fn host_files_remove_dir(
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
     }
+    let path = resolve(ctx, path)?;
     let result = if recursive {
         std::fs::remove_dir_all(path)
     } else {
@@ -203,7 +255,7 @@ mod tests {
     //! plus the nine §8 host happy-path / error-mapping tests
     //! prescribed by the 2026-04-29 plugin-files-rw-capability spec.
 
-    use super::super::test_helpers::{bound_env_ctx, null_env_ctx};
+    use super::super::test_helpers::{bound_env_ctx, ctx_with_files_root, null_env_ctx};
     use super::*;
     use crate::env::ShellEnv;
     use tempfile::tempdir;
@@ -329,6 +381,94 @@ mod tests {
         assert!(nested.is_dir());
         assert!(dir.path().join("a").is_dir());
         assert!(dir.path().join("a/b").is_dir());
+    }
+
+    // ── files_root confinement tests ───────────────────────────────────
+
+    /// Canonicalized tempdir root (macOS /tmp is a symlink to /private/tmp).
+    fn canon_root(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        std::fs::canonicalize(dir.path()).unwrap()
+    }
+
+    #[test]
+    fn files_root_denies_read_outside_root() {
+        let root_dir = tempdir().unwrap();
+        let outside_dir = tempdir().unwrap();
+        let secret = outside_dir.path().join("secret.txt");
+        std::fs::write(&secret, b"secret").unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let ctx = ctx_with_files_root(&mut env, &canon_root(&root_dir));
+        let result = host_files_read_file(&ctx, &secret.to_string_lossy());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn files_root_denies_dotdot_escape() {
+        // The confinement root is nested one level down so the escape
+        // target lands in a directory this test owns.
+        let outer = tempdir().unwrap();
+        let root = outer.path().join("inner");
+        std::fs::create_dir(&root).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let ctx = ctx_with_files_root(&mut env, &root);
+        let escape = format!("{}/../escape.txt", root.display());
+        assert_eq!(
+            host_files_write_file(&ctx, &escape, b"x"),
+            Err(ErrorCode::Denied)
+        );
+        assert!(!outer.path().join("escape.txt").exists());
+    }
+
+    #[test]
+    fn files_root_denies_symlink_escape() {
+        let root_dir = tempdir().unwrap();
+        let outside_dir = tempdir().unwrap();
+        let root = canon_root(&root_dir);
+        let secret = outside_dir.path().join("secret.txt");
+        std::fs::write(&secret, b"secret").unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let ctx = ctx_with_files_root(&mut env, &root);
+        let result = host_files_read_file(&ctx, &link.to_string_lossy());
+        assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    #[test]
+    fn files_root_allows_inside_root_and_relative_paths() {
+        let root_dir = tempdir().unwrap();
+        let root = canon_root(&root_dir);
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let ctx = ctx_with_files_root(&mut env, &root);
+        // Relative path resolves against the root, not the process cwd.
+        host_files_write_file(&ctx, "rel.txt", b"data").unwrap();
+        assert_eq!(std::fs::read(root.join("rel.txt")).unwrap(), b"data");
+        // Absolute path inside the root is allowed.
+        let abs = root.join("rel.txt");
+        assert_eq!(
+            host_files_read_file(&ctx, &abs.to_string_lossy()),
+            Ok(b"data".to_vec())
+        );
+    }
+
+    #[test]
+    fn files_root_denies_remove_dir_outside_root() {
+        let root_dir = tempdir().unwrap();
+        let outside_dir = tempdir().unwrap();
+        let victim = outside_dir.path().join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        std::fs::write(victim.join("f"), b"x").unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let ctx = ctx_with_files_root(&mut env, &canon_root(&root_dir));
+        let result = host_files_remove_dir(&ctx, &victim.to_string_lossy(), true);
+        assert_eq!(result, Err(ErrorCode::Denied));
+        assert!(victim.exists());
     }
 
     #[test]

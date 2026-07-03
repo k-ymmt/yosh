@@ -443,14 +443,16 @@ impl<'a> ArithParser<'a> {
                 if right == 0 {
                     return Err("division by zero".to_string());
                 }
-                left /= right;
+                // wrapping: INT_MIN / -1 yields INT_MIN (C semantics) instead of panicking
+                left = left.wrapping_div(right);
             } else if self.pos < self.input.len() && self.input[self.pos] == b'%' {
                 self.pos += 1;
                 let right = self.unary()?;
                 if right == 0 {
                     return Err("division by zero (modulo)".to_string());
                 }
-                left %= right;
+                // wrapping: INT_MIN % -1 yields 0 instead of panicking
+                left = left.wrapping_rem(right);
             } else {
                 break;
             }
@@ -574,13 +576,15 @@ impl<'a> ArithParser<'a> {
                     if rhs == 0 {
                         return Err("division by zero".to_string());
                     }
-                    cur_val / rhs
+                    // wrapping: INT_MIN / -1 yields INT_MIN (C semantics)
+                    cur_val.wrapping_div(rhs)
                 }
                 CompoundOp::Mod => {
                     if rhs == 0 {
                         return Err("division by zero".to_string());
                     }
-                    cur_val % rhs
+                    // wrapping: INT_MIN % -1 yields 0
+                    cur_val.wrapping_rem(rhs)
                 }
                 CompoundOp::Shl => cur_val.wrapping_shl(rhs as u32),
                 CompoundOp::Shr => cur_val.wrapping_shr(rhs as u32),
@@ -734,6 +738,42 @@ mod tests {
         let mut e = env();
         e.vars.set("x", "10").unwrap();
         assert_eq!(evaluate(&mut e, "x + 5"), Ok("15".to_string()));
+    }
+
+    #[test]
+    fn test_int_min_div_neg_one_wraps() {
+        let mut e = env();
+        e.vars.set("x", "-9223372036854775808").unwrap();
+        assert_eq!(
+            evaluate(&mut e, "x / -1"),
+            Ok("-9223372036854775808".to_string())
+        );
+    }
+
+    #[test]
+    fn test_int_min_mod_neg_one_is_zero() {
+        let mut e = env();
+        e.vars.set("x", "-9223372036854775808").unwrap();
+        assert_eq!(evaluate(&mut e, "x % -1"), Ok("0".to_string()));
+    }
+
+    #[test]
+    fn test_int_min_compound_div_assign_neg_one_wraps() {
+        let mut e = env();
+        e.vars.set("x", "-9223372036854775808").unwrap();
+        assert_eq!(
+            evaluate(&mut e, "x /= -1"),
+            Ok("-9223372036854775808".to_string())
+        );
+        assert_eq!(e.vars.get("x"), Some("-9223372036854775808"));
+    }
+
+    #[test]
+    fn test_int_min_compound_mod_assign_neg_one_is_zero() {
+        let mut e = env();
+        e.vars.set("x", "-9223372036854775808").unwrap();
+        assert_eq!(evaluate(&mut e, "x %= -1"), Ok("0".to_string()));
+        assert_eq!(e.vars.get("x"), Some("0"));
     }
 
     #[test]

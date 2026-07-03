@@ -295,6 +295,7 @@ impl PluginManager {
                 .as_ref()
                 .map(|strs| config::capabilities_from_strs(strs));
             let cache_key = entry.cache_key();
+            let files_root = entry.files_root.as_deref().map(expand_tilde);
             if let Err(e) = self.load_one(
                 &path,
                 env,
@@ -302,6 +303,7 @@ impl PluginManager {
                 entry.cwasm_path.as_deref(),
                 cache_key.as_ref(),
                 entry.allowed_commands.as_deref().unwrap_or_default(),
+                files_root.as_deref(),
             ) {
                 eprintln!("yosh: plugin: {}", e);
             }
@@ -315,7 +317,7 @@ impl PluginManager {
     /// compile (no cwasm cache lookup).
     #[allow(dead_code)] // public manager API; production loads go through load_from_config
     pub fn load_plugin(&mut self, path: &Path, env: &mut ShellEnv) -> Result<(), String> {
-        self.load_one(path, env, None, None, None, &[])
+        self.load_one(path, env, None, None, None, &[], None)
     }
 
     /// Look up a cached `Linker<HostContext>` for the given capability
@@ -346,6 +348,11 @@ impl PluginManager {
     ///     `Component::deserialize` from the trusted cache instead of
     ///     re-compiling the wasm bytes. Any of the 5 trust conditions
     ///     failing falls back to in-memory compile with a warning.
+    ///   * `files_root`: when present, confines every `files:read` /
+    ///     `files:write` host call to paths inside this directory
+    ///     (canonicalized at load time). `None` leaves the capability
+    ///     as a full-filesystem grant.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn load_one(
         &mut self,
         path: &Path,
@@ -354,6 +361,7 @@ impl PluginManager {
         cwasm_path: Option<&Path>,
         expected_key: Option<&CacheKey>,
         allowed_commands: &[String],
+        files_root: Option<&Path>,
     ) -> Result<(), String> {
         // 1. Read the wasm bytes (needed for SHA verify and/or in-memory compile).
         let wasm_bytes = std::fs::read(path).map_err(|e| format!("{}: {}", path.display(), e))?;
@@ -509,6 +517,12 @@ impl PluginManager {
         let mut host_ctx =
             HostContext::new_for_plugin(plugin_info.name.clone(), effective_capabilities);
         host_ctx.allowed_commands = parsed_allowed_commands;
+        // Canonicalize once at load time so the per-call starts_with
+        // confinement check compares canonical paths. A root that does
+        // not exist yet is kept verbatim (every canonicalized candidate
+        // will then fail starts_with — deny-by-default).
+        host_ctx.files_root =
+            files_root.map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
         let mut store = Store::new(&self.engine, host_ctx);
         // Default-effectively-never deadline. `call_pre_prompt` overrides
         // this with a tight bound on each invocation (Task 4); other
@@ -886,7 +900,7 @@ pub mod test_helpers {
         caps: u32,
         allowed_commands: &[String],
     ) -> Result<(), String> {
-        manager.load_one(path, env, Some(caps), None, None, allowed_commands)
+        manager.load_one(path, env, Some(caps), None, None, allowed_commands, None)
     }
 
     /// Load a plugin with an explicit cwasm cache + key. The host
@@ -908,6 +922,7 @@ pub mod test_helpers {
             Some(cwasm_path),
             Some(expected_key),
             allowed_commands,
+            None,
         )
     }
 

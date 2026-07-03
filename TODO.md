@@ -7,49 +7,8 @@ performance). Behavioral items were verified against the debug binary on
 2026-07-02; code-pinned items cite the exact offending line. Items already
 tracked elsewhere (break/continue `loop_depth` across functions — see the
 SP1 follow-up above; plugin `is_symlink` — see the plugin follow-up below)
-are intentionally omitted here.
-
-### Security / Robustness
-
-- [ ] SECURITY(medium): Arithmetic `/` and `%` panic and abort the shell on
-      `INT_MIN / -1` — operands can come from untrusted variables/positional
-      params (verified: `x=-9223372036854775808; echo $((x / -1))` panics at
-      the divide, even in release). Only division-by-zero is guarded; the
-      overflow case is not. Guard both operators (and the compound-assignment
-      `/=` / `%=` siblings) with a checked-div returning `INT_MIN` per C
-      semantics or an arithmetic error (`src/expand/arith.rs:446`,
-      `src/expand/arith.rs:453`, `src/expand/arith.rs:577`,
-      `src/expand/arith.rs:581`).
-- [ ] SECURITY(high): Plugin `files` capability performs raw `std::fs`
-      operations on any attacker-supplied absolute path with only the coarse
-      `CAP_FILES_READ` / `CAP_FILES_WRITE` bit as a gate — no path confinement,
-      no root-dir scoping, symlinks followed. A plugin granted file-read can
-      read `~/.ssh/id_rsa`; file-write can overwrite/`remove_dir_all` anywhere
-      the user can, despite module/linker comments claiming a "plugin sandbox".
-      The manager crate has a `sandbox_root` concept (see plugin follow-ups);
-      the production host does not enforce it. Decide the intended capability
-      model and either confine paths to a configured root or document that
-      `files` is a full-filesystem grant (`src/plugin/host/files.rs:24`,
-      `src/plugin/host/files.rs:85`, `src/plugin/host/files.rs:141`).
-- [ ] SECURITY(low): `host_filesystem_set_cwd` lets a plugin (CAP_FILESYSTEM)
-      mutate the whole shell process's cwd via `std::env::set_current_dir`, a
-      global side effect that changes relative-path resolution for all
-      subsequent host commands, not just the plugin (`src/plugin/host/filesystem.rs:20`).
-- [ ] SECURITY(low): `commands:exec` allowlist matches the literal, unresolved
-      `program` string, but `Command::new(program)` then PATH-resolves relative
-      names against the shell's full inherited environment, so `git:*` executes
-      whatever `git` PATH resolves to — a PATH-injection surface if PATH is
-      attacker-influenced (`src/plugin/host/commands.rs:53`).
-- [ ] SECURITY(low): `noclobber` (`>` under `set -C`) uses a TOCTOU
-      `Path::exists()` check followed by `open(O_CREAT|O_TRUNC)` without
-      `O_EXCL`, so a file created in the race window is clobbered and a symlink
-      target is followed — defeating the overwrite protection. Use
-      `O_CREAT|O_EXCL` and act on `EEXIST` (`src/exec/redirect.rs:80`).
-- [ ] Heredoc bodies larger than the pipe buffer (~64 KiB) deadlock: the whole
-      body is written to the pipe with `write_all` before any reader is
-      attached, so a large heredoc blocks the shell forever (verified hang on a
-      200 KB heredoc). Real shells spool via a temp file or a writer process
-      (`src/exec/redirect.rs:194`).
+are intentionally omitted here. The Security / Robustness findings from
+this audit were all resolved on 2026-07-03.
 
 ### Correctness (POSIX deviations)
 

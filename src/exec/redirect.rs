@@ -7,6 +7,83 @@ use crate::env::ShellEnv;
 use crate::expand::expand_word_to_string;
 use crate::parser::ast::{Redirect, RedirectKind};
 
+/// Open `path` for `>` output under `set -C` (noclobber) without the
+/// TOCTOU race of a separate exists() check: O_CREAT|O_EXCL atomically
+/// fails with EEXIST if anything (including a symlink) already occupies
+/// the path. Existing *non-regular* files (e.g. /dev/null, FIFOs) are
+/// then reopened without O_CREAT/O_TRUNC, per POSIX — noclobber only
+/// protects regular files.
+fn open_noclobber(path: &str) -> Result<RawFd, String> {
+    let create_flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL;
+    match open(path, create_flags, Mode::from_bits_truncate(0o644)) {
+        Ok(fd) => Ok(fd.into_raw_fd()),
+        Err(nix::errno::Errno::EEXIST) => {
+            // stat() follows symlinks: a dangling link errors here, and a
+            // link to a regular file is treated as that regular file.
+            match std::fs::metadata(path) {
+                Ok(md) if !md.is_file() => open(path, OFlag::O_WRONLY, Mode::empty())
+                    .map(|fd| fd.into_raw_fd())
+                    .map_err(|e| format!("{}: {}", path, e)),
+                _ => Err(format!("{}: cannot overwrite existing file", path)),
+            }
+        }
+        Err(e) => Err(format!("{}: {}", path, e)),
+    }
+}
+
+/// Heredoc bodies at or below this size are delivered via an anonymous
+/// pipe, written in full before any reader is attached. POSIX only
+/// guarantees a pipe absorbs PIPE_BUF (>= 512) bytes without a reader;
+/// real capacities are 16-64 KiB. 4096 stays conservatively below any
+/// real capacity so the up-front write cannot block. Larger bodies are
+/// spooled through an unlinked temp file instead.
+const HEREDOC_PIPE_MAX: usize = 4096;
+
+/// Produce a readable fd that yields `body`, without blocking the shell
+/// regardless of body size.
+fn heredoc_source_fd(body: &[u8]) -> Result<RawFd, String> {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::unix::io::FromRawFd;
+
+    if body.len() <= HEREDOC_PIPE_MAX {
+        let mut fds: [RawFd; 2] = [0; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
+            return Err(format!("pipe: {}", std::io::Error::last_os_error()));
+        }
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        {
+            let mut write_file = unsafe { std::fs::File::from_raw_fd(write_fd) };
+            let _ = write_file.write_all(body);
+            // drop closes write_fd
+        }
+        return Ok(read_fd);
+    }
+
+    // Spool via an unlinked temp file (what real shells do): the fd
+    // stays valid, the name disappears immediately.
+    let template = std::env::temp_dir().join("yosh-heredoc.XXXXXX");
+    let mut template_bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        template.as_os_str().as_bytes().to_vec()
+    };
+    template_bytes.push(0);
+    let fd = unsafe { libc::mkstemp(template_bytes.as_mut_ptr() as *mut libc::c_char) };
+    if fd == -1 {
+        return Err(format!(
+            "heredoc: mkstemp: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    unsafe { libc::unlink(template_bytes.as_ptr() as *const libc::c_char) };
+
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    file.write_all(body)
+        .map_err(|e| format!("heredoc: write: {}", e))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("heredoc: seek: {}", e))?;
+    Ok(file.into_raw_fd())
+}
+
 /// Perform a low-level dup2(oldfd, newfd) via libc.
 fn raw_dup2(oldfd: RawFd, newfd: RawFd) -> nix::Result<()> {
     let res = unsafe { libc::dup2(oldfd, newfd) };
@@ -77,13 +154,14 @@ impl RedirectState {
             RedirectKind::Output(word) => {
                 let target_fd = redirect.fd.unwrap_or(1);
                 let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
-                if env.mode.options.noclobber && std::path::Path::new(&path).exists() {
-                    return Err(format!("{}: cannot overwrite existing file", path));
-                }
-                let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
-                let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
-                    .map_err(|e| format!("{}: {}", path, e))?
-                    .into_raw_fd();
+                let fd = if env.mode.options.noclobber {
+                    open_noclobber(&path)?
+                } else {
+                    let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
+                    open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
+                        .map_err(|e| format!("{}: {}", path, e))?
+                        .into_raw_fd()
+                };
                 if save {
                     self.save_fd(target_fd)?;
                 }
@@ -183,21 +261,7 @@ impl RedirectState {
                 // Expand the body
                 let body = crate::expand::expand_heredoc_body(env, &heredoc.body, heredoc.quoted);
 
-                // Create a pipe
-                let mut fds: [RawFd; 2] = [0; 2];
-                if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
-                    return Err(format!("pipe: {}", std::io::Error::last_os_error()));
-                }
-                let (read_fd, write_fd) = (fds[0], fds[1]);
-
-                // Write the body to the pipe write end, then close it
-                {
-                    use std::io::Write;
-                    use std::os::unix::io::FromRawFd;
-                    let mut write_file = unsafe { std::fs::File::from_raw_fd(write_fd) };
-                    let _ = write_file.write_all(body.as_bytes());
-                    // drop closes write_fd
-                }
+                let read_fd = heredoc_source_fd(body.as_bytes())?;
 
                 // Connect read end to target fd (stdin by default)
                 if save {
