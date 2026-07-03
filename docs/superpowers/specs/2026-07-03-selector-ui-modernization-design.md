@@ -92,12 +92,14 @@ nearest the query line, matching current behavior):
 ```
   src/lexer/mod.rs
   src/lexer/word.rs
-▶ src/lexer/scanner.rs      <- selected: cyan pointer + DarkGrey background + bold
+❯ src/lexer/scanner.rs      <- selected: cyan pointer + DarkGrey background + bold
   src/builtin/              <- directories blue (ItemStyle::Path only)
   ──────────────────        <- separator: dim
   4/17 ❯ lex█               <- count yellow (filtered/total, bug fixed); prompt ❯ cyan
 ```
 
+- Pointer uses `❯` (U+276F) instead of `▶` (U+25B6) because the latter is
+  East-Asian-Ambiguous width and misaligns on CJK terminals.
 - Fuzzy-matched characters: cyan + bold, in both selected and unselected
   rows (rendered from `ScoredCandidate::positions`).
 - Truncation: display-width-aware via the existing `display_width.rs`
