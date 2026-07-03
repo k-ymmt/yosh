@@ -19,8 +19,15 @@ impl Parser {
             }
 
             // Check for word token
-            if let Token::Word(word) = &self.current.token.clone() {
-                let word = word.clone();
+            if let Token::Word(_) = &self.current.token {
+                // Move the word out of `current`, leaving a placeholder that is
+                // never observed: every branch below calls `advance()?` right
+                // after, which overwrites `current` with the next token before
+                // any error path could return control to a caller that reads it.
+                let Token::Word(word) = std::mem::replace(&mut self.current.token, Token::Eof)
+                else {
+                    unreachable!("matched Token::Word above")
+                };
 
                 // Only try assignments before any command words have been seen
                 if words.is_empty()
@@ -91,8 +98,8 @@ impl Parser {
         }
 
         // Collect the full literal text from the first part (if it's a Literal)
-        let first_part_text = match &word.parts[0] {
-            WordPart::Literal(s) => s.clone(),
+        let first_part_text: &str = match &word.parts[0] {
+            WordPart::Literal(s) => s,
             _ => return None,
         };
 

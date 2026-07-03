@@ -5,7 +5,7 @@ mod scanner;
 pub mod token;
 mod word;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::parser::ast::WordPart;
 use token::SpannedToken;
@@ -14,9 +14,25 @@ pub struct LexerState {
     pub pos: usize,
     pub line: usize,
     pub column: usize,
-    alias_token_queue: Vec<SpannedToken>,
+    alias_token_queue: VecDeque<SpannedToken>,
     check_alias: bool,
     expanding_aliases: HashSet<String>,
+}
+
+/// A cheap snapshot of only the byte-cursor fields (`pos`/`line`/`column`).
+///
+/// Unlike `LexerState`, this does NOT capture `alias_token_queue`,
+/// `check_alias`, or `expanding_aliases`. It is only safe to use around a
+/// scan that provably never calls anything that can mutate those fields —
+/// i.e. no call to `Lexer::next_token` (the only place that dequeues the
+/// alias queue, flips `check_alias`, or touches `expanding_aliases`).
+/// Plain byte-level helpers (`advance`, `current_byte`, `at_end`, ...) are
+/// fine. See `Lexer::try_read_io_number` for the sole caller and its
+/// safety argument.
+pub(crate) struct CursorState {
+    pos: usize,
+    line: usize,
+    column: usize,
 }
 
 pub struct PendingHereDoc {
@@ -37,7 +53,7 @@ pub struct Lexer {
     expanding_aliases: HashSet<String>,
     check_alias: bool,
     /// Queue of tokens produced by alias expansion, to be returned before reading more input.
-    alias_token_queue: Vec<SpannedToken>,
+    alias_token_queue: VecDeque<SpannedToken>,
 }
 
 fn is_name_start(ch: u8) -> bool {
@@ -60,7 +76,7 @@ impl Lexer {
             aliases: HashMap::new(),
             expanding_aliases: HashSet::new(),
             check_alias: true,
-            alias_token_queue: Vec::new(),
+            alias_token_queue: VecDeque::new(),
         }
     }
 
@@ -110,6 +126,21 @@ impl Lexer {
         self.alias_token_queue = state.alias_token_queue;
         self.check_alias = state.check_alias;
         self.expanding_aliases = state.expanding_aliases;
+    }
+
+    /// Cheap cursor-only snapshot; see `CursorState` for the safety contract.
+    pub(crate) fn save_cursor(&self) -> CursorState {
+        CursorState {
+            pos: self.pos,
+            line: self.line,
+            column: self.column,
+        }
+    }
+
+    pub(crate) fn restore_cursor(&mut self, state: CursorState) {
+        self.pos = state.pos;
+        self.line = state.line;
+        self.column = state.column;
     }
 }
 
@@ -654,5 +685,110 @@ mod tests {
             WordPart::Literal(s) => assert_eq!(s, "x=foobar"),
             other => panic!("expected Literal, got {:?}", other),
         }
+    }
+
+    // ---- Task 4 item 17 locking tests ----
+    //
+    // These lock in behavior around `try_read_io_number`'s `save_state`/
+    // `restore_state` pair (src/lexer/scanner.rs) while it interacts with
+    // alias-expansion state (the token queue, `check_alias`, and the
+    // `expanding_aliases` recursion guard). They must stay green whether
+    // `save_state` does a full clone or a light pos/line/column-only
+    // snapshot, because nothing between save and restore in
+    // `try_read_io_number` can mutate the alias-related fields (only the
+    // byte-level `advance`/`current_byte` are called).
+
+    #[test]
+    fn io_number_lookahead_after_alias_expanded_word_still_tokenizes_correctly() {
+        // `ll` expands to `ls -l`; the token queue holds `-l` when the lexer
+        // resumes scanning raw input at `2>err`. The io-number lookahead
+        // inside that raw scan must not disturb the still-pending queue.
+        use crate::env::aliases::AliasStore;
+        let mut aliases = AliasStore::default();
+        aliases.set("ll", "ls -l");
+        let mut lexer = Lexer::new_with_aliases("ll 2>err", &aliases);
+
+        let t1 = lexer.next_token().unwrap().token;
+        assert_eq!(t1, Token::Word(Word::literal("ls")));
+        let t2 = lexer.next_token().unwrap().token;
+        assert_eq!(t2, Token::Word(Word::literal("-l")));
+        let t3 = lexer.next_token().unwrap().token;
+        assert_eq!(t3, Token::IoNumber(2));
+        let t4 = lexer.next_token().unwrap().token;
+        assert_eq!(t4, Token::Great);
+        let t5 = lexer.next_token().unwrap().token;
+        assert_eq!(t5, Token::Word(Word::literal("err")));
+    }
+
+    #[test]
+    fn io_number_lookahead_during_recursive_alias_expansion_preserves_guard() {
+        // Alias `a` expands to `2x a` (self-referential) with a digit-led
+        // word (`2x`) that is NOT a redirect, so the io-number lookahead
+        // inside the sub-lexer used for `a`'s expansion must backtrack. The
+        // second `a` in the expansion is scanned by that SAME sub-lexer
+        // (still inside `next_token`'s alias-expansion block), while `a` is
+        // already in `expanding_aliases` — the recursion guard must still
+        // correctly block it from expanding again, regardless of the
+        // intervening io-number backtrack.
+        use crate::env::aliases::AliasStore;
+        let mut aliases = AliasStore::default();
+        aliases.set("a", "2x a");
+        let mut lexer = Lexer::new_with_aliases("a", &aliases);
+
+        // "2x" is not a valid io-number (not followed by < or >), so it must
+        // come back as a literal word, not silently swallowed or corrupted.
+        let t1 = lexer.next_token().unwrap().token;
+        assert_eq!(t1, Token::Word(Word::literal("2x")));
+
+        // The second "a" must come back as a literal word (recursion
+        // blocked), not loop or panic.
+        let t2 = lexer.next_token().unwrap().token;
+        assert_eq!(t2, Token::Word(Word::literal("a")));
+
+        let t3 = lexer.next_token().unwrap().token;
+        assert_eq!(t3, Token::Eof);
+    }
+
+    #[test]
+    fn io_number_lookahead_after_trailing_space_alias_chain() {
+        // Alias `a` expands to `2x ` (trailing space), which forces the NEXT
+        // raw-scanned word to also be alias-checked. The next raw input is
+        // `4>out`, exercising the io-number lookahead on a freshly scanned
+        // (non-queued) token immediately after an alias-chain continuation
+        // — the scenario the light `CursorState` snapshot must handle
+        // identically to the full `LexerState` snapshot.
+        use crate::env::aliases::AliasStore;
+        let mut aliases = AliasStore::default();
+        aliases.set("a", "2x ");
+        let mut lexer = Lexer::new_with_aliases("a 4>out", &aliases);
+
+        let t1 = lexer.next_token().unwrap().token;
+        assert_eq!(t1, Token::Word(Word::literal("2x")));
+        let t2 = lexer.next_token().unwrap().token;
+        assert_eq!(t2, Token::IoNumber(4));
+        let t3 = lexer.next_token().unwrap().token;
+        assert_eq!(t3, Token::Great);
+        let t4 = lexer.next_token().unwrap().token;
+        assert_eq!(t4, Token::Word(Word::literal("out")));
+    }
+
+    #[test]
+    fn io_number_lookahead_digit_redirect_inside_alias_expansion() {
+        // Alias value itself contains a digit-then-redirect sequence, so
+        // try_read_io_number's save/restore runs inside the sub-lexer used
+        // for alias expansion (which has non-empty `expanding_aliases`).
+        use crate::env::aliases::AliasStore;
+        let mut aliases = AliasStore::default();
+        aliases.set("redir", "cmd 2>/dev/null");
+        let mut lexer = Lexer::new_with_aliases("redir", &aliases);
+
+        let t1 = lexer.next_token().unwrap().token;
+        assert_eq!(t1, Token::Word(Word::literal("cmd")));
+        let t2 = lexer.next_token().unwrap().token;
+        assert_eq!(t2, Token::IoNumber(2));
+        let t3 = lexer.next_token().unwrap().token;
+        assert_eq!(t3, Token::Great);
+        let t4 = lexer.next_token().unwrap().token;
+        assert_eq!(t4, Token::Word(Word::literal("/dev/null")));
     }
 }

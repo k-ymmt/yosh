@@ -267,20 +267,28 @@ impl Parser {
         // assignments to the compound. Otherwise fall through to the normal
         // simple-command / function-def paths which handle assignments themselves.
         if let Token::Word(_) = &self.current.token {
+            // Full `save_state` (not the lexer's light `CursorState`) is
+            // required here: the loop below calls `self.advance()`
+            // (`Parser::advance`), which drives `Lexer::next_token()` and
+            // can dequeue `alias_token_queue` / flip `check_alias` / mutate
+            // `expanding_aliases` when the look-ahead words came from (or
+            // trigger) alias expansion. A cursor-only snapshot would lose
+            // that state on the restore path below and corrupt subsequent
+            // alias expansion. See `Lexer::try_read_io_number` for the
+            // contrasting call site where the light snapshot IS safe.
             let saved_state = self.lexer.save_state();
             let saved_current = self.current.clone();
 
             let mut prefix_assignments = Vec::new();
             let found_compound = loop {
-                if let Token::Word(word) = &self.current.token {
-                    let word = word.clone();
-                    if let Some(a) = Self::try_parse_assignment(&word) {
-                        if self.advance().is_err() {
-                            break false;
-                        }
-                        prefix_assignments.push(a);
-                        continue;
+                if let Token::Word(word) = &self.current.token
+                    && let Some(a) = Self::try_parse_assignment(word)
+                {
+                    if self.advance().is_err() {
+                        break false;
                     }
+                    prefix_assignments.push(a);
+                    continue;
                 }
                 break self.is_compound_command_start();
             };
@@ -311,16 +319,11 @@ impl Parser {
         match &self.current.token {
             Token::Eof => true,
             Token::RParen => true,
-            Token::Word(_) => {
-                self.is_reserved("}")
-                    || self.is_reserved("fi")
-                    || self.is_reserved("done")
-                    || self.is_reserved("esac")
-                    || self.is_reserved("then")
-                    || self.is_reserved("else")
-                    || self.is_reserved("elif")
-                    || self.is_reserved("do")
-            }
+            Token::Word(word) => match word.as_literal() {
+                Some("}") | Some("fi") | Some("done") | Some("esac") | Some("then")
+                | Some("else") | Some("elif") | Some("do") => true,
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -330,14 +333,11 @@ impl Parser {
     pub(super) fn is_compound_command_start(&self) -> bool {
         match &self.current.token {
             Token::LParen => true,
-            Token::Word(_) => {
-                self.is_reserved("if")
-                    || self.is_reserved("for")
-                    || self.is_reserved("while")
-                    || self.is_reserved("until")
-                    || self.is_reserved("case")
-                    || self.is_reserved("{")
-            }
+            Token::Word(word) => match word.as_literal() {
+                Some("if") | Some("for") | Some("while") | Some("until") | Some("case")
+                | Some("{") => true,
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -440,5 +440,90 @@ mod tests {
         // is_completable probe candidate for "if true; then\n".
         let mut p = Parser::new("if true; then\n\n;;\nesac\n");
         assert!(p.parse_program().is_err());
+    }
+
+    // ---- Task 4 item 17 locking tests ----
+    //
+    // `parse_command`'s assignment-prefix lookahead (this file, around
+    // `save_state`/`restore_state`) calls `self.advance()` inside the loop,
+    // which is `Parser::advance` — it drives the lexer's `next_token()` and
+    // CAN dequeue from `alias_token_queue` / mutate `check_alias` /
+    // `expanding_aliases`. That means this call site must keep the FULL
+    // `save_state` (queue + HashSet clone), unlike the io-number lookahead
+    // in the lexer. These tests exercise alias expansion across exactly
+    // this save/restore pair on both outcomes (compound found, and
+    // fallback/restore) to lock in correct behavior regardless of how
+    // `save_state` is implemented.
+
+    #[test]
+    fn assignment_lookahead_restores_correctly_after_alias_expanded_words() {
+        // `ll` expands to `ls -l` (two queued tokens). Neither looks like an
+        // assignment, so the lookahead loop's very first iteration takes the
+        // `is_compound_command_start()` branch immediately (false), and the
+        // outer code must restore lexer + current state so the alias-queued
+        // tokens are not lost or duplicated by the subsequent real parse.
+        use crate::env::aliases::AliasStore;
+        let mut aliases = AliasStore::default();
+        aliases.set("ll", "ls -l");
+        let mut parser = Parser::new_with_aliases("ll /tmp\n", &aliases);
+        let prog = parser.parse_program().unwrap();
+        let cmd = &prog.commands[0].items[0].0.first.commands[0];
+        let Command::Simple(sc) = cmd else {
+            panic!("expected simple command, got {:?}", cmd);
+        };
+        assert!(sc.assignments.is_empty());
+        assert_eq!(sc.words.len(), 3);
+        assert_eq!(sc.words[0].as_literal(), Some("ls"));
+        assert_eq!(sc.words[1].as_literal(), Some("-l"));
+        assert_eq!(sc.words[2].as_literal(), Some("/tmp"));
+    }
+
+    #[test]
+    fn assignment_lookahead_commits_compound_after_alias_expanded_assignment() {
+        // `setx` expands to `x=1`, a real assignment word. The lookahead
+        // loop consumes it for real (advance) and then finds `if`, a
+        // compound-command start, so this path commits (does NOT restore)
+        // and attaches the assignment to the compound. This exercises the
+        // "found_compound" branch with an alias-produced assignment word
+        // flowing through the save/restore pair.
+        use crate::env::aliases::AliasStore;
+        use ast::{Command, CompoundCommandKind};
+        let mut aliases = AliasStore::default();
+        aliases.set("setx", "x=1");
+        let mut parser = Parser::new_with_aliases("setx if true; then echo y; fi\n", &aliases);
+        let prog = parser.parse_program().unwrap();
+        let cmd = &prog.commands[0].items[0].0.first.commands[0];
+        let Command::Compound(comp, _redirs) = cmd else {
+            panic!("expected Compound, got {:?}", cmd);
+        };
+        assert!(matches!(comp.kind, CompoundCommandKind::If { .. }));
+        assert_eq!(comp.assignments.len(), 1);
+        assert_eq!(comp.assignments[0].name, "x");
+        assert_eq!(
+            comp.assignments[0].value.as_ref().unwrap().as_literal(),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn assignment_lookahead_restores_alias_queue_when_not_assignment_led() {
+        // `greet` expands to `echo hi` (two queued tokens, neither an
+        // assignment). The lookahead loop's first token is a Word but fails
+        // try_parse_assignment immediately, so is_compound_command_start()
+        // is checked on the SAME (still unconsumed) token and is false —
+        // the outer restore path fires. This must not drop or duplicate the
+        // still-queued alias token ("hi").
+        use crate::env::aliases::AliasStore;
+        let mut aliases = AliasStore::default();
+        aliases.set("greet", "echo hi");
+        let mut parser = Parser::new_with_aliases("greet\n", &aliases);
+        let prog = parser.parse_program().unwrap();
+        let cmd = &prog.commands[0].items[0].0.first.commands[0];
+        let Command::Simple(sc) = cmd else {
+            panic!("expected simple command, got {:?}", cmd);
+        };
+        assert_eq!(sc.words.len(), 2);
+        assert_eq!(sc.words[0].as_literal(), Some("echo"));
+        assert_eq!(sc.words[1].as_literal(), Some("hi"));
     }
 }

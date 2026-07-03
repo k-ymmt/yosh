@@ -302,8 +302,20 @@ impl Lexer {
 
     /// Tries to read an IO_NUMBER token (digits immediately followed by `<` or `>`).
     /// Returns None and restores state if not followed by a redirect operator.
+    ///
+    /// Uses the light `CursorState` snapshot (pos/line/column only) instead
+    /// of the full `LexerState` (which also clones `alias_token_queue` and
+    /// `expanding_aliases`). This is safe here because the only operations
+    /// performed between save and restore are the byte-level `advance` and
+    /// `current_byte`/`at_end` — none of which touch the alias queue,
+    /// `check_alias`, or `expanding_aliases`. Those fields are only ever
+    /// mutated inside `Lexer::next_token`, which is never called in this
+    /// scan. Contrast with `Parser::parse_command`'s assignment lookahead
+    /// (src/parser/mod.rs), which DOES call `next_token` (via
+    /// `Parser::advance`) between save and restore and therefore must keep
+    /// the full `save_state`/`restore_state`.
     pub(crate) fn try_read_io_number(&mut self) -> Option<Token> {
-        let state = self.save_state();
+        let cursor = self.save_cursor();
         let mut digits = String::new();
 
         while !self.at_end() && self.current_byte().is_ascii_digit() {
@@ -318,8 +330,8 @@ impl Lexer {
             return Some(Token::IoNumber(n));
         }
 
-        // Not an IO_NUMBER: restore state
-        self.restore_state(state);
+        // Not an IO_NUMBER: restore cursor only (alias state is untouched).
+        self.restore_cursor(cursor);
         None
     }
 }

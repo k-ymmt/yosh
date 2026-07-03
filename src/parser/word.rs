@@ -5,8 +5,15 @@ use crate::lexer::token::Token;
 
 impl Parser {
     pub(super) fn expect_word(&mut self, context: &str) -> error::Result<Word> {
-        if let Token::Word(word) = &self.current.token.clone() {
-            let word = word.clone();
+        if let Token::Word(_) = &self.current.token {
+            // Move the word out, leaving a placeholder `current.token`. The
+            // placeholder is immediately overwritten by `advance()?` below on
+            // the success path; if `advance()` errors, the placeholder Eof is
+            // still a valid Token and is never printed (the caller propagates
+            // the error rather than reading `current` again).
+            let Token::Word(word) = std::mem::replace(&mut self.current.token, Token::Eof) else {
+                unreachable!("matched Token::Word above")
+            };
             self.advance()?;
             Ok(word)
         } else {
