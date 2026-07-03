@@ -134,6 +134,14 @@ retained below for tracking.
       format implementation-defined; bash includes hit counts. Track
       hit counts on the cache entries if a tooling consumer asks
       (`src/builtin/hash.rs`).
+- [ ] `command -p` shares `utility_hash` while searching the *default*
+      PATH (`src/exec/simple.rs:932`), so a `command -p foo` hit can be
+      reused by a later plain `foo` lookup under a different `$PATH` —
+      the same cache-key mismatch fixed for `PATH=dir cmd` prefix
+      overrides in edb5254 (which resolves uncached). Route `command -p`
+      through `lookup_in_path_uncached`, or key cache entries on the
+      PATH value used. Surfaced by the 2026-07-04 perf-branch final
+      review; pre-existing at base 31ef66b.
 - [ ] `command -V` (`src/builtin/command.rs::render_verbose`) does not
       escape single quotes in alias values while native `type`
       (`src/builtin/type.rs::format_type_line`) does. Pre-existing
