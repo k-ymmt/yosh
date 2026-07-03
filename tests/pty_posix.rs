@@ -131,10 +131,7 @@ mod fc {
         run_and_drain(&mut session, "export FCEDIT=cat");
         run_and_drain(&mut session, "echo seedline");
 
-        let out = capture_until_sentinel(
-            &mut session,
-            "fc </dev/null >/dev/null 2>&1; echo RC=$?",
-        );
+        let out = capture_until_sentinel(&mut session, "fc </dev/null >/dev/null 2>&1; echo RC=$?");
 
         assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
 
@@ -156,10 +153,7 @@ mod fc {
         run_and_drain(&mut session, "export FCEDIT=cat");
         run_and_drain(&mut session, "echo seedline");
 
-        let out = capture_until_sentinel(
-            &mut session,
-            "fc </dev/null >/dev/null 2>&1; echo RC=$?",
-        );
+        let out = capture_until_sentinel(&mut session, "fc </dev/null >/dev/null 2>&1; echo RC=$?");
 
         assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
 
@@ -181,10 +175,7 @@ mod fcedit {
         run_and_drain(&mut session, "export FCEDIT=cat");
         run_and_drain(&mut session, "echo seedline");
 
-        let out = capture_until_sentinel(
-            &mut session,
-            "fc </dev/null >/dev/null 2>&1; echo RC=$?",
-        );
+        let out = capture_until_sentinel(&mut session, "fc </dev/null >/dev/null 2>&1; echo RC=$?");
 
         assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
 
@@ -202,10 +193,7 @@ mod fcedit {
 
         run_and_drain(&mut session, "echo seedline");
 
-        let out = capture_until_sentinel(
-            &mut session,
-            "fc </dev/null >/dev/null 2>&1; echo RC=$?",
-        );
+        let out = capture_until_sentinel(&mut session, "fc </dev/null >/dev/null 2>&1; echo RC=$?");
 
         assert!(out.contains("RC=0"), "expected RC=0 in: {:?}", out);
 
@@ -300,7 +288,11 @@ mod exec_redirect {
             .expect("sentinel __YOSH_DONE__ not found");
         let out = String::from_utf8_lossy(captured.before()).into_owned();
 
-        assert!(out.contains("persistent"), "missing 'persistent' in: {:?}", out);
+        assert!(
+            out.contains("persistent"),
+            "missing 'persistent' in: {:?}",
+            out
+        );
 
         session.send_line("exit").unwrap();
         let _ = session.expect(Eof);

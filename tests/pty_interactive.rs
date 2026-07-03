@@ -4,9 +4,7 @@ use std::time::Duration;
 
 use expectrl::{Eof, Expect, Regex, session::OsSession};
 
-use helpers::pty::{
-    TIMEOUT, spawn_yosh, wait_for_prompt, wait_for_ps2, wait_for_raw_mode,
-};
+use helpers::pty::{TIMEOUT, spawn_yosh, wait_for_prompt, wait_for_ps2, wait_for_raw_mode};
 
 /// Wait for command output (a line following a newline, not the input echo).
 /// Uses a regex that matches the pattern preceded by a newline. The \r before

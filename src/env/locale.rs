@@ -117,8 +117,14 @@ mod tests {
         // locale variables are never readonly in normal use.
         let mut env = ShellEnv::new("yosh", vec![]);
         for v in &[
-            "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES",
-            "LC_MONETARY", "LC_NUMERIC", "LC_TIME", "LANG",
+            "LC_ALL",
+            "LC_COLLATE",
+            "LC_CTYPE",
+            "LC_MESSAGES",
+            "LC_MONETARY",
+            "LC_NUMERIC",
+            "LC_TIME",
+            "LANG",
         ] {
             let _ = env.vars.unset(v);
         }
@@ -222,6 +228,6 @@ mod tests {
     fn is_c_locale_rejects_others() {
         assert!(!is_c_locale("en_US.UTF-8"));
         assert!(!is_c_locale("ja_JP.UTF-8"));
-        assert!(!is_c_locale("c"));   // case-sensitive per POSIX
+        assert!(!is_c_locale("c")); // case-sensitive per POSIX
     }
 }

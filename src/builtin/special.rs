@@ -1147,12 +1147,14 @@ mod tests {
             &mut executor,
         );
         assert_eq!(status, 1);
-        assert!(executor
-            .env
-            .vars
-            .get_var("foo")
-            .map(|v| v.exported)
-            .unwrap_or(false));
+        assert!(
+            executor
+                .env
+                .vars
+                .get_var("foo")
+                .map(|v| v.exported)
+                .unwrap_or(false)
+        );
     }
 
     #[test]
@@ -1165,12 +1167,14 @@ mod tests {
         );
         assert_eq!(status, 0);
         assert_eq!(executor.env.vars.get("foo"), Some("ok"));
-        assert!(executor
-            .env
-            .vars
-            .get_var("foo")
-            .map(|v| v.readonly)
-            .unwrap_or(false));
+        assert!(
+            executor
+                .env
+                .vars
+                .get_var("foo")
+                .map(|v| v.readonly)
+                .unwrap_or(false)
+        );
     }
 
     #[test]
@@ -1235,12 +1239,14 @@ mod tests {
             &mut executor,
         );
         assert_eq!(status, 1);
-        assert!(executor
-            .env
-            .vars
-            .get_var("foo")
-            .map(|v| v.readonly)
-            .unwrap_or(false));
+        assert!(
+            executor
+                .env
+                .vars
+                .get_var("foo")
+                .map(|v| v.readonly)
+                .unwrap_or(false)
+        );
     }
 
     #[test]

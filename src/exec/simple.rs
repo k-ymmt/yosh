@@ -1,20 +1,20 @@
 use std::ffi::CString;
 
-use nix::unistd::{execvp, fork, ForkResult};
+use nix::unistd::{ForkResult, execvp, fork};
 
 use crate::builtin::special::exec_special_builtin;
-use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
-use crate::env::jobs;
+use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
 use crate::env::ShellEnv;
+use crate::env::jobs;
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::expand::expand_words;
-use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
 use crate::parser::Parser;
+use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
 use crate::signal;
 
+use super::Executor;
 use super::command::wait_child;
 use super::redirect::RedirectState;
-use super::Executor;
 
 /// For export/readonly, re-process each Word argument by trying to parse
 /// it as an Assignment first. Words that successfully parse as `NAME=value`
@@ -683,7 +683,7 @@ impl Executor {
     /// - Brief (`-v`) / Verbose (`-V`) → print and return exit status
     /// - Execute (`-p` or no flag) → handled in later tasks (returns 1 for now)
     pub(crate) fn builtin_command(&mut self, args: &[String]) -> i32 {
-        use crate::builtin::command::{parse_flags, render_brief, render_verbose, Verbosity};
+        use crate::builtin::command::{Verbosity, parse_flags, render_brief, render_verbose};
 
         let parsed = match parse_flags(args) {
             Ok(p) => p,
@@ -728,7 +728,7 @@ impl Executor {
     /// preference over functions, but builtins are part of the utility set.
     pub(crate) fn exec_command_with_default_path(&mut self, name: &str, args: &[String]) -> i32 {
         use crate::builtin::special::exec_special_builtin;
-        use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
+        use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
         use crate::env::default_path::default_path;
 
         // If `name` is a builtin, run the builtin (POSIX: command -p still
@@ -748,7 +748,7 @@ impl Executor {
             BuiltinKind::NotBuiltin => {}
         }
 
-        use crate::exec::command::{lookup_in_path, PathLookup};
+        use crate::exec::command::{PathLookup, lookup_in_path};
 
         let dp = default_path(&self.env).to_string();
         match lookup_in_path(name, &dp, &mut self.env.utility_hash) {
@@ -770,7 +770,7 @@ impl Executor {
     /// parser saw `command` itself, not the expanded alias).
     pub(crate) fn exec_command_skip_functions(&mut self, name: &str, args: &[String]) -> i32 {
         use crate::builtin::special::exec_special_builtin;
-        use crate::builtin::{classify_builtin, exec_regular_builtin, BuiltinKind};
+        use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
 
         // Builtins take precedence over external; functions are deliberately
         // skipped.
@@ -789,7 +789,7 @@ impl Executor {
         }
 
         // External: resolve via $PATH (not the POSIX default path).
-        use crate::exec::command::{lookup_in_path, PathLookup};
+        use crate::exec::command::{PathLookup, lookup_in_path};
 
         let path_var = self
             .env
