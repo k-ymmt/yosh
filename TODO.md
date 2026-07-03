@@ -88,34 +88,6 @@ this audit were all resolved on 2026-07-03.
       keystroke. Extending the partial-repaint path to the multi-row case
       would need wrapped-row-aware cursor positioning
       (`src/interactive/line_editor.rs` `redraw`).
-- [ ] PERF: `next_token` dequeues alias tokens with `first().cloned()` +
-      `remove(0)` — an O(n) front-shift plus a full token clone per queued token;
-      use a `VecDeque` (`pop_front`) (`src/lexer/alias.rs:8`).
-- [ ] PERF: `try_read_io_number` and `parse_command`'s assignment look-ahead call
-      `save_state()` for every digit-/word-led command, cloning the
-      `alias_token_queue` Vec and `expanding_aliases` HashSet though only the
-      scalar cursor is needed; snapshot just `pos`/`line`/`column` for the common
-      no-op restore (`src/lexer/scanner.rs:306`, `src/parser/mod.rs:270`).
-- [ ] PERF: parser double-clones the current Word token
-      (`&self.current.token.clone()` then `word.clone()`) in
-      `parse_simple_command` / `expect_word` / `parse_command`, cloning every
-      `WordPart` String twice per command word; restructure to a single move via
-      `std::mem::replace` (`src/parser/simple.rs:22`, `src/parser/word.rs:8`,
-      `src/parser/mod.rs:270`).
-- [ ] PERF: `try_parse_assignment` clones the entire first literal String
-      (`WordPart::Literal(s) => s.clone()`) for every command word checked but
-      only `.find('=')` + slices it; bind `&str` instead (`src/parser/simple.rs:95`).
-- [ ] PERF: `is_complete_command_end` / `is_compound_command_start` recompute
-      `as_literal()` up to 8 times per call (once per `is_reserved`) inside the
-      per-command-boundary parse loop; compute the literal `&str` once and
-      `match` on it (`src/parser/mod.rs:310`).
-- [ ] PERF: `read_word_parts` rebuilds the whole `parts` Vec via
-      `.into_iter().filter(...).collect()` on every word just to drop
-      empty-Literal entries that only appear with rare line continuations; skip
-      the rebuild when no empty literal was produced (`src/lexer/word.rs:136`).
-- [ ] PERF: `read_heredoc_body` allocates a fresh `String` per body line for the
-      delimiter comparison (`trim_start_matches('\t').to_string()` /
-      `line.clone()`); compare against a `&str` borrow (`src/lexer/heredoc.rs:62`).
 
 ## Future: POSIX Byte Semantics
 
