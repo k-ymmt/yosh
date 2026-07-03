@@ -589,6 +589,20 @@ retained below for tracking.
       this test (`e2e/posix_spec/2_06_05_field_splitting/literal_glob_metachar_still_globs.sh`).
       Code-review follow-up from Task 3.
 
+### 2026-07-03 selector-UI follow-ups
+
+- [ ] Selector UI `colors_enabled()` reads NO_COLOR / CLICOLOR_FORCE / CLICOLOR
+      from the process environment via `std::env::var_os` at startup only
+      (`src/interactive/selector.rs`). yosh never calls `std::env::set_var`
+      (thread-safety), so exported shell variables live only in ShellEnv and
+      are passed to child processes explicitly. Consequence: running
+      `export NO_COLOR=1` inside yosh does NOT disable selector colors —
+      only setting NO_COLOR in the parent environment before launching yosh
+      works. Future follow-up: plumb ShellEnv's NO_COLOR value (or other
+      color-control exports) through the line_editor into `SelectorOptions.colors`
+      so runtime `export NO_COLOR=1` takes effect immediately
+      (`src/interactive/line_editor.rs`, `src/interactive/selector.rs::colors_enabled`).
+
 ## Job Control: Known Limitations
 
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
