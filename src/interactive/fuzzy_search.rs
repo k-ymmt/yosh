@@ -112,12 +112,27 @@ use super::terminal::Terminal;
 /// Ctrl+R history search. Thin wrapper over the shared [`SelectorUI`].
 pub struct FuzzySearchUI;
 
+/// Drop later duplicates, keeping the first occurrence of each entry.
+/// Used to collapse identical commands in the history search list; the
+/// stored history keeps them (see `HISTCONTROL`), but showing the same
+/// command more than once in the selector is just noise.
+fn dedup_preserving_order(entries: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    entries
+        .into_iter()
+        .filter(|e| seen.insert(e.clone()))
+        .collect()
+}
+
 impl FuzzySearchUI {
     pub fn run<T: Terminal>(history: &History, term: &mut T) -> io::Result<Option<String>> {
         // Newest first: SelectorUI treats index 0 as the best candidate, and
         // filter_and_sort's stable sort keeps this order for equal scores.
         let mut entries: Vec<String> = history.entries().to_vec();
         entries.reverse();
+        // Collapse identical commands so each unique entry appears once,
+        // keeping the most recent occurrence (first after the reverse).
+        let entries = dedup_preserving_order(entries);
         SelectorUI::run(
             &entries,
             SelectorOptions {
@@ -221,5 +236,42 @@ mod tests {
         let entries = vec!["anything".to_string()];
         let results = filter_and_sort("", &entries);
         assert!(results[0].positions.is_empty());
+    }
+
+    #[test]
+    fn test_dedup_preserving_order_keeps_first() {
+        // Simulates the newest-first list handed to the selector: identical
+        // commands collapse to their first (most recent) occurrence, and the
+        // relative order of distinct entries is preserved.
+        let entries = vec![
+            "ls".to_string(),
+            "git status".to_string(),
+            "ls".to_string(),
+            "cd ..".to_string(),
+            "git status".to_string(),
+            "ls".to_string(),
+        ];
+        let deduped = dedup_preserving_order(entries);
+        assert_eq!(
+            deduped,
+            vec![
+                "ls".to_string(),
+                "git status".to_string(),
+                "cd ..".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_dedup_preserving_order_no_duplicates() {
+        let entries = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(dedup_preserving_order(entries.clone()), entries);
+    }
+
+    #[test]
+    fn test_dedup_preserving_order_only_exact_matches() {
+        // Commands that merely share a prefix are distinct and both kept.
+        let entries = vec!["git log".to_string(), "git log --oneline".to_string()];
+        assert_eq!(dedup_preserving_order(entries.clone()), entries);
     }
 }
