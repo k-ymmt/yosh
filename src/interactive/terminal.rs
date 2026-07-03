@@ -1,7 +1,7 @@
 use crossterm::{
     ExecutableCommand, cursor,
     event::{self, Event},
-    style::{Attribute, Color, SetAttribute, SetForegroundColor},
+    style::{Attribute, Color, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{self, ClearType},
 };
 use std::io::{self, Stdout, Write, stdout};
@@ -50,6 +50,10 @@ pub trait Terminal {
 
     /// Set foreground color.
     fn set_fg_color(&mut self, color: Color) -> io::Result<()>;
+
+    /// Set background color.
+    #[allow(dead_code)] // used by the selector renderer (Task 4); mocks implement it
+    fn set_bg_color(&mut self, color: Color) -> io::Result<()>;
 
     /// Reset all text styling (color, bold, dim, underline, reverse).
     fn reset_style(&mut self) -> io::Result<()>;
@@ -180,6 +184,11 @@ impl Terminal for CrosstermTerminal {
 
     fn set_fg_color(&mut self, color: Color) -> io::Result<()> {
         self.stdout.execute(SetForegroundColor(color))?;
+        Ok(())
+    }
+
+    fn set_bg_color(&mut self, color: Color) -> io::Result<()> {
+        self.stdout.execute(SetBackgroundColor(color))?;
         Ok(())
     }
 

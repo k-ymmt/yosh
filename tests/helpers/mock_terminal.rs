@@ -135,6 +135,11 @@ impl Terminal for MockTerminal {
         Ok(())
     }
 
+    fn set_bg_color(&mut self, color: crossterm::style::Color) -> io::Result<()> {
+        self.output.push(format!("[BG:{:?}]", color));
+        Ok(())
+    }
+
     fn reset_style(&mut self) -> io::Result<()> {
         self.dim = false;
         self.bold = false;

@@ -842,6 +842,9 @@ mod tests {
         fn set_fg_color(&mut self, _color: crossterm::style::Color) -> std::io::Result<()> {
             Ok(())
         }
+        fn set_bg_color(&mut self, _color: crossterm::style::Color) -> std::io::Result<()> {
+            Ok(())
+        }
         fn reset_style(&mut self) -> std::io::Result<()> {
             Ok(())
         }
