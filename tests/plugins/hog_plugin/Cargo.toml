@@ -1,0 +1,17 @@
+[package]
+name = "hog_plugin"
+version = "0.2.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+yosh-plugin-sdk = { path = "../../../crates/yosh-plugin-sdk" }
+
+[package.metadata.component]
+package = "yosh:hog-plugin"
+
+[package.metadata.component.target]
+path  = "../../../crates/yosh-plugin-api/wit"
+world = "plugin-world"

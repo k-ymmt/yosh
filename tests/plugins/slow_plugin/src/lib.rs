@@ -1,56 +1,62 @@
-//! `slow_plugin` — minimal plugin that busy-loops in `pre_prompt` and
-//! returns immediately from `pre_exec`. Used by `tests/plugin.rs` to
-//! verify (a) the epoch-deadline timeout path interrupts the busy loop
-//! and invalidates the plugin, and (b) the per-call deadline-restore
-//! after `pre_prompt` keeps the plugin's other hooks usable when the
-//! pre_prompt itself returned in time (regression for the post-call
-//! reset bug fixed in commit 154e96e).
+//! `slow_plugin` — minimal plugin whose `pre_prompt` and `on_cd` hooks
+//! busy-loop and whose `spin` command busy-loops, while `pre_exec`
+//! returns immediately. Used by `tests/plugin.rs` and the manager's
+//! `tests/runner.rs` to verify the epoch-deadline timeout paths
+//! (per-entry-point budgets) and the post-call deadline restore.
 //!
 //! The plugin makes **zero host calls** by design. The test goal is to
 //! verify that wasmtime's epoch-interrupt path itself terminates the
 //! busy loop — *not* that the host-call deny short-circuit terminates
-//! it. Adding any host call here (even a benign `print()`) would let
-//! the host-side capability check fire first and mask whether the
-//! pure-wasm interrupt mechanism actually works. Keep this plugin host-
-//! call free.
+//! it. Keep this plugin host-call free.
 
 use yosh_plugin_sdk::{Capability, HookName, Plugin, export};
 
 #[derive(Default)]
 struct SlowPlugin;
 
+fn busy_loop() -> ! {
+    // core::hint::black_box defeats trivial dead-code elimination; the
+    // actual termination comes from increment_epoch -> Trap::Interrupt.
+    loop {
+        core::hint::black_box(0u64);
+    }
+}
+
 impl Plugin for SlowPlugin {
     fn commands(&self) -> &[&'static str] {
-        &[]
+        &["spin"]
     }
 
     fn required_capabilities(&self) -> &[Capability] {
-        &[Capability::HookPrePrompt, Capability::HookPreExec]
+        &[
+            Capability::HookPrePrompt,
+            Capability::HookPreExec,
+            Capability::HookOnCd,
+        ]
     }
 
     fn implemented_hooks(&self) -> &[HookName] {
-        &[HookName::PrePrompt, HookName::PreExec]
+        &[HookName::PrePrompt, HookName::PreExec, HookName::OnCd]
     }
 
-    fn exec(&mut self, _command: &str, _args: &[String]) -> i32 {
-        // SlowPlugin doesn't register any commands, so this is unreachable
-        // in practice. Implemented to satisfy the required trait method.
+    fn exec(&mut self, command: &str, _args: &[String]) -> i32 {
+        if command == "spin" {
+            busy_loop();
+        }
         0
     }
 
     fn hook_pre_prompt(&mut self) {
-        // Busy loop. core::hint::black_box defeats trivial dead-code
-        // elimination; the actual termination comes from the host's
-        // increment_epoch -> Trap::Interrupt path.
-        loop {
-            core::hint::black_box(0u64);
-        }
+        busy_loop();
     }
 
     fn hook_pre_exec(&mut self, _command: &str) {
-        // No-op. Used to prove the per-call pre_prompt deadline is
-        // restored to the baseline so this hook still runs without
-        // tripping the epoch deadline.
+        // No-op. Proves the per-call deadline is restored to baseline
+        // so a later hook on the same store still runs.
+    }
+
+    fn hook_on_cd(&mut self, _old: &str, _new: &str) {
+        busy_loop();
     }
 }
 

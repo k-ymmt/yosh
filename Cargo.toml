@@ -8,6 +8,7 @@ members = [
     "tests/plugins/trap_plugin",
     "tests/plugins/slow_plugin",
     "tests/plugins/perf_plugin",
+    "tests/plugins/hog_plugin",
 ]
 # Exclude wasm-component test plugins from default builds. They are
 # `crate-type = ["cdylib"]` for `wasm32-wasip2` only and fail to link
@@ -119,5 +120,9 @@ opt-level = "s"
 strip = true
 
 [profile.release.package.perf_plugin]
+opt-level = "s"
+strip = true
+
+[profile.release.package.hog_plugin]
 opt-level = "s"
 strip = true
