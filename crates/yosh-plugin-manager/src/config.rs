@@ -16,6 +16,10 @@ pub struct PluginDecl {
     pub enabled: bool,
     pub capabilities: Option<Vec<String>>,
     pub asset: Option<String>,
+    pub max_memory_mb: Option<u64>,
+    pub hook_timeout_ms: Option<u64>,
+    pub command_timeout_ms: Option<u64>,
+    pub pre_prompt_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +37,10 @@ struct RawPluginEntry {
     enabled: bool,
     capabilities: Option<Vec<String>>,
     asset: Option<String>,
+    max_memory_mb: Option<u64>,
+    hook_timeout_ms: Option<u64>,
+    command_timeout_ms: Option<u64>,
+    pre_prompt_timeout_ms: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -119,6 +127,10 @@ pub fn load_config(path: &Path) -> Result<Vec<PluginDecl>, String> {
                 enabled: entry.enabled,
                 capabilities: entry.capabilities,
                 asset: entry.asset,
+                max_memory_mb: entry.max_memory_mb,
+                hook_timeout_ms: entry.hook_timeout_ms,
+                command_timeout_ms: entry.command_timeout_ms,
+                pre_prompt_timeout_ms: entry.pre_prompt_timeout_ms,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -387,6 +399,29 @@ source = "local:/tmp/b.wasm"
             "expected duplicate name in error, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn limit_fields_parse_into_decl() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut f,
+            br#"
+[[plugin]]
+name = "limited"
+source = "local:/tmp/x.wasm"
+max_memory_mb = 64
+hook_timeout_ms = 1000
+command_timeout_ms = 30000
+pre_prompt_timeout_ms = 250
+"#,
+        )
+        .unwrap();
+        let decls = load_config(f.path()).unwrap();
+        assert_eq!(decls[0].max_memory_mb, Some(64));
+        assert_eq!(decls[0].hook_timeout_ms, Some(1000));
+        assert_eq!(decls[0].command_timeout_ms, Some(30_000));
+        assert_eq!(decls[0].pre_prompt_timeout_ms, Some(250));
     }
 
     #[test]

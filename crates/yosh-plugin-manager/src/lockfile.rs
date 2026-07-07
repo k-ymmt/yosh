@@ -62,6 +62,17 @@ pub struct LockEntry {
     /// caching rationale as `required_capabilities`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub implemented_hooks: Option<Vec<String>>,
+    /// Per-plugin runtime resource limits, passed through verbatim from
+    /// `plugins.toml`. `None` means the host applies its built-in default
+    /// for that limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_memory_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_prompt_timeout_ms: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -113,7 +124,26 @@ mod tests {
             engine_config_hash: None,
             required_capabilities: None,
             implemented_hooks: None,
+            max_memory_mb: None,
+            hook_timeout_ms: None,
+            command_timeout_ms: None,
+            pre_prompt_timeout_ms: None,
         }
+    }
+
+    #[test]
+    fn limit_fields_round_trip() {
+        let mut e = sample_entry();
+        e.max_memory_mb = Some(64);
+        e.hook_timeout_ms = Some(1000);
+        e.command_timeout_ms = Some(30_000);
+        e.pre_prompt_timeout_ms = Some(250);
+        let lf = LockFile { plugin: vec![e.clone()] };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plugins.lock");
+        save_lockfile(&path, &lf).unwrap();
+        let loaded = load_lockfile(&path).unwrap();
+        assert_eq!(loaded.plugin[0], e);
     }
 
     #[test]
@@ -162,6 +192,10 @@ mod tests {
             engine_config_hash: None,
             required_capabilities: None,
             implemented_hooks: None,
+            max_memory_mb: None,
+            hook_timeout_ms: None,
+            command_timeout_ms: None,
+            pre_prompt_timeout_ms: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let lock_path = dir.path().join("plugins.lock");

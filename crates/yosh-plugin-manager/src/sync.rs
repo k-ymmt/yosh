@@ -263,6 +263,10 @@ fn sync_one(
                 engine_config_hash: Some(pre.cache_key.engine_config_hash.clone()),
                 required_capabilities: Some(metadata.required_capabilities),
                 implemented_hooks: Some(metadata.implemented_hooks),
+                max_memory_mb: decl.max_memory_mb,
+                hook_timeout_ms: decl.hook_timeout_ms,
+                command_timeout_ms: decl.command_timeout_ms,
+                pre_prompt_timeout_ms: decl.pre_prompt_timeout_ms,
             })
         }
         PluginSource::Local { path } => {
@@ -323,6 +327,10 @@ fn sync_one(
                 engine_config_hash,
                 required_capabilities,
                 implemented_hooks,
+                max_memory_mb: decl.max_memory_mb,
+                hook_timeout_ms: decl.hook_timeout_ms,
+                command_timeout_ms: decl.command_timeout_ms,
+                pre_prompt_timeout_ms: decl.pre_prompt_timeout_ms,
             })
         }
     }
@@ -372,6 +380,10 @@ mod tests {
             enabled: true,
             capabilities: Some(vec!["io".into()]),
             asset: None,
+            max_memory_mb: None,
+            hook_timeout_ms: None,
+            command_timeout_ms: None,
+            pre_prompt_timeout_ms: None,
         };
         let client = GitHubClient::new();
         let empty_lock = LockFile { plugin: vec![] };
@@ -400,6 +412,10 @@ mod tests {
             enabled: true,
             capabilities: None,
             asset: None,
+            max_memory_mb: None,
+            hook_timeout_ms: None,
+            command_timeout_ms: None,
+            pre_prompt_timeout_ms: None,
         };
         let client = GitHubClient::new();
         let empty_lock = LockFile { plugin: vec![] };

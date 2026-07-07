@@ -64,6 +64,10 @@ fn lockfile_round_trip_with_multiple_entries() {
                 engine_config_hash: None,
                 required_capabilities: None,
                 implemented_hooks: None,
+                max_memory_mb: None,
+                hook_timeout_ms: None,
+                command_timeout_ms: None,
+                pre_prompt_timeout_ms: None,
             },
             yosh_plugin_manager::lockfile::LockEntry {
                 name: "b".into(),
@@ -80,6 +84,10 @@ fn lockfile_round_trip_with_multiple_entries() {
                 engine_config_hash: None,
                 required_capabilities: None,
                 implemented_hooks: None,
+                max_memory_mb: None,
+                hook_timeout_ms: None,
+                command_timeout_ms: None,
+                pre_prompt_timeout_ms: None,
             },
         ],
     };
