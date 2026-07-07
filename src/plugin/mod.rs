@@ -22,6 +22,7 @@
 
 pub mod cache;
 pub mod config;
+pub mod limits;
 mod host;
 mod linker;
 pub mod pattern;
