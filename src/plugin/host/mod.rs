@@ -62,6 +62,10 @@ pub struct HostContext {
     /// full-filesystem grant; `Some(root)` confines every `files` host
     /// call to paths inside `root` (canonicalized, symlink-escape safe).
     pub(super) files_root: Option<std::path::PathBuf>,
+    /// Linear-memory limiter installed on the owning `Store` via
+    /// `Store::limiter`. Its `denied` flag is read (and reset) by
+    /// `with_env` after a trap to attribute memory-cap kills.
+    pub(super) mem_limiter: crate::plugin::limits::MemoryLimiter,
 }
 
 // SAFETY: `*mut ShellEnv` is `!Send` by default, but the pointer is only
@@ -75,7 +79,11 @@ unsafe impl Send for HostContext {}
 unsafe impl Sync for HostContext {}
 
 impl HostContext {
-    pub fn new_for_plugin(plugin_name: impl Into<String>, capabilities: u32) -> Self {
+    pub fn new_for_plugin(
+        plugin_name: impl Into<String>,
+        capabilities: u32,
+        max_memory_bytes: usize,
+    ) -> Self {
         // wasmtime-wasi 27 builder: defaults are sufficient (clocks use the
         // host clock, random is seeded; stdout/stderr are eaten — plugins
         // do their own host-side I/O via the `yosh:plugin/io` interface).
@@ -88,6 +96,7 @@ impl HostContext {
             resource_table: ResourceTable::new(),
             allowed_commands: Vec::new(),
             files_root: None,
+            mem_limiter: crate::plugin::limits::MemoryLimiter::new(max_memory_bytes),
         }
     }
 
@@ -177,11 +186,11 @@ pub(super) mod test_helpers {
         // CAP_ALL is intentional — the deny short-circuit we test
         // fires regardless of granted capabilities, because it lives
         // inside the *real* implementations.
-        HostContext::new_for_plugin("<test>", CAP_ALL)
+        HostContext::new_for_plugin("<test>", CAP_ALL, 256 * 1024 * 1024)
     }
 
     pub fn bound_env_ctx(env: &mut ShellEnv) -> HostContext {
-        let mut ctx = HostContext::new_for_plugin("<test>", CAP_ALL);
+        let mut ctx = HostContext::new_for_plugin("<test>", CAP_ALL, 256 * 1024 * 1024);
         ctx.env = env as *mut ShellEnv;
         ctx
     }

@@ -129,6 +129,46 @@ pub(super) fn resolve_limits(
     )
 }
 
+/// Per-store memory limiter. Denies any linear-memory growth beyond
+/// `max_memory_bytes` and records the denial so `with_env` can
+/// attribute the guest's subsequent trap (a failed `memory.grow`
+/// surfaces as an allocator abort, which carries no structured cause).
+pub(in crate::plugin) struct MemoryLimiter {
+    max_memory_bytes: usize,
+    pub(in crate::plugin) denied: bool,
+}
+
+impl MemoryLimiter {
+    pub(in crate::plugin) fn new(max_memory_bytes: usize) -> Self {
+        MemoryLimiter { max_memory_bytes, denied: false }
+    }
+}
+
+impl wasmtime::ResourceLimiter for MemoryLimiter {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        if desired > self.max_memory_bytes {
+            self.denied = true;
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        _desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        Ok(true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +278,17 @@ mod tests {
         assert_eq!(l.hook_deadline_ticks(), Some(3));
         assert_eq!(l.command_deadline_ticks(), Some(2));
         assert_eq!(l.pre_prompt_ticks(), 1);
+    }
+
+    #[test]
+    fn memory_limiter_denies_over_cap_and_sets_flag() {
+        use wasmtime::ResourceLimiter;
+        let mut l = MemoryLimiter::new((8 * MIB) as usize);
+        assert!(l.memory_growing(0, (4 * MIB) as usize, None).unwrap());
+        assert!(!l.denied);
+        assert!(!l.memory_growing((4 * MIB) as usize, (16 * MIB) as usize, None).unwrap());
+        assert!(l.denied);
+        // Table growth is never memory-capped.
+        assert!(l.table_growing(0, 10_000, None).unwrap());
     }
 }

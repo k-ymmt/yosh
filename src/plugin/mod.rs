@@ -487,8 +487,13 @@ impl PluginManager {
 
         let mut scratch_store = Store::new(
             &self.engine,
-            HostContext::new_for_plugin("<probing>", CAP_ALL),
+            HostContext::new_for_plugin(
+                "<probing>",
+                CAP_ALL,
+                (limits::DEFAULT_MAX_MEMORY_MB * limits::MIB) as usize,
+            ),
         );
+        scratch_store.limiter(|ctx| &mut ctx.mem_limiter);
         // With epoch_interruption(true) on the engine, every store needs a
         // deadline; the default is 0, which traps on the first instruction.
         // metadata() should be microseconds; the scratch deadline is a
@@ -542,8 +547,11 @@ impl PluginManager {
         )
         .map_err(|e| format!("{}: real bindings pre-init: {}", path.display(), e))?;
 
-        let mut host_ctx =
-            HostContext::new_for_plugin(plugin_info.name.clone(), effective_capabilities);
+        let mut host_ctx = HostContext::new_for_plugin(
+            plugin_info.name.clone(),
+            effective_capabilities,
+            plugin_limits.max_memory_bytes,
+        );
         host_ctx.allowed_commands = parsed_allowed_commands;
         // Canonicalize once at load time so the per-call starts_with
         // confinement check compares canonical paths. A root that does
@@ -552,6 +560,7 @@ impl PluginManager {
         host_ctx.files_root =
             files_root.map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
         let mut store = Store::new(&self.engine, host_ctx);
+        store.limiter(|ctx| &mut ctx.mem_limiter);
         // Default-effectively-never deadline. `call_pre_prompt` overrides
         // this with a tight bound on each invocation (Task 4); other
         // hooks and `exec_command` keep this baseline so they don't trap
@@ -606,7 +615,7 @@ impl PluginManager {
         }) {
             Ok(exit) => PluginExec::Handled(exit),
             Err(e) => {
-                log_with_env_failure(&plugin.name, &e);
+                log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb());
                 PluginExec::Failed
             }
         }
@@ -623,7 +632,7 @@ impl PluginManager {
             if let Err(e) = with_env(plugin, env, |bindings, store| {
                 bindings.yosh_plugin_hooks().call_pre_exec(store, cmd)
             }) {
-                log_with_env_failure(&plugin.name, &e);
+                log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb());
             }
         }
     }
@@ -641,7 +650,7 @@ impl PluginManager {
                     .yosh_plugin_hooks()
                     .call_post_exec(store, cmd, exit_code)
             }) {
-                log_with_env_failure(&plugin.name, &e);
+                log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb());
             }
         }
     }
@@ -659,7 +668,7 @@ impl PluginManager {
                     .yosh_plugin_hooks()
                     .call_on_cd(store, old_dir, new_dir)
             }) {
-                log_with_env_failure(&plugin.name, &e);
+                log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb());
             }
         }
     }
@@ -699,7 +708,7 @@ impl PluginManager {
                             plugin.name, timeout_ms
                         );
                     }
-                    _ => log_with_env_failure(&plugin.name, &e),
+                    _ => log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb()),
                 }
             }
         }
@@ -718,7 +727,7 @@ impl PluginManager {
             if let Err(e) = with_env(plugin, env, |bindings, store| {
                 bindings.yosh_plugin_plugin().call_on_unload(store)
             }) {
-                log_with_env_failure(&plugin.name, &e);
+                log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb());
             }
         }
         // plugins drops here, releasing every Store and underlying instance.
@@ -814,6 +823,10 @@ enum WithEnvError {
     /// deadline exceeded). The plugin has been marked invalidated.
     Trapped {
         is_interrupt: bool,
+        /// The store's memory limiter denied a grow during this call —
+        /// the trap is (almost certainly) the guest allocator aborting
+        /// on the failed allocation.
+        memory_denied: bool,
         trap: wasmtime::Trap,
     },
     /// Non-trap host-side error (e.g. type mismatch). The plugin is NOT
@@ -851,8 +864,10 @@ fn with_env<R>(
             if let Some(trap) = e.downcast_ref::<wasmtime::Trap>() {
                 let trap = *trap;
                 let is_interrupt = matches!(trap, wasmtime::Trap::Interrupt);
+                let memory_denied =
+                    std::mem::replace(&mut plugin.store.data_mut().mem_limiter.denied, false);
                 plugin.invalidated = true;
-                Err(WithEnvError::Trapped { is_interrupt, trap })
+                Err(WithEnvError::Trapped { is_interrupt, memory_denied, trap })
             } else {
                 Err(WithEnvError::Other(e))
             }
@@ -862,9 +877,15 @@ fn with_env<R>(
 
 /// Generic "with_env failure" logger for hooks that don't need
 /// hook-specific phrasing. Reproduces the pre-refactor messages exactly.
-fn log_with_env_failure(plugin_name: &str, err: &WithEnvError) {
+fn log_with_env_failure(plugin_name: &str, err: &WithEnvError, max_memory_mb: u64) {
     match err {
         WithEnvError::Skipped => {}
+        WithEnvError::Trapped { memory_denied: true, trap, .. } => {
+            eprintln!(
+                "yosh: plugin '{}': trapped: {} (memory limit {} MiB exceeded) — disabling for the rest of this session",
+                plugin_name, trap, max_memory_mb
+            );
+        }
         WithEnvError::Trapped { trap, .. } => {
             eprintln!(
                 "yosh: plugin '{}': trapped: {} — disabling for the rest of this session",
