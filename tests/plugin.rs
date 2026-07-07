@@ -1087,6 +1087,13 @@ fn t26_on_cd_timeout_invalidates_plugin() {
     let start = Instant::now();
     mgr.call_on_cd(&mut env, "/b", "/c");
     assert!(start.elapsed() < Duration::from_millis(100));
+
+    // Prove the plugin is genuinely invalidated (not merely never
+    // dispatched): a command dispatch must also observe the skip.
+    assert!(matches!(
+        mgr.exec_command(&mut env, "spin", &[]),
+        yosh::plugin::PluginExec::Failed
+    ));
 }
 
 /// Custom command timeout — with command_timeout_ms set, the busy-loop
@@ -1193,5 +1200,33 @@ fn t29_memory_cap_kills_hog_plugin() {
     // Invalidated: subsequent dispatch is a fast skip, shell still fine.
     let start = std::time::Instant::now();
     mgr.call_pre_exec(&mut env, "ls");
-    assert!(start.elapsed() < std::time::Duration::from_millis(100));
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(100),
+        "expected a fast skip after invalidation, took {:?}",
+        elapsed
+    );
+}
+
+/// Stale `mem_limiter.denied` regression — a denied-but-survived grow
+/// must not mis-attribute a later, unrelated trap as a memory-limit
+/// trap. `with_env` clears the flag at dispatch entry, so a successful
+/// dispatch after the flag was forced `true` must observe it cleared.
+#[test]
+fn t30_stale_mem_denied_cleared_on_next_dispatch() {
+    let _guard = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, yosh_plugin_api::CAP_ALL, &[])
+        .expect("load test_plugin");
+
+    test_helpers::set_mem_denied_for_tests(&mut mgr, true);
+    assert_eq!(test_helpers::mem_denied_for_tests(&mgr), Some(true));
+
+    // A successful dispatch (test_plugin's pre_exec is fast and does not
+    // trap) must clear the stale flag at `with_env` entry.
+    mgr.call_pre_exec(&mut env, "ls");
+
+    assert_eq!(test_helpers::mem_denied_for_tests(&mgr), Some(false));
 }

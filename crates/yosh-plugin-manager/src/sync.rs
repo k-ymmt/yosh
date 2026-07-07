@@ -177,7 +177,7 @@ fn sync_one(
                             .map(|p| p.exists())
                             .unwrap_or(false);
                         if cwasm_present {
-                            return Ok(existing.clone());
+                            return Ok(with_decl_limits(existing, decl));
                         }
                         // Fall through to re-run precompile + metadata.
                     }
@@ -336,6 +336,22 @@ fn sync_one(
     }
 }
 
+/// Clone `entry` but refresh the four per-plugin resource-limit fields
+/// from `decl`. Used on the GitHub "already synced" fast path so that
+/// editing a limit in `plugins.toml` and re-running `sync` takes effect
+/// without forcing a re-download/re-precompile. Note: `enabled` and
+/// `capabilities` are deliberately left untouched here — their identical
+/// staleness on this fast path is pre-existing behaviour tracked
+/// separately.
+fn with_decl_limits(entry: &LockEntry, decl: &PluginDecl) -> LockEntry {
+    let mut refreshed = entry.clone();
+    refreshed.max_memory_mb = decl.max_memory_mb;
+    refreshed.hook_timeout_ms = decl.hook_timeout_ms;
+    refreshed.command_timeout_ms = decl.command_timeout_ms;
+    refreshed.pre_prompt_timeout_ms = decl.pre_prompt_timeout_ms;
+    refreshed
+}
+
 /// Extract `<stem>` from `<stem>.wasm`, or fall back to the whole name.
 fn asset_stem(asset_name: &str) -> &str {
     asset_name.strip_suffix(".wasm").unwrap_or(asset_name)
@@ -446,5 +462,119 @@ mod tests {
     fn tildify_outside_home_returns_none() {
         let p = std::path::PathBuf::from("/tmp/foo");
         assert_eq!(tildify(&p), None);
+    }
+
+    fn sample_lock_entry() -> LockEntry {
+        LockEntry {
+            name: "gh-test".into(),
+            path: "~/.yosh/plugins/gh-test/gh-test.wasm".into(),
+            enabled: false,
+            capabilities: Some(vec!["io".into()]),
+            sha256: "aaa".into(),
+            upstream_sha256: Some("aaa".into()),
+            source: "github:owner/repo".into(),
+            version: Some("1.0.0".into()),
+            cwasm_path: Some("~/.yosh/plugins/gh-test/gh-test.cwasm".into()),
+            wasmtime_version: Some("1.2.3".into()),
+            target_triple: Some("aarch64-apple-darwin".into()),
+            engine_config_hash: Some("hash".into()),
+            required_capabilities: Some(vec!["io".into()]),
+            implemented_hooks: Some(vec!["pre_exec".into()]),
+            max_memory_mb: Some(32),
+            hook_timeout_ms: Some(500),
+            command_timeout_ms: Some(10_000),
+            pre_prompt_timeout_ms: Some(100),
+        }
+    }
+
+    fn sample_decl_with_limits(
+        max_memory_mb: Option<u64>,
+        hook_timeout_ms: Option<u64>,
+        command_timeout_ms: Option<u64>,
+        pre_prompt_timeout_ms: Option<u64>,
+    ) -> PluginDecl {
+        PluginDecl {
+            name: "gh-test".into(),
+            source: PluginSource::GitHub {
+                owner: "owner".into(),
+                repo: "repo".into(),
+            },
+            version: Some("1.0.0".into()),
+            // Deliberately different from the existing entry so the
+            // "left untouched" assertions below are meaningful.
+            enabled: true,
+            capabilities: None,
+            asset: None,
+            max_memory_mb,
+            hook_timeout_ms,
+            command_timeout_ms,
+            pre_prompt_timeout_ms,
+        }
+    }
+
+    #[test]
+    fn with_decl_limits_refreshes_all_four_fields() {
+        let existing = sample_lock_entry();
+        let decl = sample_decl_with_limits(Some(64), Some(1_000), Some(30_000), Some(250));
+
+        let refreshed = with_decl_limits(&existing, &decl);
+
+        assert_eq!(refreshed.max_memory_mb, Some(64));
+        assert_eq!(refreshed.hook_timeout_ms, Some(1_000));
+        assert_eq!(refreshed.command_timeout_ms, Some(30_000));
+        assert_eq!(refreshed.pre_prompt_timeout_ms, Some(250));
+    }
+
+    #[test]
+    fn with_decl_limits_can_clear_a_previously_set_limit() {
+        let existing = sample_lock_entry();
+        // decl now omits all limits (user deleted the lines from
+        // plugins.toml) — the refreshed entry must drop them too.
+        let decl = sample_decl_with_limits(None, None, None, None);
+
+        let refreshed = with_decl_limits(&existing, &decl);
+
+        assert_eq!(refreshed.max_memory_mb, None);
+        assert_eq!(refreshed.hook_timeout_ms, None);
+        assert_eq!(refreshed.command_timeout_ms, None);
+        assert_eq!(refreshed.pre_prompt_timeout_ms, None);
+    }
+
+    #[test]
+    fn with_decl_limits_leaves_enabled_and_capabilities_untouched() {
+        let existing = sample_lock_entry();
+        let decl = sample_decl_with_limits(Some(64), Some(1_000), Some(30_000), Some(250));
+
+        let refreshed = with_decl_limits(&existing, &decl);
+
+        // `enabled` is false on `existing` and true on `decl` — the
+        // fast path's pre-existing staleness for this field must be
+        // preserved (tracked separately, not in scope for this fix).
+        assert_eq!(refreshed.enabled, existing.enabled);
+        assert_eq!(refreshed.capabilities, existing.capabilities);
+    }
+
+    #[test]
+    fn with_decl_limits_preserves_non_limit_fields() {
+        let existing = sample_lock_entry();
+        let decl = sample_decl_with_limits(Some(64), Some(1_000), Some(30_000), Some(250));
+
+        let refreshed = with_decl_limits(&existing, &decl);
+
+        assert_eq!(refreshed.name, existing.name);
+        assert_eq!(refreshed.path, existing.path);
+        assert_eq!(refreshed.sha256, existing.sha256);
+        assert_eq!(refreshed.upstream_sha256, existing.upstream_sha256);
+        assert_eq!(refreshed.source, existing.source);
+        assert_eq!(refreshed.version, existing.version);
+        assert_eq!(refreshed.cwasm_path, existing.cwasm_path);
+        assert_eq!(refreshed.wasmtime_version, existing.wasmtime_version);
+        assert_eq!(refreshed.target_triple, existing.target_triple);
+        assert_eq!(refreshed.engine_config_hash, existing.engine_config_hash);
+        assert_eq!(
+            refreshed.required_capabilities,
+            existing.required_capabilities
+        );
+        assert_eq!(refreshed.implemented_hooks, existing.implemented_hooks);
     }
 }

@@ -848,6 +848,15 @@ fn with_env<R>(
         return Err(WithEnvError::Skipped);
     }
 
+    // Clear any stale `denied` flag left over from a prior grow that the
+    // guest survived without trapping (e.g. `try_reserve`, or a
+    // non-Rust guest that handles allocation failure gracefully), or
+    // from a denial during `on_load` (which runs via a raw `EnvGuard`,
+    // not `with_env`, so this is the first chance to clear it). Without
+    // this, a later unrelated trap would read a stale `true` here and
+    // mis-attribute itself as a memory-limit trap.
+    plugin.store.data_mut().mem_limiter.denied = false;
+
     let bindings = &plugin.bindings;
     let result = {
         let mut guard = EnvGuard::bind(&mut plugin.store, env);
@@ -921,6 +930,10 @@ fn log_entry_failure(
 fn log_with_env_failure(plugin_name: &str, err: &WithEnvError, max_memory_mb: u64) {
     match err {
         WithEnvError::Skipped => {}
+        // Must precede the generic `Trapped` arm below: both patterns
+        // match `Trapped { .. }`, and Rust picks the first arm whose
+        // pattern matches, so this more-specific `memory_denied: true`
+        // arm has to come first or it would be unreachable.
         WithEnvError::Trapped { memory_denied: true, trap, .. } => {
             eprintln!(
                 "yosh: plugin '{}': trapped: {} (memory limit {} MiB exceeded) — disabling for the rest of this session",
@@ -1059,6 +1072,22 @@ pub mod test_helpers {
     pub fn env_pointer_is_null_in_store(manager: &PluginManager) -> Option<bool> {
         let plugin = manager.plugins.last()?;
         Some(plugin.store.data().env.is_null())
+    }
+
+    /// Force the most-recently-loaded plugin's `mem_limiter.denied` flag,
+    /// for the stale-flag regression test.
+    pub fn set_mem_denied_for_tests(manager: &mut PluginManager, denied: bool) {
+        if let Some(plugin) = manager.plugins.last_mut() {
+            plugin.store.data_mut().mem_limiter.denied = denied;
+        }
+    }
+
+    /// Returns the most-recently-loaded plugin's `mem_limiter.denied`
+    /// flag. Used by the stale-flag regression test to confirm
+    /// `with_env` clears it at dispatch entry.
+    pub fn mem_denied_for_tests(manager: &PluginManager) -> Option<bool> {
+        let plugin = manager.plugins.last()?;
+        Some(plugin.store.data().mem_limiter.denied)
     }
 
     /// Number of `Linker<HostContext>` entries currently cached on the
