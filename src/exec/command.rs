@@ -24,39 +24,20 @@ fn path_component_dir(dir: &str) -> &str {
     if dir.is_empty() { "." } else { dir }
 }
 
-fn walk_path(cmd: &str, path_var: &str) -> Option<PathBuf> {
-    for dir in path_var.split(':') {
-        let candidate = PathBuf::from(path_component_dir(dir)).join(cmd);
-        if is_executable_file(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
 /// Search each directory in `path_var` for `cmd`, consulting a cache first.
 ///
-/// If `cmd` contains '/', the cache is bypassed (POSIX: pathnames with
-/// '/' are not subject to PATH search). On a cache hit whose path still
-/// exists and is executable, the cached path is returned without
-/// re-walking PATH. On miss or stale cache entry, falls through to the
-/// PATH walk and inserts a fresh entry on success (auto-hash).
+/// Thin wrapper over [`lookup_in_path`] for exec-only callers that do not
+/// need the 126/127 (not executable / not found) distinction: both
+/// non-`Executable` outcomes collapse to `None`.
 pub fn find_in_path(
     cmd: &str,
     path_var: &str,
     cache: &mut std::collections::HashMap<String, std::path::PathBuf>,
 ) -> Option<PathBuf> {
-    if cmd.contains('/') {
-        return walk_path(cmd, path_var);
+    match lookup_in_path(cmd, path_var, cache) {
+        PathLookup::Executable(p) => Some(p),
+        PathLookup::NotExecutable(_) | PathLookup::NotFound => None,
     }
-    if let Some(cached) = cache.get(cmd)
-        && is_executable_file(cached)
-    {
-        return Some(cached.clone());
-    }
-    let found = walk_path(cmd, path_var)?;
-    cache.insert(cmd.to_string(), found.clone());
-    Some(found)
 }
 
 /// Result of looking up a command name in `$PATH`.
@@ -108,16 +89,17 @@ pub fn lookup_in_path(
     path_var: &str,
     cache: &mut std::collections::HashMap<String, std::path::PathBuf>,
 ) -> PathLookup {
-    if !cmd.contains('/')
+    // POSIX: pathnames containing '/' are not subject to PATH search, so
+    // they bypass the cache entirely (never read, never inserted).
+    let use_cache = !cmd.contains('/');
+    if use_cache
         && let Some(cached) = cache.get(cmd)
         && is_executable_file(cached)
     {
         return PathLookup::Executable(cached.clone());
     }
     let result = walk_path_lookup(cmd, path_var);
-    if let PathLookup::Executable(p) = &result
-        && !cmd.contains('/')
-    {
+    if use_cache && let PathLookup::Executable(p) = &result {
         cache.insert(cmd.to_string(), p.clone());
     }
     result

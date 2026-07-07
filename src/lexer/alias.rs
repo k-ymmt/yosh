@@ -91,9 +91,7 @@ impl Lexer {
             Token::Word(_) => {
                 // After first word in command position, stop alias-expanding
                 // (unless a previous alias ended with space, already handled above)
-                if self.check_alias {
-                    self.check_alias = false;
-                }
+                self.check_alias = false;
             }
             _ => {
                 // For other tokens (redirects, etc.), don't change check_alias

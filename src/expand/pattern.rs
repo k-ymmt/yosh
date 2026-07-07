@@ -228,12 +228,12 @@ fn parse_bracket(pat: &str) -> Option<(usize, bool, Vec<BracketItem>)> {
         // Range: x-y  (only if '-' is followed by another non-']' char).
         if let Some('-') = after_c0.chars().next() {
             let after_dash = &after_c0['-'.len_utf8()..];
-            if let Some(hi) = after_dash.chars().next() {
-                if hi != ']' {
-                    members.push(BracketItem::Range(c0, hi));
-                    rest = &after_dash[hi.len_utf8()..];
-                    continue;
-                }
+            if let Some(hi) = after_dash.chars().next()
+                && hi != ']'
+            {
+                members.push(BracketItem::Range(c0, hi));
+                rest = &after_dash[hi.len_utf8()..];
+                continue;
             }
         }
 

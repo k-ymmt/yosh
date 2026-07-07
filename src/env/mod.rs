@@ -49,7 +49,7 @@ pub struct ShellEnv {
     /// Auto-populated by `find_in_path` / `lookup_in_path` cache misses
     /// and by explicit `hash utility...` invocations. Cleared by
     /// `hash -r` and on `PATH` reassignment (POSIX §2.5.3).
-    pub utility_hash: HashMap<String, PathBuf>,
+    pub(crate) utility_hash: HashMap<String, PathBuf>,
 }
 
 impl ShellEnv {

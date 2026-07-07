@@ -125,13 +125,13 @@ impl ExpandedField {
     /// and glob expansion (used for glob-match results that must not be
     /// re-split or re-globbed).
     pub fn all_quoted(value: String) -> Self {
-        let len = value.len();
-        let needed_words = len.div_ceil(64);
-        let mask = vec![u64::MAX; needed_words];
+        // The two masks are independent state; build each one directly
+        // rather than cloning one into the other.
+        let needed_words = value.len().div_ceil(64);
         Self {
+            split_protected_mask: vec![u64::MAX; needed_words],
+            glob_protected_mask: vec![u64::MAX; needed_words],
             value,
-            split_protected_mask: mask.clone(),
-            glob_protected_mask: mask,
             was_quoted: false,
         }
     }
@@ -644,8 +644,8 @@ mod tests {
     fn all_quoted_marks_both() {
         let f = ExpandedField::all_quoted("abc".to_string());
         for i in 0..3 {
-            assert!(f.is_split_protected(i), "byte {i} split-protected", i = i);
-            assert!(f.is_glob_protected(i), "byte {i} glob-protected", i = i);
+            assert!(f.is_split_protected(i), "byte {i} split-protected");
+            assert!(f.is_glob_protected(i), "byte {i} glob-protected");
         }
         assert!(!f.was_quoted);
     }

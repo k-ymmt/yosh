@@ -610,6 +610,27 @@ impl LineEditor {
         result
     }
 
+    /// Move the cursor down past the last rendered row so subsequent
+    /// terminal output starts below the full (possibly wrapped) input.
+    /// No-op when nothing has been rendered yet.
+    fn move_below_render<T: Terminal>(&self, term: &mut T, prompt_width: usize) -> io::Result<()> {
+        if self.prev_total_rows == 0 {
+            return Ok(());
+        }
+        let buf_pos_width: usize = self.buf[..self.pos]
+            .iter()
+            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+            .sum();
+        let (tw, _) = term.size().unwrap_or((80, 24));
+        let cursor_row = (prompt_width + buf_pos_width)
+            .checked_div(tw as usize)
+            .unwrap_or(0);
+        if self.prev_total_rows > cursor_row {
+            term.move_down((self.prev_total_rows - cursor_row) as u16)?;
+        }
+        Ok(())
+    }
+
     fn read_line_loop<T: Terminal>(
         &mut self,
         prompt: &str,
@@ -625,22 +646,7 @@ impl LineEditor {
                     match self.handle_key(key_event, history) {
                         KeyAction::Submit => {
                             history.reset_cursor();
-                            if self.prev_total_rows > 0 {
-                                let buf_pos_width: usize = self.buf[..self.pos]
-                                    .iter()
-                                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                                    .sum();
-                                let (tw, _) = term.size().unwrap_or((80, 24));
-                                let tw = tw as usize;
-                                let cursor_row = if tw > 0 {
-                                    (prompt_width + buf_pos_width) / tw
-                                } else {
-                                    0
-                                };
-                                if self.prev_total_rows > cursor_row {
-                                    term.move_down((self.prev_total_rows - cursor_row) as u16)?;
-                                }
-                            }
+                            self.move_below_render(term, prompt_width)?;
                             term.move_to_column(0)?;
                             term.write_str("\r\n")?;
                             term.flush()?;
@@ -651,22 +657,7 @@ impl LineEditor {
                         }
                         KeyAction::Interrupt => {
                             history.reset_cursor();
-                            if self.prev_total_rows > 0 {
-                                let buf_pos_width: usize = self.buf[..self.pos]
-                                    .iter()
-                                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                                    .sum();
-                                let (tw, _) = term.size().unwrap_or((80, 24));
-                                let tw = tw as usize;
-                                let cursor_row = if tw > 0 {
-                                    (prompt_width + buf_pos_width) / tw
-                                } else {
-                                    0
-                                };
-                                if self.prev_total_rows > cursor_row {
-                                    term.move_down((self.prev_total_rows - cursor_row) as u16)?;
-                                }
-                            }
+                            self.move_below_render(term, prompt_width)?;
                             term.move_to_column(0)?;
                             term.write_str("\r\n")?;
                             term.flush()?;
@@ -901,12 +892,8 @@ impl LineEditor {
 
         // Position cursor at self.pos
         let cursor_total = prompt_width + buf_pos_width;
-        let cursor_row = if tw > 0 { cursor_total / tw } else { 0 };
-        let cursor_col = if tw > 0 {
-            cursor_total % tw
-        } else {
-            cursor_total
-        };
+        let cursor_row = cursor_total.checked_div(tw).unwrap_or(0);
+        let cursor_col = cursor_total.checked_rem(tw).unwrap_or(cursor_total);
 
         // Move from end-of-content row to cursor row
         let end_row = total_rows;
@@ -959,12 +946,13 @@ impl LineEditor {
             | EditAction::TransposeWords
             | EditAction::UpcaseWord
             | EditAction::DowncaseWord
-            | EditAction::CapitalizeWord => {
-                if !self.last_was_insert {
-                    // Not transitioning from insert — save pre-op state directly
-                    self.undo.save(&self.buf, self.pos);
-                }
-                // If last_was_insert, boundary save above already captured the state
+            | EditAction::CapitalizeWord
+                if !self.last_was_insert =>
+            {
+                // Not transitioning from insert — save pre-op state directly.
+                // (When last_was_insert, the boundary save above already
+                // captured the state.)
+                self.undo.save(&self.buf, self.pos);
             }
             _ => {}
         }
@@ -1227,22 +1215,7 @@ impl LineEditor {
                         KeyAction::Submit => {
                             history.reset_cursor();
                             term.reset_style()?;
-                            if self.prev_total_rows > 0 {
-                                let buf_pos_width: usize = self.buf[..self.pos]
-                                    .iter()
-                                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                                    .sum();
-                                let (tw, _) = term.size().unwrap_or((80, 24));
-                                let tw = tw as usize;
-                                let cursor_row = if tw > 0 {
-                                    (prompt_width + buf_pos_width) / tw
-                                } else {
-                                    0
-                                };
-                                if self.prev_total_rows > cursor_row {
-                                    term.move_down((self.prev_total_rows - cursor_row) as u16)?;
-                                }
-                            }
+                            self.move_below_render(term, prompt_width)?;
                             term.move_to_column(0)?;
                             term.write_str("\r\n")?;
                             term.flush()?;
@@ -1254,22 +1227,7 @@ impl LineEditor {
                         KeyAction::Interrupt => {
                             history.reset_cursor();
                             term.reset_style()?;
-                            if self.prev_total_rows > 0 {
-                                let buf_pos_width: usize = self.buf[..self.pos]
-                                    .iter()
-                                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                                    .sum();
-                                let (tw, _) = term.size().unwrap_or((80, 24));
-                                let tw = tw as usize;
-                                let cursor_row = if tw > 0 {
-                                    (prompt_width + buf_pos_width) / tw
-                                } else {
-                                    0
-                                };
-                                if self.prev_total_rows > cursor_row {
-                                    term.move_down((self.prev_total_rows - cursor_row) as u16)?;
-                                }
-                            }
+                            self.move_below_render(term, prompt_width)?;
                             term.move_to_column(0)?;
                             term.write_str("\r\n")?;
                             term.flush()?;

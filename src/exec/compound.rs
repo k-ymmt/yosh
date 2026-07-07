@@ -149,16 +149,29 @@ impl Executor {
     /// Execute a while or until loop.
     /// `until=false` → while (run while condition succeeds)
     /// `until=true`  → until (run while condition fails)
+    /// Run `f` with `loop_depth` incremented, restoring the counter on
+    /// exit even if `f` unwinds (panics inside a function body are caught
+    /// by `exec_function_call`'s `catch_unwind`, so a skipped decrement
+    /// would otherwise leak into subsequent commands).
+    fn with_loop_depth<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        struct Guard<'a>(&'a mut Executor);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.0.env.exec.loop_depth -= 1;
+            }
+        }
+        self.env.exec.loop_depth += 1;
+        let guard = Guard(self);
+        f(&mut *guard.0)
+    }
+
     fn exec_loop(
         &mut self,
         condition: &[CompleteCommand],
         body: &[CompleteCommand],
         until: bool,
     ) -> i32 {
-        self.env.exec.loop_depth += 1;
-        let status = self.exec_loop_inner(condition, body, until);
-        self.env.exec.loop_depth -= 1;
-        status
+        self.with_loop_depth(|e| e.exec_loop_inner(condition, body, until))
     }
 
     fn exec_loop_inner(
@@ -214,10 +227,7 @@ impl Executor {
         words: &Option<Vec<Word>>,
         body: &[CompleteCommand],
     ) -> Result<i32, ShellError> {
-        self.env.exec.loop_depth += 1;
-        let result = self.exec_for_inner(var, words, body);
-        self.env.exec.loop_depth -= 1;
-        result
+        self.with_loop_depth(|e| e.exec_for_inner(var, words, body))
     }
 
     fn exec_for_inner(

@@ -228,7 +228,7 @@ mod tests {
         let mut store = TrapStore::default();
         store
             .set_trap("EXIT", TrapAction::Command("echo bye".to_string()))
-            .unwrap();
+            .expect("set_trap with a valid signal name must succeed");
         assert!(matches!(
             store.get_trap("EXIT"),
             Some(TrapAction::Command(_))
@@ -238,9 +238,13 @@ mod tests {
     #[test]
     fn test_trap_store_set_signal() {
         let mut store = TrapStore::default();
-        store.set_trap("INT", TrapAction::Ignore).unwrap();
+        store
+            .set_trap("INT", TrapAction::Ignore)
+            .expect("set_trap with a valid signal name must succeed");
         assert!(matches!(store.get_trap("INT"), Some(TrapAction::Ignore)));
-        store.set_trap("INT", TrapAction::Default).unwrap();
+        store
+            .set_trap("INT", TrapAction::Default)
+            .expect("set_trap with a valid signal name must succeed");
         assert!(matches!(store.get_trap("INT"), Some(TrapAction::Default)));
     }
 
@@ -261,7 +265,7 @@ mod tests {
         let mut store = TrapStore::default();
         store
             .set_trap("EXIT", TrapAction::Command("echo bye".to_string()))
-            .unwrap();
+            .expect("set_trap with a valid signal name must succeed");
         store.remove_trap("EXIT");
         assert!(store.exit_trap.is_none());
     }
@@ -271,11 +275,13 @@ mod tests {
         let mut store = TrapStore::default();
         store
             .set_trap("INT", TrapAction::Command("echo caught".to_string()))
-            .unwrap();
-        store.set_trap("HUP", TrapAction::Ignore).unwrap();
+            .expect("set_trap with a valid signal name must succeed");
+        store
+            .set_trap("HUP", TrapAction::Ignore)
+            .expect("set_trap with a valid signal name must succeed");
         store
             .set_trap("TERM", TrapAction::Command("echo term".to_string()))
-            .unwrap();
+            .expect("set_trap with a valid signal name must succeed");
         store.reset_non_ignored();
         assert!(!store.signal_traps.contains_key(&2));
         assert_eq!(store.signal_traps.get(&1), Some(&TrapAction::Ignore));
@@ -360,7 +366,7 @@ mod tests {
         let mut store = TrapStore::default();
         store
             .set_trap("INT", TrapAction::Command("echo caught".to_string()))
-            .unwrap();
+            .expect("set_trap with a valid signal name must succeed");
         assert!(matches!(
             store.get_signal_trap(2),
             Some(TrapAction::Command(_))
@@ -373,7 +379,7 @@ mod tests {
         let mut store = TrapStore::default();
         store
             .set_trap("INT", TrapAction::Command("echo parent".into()))
-            .unwrap();
+            .expect("set_trap with a valid signal name must succeed");
         store.reset_for_command_sub();
         assert!(
             store.saved_traps_is_some(),
@@ -394,10 +400,12 @@ mod tests {
     fn test_reset_for_subshell_preserves_ignored() {
         // POSIX §2.11: Ignore-action traps must survive subshell entry.
         let mut store = TrapStore::default();
-        store.set_trap("HUP", TrapAction::Ignore).unwrap();
+        store
+            .set_trap("HUP", TrapAction::Ignore)
+            .expect("set_trap with a valid signal name must succeed");
         store
             .set_trap("INT", TrapAction::Command("x".into()))
-            .unwrap();
+            .expect("set_trap with a valid signal name must succeed");
         store.reset_for_subshell();
         assert_eq!(
             store.signal_traps.get(&1),
@@ -417,7 +425,7 @@ mod tests {
         let mut store = TrapStore::default();
         store
             .set_trap("INT", TrapAction::Command("x".into()))
-            .unwrap();
+            .expect("set_trap with a valid signal name must succeed");
         // saved_traps is None at this point.
         store.reset_for_subshell();
         assert!(!store.saved_traps_is_some());

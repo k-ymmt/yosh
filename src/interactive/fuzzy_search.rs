@@ -95,7 +95,7 @@ pub fn filter_and_sort(query: &str, entries: &[String]) -> Vec<ScoredCandidate> 
             })
         })
         .collect();
-    results.sort_by(|a, b| b.score.cmp(&a.score));
+    results.sort_by_key(|c| std::cmp::Reverse(c.score));
     results
 }
 

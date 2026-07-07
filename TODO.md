@@ -115,7 +115,6 @@ retained below for tracking.
       POSIX byte semantics stage-1 verification; unrelated to the byte
       semantics change set.
 - [ ] `exec_function_call` does not clear `env.exec.loop_depth` on entry, so `break`/`continue` inside a function called from a loop affects the caller's loop. Matches dash; bash treats it as out-of-loop. Decide intent and either save/restore `loop_depth` on function entry or document the deviation (`src/exec/function.rs`).
-- [ ] `loop_depth` bump/restore in `exec_for` / `exec_loop` is not panic-safe — `_inner` panics would skip the decrement. Currently fine because yosh uses `Result`, but a small `LoopDepthGuard` RAII drop guard would harden it (`src/exec/compound.rs`).
 - [ ] `exit_child` doc comment (`src/exec/mod.rs:24`) says "Use ONLY after fork() in the child branch, never in the shell parent", but SP1 G5b added a top-level non-interactive call site in `src/exec/simple.rs` (BuiltinKind::Special redirect-error). Either update the doc to permit non-interactive shell exit, or introduce a dedicated `exit_shell(status)` helper.
 - [ ] `builtin_exec` absolute-path branch (`cmd.contains('/')`) has no dedicated unit/e2e test. `exec_keeps_env.sh` covers the PATH-walk branch only. Add a focused test like `export m=v; exec /bin/sh -c 'echo $m'` (`src/builtin/special.rs::builtin_exec`).
 - [ ] `export -p foo=v` silently drops `foo=v` operand (the `-p` branch prints and returns). Pre-existing, made more visible by SP1 G2's stricter validation. Either accept operands after `-p` or document the limitation (`src/builtin/special.rs::builtin_export`).
@@ -142,32 +141,9 @@ retained below for tracking.
       through `lookup_in_path_uncached`, or key cache entries on the
       PATH value used. Surfaced by the 2026-07-04 perf-branch final
       review; pre-existing at base 31ef66b.
-- [ ] `command -V` (`src/builtin/command.rs::render_verbose`) does not
-      escape single quotes in alias values while native `type`
-      (`src/builtin/type.rs::format_type_line`) does. Pre-existing
-      escape gap surfaced during SP2 G2 code review. Either align
-      `render_verbose` with the escaping in `type`, or extract a shared
-      `format_alias_value` helper for both call sites.
-- [ ] `ShellEnv.utility_hash` field visibility is `pub` (`src/env/mod.rs`);
-      tighten to `pub(crate)` so only `assign_var`/`unset_var`/`hash`
-      builtin and `find_in_path` reach into it.
-- [ ] `lookup_in_path` checks `cmd.contains('/')` twice (once at the
-      cache-hit guard, once before auto-insert in the PATH walk loop)
-      while `find_in_path` checks once at the top. Symmetrize for
-      readability (`src/exec/command.rs`).
-- [ ] The `BuiltinKind::NotBuiltin` arm in `format_type_line`
-      (`src/builtin/type.rs`) and `render_verbose`
-      (`src/builtin/command.rs`) is dead code with a `// Cannot happen`
-      comment. Replace with `unreachable!("…")` so the contract is
-      compile-checked.
 
 ### SP3 follow-ups (non-blocking)
 
-- [ ] `split_fields` terminator-consume branches are mildly redundant
-      (`src/builtin/read.rs:200-213`). The `is_sep` and `else` (ws-only)
-      branches both end with the same `while is_ws(...)` consume loop;
-      flattening to "consume one sep byte if present, then consume any
-      ws-IFS run" makes the POSIX rule clearer. Pure refactor.
 - [ ] `split_fields` test coverage gaps surfaced by Task 4 code review
       (`src/builtin/read.rs`):
       - N=1 with sep-only IFS (leading `:` not trimmed)
@@ -175,11 +151,6 @@ retained below for tracking.
       - Escaped leading sep-IFS byte (`\<:>` stays in field 1)
       Each is a 3–5 line test; not blocking because spec coverage is
       adequate via the existing 11 tests.
-- [ ] `assert!(n_vars >= 1)` at `src/builtin/read.rs:140` could drop to
-      `debug_assert!` since the only caller (`builtin_read`) guarantees
-      `var_names.len() >= 1` via `ArgError::NoVarName`. Saves a tiny
-      runtime check; matches the `debug_assert_eq!(result.len(), n_vars)`
-      at the function tail.
 - [ ] Partial-variable-assignment state on readonly error
       (`src/builtin/read.rs:43-49`): if the Kth variable in
       `read x y z` is readonly, `x` and `y` are already assigned before
@@ -319,11 +290,6 @@ retained below for tracking.
       (`tests/subshell.rs:237` 周辺) から離れている。次回 subshell.rs を
       触る時にコマンドサブセクションへ寄せる。
       Code-review follow-up from f703a26.
-- [ ] `src/env/traps.rs::tests` の `.unwrap()` と `.expect("...")` が
-      不統一 — `test_reset_for_subshell_*` 系は `.unwrap()`、
-      `test_set_trap_with_*` 系も `.unwrap()` のメッセージなし。
-      失敗時のデバッグ性を上げるため `.expect(...)` で揃える。
-      Code-review follow-up from f703a26.
 - [ ] `reset_for_subshell` が `Command` 種 `exit_trap` をクリアする
       ことを直接検証するユニットテストがない。`reset_non_ignored`
       の `exit_trap` クリア挙動は `test_trap_store_reset_non_ignored`
@@ -358,18 +324,6 @@ retained below for tracking.
       regression test would solidify the behaviour. Code-review
       follow-up from 2026-05-21 locale-support branch
       (`src/expand/pattern.rs`).
-- [ ] `try_parse_posix_class` allocates a temporary `String` for
-      the class-name lookup (`pat[..end].iter().collect()`). All 12
-      class names are short ASCII; comparing `&[char]` slices
-      directly against each known name would avoid the allocation.
-      Only matters if glob/pattern matching becomes a hot path.
-      Code-review follow-up from 2026-05-21 locale-support branch
-      (`src/expand/pattern.rs`).
-- [ ] `try_parse_posix_class` loop guard `while end + 1 < pat.len()`
-      is correct but `while end < pat.len().saturating_sub(1)`
-      reads more clearly as "scan up to the second-to-last char".
-      Cosmetic. Code-review follow-up from 2026-05-21 locale-support
-      branch (`src/expand/pattern.rs`).
 - [ ] `docs/yosh/posix-compliance.md` LC_COLLATE description says
       "Unicode codepoint ordering coincides with C-locale bytewise
       ordering". Strictly true only in the ASCII range; UTF-8 byte
@@ -386,36 +340,9 @@ retained below for tracking.
       character class / `test` string-comparison call sites. Spec
       `docs/superpowers/specs/2026-05-21-locale-support-design.md`
       §2.3 documents this as the intended branch point.
-- [ ] `clippy::collapsible_if` warning at `src/expand/pattern.rs:85` — the
-      `if pat[i] == '[' && … { if let Some((consumed, class)) =
-      try_parse_posix_class(…) { … } }` nesting can collapse to a let-chain
-      (`&&` in edition 2024). Surfaced during the 2026-05-26 ulimit
-      verification `cargo clippy` run; the only lib clippy warning in the
-      tree. Collapse it (or `#[allow]` with rationale).
 
 ### 2026-05-23 literal-argv word-splitting follow-ups (non-blocking)
 
-- [ ] `test_literal_colon_not_split` doc-comment is stale —
-      `src/expand/field_split.rs:478` says "Without push_literal
-      wiring in pipeline.rs" but the wiring landed in `addff32`.
-      Rephrase to "Pins field_split predicate behavior independently
-      of pipeline.rs wiring." Code-review follow-up from Task 2 of
-      the literal-argv word-splitting fix (spec
-      `docs/superpowers/specs/2026-05-23-literal-argv-word-splitting-fix-design.md`).
-- [ ] `append_char` local var naming `split_p` / `glob_p` — the `_p`
-      suffix adds no information. Drop to `split` / `glob` in the
-      directly-following `match (split_p, glob_p)` for readability
-      (`src/expand/field_split.rs:207-209`). Code-review follow-up
-      from Task 1.
-- [ ] Redundant `i = i` in format args — `"byte {i} split-protected",
-      i = i` at `src/expand/mod.rs:572-573` (and the
-      glob-protected sibling). `{i}` already captures `i` from
-      scope; drop the named arg. Code-review follow-up from Task 1.
-- [ ] `all_quoted` uses `.clone()` for both masks
-      (`src/expand/mod.rs:113-117`), which implies shared state —
-      precisely what the two-mask refactor repudiates. Two
-      `vec![u64::MAX; needed_words]` calls would be equivalent and
-      clearer in intent. Cosmetic. Code-review follow-up from Task 1.
 - [ ] `set_mask_range` (`src/expand/mod.rs:130-143`) has a per-bit
       inner loop with no word-aligned fast path. For long literal /
       quoted runs (common in real shell input) the `/64 + %64 +
@@ -559,7 +486,6 @@ retained below for tracking.
 ## Future: Code Quality Improvements
 
 - [ ] `JobTable::update_status` per-process status tracking — currently overwrites the overall `job.status` on each child exit; if per-process status tracking (e.g., `$PIPESTATUS` array) is needed in the future, the `Job` struct will need a `Vec<(Pid, JobStatus)>` field instead of a single `status` (`src/env/jobs/mod.rs`)
-- [ ] `find_in_path` vs `lookup_in_path` — `find_in_path` returns `Option<PathBuf>` (exec-only); `lookup_in_path` returns 3-state `PathLookup` for 126/127 distinction. Consider making `find_in_path` a thin wrapper over `lookup_in_path` to remove the near-duplicate directory walk (`src/exec/command.rs`)
 - [ ] `exec_regular_builtin` "internal error" guards for `wait` / `fg`/`bg`/`jobs` / `command` are growing — consider factoring "Executor-requiring builtins" into an explicit classification or dispatch table instead of per-name guards (`src/builtin/mod.rs`)
 - [ ] `render_verbose` Function arm has no unit test — `command -V <function>` branch exercised only through E2E; add a focused unit test in `src/builtin/command.rs` tests module
 - [ ] `preview_command` has no direct unit tests — only exercised via E2E; add focused tests for compound-command / unexpandable-word fallback and pipeline first-command extraction (`src/exec/mod.rs`)
@@ -569,7 +495,6 @@ retained below for tracking.
 - [ ] LINENO update allocates a `String` per command — `exec_simple_command` / `exec_compound_command` call `cmd.line.to_string()` and go through `VarStore::set`. For tight loops this is ~500μs per 10k commands. If benchmarks ever show pressure, add `ShellEnv.exec.current_lineno: usize` and intercept `$LINENO` in `expand::param` to read that field directly, bypassing the alloc + HashMap write (`src/exec/simple.rs`, `src/exec/compound.rs`, `src/expand/param.rs`).
 - [ ] `pattern::matches` bracket set-member multibyte test gap — `src/expand/pattern.rs` tests cover a multibyte char as a bracket **range endpoint** (`matches("[あ-ん]", "か")`) but not as a plain **set member** (e.g. `matches("[あいう]", "い")`). No reachable bug — the set-member path reuses the same `BracketItem::Char(c0)` char decoding the range test exercises — but an explicit case would make `parse_bracket`'s loop intent clearer. Cosmetic test-coverage follow-up from the 2026-05-27 `&str` matcher rewrite final review.
 - [ ] `strip_prefix` / `strip_suffix` re-parse `pat` on every candidate cut point — `pattern::matches` re-walks the whole pattern (rebuilding a `Vec<BracketItem>` per bracket) once per char boundary, so a value with N boundaries does O(N) full pattern parses and the cut-point scan is O(n²) char comparisons. The 2026-05-27 Layer-2 rewrite removed the per-cut `String` / `Vec<char>` *allocations* but not this CPU cost. Options: compile `pat` to an AST once and match it many times, or replace the brute-force cut-point loop with a left/right-anchored single-pass matcher. Recorded out-of-scope in `docs/superpowers/specs/2026-05-27-strip-prefix-suffix-zero-alloc-design.md` §7 (`src/expand/param.rs`, `src/expand/pattern.rs`).
-- [ ] Extract `try_parse_assignment` value-construction walker into a private helper — the ~25-line match loop plus its 21-line doc comment dominates `try_parse_assignment` and will be swapped wholesale when sub-project 4 replaces `prev_was_literal` with escape metadata. A helper like `fn build_assignment_value_parts(after_eq: &str, remaining_parts: &[WordPart]) -> Vec<WordPart>` would make the doc comment a rustdoc `///`, keep `try_parse_assignment` focused on name/value splitting, and localize sub-project 4's diff (`src/parser/simple.rs`).
 - [ ] `try_parse_assignment` `other.clone()` deep-copies CommandSub — the non-Literal branch clones each remaining `WordPart`, which for `$(...)` substitutions clones the embedded `Program`. Same inefficiency as the prior `extend_from_slice`, so not a regression, but consider consuming `Word` (take ownership) or draining `word.parts` to avoid the copy (`src/parser/simple.rs`).
 - [ ] `expand_assignment_builtin_args` string round-trip — helper builds `"NAME=value"` strings that the builtin re-parses with `find('=')`. Lossless today, but couples the helper shape to the legacy builtin API. When a future refactor touches `builtin_export`/`builtin_readonly` signatures, consider passing `Vec<(String, Option<String>)>` directly to skip the round-trip (`src/exec/simple.rs`, `src/builtin/special.rs`).
 - [ ] macOS CI job — Task 1 (SIGNAL_TABLE libc-const fix) corrects a bug that only manifests on macOS. Current CI only runs on Linux, so the regression test for the fix is not actually exercising the bug pre-fix. Add a GitHub Actions macOS runner to `cargo test` on every push so future signal-numbering regressions are caught. Spec cross-cutting concern from 2026-04-20 signal-table design.
@@ -577,11 +502,8 @@ retained below for tracking.
 - [ ] Multi-byte IFS support in UTF-8 locale (bash-extension parity) — `field_split::split` currently matches IFS as an ASCII byte-set. `IFS="日"; set -- $"a日b"` yields `[a] [b]` under bash in UTF-8 locale (character-level match) but is silently ignored (post-fix A) or produces garbled bytes (pre-fix A) in yosh. POSIX leaves this locale-dependent; bash uses character-level matching when locale is multi-byte. Plan: introduce a `char`-level IFS match path (`char_indices` in `split_field`, char-mode `ifs` set) gated by locale detection. Deferred from the 2026-04-21 `append_byte` UTF-8 panic fix to keep scope minimal. See the brainstorming log for that fix; reference bash 3.2 behavior under `LC_ALL=en_US.UTF-8` as the target semantics.
 - [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard.
 - [ ] `Parser::current_token` API shape — `interactive/parse_status.rs:61` compares the result against `&Token::Newline` literally, which forces every caller to construct a borrowed `Token` value just for equality. Consider a predicate `fn is_token(&self, t: &Token) -> bool` (or an enum-tag helper) that hides the borrow. Discovered during the 2026-05-05 visibility-tightening spec follow-up (`docs/superpowers/specs/2026-05-05-parser-visibility-tightening-design.md` §4.2-1, `src/parser/mod.rs`).
-- [ ] `Parser::try_parse_assignment` should be a free function — it takes no `self` and is called only from `src/exec/simple.rs:33`. Moving it to a module-level `pub fn try_parse_assignment(word: &Word) -> Option<Assignment>` in `src/parser/simple.rs` would drop one of the two surviving `pub fn`s on the `Parser` impl and clarify that the function is a pure utility. Discovered during the 2026-05-05 visibility-tightening spec follow-up (§4.2-2, `src/parser/simple.rs:84`).
 - [ ] Bench API surface — `Parser::new` and `parse_program` are the only two `Parser` items required to stay `pub`; their sole external consumers are `benches/parser_bench.rs` and `benches/exec_bench.rs`. Wrapping them in a bench-only helper module (e.g. an internal `pub(crate) fn parse_for_bench(s: &str) -> Program` reachable through a `#[cfg(any(test, feature = "internal_api"))]` shim) would let both `Parser::new` and `parse_program` drop to `pub(crate)`, shrinking the public Parser surface from 10 to 8. Requires bench-side refactor. Discovered during the 2026-05-05 visibility-tightening spec follow-up (§4.2-3, `benches/parser_bench.rs`, `benches/exec_bench.rs`).
 - [ ] `Executor` API visibility tightening (post-split follow-up) — five `pub` methods on `Executor` are candidates for `pub(crate)` since their callers are all in-crate: `Executor::exec_command` (only `pipeline.rs` + tests), `exec_and_or` (internal-only), `exec_program` (used by `expand/command_sub.rs`, `bin/yosh-dhat.rs`, `builtin/special.rs`), `exec_complete_command` (used by `compound.rs`, `interactive/mod.rs`, `main.rs`), and `display_job_notifications` (only `interactive/mod.rs` + `control.rs::exec_complete_command`). Mirrors the 2026-05-05 parser-visibility-tightening pattern. Surfaced during the 2026-05-05 exec/mod.rs split final review (`src/exec/control.rs`, `src/exec/job_control.rs`).
-- [ ] `assignment_rhs_backslash_tilde_after_colon_stays_literal` (`src/parser/simple.rs:311`) still uses the loose `!any(matches!(p, Tilde(_)))` form — sibling test to `assignment_rhs_param_then_escaped_tilde_stays_literal` (line 321) which was tightened on 2026-05-10 to a structural `assert_eq!`. Apply the same treatment so a `/bin` segment drop or shape regression is caught at unit-test level. Code-review follow-up from 2026-05-10 POSIX TODO cleanup branch.
-- [ ] `readonly_p_then_double_dash_remains_listing` and `export_p_then_double_dash_remains_listing` test comments (`src/builtin/special.rs`) say "helper is never reached" but do not note *why* `--` is harmless: the listing branch returns `Ok(0)` before `consume_end_of_options` is called, so the `--` operand is silently ignored. A one-line addition to each comment would make them self-contained. Cosmetic. Code-review follow-up from 2026-05-25 readonly -p listing-symmetry branch.
 - [ ] `ulimit` `-f` block arithmetic assumes `libc::rlim_t == u64` — `BLOCK_SIZE: libc::rlim_t = 512` and `SetBlocks(n: u64).saturating_mul(BLOCK_SIZE)` (`src/builtin/regular.rs`) compile only where `rlim_t` is `u64` (macOS, 64-bit Linux). On 32-bit Linux `rlim_t` is `u32`, making the `u64 * u32` a type error. Not a runtime risk and the project has no Linux CI / targets macOS, but if a 32-bit target is ever added, type `BLOCK_SIZE` as `u64` and cast at the `set_fsize` / `format_fsize_limit` call sites. Final-review follow-up from 2026-05-26 ulimit native -f branch.
 - [ ] `indirection_level_balanced_after_dot_script*` tests use `tempfile::NamedTempFile` while the sibling `source_file_*` tests use `std::env::temp_dir()` + `std::fs::write`/`remove_file`. The `NamedTempFile` style is cleaner (auto-cleanup) — unify the `source_file_*` tests onto it in a future pass for consistency (`src/exec/mod.rs`). Code-review follow-up from 2026-05-28 PS4 full-support branch.
 

@@ -224,7 +224,9 @@ fn read_logical_line<R: ByteReader>(raw: bool, reader: &mut R) -> std::io::Resul
 /// remainder (with only trailing whitespace-IFS trimmed). When IFS is
 /// empty, no splitting occurs.
 fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
-    assert!(n_vars >= 1);
+    // The only caller (builtin_read) guarantees at least one var name
+    // via ArgError::NoVarName.
+    debug_assert!(n_vars >= 1);
 
     // Classify IFS bytes.
     let mut ws_ifs: Vec<u8> = Vec::new();
@@ -282,20 +284,14 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
         let field: String = line[start..i].iter().map(|b| b.value as char).collect();
         result.push(field);
 
-        // Consume one terminator: either a single sep_ifs byte plus
-        // any adjacent ws_ifs, or a run of ws_ifs.
+        // Consume one terminator: at most one sep_ifs byte, then any
+        // adjacent run of ws_ifs (which collapses with the terminator).
         if i < line.len() {
             if is_sep(&line[i]) {
                 i += 1;
-                // Adjacent ws_ifs collapses with the sep terminator.
-                while i < line.len() && is_ws(&line[i]) {
-                    i += 1;
-                }
-            } else {
-                // ws_ifs run.
-                while i < line.len() && is_ws(&line[i]) {
-                    i += 1;
-                }
+            }
+            while i < line.len() && is_ws(&line[i]) {
+                i += 1;
             }
         }
     }

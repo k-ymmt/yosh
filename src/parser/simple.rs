@@ -1,5 +1,5 @@
 use super::Parser;
-use super::ast::{self, Assignment, SimpleCommand, Word};
+use super::ast::{Assignment, SimpleCommand, Word, WordPart};
 use super::word::{is_valid_name, split_tildes_in_literal};
 use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::token::Token;
@@ -31,7 +31,7 @@ impl Parser {
 
                 // Only try assignments before any command words have been seen
                 if words.is_empty()
-                    && let Some(assignment) = Self::try_parse_assignment(&word)
+                    && let Some(assignment) = try_parse_assignment(&word)
                 {
                     self.advance()?;
                     assignments.push(assignment);
@@ -85,87 +85,95 @@ impl Parser {
             line,
         })
     }
+}
 
-    /// Try to parse an assignment from a word.
-    /// Returns Some(Assignment) if the word contains an `=` and a valid name prefix.
-    pub fn try_parse_assignment(word: &Word) -> Option<Assignment> {
-        use ast::WordPart;
+/// Try to parse an assignment from a word.
+/// Returns Some(Assignment) if the word contains an `=` and a valid name prefix.
+///
+/// A free function (not a `Parser` method): it needs no parser state and is
+/// also called from the executor's assignment re-check.
+pub(crate) fn try_parse_assignment(word: &Word) -> Option<Assignment> {
+    // We need the first part to be a Literal containing '='
+    // (or the word might be entirely a literal like "FOO=bar")
+    if word.parts.is_empty() {
+        return None;
+    }
 
-        // We need the first part to be a Literal containing '='
-        // (or the word might be entirely a literal like "FOO=bar")
-        if word.parts.is_empty() {
-            return None;
-        }
+    // Collect the full literal text from the first part (if it's a Literal)
+    let first_part_text: &str = match &word.parts[0] {
+        WordPart::Literal(s) => s,
+        _ => return None,
+    };
 
-        // Collect the full literal text from the first part (if it's a Literal)
-        let first_part_text: &str = match &word.parts[0] {
-            WordPart::Literal(s) => s,
-            _ => return None,
-        };
+    // Find '=' in the literal
+    let eq_pos = first_part_text.find('=')?;
 
-        // Find '=' in the literal
-        let eq_pos = first_part_text.find('=')?;
+    let name = &first_part_text[..eq_pos];
+    if !is_valid_name(name) {
+        return None;
+    }
 
-        let name = &first_part_text[..eq_pos];
-        if !is_valid_name(name) {
-            return None;
-        }
+    // Value: rest after '=' in the first part + remaining parts
+    let after_eq = &first_part_text[eq_pos + 1..];
+    let remaining_parts = &word.parts[1..];
 
-        // Value: rest after '=' in the first part + remaining parts
-        let after_eq = &first_part_text[eq_pos + 1..];
-        let remaining_parts = &word.parts[1..];
+    if after_eq.is_empty() && remaining_parts.is_empty() {
+        // FOO= with nothing after
+        return Some(Assignment {
+            name: name.to_string(),
+            value: None,
+        });
+    }
 
-        if after_eq.is_empty() && remaining_parts.is_empty() {
-            // FOO= with nothing after
-            return Some(Assignment {
-                name: name.to_string(),
-                value: None,
-            });
-        }
+    Some(Assignment {
+        name: name.to_string(),
+        value: Some(Word {
+            parts: build_assignment_value_parts(after_eq, remaining_parts),
+        }),
+    })
+}
 
-        // Build value word with boundary-aware tilde splitting across all parts.
-        //
-        // The segment boundary starts true immediately after `=` (we just
-        // consumed it). Whenever a Literal part is scanned,
-        // split_tildes_in_literal returns whether the last character was an
-        // unquoted `:`, which we propagate as the incoming boundary for the
-        // next part.
-        //
-        // A non-Literal part (Parameter, CommandSub, quoted content, Tilde,
-        // EscapedLiteral) resets the boundary to false: such parts cannot
-        // expose an unquoted trailing `:` to the next segment, and
-        // EscapedLiteral specifically carries an explicit "this character
-        // was escaped" signal from the lexer — tilde-prefix recognition must
-        // not fire immediately after it.
-        let mut value_parts = Vec::new();
-        let mut at_boundary = true;
-        if !after_eq.is_empty() {
-            let (parts, ends_colon) = split_tildes_in_literal(after_eq, at_boundary);
-            value_parts.extend(parts);
-            at_boundary = ends_colon;
-        }
-        for part in remaining_parts {
-            match part {
-                WordPart::Literal(s) => {
-                    let (parts, ends_colon) = split_tildes_in_literal(s, at_boundary);
-                    value_parts.extend(parts);
-                    at_boundary = ends_colon;
-                }
-                other => {
-                    // Parameter, CommandSub, SingleQuoted, DoubleQuoted,
-                    // DollarSingleQuoted, ArithSub, Tilde, and EscapedLiteral
-                    // all hit this arm: emit as-is and close the boundary.
-                    value_parts.push(other.clone());
-                    at_boundary = false;
-                }
+/// Build an assignment's value word with boundary-aware tilde splitting
+/// across all parts. `after_eq` is the tail of the first literal part
+/// (everything after `=`), `remaining_parts` are the word's other parts.
+///
+/// The segment boundary starts true immediately after `=` (the caller just
+/// consumed it). Whenever a Literal part is scanned,
+/// `split_tildes_in_literal` returns whether the last character was an
+/// unquoted `:`, which we propagate as the incoming boundary for the
+/// next part.
+///
+/// A non-Literal part (Parameter, CommandSub, quoted content, Tilde,
+/// EscapedLiteral) resets the boundary to false: such parts cannot
+/// expose an unquoted trailing `:` to the next segment, and
+/// EscapedLiteral specifically carries an explicit "this character
+/// was escaped" signal from the lexer — tilde-prefix recognition must
+/// not fire immediately after it.
+fn build_assignment_value_parts(after_eq: &str, remaining_parts: &[WordPart]) -> Vec<WordPart> {
+    let mut value_parts = Vec::new();
+    let mut at_boundary = true;
+    if !after_eq.is_empty() {
+        let (parts, ends_colon) = split_tildes_in_literal(after_eq, at_boundary);
+        value_parts.extend(parts);
+        at_boundary = ends_colon;
+    }
+    for part in remaining_parts {
+        match part {
+            WordPart::Literal(s) => {
+                let (parts, ends_colon) = split_tildes_in_literal(s, at_boundary);
+                value_parts.extend(parts);
+                at_boundary = ends_colon;
+            }
+            other => {
+                // Parameter, CommandSub, SingleQuoted, DoubleQuoted,
+                // DollarSingleQuoted, ArithSub, Tilde, and EscapedLiteral
+                // all hit this arm: emit as-is and close the boundary.
+                value_parts.push(other.clone());
+                at_boundary = false;
             }
         }
-
-        Some(Assignment {
-            name: name.to_string(),
-            value: Some(Word { parts: value_parts }),
-        })
     }
+    value_parts
 }
 
 #[cfg(test)]
@@ -319,9 +327,16 @@ mod tests {
         // `x=foo:\~/bin` — the `\~` escape prevents tilde expansion. The
         // lexer emits EscapedLiteral("~"), which the walker treats as a
         // non-Literal segment-boundary closer, preventing tilde expansion.
-        let (_, parts) = parse_first_assignment("x=foo:\\~/bin\n").unwrap();
-        let has_tilde = parts.iter().any(|p| matches!(p, WordPart::Tilde(_)));
-        assert!(!has_tilde, "parts = {:?}", parts);
+        let (name, parts) = parse_first_assignment("x=foo:\\~/bin\n").unwrap();
+        assert_eq!(name, "x");
+        assert_eq!(
+            parts,
+            vec![
+                lit("foo:"),
+                WordPart::EscapedLiteral("~".to_string()),
+                lit("/bin"),
+            ]
+        );
     }
 
     #[test]

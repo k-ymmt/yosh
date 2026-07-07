@@ -227,9 +227,9 @@ fn append_char(dest: &mut ExpandedField, source: &ExpandedField, i: usize) -> us
         .expect("i on char boundary")
         .len_utf8();
     let slice = &source.value[i..i + ch_len];
-    let split_p = source.is_split_protected(i);
-    let glob_p = source.is_glob_protected(i);
-    match (split_p, glob_p) {
+    let split = source.is_split_protected(i);
+    let glob = source.is_glob_protected(i);
+    match (split, glob) {
         (true, true) => dest.push_quoted(slice),
         (true, false) => dest.push_literal(slice),
         (false, false) => dest.push_expanded(slice),
@@ -533,8 +533,8 @@ mod tests {
     #[test]
     fn test_literal_colon_not_split() {
         // SP3 follow-up #1: literal text must not be field-split.
-        // Without push_literal wiring in pipeline.rs, the equivalent
-        // unit-level check exercises the field_split predicate directly.
+        // Pins the field_split predicate behavior directly, independent
+        // of the push_literal wiring in pipeline.rs (landed in addff32).
         let env = env_with_ifs(":");
         let mut f = ExpandedField::new();
         f.push_literal("a::b");

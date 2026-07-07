@@ -5,6 +5,8 @@ mod redirect;
 mod simple;
 pub(crate) mod word;
 
+pub(crate) use simple::try_parse_assignment;
+
 use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::Lexer;
 use crate::lexer::token::{Span, SpannedToken, Token};
@@ -282,7 +284,7 @@ impl Parser {
             let mut prefix_assignments = Vec::new();
             let found_compound = loop {
                 if let Token::Word(word) = &self.current.token
-                    && let Some(a) = Self::try_parse_assignment(word)
+                    && let Some(a) = try_parse_assignment(word)
                 {
                     if self.advance().is_err() {
                         break false;
@@ -319,11 +321,10 @@ impl Parser {
         match &self.current.token {
             Token::Eof => true,
             Token::RParen => true,
-            Token::Word(word) => match word.as_literal() {
-                Some("}") | Some("fi") | Some("done") | Some("esac") | Some("then")
-                | Some("else") | Some("elif") | Some("do") => true,
-                _ => false,
-            },
+            Token::Word(word) => matches!(
+                word.as_literal(),
+                Some("}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do")
+            ),
             _ => false,
         }
     }
@@ -333,11 +334,10 @@ impl Parser {
     pub(super) fn is_compound_command_start(&self) -> bool {
         match &self.current.token {
             Token::LParen => true,
-            Token::Word(word) => match word.as_literal() {
-                Some("if") | Some("for") | Some("while") | Some("until") | Some("case")
-                | Some("{") => true,
-                _ => false,
-            },
+            Token::Word(word) => matches!(
+                word.as_literal(),
+                Some("if" | "for" | "while" | "until" | "case" | "{")
+            ),
             _ => false,
         }
     }

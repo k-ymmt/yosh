@@ -8,8 +8,8 @@ use crate::env::ShellEnv;
 use crate::env::jobs;
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::expand::expand_words;
-use crate::parser::Parser;
 use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
+use crate::parser::try_parse_assignment;
 use crate::signal;
 
 use super::Executor;
@@ -30,7 +30,7 @@ fn expand_assignment_builtin_args(
 ) -> crate::error::Result<Vec<String>> {
     let mut out = Vec::with_capacity(words.len());
     for word in words {
-        match Parser::try_parse_assignment(word) {
+        match try_parse_assignment(word) {
             Some(Assignment {
                 name,
                 value: Some(value_word),
@@ -187,7 +187,7 @@ fn resolve_exec_path(
 /// (last-wins, matching setenv/child-environment semantics); `None`
 /// means "use the shell's own $PATH", letting the caller take the
 /// normal (cached) resolution path.
-fn effective_path_override<'a>(env_overrides: &'a [(String, String)]) -> Option<&'a str> {
+fn effective_path_override(env_overrides: &[(String, String)]) -> Option<&str> {
     env_overrides
         .iter()
         .rev()

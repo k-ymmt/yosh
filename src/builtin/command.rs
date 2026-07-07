@@ -13,7 +13,7 @@
 //! `Executor` for redirects/assignments.
 
 use crate::builtin::BuiltinKind;
-use crate::builtin::resolve::{CommandKind, resolve_command_kind};
+use crate::builtin::resolve::{CommandKind, escape_alias_value, resolve_command_kind};
 use crate::env::ShellEnv;
 
 /// Parsed form of a `command [...]` invocation.
@@ -83,7 +83,7 @@ pub fn parse_flags(args: &[String]) -> Result<CommandFlags, String> {
 pub fn render_brief(env: &mut ShellEnv, name: &str) -> (String, i32) {
     match resolve_command_kind(env, name) {
         CommandKind::Alias(val) => {
-            let escaped = val.replace('\'', r"'\''");
+            let escaped = escape_alias_value(&val);
             (format!("alias {}='{}'", name, escaped), 0)
         }
         CommandKind::Keyword => (name.to_string(), 0),
@@ -99,7 +99,7 @@ pub fn render_brief(env: &mut ShellEnv, name: &str) -> (String, i32) {
 pub fn render_verbose(env: &mut ShellEnv, name: &str) -> (String, String, i32) {
     match resolve_command_kind(env, name) {
         CommandKind::Alias(val) => (
-            format!("{} is aliased to '{}'", name, val),
+            format!("{} is aliased to '{}'", name, escape_alias_value(&val)),
             String::new(),
             0,
         ),
@@ -114,12 +114,7 @@ pub fn render_verbose(env: &mut ShellEnv, name: &str) -> (String, String, i32) {
             (format!("{} is a shell builtin", name), String::new(), 0)
         }
         CommandKind::Builtin(BuiltinKind::NotBuiltin) => {
-            // Cannot happen — resolve_command_kind never returns this.
-            (
-                String::new(),
-                format!("yosh: command: {}: not found", name),
-                1,
-            )
+            unreachable!("resolve_command_kind never returns Builtin(NotBuiltin)")
         }
         CommandKind::External(p) => (
             format!("{} is {}", name, p.to_string_lossy()),
@@ -282,6 +277,16 @@ mod tests {
         let (out, err, code) = render_verbose(&mut env, "ll");
         assert_eq!(out, "ll is aliased to 'ls -l'");
         assert_eq!(err, "");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn verbose_alias_with_single_quote() {
+        // -V must escape embedded ' the same way `type` does.
+        let mut env = env_with_path("/bin:/usr/bin");
+        env.aliases.set("q", "echo 'hi'");
+        let (out, _, code) = render_verbose(&mut env, "q");
+        assert_eq!(out, r"q is aliased to 'echo '\''hi'\'''");
         assert_eq!(code, 0);
     }
 

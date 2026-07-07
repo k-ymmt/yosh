@@ -14,7 +14,7 @@
 //! - `<name> is <path>`
 
 use crate::builtin::BuiltinKind;
-use crate::builtin::resolve::{CommandKind, resolve_command_kind};
+use crate::builtin::resolve::{CommandKind, escape_alias_value, resolve_command_kind};
 use crate::env::ShellEnv;
 use crate::error::ShellError;
 
@@ -26,7 +26,7 @@ use crate::error::ShellError;
 pub(crate) fn format_type_line(env: &mut ShellEnv, name: &str) -> (String, Option<String>, i32) {
     match resolve_command_kind(env, name) {
         CommandKind::Alias(val) => {
-            let escaped = val.replace('\'', r"'\''");
+            let escaped = escape_alias_value(&val);
             (format!("{} is aliased to '{}'", name, escaped), None, 0)
         }
         CommandKind::Keyword => (format!("{} is a shell keyword", name), None, 0),
@@ -38,12 +38,7 @@ pub(crate) fn format_type_line(env: &mut ShellEnv, name: &str) -> (String, Optio
             (format!("{} is a shell builtin", name), None, 0)
         }
         CommandKind::Builtin(BuiltinKind::NotBuiltin) => {
-            // Cannot happen — resolve_command_kind never returns this.
-            (
-                String::new(),
-                Some(format!("yosh: type: {}: not found", name)),
-                1,
-            )
+            unreachable!("resolve_command_kind never returns Builtin(NotBuiltin)")
         }
         CommandKind::External(p) => (format!("{} is {}", name, p.to_string_lossy()), None, 0),
         CommandKind::NotFound => (
