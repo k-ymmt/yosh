@@ -128,7 +128,7 @@ wall clock, not 15 s).
 |---|---|---|
 | Hook over budget | epoch `Trap::Interrupt` | warning with hook name + budget; plugin disabled for session |
 | Command over budget (if configured) | same | same, names the command |
-| Memory over cap | `memory.grow` fails → guest trap | trap warning with `(memory limit N MiB exceeded?)` hint; plugin disabled |
+| Memory over cap | `memory.grow` fails → guest trap | trap warning with `(memory limit N MiB exceeded)` hint; plugin disabled |
 | Invalid config value | clamp + stderr warning at load | plugin still loads with clamped value |
 
 ## 6. Testing
