@@ -52,6 +52,20 @@ pub struct PluginEntry {
     /// `files` is a full-filesystem grant. Supports `~/` expansion.
     #[serde(default)]
     pub files_root: Option<String>,
+    /// Per-plugin linear-memory cap in MiB (default 256, ceiling 4096).
+    #[serde(default)]
+    pub max_memory_mb: Option<u64>,
+    /// Budget for pre_exec/post_exec/on_cd hooks in ms. 0 = unlimited.
+    /// Default 5000.
+    #[serde(default)]
+    pub hook_timeout_ms: Option<u64>,
+    /// Budget for plugin custom commands in ms. 0 = unlimited (default).
+    #[serde(default)]
+    pub command_timeout_ms: Option<u64>,
+    /// Per-plugin pre_prompt budget in ms, range [1, 60000]. Overrides
+    /// the `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS` env var for this plugin.
+    #[serde(default)]
+    pub pre_prompt_timeout_ms: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -70,6 +84,16 @@ impl PluginEntry {
             target_triple: self.target_triple.clone()?,
             engine_config_hash: self.engine_config_hash.clone()?,
         })
+    }
+
+    /// Bundle the four optional limit fields for `load_one`.
+    pub fn limits_config(&self) -> crate::plugin::limits::LimitsConfig {
+        crate::plugin::limits::LimitsConfig {
+            max_memory_mb: self.max_memory_mb,
+            hook_timeout_ms: self.hook_timeout_ms,
+            command_timeout_ms: self.command_timeout_ms,
+            pre_prompt_timeout_ms: self.pre_prompt_timeout_ms,
+        }
     }
 }
 
@@ -430,5 +454,48 @@ version = "0.1.0"
         let entry = &config.plugin[0];
         assert!(entry.cwasm_path.is_none());
         assert!(entry.cache_key().is_none());
+    }
+
+    #[test]
+    fn parse_limit_fields() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "limited"
+path = "/tmp/x.wasm"
+max_memory_mb = 64
+hook_timeout_ms = 1000
+command_timeout_ms = 30000
+pre_prompt_timeout_ms = 250
+"#
+        )
+        .unwrap();
+        let config = PluginConfig::load(f.path()).unwrap();
+        let lc = config.plugin[0].limits_config();
+        assert_eq!(lc.max_memory_mb, Some(64));
+        assert_eq!(lc.hook_timeout_ms, Some(1000));
+        assert_eq!(lc.command_timeout_ms, Some(30000));
+        assert_eq!(lc.pre_prompt_timeout_ms, Some(250));
+    }
+
+    #[test]
+    fn parse_missing_limit_fields_default_to_none() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "plain"
+path = "/tmp/x.wasm"
+"#
+        )
+        .unwrap();
+        let config = PluginConfig::load(f.path()).unwrap();
+        assert_eq!(
+            config.plugin[0].limits_config(),
+            crate::plugin::limits::LimitsConfig::default()
+        );
     }
 }

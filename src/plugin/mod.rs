@@ -136,6 +136,9 @@ struct LoadedPlugin {
     /// Granted capability bitfield (after allowlist intersection with
     /// `required-capabilities`).
     capabilities: u32,
+    /// Resolved runtime resource limits (memory cap + per-entry-point
+    /// timeouts). Fixed at load time.
+    limits: limits::PluginLimits,
     /// Set by `with_env` on guest trap. All subsequent dispatches for this
     /// plugin short-circuit with a single skip warning.
     invalidated: bool,
@@ -305,6 +308,7 @@ impl PluginManager {
                 cache_key.as_ref(),
                 entry.allowed_commands.as_deref().unwrap_or_default(),
                 files_root.as_deref(),
+                entry.limits_config(),
             ) {
                 eprintln!("yosh: plugin: {}", e);
             }
@@ -318,7 +322,16 @@ impl PluginManager {
     /// compile (no cwasm cache lookup).
     #[allow(dead_code)] // public manager API; production loads go through load_from_config
     pub fn load_plugin(&mut self, path: &Path, env: &mut ShellEnv) -> Result<(), String> {
-        self.load_one(path, env, None, None, None, &[], None)
+        self.load_one(
+            path,
+            env,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            limits::LimitsConfig::default(),
+        )
     }
 
     /// Look up a cached `Linker<HostContext>` for the given capability
@@ -353,6 +366,9 @@ impl PluginManager {
     ///     `files:write` host call to paths inside this directory
     ///     (canonicalized at load time). `None` leaves the capability
     ///     as a full-filesystem grant.
+    ///   * `limits_cfg`: raw optional resource-limit fields from the
+    ///     `plugins.lock` entry. Resolved into `PluginLimits` once
+    ///     capability negotiation has produced `plugin_info.name`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn load_one(
         &mut self,
@@ -363,6 +379,7 @@ impl PluginManager {
         expected_key: Option<&CacheKey>,
         allowed_commands: &[String],
         files_root: Option<&Path>,
+        limits_cfg: limits::LimitsConfig,
     ) -> Result<(), String> {
         // 1. Read the wasm bytes (needed for SHA verify and/or in-memory compile).
         let wasm_bytes = std::fs::read(path).map_err(|e| format!("{}: {}", path.display(), e))?;
@@ -502,6 +519,16 @@ impl PluginManager {
             }
         };
 
+        // Resolve runtime resource limits now that `plugin_info.name` is
+        // known. Pure resolution + warnings happen once, here, at load
+        // time; Tasks 3/5 read the resulting `PluginLimits` off
+        // `LoadedPlugin` without re-resolving.
+        let (plugin_limits, limit_warnings) =
+            limits::resolve_limits(&limits_cfg, self.pre_prompt_timeout_ms, &plugin_info.name);
+        for w in &limit_warnings {
+            eprintln!("yosh: {}", w);
+        }
+
         // 7. Fetch the real linker from `linker_cache` (built lazily on
         //    first use of this cap mask), create a fresh store,
         //    instantiate, and call on_load under with_env so the plugin
@@ -559,6 +586,7 @@ impl PluginManager {
             bindings,
             plugin_info,
             capabilities: effective_capabilities,
+            limits: plugin_limits,
             invalidated: false,
         });
 
@@ -915,7 +943,16 @@ pub mod test_helpers {
         caps: u32,
         allowed_commands: &[String],
     ) -> Result<(), String> {
-        manager.load_one(path, env, Some(caps), None, None, allowed_commands, None)
+        manager.load_one(
+            path,
+            env,
+            Some(caps),
+            None,
+            None,
+            allowed_commands,
+            None,
+            limits::LimitsConfig::default(),
+        )
     }
 
     /// Load a plugin with an explicit cwasm cache + key. The host
@@ -938,7 +975,20 @@ pub mod test_helpers {
             Some(expected_key),
             allowed_commands,
             None,
+            limits::LimitsConfig::default(),
         )
+    }
+
+    /// Load a plugin with explicit runtime limits, for the timeout /
+    /// memory-cap integration tests.
+    pub fn load_plugin_with_limits(
+        manager: &mut PluginManager,
+        path: &Path,
+        env: &mut ShellEnv,
+        caps: u32,
+        limits_cfg: limits::LimitsConfig,
+    ) -> Result<(), String> {
+        manager.load_one(path, env, Some(caps), None, None, &[], None, limits_cfg)
     }
 
     /// Returns true if the most-recently-loaded plugin's `Store` has a
@@ -959,6 +1009,11 @@ pub mod test_helpers {
     /// use this instead of mutating `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS`
     /// in the process environment, which is `unsafe` in Rust 2024 and
     /// races across parallel tests.
+    ///
+    /// Must be called BEFORE loading any plugins: per-plugin limits
+    /// (including the pre_prompt timeout fallback) are resolved once at
+    /// load time via `resolve_limits`, so changing this afterward has no
+    /// effect on already-loaded plugins.
     pub fn set_pre_prompt_timeout_for_tests(manager: &mut PluginManager, ms: u64) {
         debug_assert!(
             ms >= 1,
