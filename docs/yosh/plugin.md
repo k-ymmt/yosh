@@ -83,6 +83,10 @@ enabled = true
 | `asset` | No | Custom asset filename for GitHub downloads |
 | `allowed_commands` | No | Argv patterns the `commands:exec` capability may run (default: none) |
 | `files_root` | No | Directory that confines `files:read`/`files:write` (default: unconfined) |
+| `max_memory_mb` | No | Linear-memory cap in MiB (default 256, max 4096) |
+| `hook_timeout_ms` | No | Budget for `pre_exec`/`post_exec`/`on_cd` hooks in ms; `0` = unlimited (default 5000) |
+| `command_timeout_ms` | No | Budget for plugin commands in ms; `0` = unlimited (default) |
+| `pre_prompt_timeout_ms` | No | Per-plugin `pre_prompt` budget in ms, 1–60000 (default 500; overrides `YOSH_PLUGIN_PRE_PROMPT_TIMEOUT_MS`) |
 
 #### Restricting Capabilities
 
@@ -136,6 +140,18 @@ Relative paths resolve against the root. `commands:exec` resolves
 relative program names through the shell's `$PATH` and runs matching
 commands with the shell's privileges; prefer absolute paths in
 `allowed_commands` patterns when the plugin is untrusted.
+
+#### Resource Limits
+
+Every plugin runs under a linear-memory cap (`max_memory_mb`, default
+256 MiB) and per-call time budgets. A plugin that exceeds a budget or
+the memory cap is interrupted, disabled for the rest of the session,
+and reported on stderr with the entry point and limit that tripped.
+Hooks (`pre_exec`, `post_exec`, `on_cd`) default to a 5-second budget;
+`pre_prompt` defaults to 500 ms; custom commands are unlimited by
+default because users invoke them interactively — set
+`command_timeout_ms` to bound them. Out-of-range values are clamped
+with a warning at load time.
 
 #### Asset Filename
 

@@ -54,10 +54,12 @@ limits on host-import work (e.g. `commands:exec` already has its own
   mirroring the pre-prompt clamp style).
 - Behaviour on breach: `memory.grow` fails, the guest allocator
   aborts, the trap propagates through the existing `with_env` error
-  path → plugin invalidated for the session. The failure log gains a
-  hint: when a trap message contains the wasmtime grow-failure marker,
-  append `(memory limit N MiB exceeded?)` — best-effort attribution,
-  since wasm traps do not carry a structured "limiter denied" code.
+  path → plugin invalidated for the session. The implementation uses
+  a custom `ResourceLimiter` (StoreLimits-style) whose `denied` flag
+  is set the moment a growth request is refused, giving deterministic
+  attribution instead of sniffing trap messages: the failure log hint
+  prints as `(memory limit N MiB exceeded)` whenever that flag is set,
+  with no dependence on the wasmtime trap-message text.
 
 ### 4.2 Timeouts on every guest entry point
 
