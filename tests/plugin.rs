@@ -33,6 +33,7 @@ static TEST_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
 static TRAP_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
 static SLOW_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
 static PERF_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
+static HOG_PLUGIN_WASM: OnceLock<PathBuf> = OnceLock::new();
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).into()
@@ -72,6 +73,10 @@ fn slow_plugin_wasm() -> PathBuf {
 
 fn perf_plugin_wasm() -> PathBuf {
     ensure_built("perf_plugin", &PERF_PLUGIN_WASM)
+}
+
+fn hog_plugin_wasm() -> PathBuf {
+    ensure_built("hog_plugin", &HOG_PLUGIN_WASM)
 }
 
 fn fresh_env() -> ShellEnv {
@@ -1150,4 +1155,43 @@ fn t28_deadline_restored_after_bounded_hook() {
         "stale deadline tripped the default-unlimited command: {:?}",
         result
     );
+}
+
+/// Memory cap — a plugin that allocates without bound is killed when
+/// the limiter denies growth beyond max_memory_mb, is invalidated for
+/// the session, and the shell survives.
+#[test]
+fn t29_memory_cap_kills_hog_plugin() {
+    let _guard = lock_test();
+    let wasm = hog_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+    test_helpers::load_plugin_with_limits(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        yosh_plugin_api::CAP_HOOK_PRE_EXEC,
+        yosh::plugin::limits::LimitsConfig {
+            max_memory_mb: Some(8),
+            ..Default::default()
+        },
+    )
+    .expect("load hog_plugin");
+
+    // The unbounded allocator hits the 8 MiB cap quickly; the trap
+    // invalidates the plugin. Bounded wall clock guards against the cap
+    // silently not being installed (which would OOM-crawl for a long
+    // time before the default 256 MiB, or hang the epoch baseline).
+    let start = std::time::Instant::now();
+    mgr.call_pre_exec(&mut env, "ls");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "hog was not killed by the memory cap: {:?}",
+        start.elapsed()
+    );
+
+    // Invalidated: subsequent dispatch is a fast skip, shell still fine.
+    let start = std::time::Instant::now();
+    mgr.call_pre_exec(&mut env, "ls");
+    assert!(start.elapsed() < std::time::Duration::from_millis(100));
 }
