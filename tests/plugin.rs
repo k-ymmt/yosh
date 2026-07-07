@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use yosh::env::ShellEnv;
 use yosh::plugin::{PluginExec, PluginManager, test_helpers};
@@ -846,8 +847,6 @@ fn t24_commands_exec_invalid_pattern_fails_plugin_load() {
 /// we are asserting "bounded", not "fast".
 #[test]
 fn t25_pre_prompt_timeout_invalidates_slow_plugin() {
-    use std::time::Instant;
-
     let _g = lock_test();
     let wasm = slow_plugin_wasm();
     let mut env = fresh_env();
@@ -892,15 +891,12 @@ fn t25_pre_prompt_timeout_invalidates_slow_plugin() {
     );
 }
 
-// NOTE: the post-call deadline-reset in `call_pre_prompt` (commit
-// 154e96e — restore baseline so subsequent non-pre_prompt hooks on
-// the same plugin retain their full budget) is exercised only
-// indirectly today: every test that loads test_plugin (which doesn't
-// implement pre_prompt) and then calls a non-pre_prompt hook would
-// fail if the baseline weren't preserved on plugins that DO implement
-// pre_prompt. A direct regression test would need a "fast pre_prompt
-// + pre_exec" fixture (slow_plugin's pre_prompt busy-loops, so it
-// can't model a successful return). Defer until that fixture exists.
+// NOTE: the post-call deadline-reset (restore baseline so subsequent
+// calls on the same plugin retain their full budget) now has a direct
+// regression test: see `t28_deadline_restored_after_bounded_hook` below,
+// which loads `test_plugin` (a fast, successfully-returning hook) under
+// a tight `hook_timeout_ms` budget and confirms a later default-unlimited
+// command still runs to completion.
 
 /// perf_plugin commands exit with code 0.
 ///
@@ -1047,5 +1043,111 @@ fn linker_cache_separates_entries_for_distinct_masks() {
     assert_eq!(
         len, 3,
         "expected 3 entries (CAP_ALL scratch + 2 distinct real masks), got {len}",
+    );
+}
+
+/// on_cd hook timeout — busy loop is interrupted at hook_timeout_ms and
+/// the plugin is invalidated for the session.
+#[test]
+fn t26_on_cd_timeout_invalidates_plugin() {
+    let _guard = lock_test();
+    let wasm = slow_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+    let caps = yosh_plugin_api::CAP_HOOK_PRE_PROMPT
+        | yosh_plugin_api::CAP_HOOK_PRE_EXEC
+        | yosh_plugin_api::CAP_HOOK_ON_CD;
+    test_helpers::load_plugin_with_limits(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        caps,
+        yosh::plugin::limits::LimitsConfig {
+            hook_timeout_ms: Some(100),
+            ..Default::default()
+        },
+    )
+    .expect("load slow_plugin");
+
+    let start = Instant::now();
+    mgr.call_on_cd(&mut env, "/a", "/b");
+    let first = start.elapsed();
+    assert!(
+        first < Duration::from_secs(5),
+        "on_cd busy loop was not interrupted: {:?}",
+        first
+    );
+
+    // Invalidated: second dispatch is a fast skip.
+    let start = Instant::now();
+    mgr.call_on_cd(&mut env, "/b", "/c");
+    assert!(start.elapsed() < Duration::from_millis(100));
+}
+
+/// Custom command timeout — with command_timeout_ms set, the busy-loop
+/// `spin` command is interrupted and reported as Failed (not Handled).
+#[test]
+fn t27_command_timeout_interrupts_spin() {
+    let _guard = lock_test();
+    let wasm = slow_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+    let caps = yosh_plugin_api::CAP_HOOK_PRE_PROMPT
+        | yosh_plugin_api::CAP_HOOK_PRE_EXEC
+        | yosh_plugin_api::CAP_HOOK_ON_CD;
+    test_helpers::load_plugin_with_limits(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        caps,
+        yosh::plugin::limits::LimitsConfig {
+            command_timeout_ms: Some(100),
+            ..Default::default()
+        },
+    )
+    .expect("load slow_plugin");
+
+    let start = Instant::now();
+    let result = mgr.exec_command(&mut env, "spin", &[]);
+    let elapsed = start.elapsed();
+    assert!(matches!(result, PluginExec::Failed), "got {:?}", result);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "spin was not interrupted: {:?}",
+        elapsed
+    );
+}
+
+/// Baseline restore — after a deadline-bounded hook call returns in
+/// time, a later call without its own deadline (default-unlimited
+/// command) must not trip a stale epoch deadline.
+#[test]
+fn t28_deadline_restored_after_bounded_hook() {
+    let _guard = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+    test_helpers::load_plugin_with_limits(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        yosh_plugin_api::CAP_ALL,
+        yosh::plugin::limits::LimitsConfig {
+            hook_timeout_ms: Some(100),
+            ..Default::default()
+        },
+    )
+    .expect("load test_plugin");
+
+    // Fast hook under a 100ms budget: returns fine.
+    mgr.call_pre_exec(&mut env, "ls");
+    // Let more than 100ms of epoch ticks pass; if the deadline were not
+    // restored to baseline, the next guest call would trap immediately.
+    std::thread::sleep(Duration::from_millis(300));
+    let result = mgr.exec_command(&mut env, "test_cmd", &["x".to_string()]);
+    assert!(
+        matches!(result, PluginExec::Handled(0)),
+        "stale deadline tripped the default-unlimited command: {:?}",
+        result
     );
 }

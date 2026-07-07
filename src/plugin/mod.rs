@@ -610,12 +610,21 @@ impl PluginManager {
             return PluginExec::NotHandled;
         };
         let plugin = &mut self.plugins[idx];
-        match with_env(plugin, env, |bindings, store| {
+        let ticks = plugin.limits.command_deadline_ticks();
+        let timeout_ms = plugin.limits.command_timeout_ms;
+        let max_mb = plugin.limits.max_memory_mb();
+        match with_deadline(plugin, env, ticks, |bindings, store| {
             bindings.yosh_plugin_plugin().call_exec(store, name, args)
         }) {
             Ok(exit) => PluginExec::Handled(exit),
             Err(e) => {
-                log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb());
+                log_entry_failure(
+                    &plugin.name,
+                    &format!("command '{}'", name),
+                    timeout_ms,
+                    max_mb,
+                    &e,
+                );
                 PluginExec::Failed
             }
         }
@@ -629,10 +638,13 @@ impl PluginManager {
             if !plugin.implements_hook(HookName::PreExec) {
                 continue;
             }
-            if let Err(e) = with_env(plugin, env, |bindings, store| {
+            let ticks = plugin.limits.hook_deadline_ticks();
+            let timeout_ms = plugin.limits.hook_timeout_ms;
+            let max_mb = plugin.limits.max_memory_mb();
+            if let Err(e) = with_deadline(plugin, env, ticks, |bindings, store| {
                 bindings.yosh_plugin_hooks().call_pre_exec(store, cmd)
             }) {
-                log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb());
+                log_entry_failure(&plugin.name, "pre_exec", timeout_ms, max_mb, &e);
             }
         }
     }
@@ -645,12 +657,15 @@ impl PluginManager {
             if !plugin.implements_hook(HookName::PostExec) {
                 continue;
             }
-            if let Err(e) = with_env(plugin, env, |bindings, store| {
+            let ticks = plugin.limits.hook_deadline_ticks();
+            let timeout_ms = plugin.limits.hook_timeout_ms;
+            let max_mb = plugin.limits.max_memory_mb();
+            if let Err(e) = with_deadline(plugin, env, ticks, |bindings, store| {
                 bindings
                     .yosh_plugin_hooks()
                     .call_post_exec(store, cmd, exit_code)
             }) {
-                log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb());
+                log_entry_failure(&plugin.name, "post_exec", timeout_ms, max_mb, &e);
             }
         }
     }
@@ -663,20 +678,20 @@ impl PluginManager {
             if !plugin.implements_hook(HookName::OnCd) {
                 continue;
             }
-            if let Err(e) = with_env(plugin, env, |bindings, store| {
+            let ticks = plugin.limits.hook_deadline_ticks();
+            let timeout_ms = plugin.limits.hook_timeout_ms;
+            let max_mb = plugin.limits.max_memory_mb();
+            if let Err(e) = with_deadline(plugin, env, ticks, |bindings, store| {
                 bindings
                     .yosh_plugin_hooks()
                     .call_on_cd(store, old_dir, new_dir)
             }) {
-                log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb());
+                log_entry_failure(&plugin.name, "on_cd", timeout_ms, max_mb, &e);
             }
         }
     }
 
     pub fn call_pre_prompt(&mut self, env: &mut ShellEnv) {
-        let ticks = self.pre_prompt_timeout_ms.div_ceil(TICK_MS);
-        let timeout_ms = self.pre_prompt_timeout_ms;
-
         for plugin in &mut self.plugins {
             if plugin.capabilities & CAP_HOOK_PRE_PROMPT == 0 {
                 continue;
@@ -684,32 +699,13 @@ impl PluginManager {
             if !plugin.implements_hook(HookName::PrePrompt) {
                 continue;
             }
-            plugin.store.set_epoch_deadline(ticks);
-            let result = with_env(plugin, env, |bindings, store| {
+            let ticks = Some(plugin.limits.pre_prompt_ticks());
+            let timeout_ms = plugin.limits.pre_prompt_timeout_ms;
+            let max_mb = plugin.limits.max_memory_mb();
+            if let Err(e) = with_deadline(plugin, env, ticks, |bindings, store| {
                 bindings.yosh_plugin_hooks().call_pre_prompt(store)
-            });
-            // Restore the baseline so subsequent non-pre_prompt hooks
-            // (pre_exec, post_exec, on_cd, exec_command) on the same
-            // store retain their full budget. Skip on Trapped because
-            // the plugin is now invalidated and its deadline is moot.
-            if !matches!(&result, Err(WithEnvError::Trapped { .. })) {
-                plugin
-                    .store
-                    .set_epoch_deadline(STORE_BASELINE_DEADLINE_TICKS);
-            }
-            if let Err(e) = result {
-                match &e {
-                    WithEnvError::Skipped => {}
-                    WithEnvError::Trapped {
-                        is_interrupt: true, ..
-                    } => {
-                        eprintln!(
-                            "yosh: plugin '{}': pre_prompt exceeded {}ms timeout — disabling for the rest of this session",
-                            plugin.name, timeout_ms
-                        );
-                    }
-                    _ => log_with_env_failure(&plugin.name, &e, plugin.limits.max_memory_mb()),
-                }
+            }) {
+                log_entry_failure(&plugin.name, "pre_prompt", timeout_ms, max_mb, &e);
             }
         }
     }
@@ -872,6 +868,51 @@ fn with_env<R>(
                 Err(WithEnvError::Other(e))
             }
         }
+    }
+}
+
+/// Run a guest call under an optional epoch deadline. `None` leaves the
+/// store at the baseline (effectively unlimited). The baseline is
+/// restored after the call unless the plugin trapped (it is then
+/// invalidated and its deadline is moot).
+fn with_deadline<R>(
+    plugin: &mut LoadedPlugin,
+    env: &mut ShellEnv,
+    deadline_ticks: Option<u64>,
+    f: impl FnOnce(&PluginWorld, &mut Store<HostContext>) -> Result<R, wasmtime::Error>,
+) -> Result<R, WithEnvError> {
+    if let Some(ticks) = deadline_ticks {
+        plugin.store.set_epoch_deadline(ticks);
+    }
+    let result = with_env(plugin, env, f);
+    if deadline_ticks.is_some() && !matches!(&result, Err(WithEnvError::Trapped { .. })) {
+        plugin
+            .store
+            .set_epoch_deadline(STORE_BASELINE_DEADLINE_TICKS);
+    }
+    result
+}
+
+/// Failure logger for deadline-bounded entry points: names the entry
+/// point and its budget on an epoch interrupt; defers to
+/// `log_with_env_failure` for everything else.
+fn log_entry_failure(
+    plugin_name: &str,
+    entry: &str,
+    timeout_ms: u64,
+    max_memory_mb: u64,
+    err: &WithEnvError,
+) {
+    match err {
+        WithEnvError::Trapped {
+            is_interrupt: true, ..
+        } => {
+            eprintln!(
+                "yosh: plugin '{}': {} exceeded {}ms timeout — disabling for the rest of this session",
+                plugin_name, entry, timeout_ms
+            );
+        }
+        other => log_with_env_failure(plugin_name, other, max_memory_mb),
     }
 }
 
