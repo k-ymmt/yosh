@@ -16,6 +16,9 @@ pub struct LoadedPlugin {
     pub world: PluginWorld,
     pub store: Store<TestCtx>,
     pub engine: wasmtime::Engine,
+    /// Keeps the epoch ticking until the invocation completes; stops
+    /// and joins on drop.
+    _tick: crate::tick::TickThread,
 }
 
 #[derive(Debug)]
@@ -57,15 +60,11 @@ pub fn load_plugin(
     .map_err(|e| RunnerError::Load(format!("bindings: {}", e)))?;
 
     let mut store = Store::new(&engine, TestCtx::new(state));
-    store.set_epoch_deadline(1);
-
-    let watchdog_engine = engine.clone();
-    let _watchdog = std::thread::Builder::new()
-        .name("yosh-plugin-test-watchdog".into())
-        .spawn(move || {
-            std::thread::sleep(timeout);
-            watchdog_engine.increment_epoch();
-        });
+    // Deadline in ticks; the continuous tick thread bumps the epoch
+    // every TICK_MS, so worst-case overshoot is one tick window.
+    let ticks = (timeout.as_millis() as u64).div_ceil(crate::tick::TICK_MS).max(1);
+    store.set_epoch_deadline(ticks);
+    let tick = crate::tick::TickThread::spawn(engine.clone());
 
     let world = pre
         .instantiate(&mut store)
@@ -74,6 +73,7 @@ pub fn load_plugin(
         world,
         store,
         engine,
+        _tick: tick,
     })
 }
 

@@ -120,16 +120,18 @@ impl SidecarMeta {
 ///
 /// 1. `precompile()` callers — the produced cwasm must match the host's
 ///    engine flags exactly so it deserializes without re-precompilation.
-/// 2. `metadata_extract` — runs each plugin's `metadata()` once behind a
-///    one-shot watchdog (1-tick deadline + 5-second detached epoch bump)
-///    to time-bound malformed components.
+/// 2. `metadata_extract` — runs each plugin's `metadata()` once with a
+///    100-tick deadline, bounded by a continuous `tick::TickThread` that
+///    bumps the epoch every `TICK_MS` to time-bound malformed components.
 ///
 /// `epoch_interruption` is ON to match the host (`src/plugin/mod.rs`),
 /// which uses it to bound the wall-clock time of `pre_prompt` hooks.
 /// All three sites share these flags so cwasm artefacts are universally
-/// loadable. Per-call timeout semantics differ between sites (host =
-/// per-invocation deadline, metadata = one-shot watchdog), but the
-/// engine config itself is shared.
+/// loadable. Per-call timeout semantics differ between sites (host and
+/// `runner::load_plugin` both use a continuous tick thread with a
+/// per-invocation deadline; `metadata_extract` uses the same continuous
+/// tick thread with a fixed 100-tick budget), but the engine config
+/// itself is shared.
 pub fn make_engine() -> Result<wasmtime::Engine, String> {
     let mut config = wasmtime::Config::new();
     config.wasm_component_model(true);

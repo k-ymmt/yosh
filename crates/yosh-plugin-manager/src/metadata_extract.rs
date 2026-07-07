@@ -27,14 +27,15 @@
 //! issue #3: real plugins failed `instantiate_pre` and were silently
 //! dropped from `plugins.lock`.
 //!
-//! ## Watchdog
+//! ## Timeout
 //!
 //! The engine returned by `precompile::make_engine()` has
-//! `epoch_interruption(true)`. We bump the epoch from a detached thread
-//! after 5 seconds to interrupt a hung `metadata()` call. A well-behaved
-//! plugin runs `metadata` in microseconds.
-
-use std::time::Duration;
+//! `epoch_interruption(true)`. A continuous tick thread
+//! (`crate::tick::TickThread`) bumps the epoch every `TICK_MS` while the
+//! call runs, so a hung `metadata()` call is interrupted within one tick
+//! window of the configured deadline instead of the old one-shot
+//! watchdog's multi-second worst case. A well-behaved plugin runs
+//! `metadata` in microseconds.
 
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
@@ -94,8 +95,8 @@ pub struct ExtractedMetadata {
 
 /// Extract plugin metadata. Compiles the wasm with the given engine,
 /// builds an all-deny linker, instantiates, calls `metadata()`, returns
-/// the result. A 5-second epoch watchdog interrupts the call if the
-/// plugin hangs.
+/// the result. A continuous epoch-tick thread interrupts the call within
+/// ~5 seconds if the plugin hangs.
 pub fn extract(engine: &Engine, wasm_bytes: &[u8]) -> Result<ExtractedMetadata, String> {
     let component = Component::new(engine, wasm_bytes)
         .map_err(|e| format!("metadata: compile component: {}", e))?;
@@ -113,21 +114,10 @@ pub fn extract(engine: &Engine, wasm_bytes: &[u8]) -> Result<ExtractedMetadata, 
     .map_err(|e| format!("metadata: bindings pre-init: {}", e))?;
 
     let mut store = Store::new(engine, MetadataCtx::default());
-    // Trip on the next epoch increment. The watchdog bumps after 5s.
-    store.set_epoch_deadline(1);
-
-    // Detached watchdog. We hold an Arc-clone of the engine so even if
-    // the parent function returns first, the thread can still call
-    // `increment_epoch` safely (no-op effect post-extraction).
-    let watchdog_engine: Engine = engine.clone();
-    let _watchdog = std::thread::Builder::new()
-        .name("yosh-plugin-metadata-watchdog".to_string())
-        .spawn(move || {
-            std::thread::sleep(Duration::from_secs(5));
-            // Engine::increment_epoch is cheap and idempotent. Calling it
-            // after the host call has finished is harmless.
-            watchdog_engine.increment_epoch();
-        });
+    // 100 ticks at 50ms ≈ 5s — same generous metadata budget as before,
+    // now enforced by the continuous tick thread.
+    store.set_epoch_deadline(100);
+    let _tick = crate::tick::TickThread::spawn(engine.clone());
 
     let plugin_world: PluginWorld = pre
         .instantiate(&mut store)

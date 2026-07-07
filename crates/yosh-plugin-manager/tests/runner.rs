@@ -92,15 +92,13 @@ fn case_5_timeout_on_slow_plugin_pre_prompt() {
     let outcome = invoke_hook(loaded, HookCall::PrePrompt);
     let elapsed = start.elapsed();
     assert_eq!(outcome.error_kind, Some("timeout"));
-    // Generous wall-clock bound: the one-shot watchdog (sleep then
-    // increment_epoch once) competes with the guest's busy loop for
-    // CPU under macOS scheduling, so the actual interrupt latency
-    // ranges several seconds even for a 200ms deadline. The point of
-    // this assertion is "bounded", not "fast" — we just want to catch
-    // an outright hang.
+    // Continuous 50ms tick thread (production parity): a 200ms deadline
+    // trips within ~250ms plus scheduling noise. 5s is a generous CI
+    // margin while still catching a regression to one-shot-watchdog
+    // latency (3-8s) or an outright hang.
     assert!(
-        elapsed < Duration::from_secs(15),
-        "timeout interrupt did not fire: {:?}",
+        elapsed < Duration::from_secs(5),
+        "timeout interrupt did not fire promptly: {:?}",
         elapsed
     );
 }
