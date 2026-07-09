@@ -201,10 +201,12 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
             )];
         }
     };
+    crate::trace::trace!("read {} ({} bytes)", wasm_path.display(), wasm_bytes.len());
     let component = match wasmtime::component::Component::new(&engine, &wasm_bytes) {
         Ok(c) => c,
         Err(e) => return vec![scenario_fail("load", format!("load: compile: {}", e))],
     };
+    crate::trace::trace!("compiled component");
 
     let mut results = Vec::new();
     for (idx, step) in scenario.steps.iter().enumerate() {

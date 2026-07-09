@@ -117,6 +117,7 @@ pub fn load_plugin(
     crate::trace::trace!("read {} ({} bytes)", wasm_path.display(), wasm_bytes.len());
     let component = Component::new(&engine, &wasm_bytes)
         .map_err(|e| HarnessError::load(format!("compile: {}", e)))?;
+    crate::trace::trace!("compiled component");
     load_plugin_precompiled(&engine, &component, state, timeout)
 }
 

@@ -365,10 +365,12 @@ fn run_once(
     // instantiation share the artifacts (was: 2x read + 2x compile).
     let bytes = std::fs::read(wasm)
         .map_err(|e| HarnessError::load(format!("read {}: {}", wasm.display(), e)))?;
+    crate::trace::trace!("read {} ({} bytes)", wasm.display(), bytes.len());
     let engine = crate::precompile::make_engine()
         .map_err(|e| HarnessError::load(format!("engine: {}", e)))?;
     let component = Component::new(&engine, &bytes)
         .map_err(|e| HarnessError::load(format!("compile: {}", e)))?;
+    crate::trace::trace!("compiled component");
 
     let mut state = TestState::default();
     let parsed_caps: Vec<_> = cap.iter().filter_map(|s| parse_capability(s)).collect();
