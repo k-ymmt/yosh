@@ -225,3 +225,46 @@ fn case_11_memory_cap_kills_hog() {
     );
     assert!(start.elapsed() < Duration::from_secs(10));
 }
+
+#[test]
+fn case_12_sandbox_write_scenario_e2e() {
+    let Some(w) = wasm() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let scenario_path = root.join("sandbox_write.toml");
+    // The write resolves to <root>/out.txt (relative paths join the
+    // sandbox root), so the files_write expectation keys that path.
+    let toml = format!(
+        r#"
+plugin = "{plugin}"
+description = "write-file lands on the real FS under sandbox_root"
+
+[env]
+caps = ["files:write"]
+sandbox_root = "{root}"
+
+[[step]]
+call = "exec"
+args = ["write-file", "out.txt"]
+
+  [step.expect]
+  exit = 0
+  files_write = {{ "{root}/out.txt" = "YOSH_TEST_CONTENT\n" }}
+"#,
+        plugin = w.canonicalize().unwrap().display(),
+        root = root.display(),
+    );
+    std::fs::write(&scenario_path, toml).unwrap();
+
+    let results = yosh_plugin_manager::scenario::run_scenario(&scenario_path);
+    assert!(
+        results
+            .iter()
+            .all(|r| matches!(r, yosh_plugin_manager::scenario::StepResult::Pass)),
+        "results: {:?}",
+        results
+    );
+    // The write must exist on the real filesystem, not just in a log.
+    let on_disk = std::fs::read(root.join("out.txt")).unwrap();
+    assert_eq!(on_disk, b"YOSH_TEST_CONTENT\n");
+}
