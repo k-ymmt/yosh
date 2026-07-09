@@ -434,7 +434,20 @@ Flags scope what the plugin can see:
 | `--allow-exec <pat>` | Allowlist a `commands:exec` argv pattern (e.g. `--allow-exec 'git status:*'`) |
 | `--sandbox-root <path>` | Real-FS scope for `files:read`/`files:write` (otherwise virtual) |
 | `--timeout <ms>` | Watchdog deadline (default 5000) |
+| `--max-memory-mb <N>` | Linear-memory cap for the plugin store in MiB (default 256) |
+| `--watch` | Re-run the invocation whenever the wasm changes (300 ms mtime polling; Ctrl-C to stop) |
 | `--format <human\|json>` | Output format |
+
+Harness-level failures (load, metadata, trap, timeout, memory) exit 99
+and print a `yosh-plugin: <kind>: <message>` line — plus a `hint:` line
+when there is an obvious fix. With `--format json` the same object is
+also emitted on stdout as `{"error":{"kind":...,"message":...,"hint":...}}`,
+so CI never scrapes stderr. Capability denials are not errors (the
+plugin decides how to react); they are listed in a `[denied]` section
+(JSON: `"denied"` array) with per-capability remediation hints.
+
+Set `YOSH_PLUGIN_TRACE=1` to trace every host-import call and runner
+phase on stderr (`yosh-plugin[trace]: ...`).
 
 Hooks are invoked similarly:
 
@@ -456,6 +469,7 @@ description = "hello prints a greeting"
 [env]
 caps = ["io"]
 timeout_ms = 5000
+max_memory_mb = 256
 
 [[step]]
 call = "exec"
@@ -475,7 +489,12 @@ yosh plugin test --format json    # JSON-lines for CI
 
 Supported `[step.expect]` keys: `exit`, `stdout`, `stderr`,
 `stdout_contains`, `stderr_contains`, `stdout_regex`, `stderr_regex`,
-`vars_set`, `vars_export`, `files_write`, `exec_called`, `trap`.
+`vars_set`, `vars_export`, `files_write`, `exec_called`, `trap`,
+`denied`. `files_write = { "/path" = "bytes" }` compares the written
+content (use `{ len = N }` to assert length only); `denied = true`
+passes iff at least one host call was capability-denied during the
+step. Failing scenarios in `--format json` carry structured `step`,
+`check`, `expected`, and `got` fields alongside the freeform `reason`.
 
 #### Example: CI integration
 

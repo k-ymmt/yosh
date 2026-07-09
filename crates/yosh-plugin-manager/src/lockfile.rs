@@ -138,7 +138,9 @@ mod tests {
         e.hook_timeout_ms = Some(1000);
         e.command_timeout_ms = Some(30_000);
         e.pre_prompt_timeout_ms = Some(250);
-        let lf = LockFile { plugin: vec![e.clone()] };
+        let lf = LockFile {
+            plugin: vec![e.clone()],
+        };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plugins.lock");
         save_lockfile(&path, &lf).unwrap();

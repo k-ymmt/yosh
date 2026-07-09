@@ -20,7 +20,10 @@ pub fn host_set_cwd(state: &mut TestState, path: &str) -> Result<(), ErrorCode> 
         return Err(super::deny(state, "filesystem:set-cwd", path));
     }
     if path.is_empty() {
-        return Err(ErrorCode::InvalidArgument);
+        // Production's host maps the empty path to IoFailed (not
+        // InvalidArgument); match it so error-mapping tests written
+        // against this harness hold in the real shell.
+        return Err(ErrorCode::IoFailed);
     }
     state.cwd = PathBuf::from(path);
     Ok(())
@@ -54,7 +57,7 @@ mod tests {
     #[test]
     fn set_cwd_rejects_empty() {
         let mut s = TestState::with_caps(CAP_FILESYSTEM);
-        assert_eq!(host_set_cwd(&mut s, ""), Err(ErrorCode::InvalidArgument));
+        assert_eq!(host_set_cwd(&mut s, ""), Err(ErrorCode::IoFailed));
     }
 
     #[test]

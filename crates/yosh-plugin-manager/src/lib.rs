@@ -57,7 +57,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
-pub enum RunAction {
+pub(crate) enum RunAction {
     /// Call `plugin/exec` with the given command and argv.
     Exec { command: String, args: Vec<String> },
     /// Call one hook.
@@ -68,7 +68,7 @@ pub enum RunAction {
 }
 
 #[derive(Subcommand)]
-pub enum HookKind {
+pub(crate) enum HookKind {
     PreExec {
         command_line: String,
     },
@@ -84,7 +84,7 @@ pub enum HookKind {
 }
 
 #[derive(Copy, Clone, clap::ValueEnum, Debug)]
-pub enum OutputFormat {
+pub(crate) enum OutputFormat {
     Human,
     Json,
 }
