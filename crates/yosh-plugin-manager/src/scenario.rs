@@ -441,6 +441,7 @@ mod evaluator_tests {
             exec_log: Vec::new(),
             error: None,
             error_kind: None,
+            error_hint: None,
         }
     }
 

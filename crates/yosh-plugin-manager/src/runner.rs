@@ -16,25 +16,86 @@ pub struct LoadedPlugin {
     pub world: PluginWorld,
     pub store: Store<TestCtx>,
     pub engine: wasmtime::Engine,
+    /// The invocation deadline, kept for the timeout hint text.
+    pub timeout_ms: u64,
     /// Keeps the epoch ticking until the invocation completes; stops
     /// and joins on drop.
     _tick: crate::tick::TickThread,
 }
 
-#[derive(Debug)]
-pub enum RunnerError {
-    Load(String),
-    Trap(String),
-    Timeout(String),
+/// Category of a harness-level failure. `as_str()` is the JSON
+/// `error.kind` value and the `RunOutcome.error_kind` string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    Load,
+    Metadata,
+    Trap,
+    Timeout,
+    Memory,
 }
 
-impl std::fmt::Display for RunnerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl ErrorKind {
+    pub fn as_str(self) -> &'static str {
         match self {
-            RunnerError::Load(s) => write!(f, "load: {}", s),
-            RunnerError::Trap(s) => write!(f, "trap: {}", s),
-            RunnerError::Timeout(s) => write!(f, "timeout: {}", s),
+            ErrorKind::Load => "load",
+            ErrorKind::Metadata => "metadata",
+            ErrorKind::Trap => "trap",
+            ErrorKind::Timeout => "timeout",
+            ErrorKind::Memory => "memory",
         }
+    }
+}
+
+/// A harness-level failure: everything that is the harness's (or the
+/// plugin binary's) fault rather than a legitimate plugin exit code.
+/// Carries an optional one-line remediation hint. Replaces the old
+/// `RunnerError`, whose `Trap`/`Timeout` variants were never
+/// constructed (TODO ~L453).
+#[derive(Debug)]
+pub struct HarnessError {
+    pub kind: ErrorKind,
+    pub message: String,
+    pub hint: Option<String>,
+}
+
+impl HarnessError {
+    pub fn load(message: impl Into<String>) -> Self {
+        HarnessError {
+            kind: ErrorKind::Load,
+            message: message.into(),
+            hint: None,
+        }
+    }
+
+    pub fn metadata(message: impl Into<String>) -> Self {
+        HarnessError {
+            kind: ErrorKind::Metadata,
+            message: message.into(),
+            hint: Some(
+                "the `metadata` function must be side-effect-free (no host imports); \
+                 see docs/yosh/plugin.md §Plugin Development Guide"
+                    .into(),
+            ),
+        }
+    }
+
+    /// The `--format json` error object:
+    /// `{"error":{"kind":...,"message":...,"hint":...}}` (hint null
+    /// when absent).
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "error": {
+                "kind": self.kind.as_str(),
+                "message": self.message,
+                "hint": self.hint,
+            }
+        })
+    }
+}
+
+impl std::fmt::Display for HarnessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.kind.as_str(), self.message)
     }
 }
 
@@ -42,22 +103,22 @@ pub fn load_plugin(
     wasm_path: &Path,
     state: TestState,
     timeout: Duration,
-) -> Result<LoadedPlugin, RunnerError> {
-    let engine = make_engine().map_err(|e| RunnerError::Load(e.to_string()))?;
+) -> Result<LoadedPlugin, HarnessError> {
+    let engine = make_engine().map_err(|e| HarnessError::load(e.to_string()))?;
     let wasm_bytes = std::fs::read(wasm_path)
-        .map_err(|e| RunnerError::Load(format!("read {}: {}", wasm_path.display(), e)))?;
+        .map_err(|e| HarnessError::load(format!("read {}: {}", wasm_path.display(), e)))?;
     let component = Component::new(&engine, &wasm_bytes)
-        .map_err(|e| RunnerError::Load(format!("compile: {}", e)))?;
+        .map_err(|e| HarnessError::load(format!("compile: {}", e)))?;
 
-    let mut linker = build_linker(&engine).map_err(|e| RunnerError::Load(e.to_string()))?;
-    register_imports(&mut linker).map_err(|e| RunnerError::Load(e.to_string()))?;
+    let mut linker = build_linker(&engine).map_err(|e| HarnessError::load(e.to_string()))?;
+    register_imports(&mut linker).map_err(|e| HarnessError::load(e.to_string()))?;
 
     let pre = PluginWorldPre::new(
         linker
             .instantiate_pre(&component)
-            .map_err(|e| RunnerError::Load(format!("instantiate_pre: {}", e)))?,
+            .map_err(|e| HarnessError::load(format!("instantiate_pre: {}", e)))?,
     )
-    .map_err(|e| RunnerError::Load(format!("bindings: {}", e)))?;
+    .map_err(|e| HarnessError::load(format!("bindings: {}", e)))?;
 
     let mut store = Store::new(&engine, TestCtx::new(state));
     // Deadline in ticks; the continuous tick thread bumps the epoch
@@ -68,11 +129,12 @@ pub fn load_plugin(
 
     let world = pre
         .instantiate(&mut store)
-        .map_err(|e| RunnerError::Load(format!("instantiate: {}", e)))?;
+        .map_err(|e| HarnessError::load(format!("instantiate: {}", e)))?;
     Ok(LoadedPlugin {
         world,
         store,
         engine,
+        timeout_ms: timeout.as_millis() as u64,
         _tick: tick,
     })
 }
@@ -92,17 +154,18 @@ pub struct RunOutcome {
     pub exec_log: Vec<ExecRecord>,
     pub error: Option<String>, // populated on trap/denied/timeout
     pub error_kind: Option<&'static str>,
+    pub error_hint: Option<String>,
 }
 
 impl RunOutcome {
     fn from_state(
         state: TestState,
         exit_code: Option<i32>,
-        error: Option<(&'static str, String)>,
+        error: Option<HarnessError>,
     ) -> Self {
-        let (kind, msg) = match error {
-            Some((k, m)) => (Some(k), Some(m)),
-            None => (None, None),
+        let (kind, msg, hint) = match error {
+            Some(e) => (Some(e.kind.as_str()), Some(e.message), e.hint),
+            None => (None, None, None),
         };
         RunOutcome {
             exit_code,
@@ -114,6 +177,7 @@ impl RunOutcome {
             exec_log: state.exec_log,
             error: msg,
             error_kind: kind,
+            error_hint: hint,
         }
     }
 }
@@ -121,32 +185,73 @@ impl RunOutcome {
 pub fn invoke_exec(mut loaded: LoadedPlugin, command: &str, args: &[String]) -> RunOutcome {
     let plugin = loaded.world.yosh_plugin_plugin();
     let res = plugin.call_exec(&mut loaded.store, command, args);
+    let timeout_ms = loaded.timeout_ms;
     let state = loaded.store.into_data().state;
     match res {
         Ok(code) => RunOutcome::from_state(state, Some(code), None),
         Err(e) => {
-            let kind = classify_trap(&e);
-            RunOutcome::from_state(state, None, Some((kind, e.to_string())))
+            let err =
+                classify_failure(&e, false, timeout_ms, crate::test_host::DEFAULT_MAX_MEMORY_MB);
+            RunOutcome::from_state(state, None, Some(err))
         }
     }
 }
 
-/// Bucket a wasmtime call failure into `"timeout"` (epoch deadline
-/// interrupt) vs `"trap"` (everything else). Epoch traps are detected
+/// Bucket a wasmtime call failure into `Timeout` (epoch deadline
+/// interrupt) vs `Trap` (everything else). Epoch traps are detected
 /// structurally by downcasting to `wasmtime::Trap::Interrupt`; the
 /// substring fallback covers other wasmtime versions / future error
 /// shapes where the trap is nested inside an anyhow chain.
-fn classify_trap(err: &wasmtime::Error) -> &'static str {
+fn classify_trap(err: &wasmtime::Error) -> ErrorKind {
     if let Some(trap) = err.downcast_ref::<wasmtime::Trap>()
         && matches!(trap, wasmtime::Trap::Interrupt)
     {
-        return "timeout";
+        return ErrorKind::Timeout;
     }
     let msg = err.to_string();
     if msg.contains("epoch") || msg.contains("deadline") || msg.contains("interrupt") {
-        "timeout"
+        ErrorKind::Timeout
     } else {
-        "trap"
+        ErrorKind::Trap
+    }
+}
+
+/// Classify a failed guest call into a `HarnessError` with a hint.
+/// `memory_denied` is the store limiter's flag — a refused
+/// `memory.grow` surfaces as a guest allocator abort whose trap text
+/// says nothing about memory, so the flag wins over trap/timeout
+/// classification. (The limiter lands in Task 7; until then callers
+/// pass `false`.)
+fn classify_failure(
+    err: &wasmtime::Error,
+    memory_denied: bool,
+    timeout_ms: u64,
+    max_memory_mb: u64,
+) -> HarnessError {
+    if memory_denied {
+        return HarnessError {
+            kind: ErrorKind::Memory,
+            message: format!("{} (memory limit {} MiB exceeded)", err, max_memory_mb),
+            hint: Some(format!(
+                "raise --max-memory-mb (or env.max_memory_mb in scenarios) above {} \
+                 if the plugin legitimately needs more",
+                max_memory_mb
+            )),
+        };
+    }
+    let kind = classify_trap(err);
+    let hint = match kind {
+        ErrorKind::Timeout => Some(format!(
+            "the invocation exceeded the {} ms budget; raise --timeout \
+             (or env.timeout_ms in scenarios)",
+            timeout_ms
+        )),
+        _ => None,
+    };
+    HarnessError {
+        kind,
+        message: err.to_string(),
+        hint,
     }
 }
 
@@ -176,12 +281,14 @@ pub fn invoke_hook(mut loaded: LoadedPlugin, hook: HookCall) -> RunOutcome {
         HookCall::OnCd { old, new } => hooks.call_on_cd(&mut loaded.store, old, new),
         HookCall::PrePrompt => hooks.call_pre_prompt(&mut loaded.store),
     };
+    let timeout_ms = loaded.timeout_ms;
     let state = loaded.store.into_data().state;
     match res {
         Ok(()) => RunOutcome::from_state(state, None, None),
         Err(e) => {
-            let kind = classify_trap(&e);
-            RunOutcome::from_state(state, None, Some((kind, e.to_string())))
+            let err =
+                classify_failure(&e, false, timeout_ms, crate::test_host::DEFAULT_MAX_MEMORY_MB);
+            RunOutcome::from_state(state, None, Some(err))
         }
     }
 }
@@ -221,6 +328,9 @@ pub fn format_human(o: &RunOutcome) -> String {
     }
     if let (Some(kind), Some(msg)) = (o.error_kind, &o.error) {
         let _ = writeln!(out, "[error] {}: {}", kind, msg);
+        if let Some(h) = &o.error_hint {
+            let _ = writeln!(out, "[hint]  {}", h);
+        }
     }
     out
 }
@@ -236,7 +346,9 @@ pub fn format_json(o: &RunOutcome) -> serde_json::Value {
         "exec":        o.exec_log.iter().map(|r| serde_json::json!({
             "program": r.program, "args": r.args, "exit": r.exit_code, "stdout_bytes": r.stdout_len
         })).collect::<Vec<_>>(),
-        "error":       o.error.as_ref().map(|m| serde_json::json!({"kind": o.error_kind, "message": m})),
+        "error": o.error.as_ref().map(|m| serde_json::json!({
+            "kind": o.error_kind, "message": m, "hint": o.error_hint
+        })),
     })
 }
 
@@ -252,8 +364,7 @@ mod tests {
             Duration::from_secs(1),
         );
         match result {
-            Err(RunnerError::Load(_)) => {}
-            Err(other) => panic!("expected Load error, got {:?}", other),
+            Err(e) => assert_eq!(e.kind, ErrorKind::Load),
             Ok(_) => panic!("expected Load error, got Ok"),
         }
     }
@@ -264,8 +375,7 @@ mod tests {
         std::fs::write(tmp.path(), b"not wasm").unwrap();
         let result = load_plugin(tmp.path(), TestState::default(), Duration::from_secs(1));
         match result {
-            Err(RunnerError::Load(_)) => {}
-            Err(other) => panic!("expected Load error, got {:?}", other),
+            Err(e) => assert_eq!(e.kind, ErrorKind::Load),
             Ok(_) => panic!("expected Load error, got Ok"),
         }
     }
@@ -331,6 +441,7 @@ mod tests {
             exec_log: Vec::new(),
             error: None,
             error_kind: None,
+            error_hint: None,
         };
         let j = format_json(&o);
         assert_eq!(j["exit"], serde_json::json!(0));
@@ -354,10 +465,63 @@ mod tests {
             exec_log: Vec::new(),
             error: None,
             error_kind: None,
+            error_hint: None,
         };
         let s = format_human(&o);
         assert!(s.contains("[stdout]"));
         assert!(s.contains("[exit] 0"));
         assert!(s.contains("[vars set]    X=y"));
+    }
+
+    #[test]
+    fn error_kind_serializes_lowercase() {
+        assert_eq!(ErrorKind::Load.as_str(), "load");
+        assert_eq!(ErrorKind::Metadata.as_str(), "metadata");
+        assert_eq!(ErrorKind::Trap.as_str(), "trap");
+        assert_eq!(ErrorKind::Timeout.as_str(), "timeout");
+        assert_eq!(ErrorKind::Memory.as_str(), "memory");
+    }
+
+    #[test]
+    fn harness_error_to_json_shape() {
+        let e = HarnessError::load("boom");
+        let j = e.to_json();
+        assert_eq!(j["error"]["kind"], serde_json::json!("load"));
+        assert_eq!(j["error"]["message"], serde_json::json!("boom"));
+        assert!(j["error"]["hint"].is_null());
+    }
+
+    #[test]
+    fn metadata_error_carries_hint() {
+        let e = HarnessError::metadata("metadata: call: denied");
+        assert_eq!(e.kind, ErrorKind::Metadata);
+        assert!(e.hint.as_deref().unwrap().contains("side-effect-free"));
+        let j = e.to_json();
+        assert!(j["error"]["hint"].as_str().unwrap().contains("side-effect-free"));
+    }
+
+    #[test]
+    fn classify_failure_memory_wins_and_hints() {
+        let err = wasmtime::Error::msg("wasm trap: unreachable");
+        let h = classify_failure(&err, true, 5000, 8);
+        assert_eq!(h.kind, ErrorKind::Memory);
+        assert!(h.message.contains("memory limit 8 MiB exceeded"));
+        assert!(h.hint.as_deref().unwrap().contains("max-memory-mb"));
+    }
+
+    #[test]
+    fn classify_failure_timeout_hint_names_budget() {
+        let err = wasmtime::Error::msg("epoch deadline reached");
+        let h = classify_failure(&err, false, 5000, 256);
+        assert_eq!(h.kind, ErrorKind::Timeout);
+        assert!(h.hint.as_deref().unwrap().contains("5000 ms"));
+    }
+
+    #[test]
+    fn classify_failure_plain_trap_has_no_hint() {
+        let err = wasmtime::Error::msg("wasm trap: unreachable");
+        let h = classify_failure(&err, false, 5000, 256);
+        assert_eq!(h.kind, ErrorKind::Trap);
+        assert!(h.hint.is_none());
     }
 }
