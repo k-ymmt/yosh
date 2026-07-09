@@ -34,6 +34,10 @@ pub struct ExecRecord {
     pub stderr_len: usize,
 }
 
+/// Default per-plugin linear-memory cap in MiB — parity with the
+/// production host's `limits::DEFAULT_MAX_MEMORY_MB`.
+pub const DEFAULT_MAX_MEMORY_MB: u64 = 256;
+
 /// In-memory state behind every TestCtx host import. The runner
 /// constructs this from CLI flags or a scenario file, then reads it
 /// back after the guest call to format results / evaluate expectations.
@@ -43,10 +47,6 @@ pub struct ExecRecord {
 /// (readonly-var rejection, integer-attribute checks, etc.). Test
 /// scenarios verifying those guard paths must run against the real
 /// shell, not this harness.
-/// Default per-plugin linear-memory cap in MiB — parity with the
-/// production host's `limits::DEFAULT_MAX_MEMORY_MB`.
-pub const DEFAULT_MAX_MEMORY_MB: u64 = 256;
-
 #[derive(Debug, Default, Clone)]
 pub struct TestState {
     /// Granted capability bitmask. Same shape as `HostContext.capabilities`.
