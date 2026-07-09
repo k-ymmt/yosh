@@ -208,6 +208,7 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
 
     let mut results = Vec::new();
     for (idx, step) in scenario.steps.iter().enumerate() {
+        crate::trace::trace!("scenario {} step {}", path.display(), idx + 1);
         let state = build_state(&scenario);
         let timeout = std::time::Duration::from_millis(scenario.env.timeout_ms);
         let loaded = match load_plugin_precompiled(&engine, &component, state, timeout) {

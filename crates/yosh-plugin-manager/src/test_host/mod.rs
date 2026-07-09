@@ -222,27 +222,25 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     vars.func_wrap(
         "get",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (name,): (String,)| {
-            Ok::<_, wasmtime::Error>((variables::host_get(&mut store.data_mut().state, &name),))
+            let r = variables::host_get(&mut store.data_mut().state, &name);
+            crate::trace::trace!("variables:get {:?} -> {:?}", name, r);
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
     vars.func_wrap(
         "set",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (name, value): (String, String)| {
-            Ok::<_, wasmtime::Error>((variables::host_set(
-                &mut store.data_mut().state,
-                &name,
-                &value,
-            ),))
+            let r = variables::host_set(&mut store.data_mut().state, &name, &value);
+            crate::trace::trace!("variables:set {:?}={:?} -> {:?}", name, value, r);
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
     vars.func_wrap(
         "export-env",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (name, value): (String, String)| {
-            Ok::<_, wasmtime::Error>((variables::host_export_env(
-                &mut store.data_mut().state,
-                &name,
-                &value,
-            ),))
+            let r = variables::host_export_env(&mut store.data_mut().state, &name, &value);
+            crate::trace::trace!("variables:export-env {:?}={:?} -> {:?}", name, value, r);
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
 
@@ -251,15 +249,17 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     fs.func_wrap(
         "cwd",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (): ()| {
-            Ok::<_, wasmtime::Error>((filesystem::host_cwd(&mut store.data_mut().state),))
+            let r = filesystem::host_cwd(&mut store.data_mut().state);
+            crate::trace::trace!("filesystem:cwd -> {:?}", r);
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
     fs.func_wrap(
         "set-cwd",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
-            Ok::<_, wasmtime::Error>(
-                (filesystem::host_set_cwd(&mut store.data_mut().state, &path),),
-            )
+            let r = filesystem::host_set_cwd(&mut store.data_mut().state, &path);
+            crate::trace::trace!("filesystem:set-cwd {:?} -> {:?}", path, r);
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
 
@@ -268,7 +268,9 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     io_inst.func_wrap(
         "write",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (target, data): (IoStream, Vec<u8>)| {
-            Ok::<_, wasmtime::Error>((io::host_write(&mut store.data_mut().state, target, &data),))
+            let r = io::host_write(&mut store.data_mut().state, target, &data);
+            crate::trace::trace!("io:write {:?} {} bytes -> {:?}", target, data.len(), r);
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
 
@@ -277,65 +279,97 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     f.func_wrap(
         "read-file",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
-            Ok::<_, wasmtime::Error>((files::host_read_file(&mut store.data_mut().state, &path),))
+            let r = files::host_read_file(&mut store.data_mut().state, &path);
+            crate::trace::trace!(
+                "files:read-file {:?} -> {:?}",
+                path,
+                r.as_ref().map(|b| b.len())
+            );
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
     f.func_wrap(
         "read-dir",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
-            Ok::<_, wasmtime::Error>((files::host_read_dir(&mut store.data_mut().state, &path),))
+            let r = files::host_read_dir(&mut store.data_mut().state, &path);
+            crate::trace::trace!(
+                "files:read-dir {:?} -> {:?}",
+                path,
+                r.as_ref().map(|v| v.len())
+            );
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
     f.func_wrap(
         "metadata",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
-            Ok::<_, wasmtime::Error>((files::host_metadata(&mut store.data_mut().state, &path),))
+            let r = files::host_metadata(&mut store.data_mut().state, &path);
+            crate::trace::trace!(
+                "files:metadata {:?} -> {:?}",
+                path,
+                r.as_ref().map(|s| s.size)
+            );
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
     f.func_wrap(
         "write-file",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, data): (String, Vec<u8>)| {
-            Ok::<_, wasmtime::Error>((files::host_write_file(
-                &mut store.data_mut().state,
-                &path,
-                &data,
-            ),))
+            let r = files::host_write_file(&mut store.data_mut().state, &path, &data);
+            crate::trace::trace!(
+                "files:write-file {:?} {} bytes -> {:?}",
+                path,
+                data.len(),
+                r
+            );
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
     f.func_wrap(
         "append-file",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, data): (String, Vec<u8>)| {
-            Ok::<_, wasmtime::Error>((files::host_append_file(
-                &mut store.data_mut().state,
-                &path,
-                &data,
-            ),))
+            let r = files::host_append_file(&mut store.data_mut().state, &path, &data);
+            crate::trace::trace!(
+                "files:append-file {:?} {} bytes -> {:?}",
+                path,
+                data.len(),
+                r
+            );
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
     f.func_wrap(
         "create-dir",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, recursive): (String, bool)| {
-            Ok::<_, wasmtime::Error>((files::host_create_dir(
-                &mut store.data_mut().state,
-                &path,
+            let r = files::host_create_dir(&mut store.data_mut().state, &path, recursive);
+            crate::trace::trace!(
+                "files:create-dir {:?} recursive={} -> {:?}",
+                path,
                 recursive,
-            ),))
+                r
+            );
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
     f.func_wrap(
         "remove-file",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
-            Ok::<_, wasmtime::Error>((files::host_remove_file(&mut store.data_mut().state, &path),))
+            let r = files::host_remove_file(&mut store.data_mut().state, &path);
+            crate::trace::trace!("files:remove-file {:?} -> {:?}", path, r);
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
     f.func_wrap(
         "remove-dir",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path, recursive): (String, bool)| {
-            Ok::<_, wasmtime::Error>((files::host_remove_dir(
-                &mut store.data_mut().state,
-                &path,
+            let r = files::host_remove_dir(&mut store.data_mut().state, &path, recursive);
+            crate::trace::trace!(
+                "files:remove-dir {:?} recursive={} -> {:?}",
+                path,
                 recursive,
-            ),))
+                r
+            );
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
 
@@ -345,11 +379,14 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
         "exec",
         |mut store: wasmtime::StoreContextMut<'_, TestCtx>,
          (program, args): (String, Vec<String>)| {
-            Ok::<_, wasmtime::Error>((commands::host_exec(
-                &mut store.data_mut().state,
-                &program,
-                &args,
-            ),))
+            let r = commands::host_exec(&mut store.data_mut().state, &program, &args);
+            crate::trace::trace!(
+                "commands:exec {:?} {:?} -> {:?}",
+                program,
+                args,
+                r.as_ref().map(|o| o.exit_code)
+            );
+            Ok::<_, wasmtime::Error>((r,))
         },
     )?;
 

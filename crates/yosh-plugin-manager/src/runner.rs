@@ -114,6 +114,7 @@ pub fn load_plugin(
     let engine = make_engine().map_err(|e| HarnessError::load(e.to_string()))?;
     let wasm_bytes = std::fs::read(wasm_path)
         .map_err(|e| HarnessError::load(format!("read {}: {}", wasm_path.display(), e)))?;
+    crate::trace::trace!("read {} ({} bytes)", wasm_path.display(), wasm_bytes.len());
     let component = Component::new(&engine, &wasm_bytes)
         .map_err(|e| HarnessError::load(format!("compile: {}", e)))?;
     load_plugin_precompiled(&engine, &component, state, timeout)
@@ -151,6 +152,11 @@ pub fn load_plugin_precompiled(
     let world = pre
         .instantiate(&mut store)
         .map_err(|e| HarnessError::load(format!("instantiate: {}", e)))?;
+    crate::trace::trace!(
+        "instantiated (timeout {} ms, memory cap {} MiB)",
+        timeout.as_millis(),
+        max_memory_mb
+    );
     Ok(LoadedPlugin {
         world,
         store,
@@ -205,6 +211,14 @@ impl RunOutcome {
 pub fn invoke_exec(mut loaded: LoadedPlugin, command: &str, args: &[String]) -> RunOutcome {
     let plugin = loaded.world.yosh_plugin_plugin();
     let res = plugin.call_exec(&mut loaded.store, command, args);
+    crate::trace::trace!(
+        "exec {:?} -> {}",
+        command,
+        match &res {
+            Ok(c) => format!("exit {}", c),
+            Err(e) => format!("error: {}", e),
+        }
+    );
     let timeout_ms = loaded.timeout_ms;
     let max_memory_mb = loaded.max_memory_mb;
     let data = loaded.store.into_data();
@@ -302,6 +316,19 @@ pub fn invoke_hook(mut loaded: LoadedPlugin, hook: HookCall) -> RunOutcome {
         HookCall::OnCd { old, new } => hooks.call_on_cd(&mut loaded.store, old, new),
         HookCall::PrePrompt => hooks.call_pre_prompt(&mut loaded.store),
     };
+    crate::trace::trace!(
+        "hook {} -> {}",
+        match &hook {
+            HookCall::PreExec { .. } => "pre-exec",
+            HookCall::PostExec { .. } => "post-exec",
+            HookCall::OnCd { .. } => "on-cd",
+            HookCall::PrePrompt => "pre-prompt",
+        },
+        match &res {
+            Ok(()) => "ok".to_string(),
+            Err(e) => format!("error: {}", e),
+        }
+    );
     let timeout_ms = loaded.timeout_ms;
     let max_memory_mb = loaded.max_memory_mb;
     let data = loaded.store.into_data();

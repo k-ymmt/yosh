@@ -10,6 +10,7 @@ pub mod scenario;
 pub mod sync;
 pub mod test_host;
 pub(crate) mod tick;
+pub(crate) mod trace;
 pub mod update;
 pub mod verify;
 pub(crate) mod watch;
