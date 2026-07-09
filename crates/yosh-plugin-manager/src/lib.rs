@@ -148,6 +148,9 @@ enum Commands {
         /// Watchdog deadline in milliseconds.
         #[arg(long, default_value_t = 5000)]
         timeout: u64,
+        /// Linear-memory cap for the plugin store, in MiB.
+        #[arg(long = "max-memory-mb", default_value_t = 256)]
+        max_memory_mb: u64,
         /// Output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
         format: OutputFormat,
@@ -187,6 +190,7 @@ pub fn run() -> i32 {
             allow_exec,
             sandbox_root,
             timeout,
+            max_memory_mb,
             format,
             watch,
         } => cmd_run(
@@ -199,6 +203,7 @@ pub fn run() -> i32 {
             allow_exec,
             sandbox_root,
             timeout,
+            max_memory_mb,
             format,
             watch,
         ),
@@ -231,6 +236,7 @@ fn cmd_run(
     allow_exec: Vec<String>,
     sandbox_root: Option<std::path::PathBuf>,
     timeout: u64,
+    max_memory_mb: u64,
     format: OutputFormat,
     watch: bool,
 ) -> i32 {
@@ -245,6 +251,7 @@ fn cmd_run(
             &allow_exec,
             sandbox_root.as_deref(),
             timeout,
+            max_memory_mb,
             format,
         ) {
             Ok(code) => code,
@@ -273,6 +280,7 @@ fn cmd_run(
             &allow_exec,
             sandbox_root.as_deref(),
             timeout,
+            max_memory_mb,
             format,
         ) {
             Ok(code) => code,
@@ -294,6 +302,7 @@ fn cmd_run(
             &allow_exec,
             sandbox_root.as_deref(),
             timeout,
+            max_memory_mb,
             format,
         ) {
             Ok(_) => {}
@@ -339,6 +348,7 @@ fn run_once(
     allow_exec: &[String],
     sandbox_root: Option<&std::path::Path>,
     timeout: u64,
+    max_memory_mb: u64,
     format: OutputFormat,
 ) -> Result<i32, crate::runner::HarnessError> {
     use crate::runner::{
@@ -397,6 +407,7 @@ fn run_once(
         .collect();
     state.sandbox_root =
         sandbox_root.map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
+    state.max_memory_mb = Some(max_memory_mb);
 
     let loaded = load_plugin_precompiled(
         &engine,

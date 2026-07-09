@@ -187,3 +187,41 @@ args = ["read-file", "/x"]
         results
     );
 }
+
+#[test]
+fn case_11_memory_cap_kills_hog() {
+    let hog = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-wasip2/release/hog_plugin.wasm");
+    if !hog.exists() {
+        return;
+    }
+    let mut s = TestState {
+        caps: yosh_plugin_api::CAP_HOOK_PRE_EXEC,
+        ..Default::default()
+    };
+    s.max_memory_mb = Some(8);
+    // Generous 30s deadline so the epoch timeout can't fire first —
+    // the 8 MiB cap must be what kills the unbounded allocator.
+    let start = std::time::Instant::now();
+    let loaded = load_plugin(&hog, s, Duration::from_secs(30)).expect("load");
+    let outcome = invoke_hook(
+        loaded,
+        HookCall::PreExec {
+            command_line: "ls".into(),
+        },
+    );
+    assert_eq!(
+        outcome.error_kind,
+        Some("memory"),
+        "error: {:?}",
+        outcome.error
+    );
+    assert!(
+        outcome
+            .error_hint
+            .as_deref()
+            .unwrap_or("")
+            .contains("max-memory-mb")
+    );
+    assert!(start.elapsed() < Duration::from_secs(10));
+}

@@ -76,6 +76,9 @@ pub struct TestState {
     /// `PatternNotAllowed`), e.g. `"files:read: /etc/passwd"`. Recorded
     /// state — the harness never guesses denials from error text.
     pub denied_log: Vec<String>,
+    /// Linear-memory cap in MiB. `None` = `DEFAULT_MAX_MEMORY_MB`.
+    /// `Option` so `#[derive(Default)]` doesn't silently mean 0.
+    pub max_memory_mb: Option<u64>,
 }
 
 impl TestState {
@@ -105,6 +108,50 @@ pub(crate) fn deny(state: &mut TestState, interface: &str, detail: &str) -> Erro
     ErrorCode::Denied
 }
 
+/// Per-store linear-memory limiter — the same shape as the production
+/// host's `limits::MemoryLimiter` (`src/plugin/limits.rs`). Duplicated
+/// (~30 lines) because the manager crate cannot depend on the yosh
+/// binary crate. Denies any growth beyond the cap and records the
+/// denial so the runner can attribute the guest's allocator abort.
+pub struct TestLimiter {
+    max_memory_bytes: usize,
+    pub denied: bool,
+}
+
+impl TestLimiter {
+    pub fn new(max_memory_bytes: usize) -> Self {
+        TestLimiter {
+            max_memory_bytes,
+            denied: false,
+        }
+    }
+}
+
+impl wasmtime::ResourceLimiter for TestLimiter {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        if desired > self.max_memory_bytes {
+            self.denied = true;
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        _desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        Ok(true)
+    }
+}
+
 /// Per-store wrapper. `state` is the shared in-memory backend; `wasi`
 /// is an empty `WasiCtx` to absorb cargo-component's transitive
 /// WASI imports (same rationale as `MetadataCtx` §Sandboxing).
@@ -112,28 +159,25 @@ pub struct TestCtx {
     pub state: TestState,
     pub(crate) table: ResourceTable,
     pub(crate) wasi: WasiCtx,
+    pub(crate) limiter: TestLimiter,
 }
 
 impl Default for TestCtx {
     fn default() -> Self {
-        // Same rationale as MetadataCtx: no preopens, no stdio, no env.
-        // Plugins use yosh:plugin/io, not wasi:cli/stdout.
-        let wasi = WasiCtxBuilder::new().build();
-        TestCtx {
-            state: TestState::default(),
-            table: ResourceTable::new(),
-            wasi,
-        }
+        TestCtx::new(TestState::default())
     }
 }
 
 impl TestCtx {
     /// Build from an existing TestState (set up by the CLI / scenario).
     pub fn new(state: TestState) -> Self {
+        let cap_bytes =
+            (state.max_memory_mb.unwrap_or(DEFAULT_MAX_MEMORY_MB) as usize) * 1024 * 1024;
         TestCtx {
             state,
             table: ResourceTable::new(),
             wasi: WasiCtxBuilder::new().build(),
+            limiter: TestLimiter::new(cap_bytes),
         }
     }
 }
@@ -351,5 +395,17 @@ mod tests {
         let engine = crate::precompile::make_engine().unwrap();
         let mut linker = build_linker(&engine).unwrap();
         register_imports(&mut linker).expect("yosh imports");
+    }
+
+    #[test]
+    fn test_limiter_denies_over_cap_and_sets_flag() {
+        use wasmtime::ResourceLimiter;
+        let mib = 1024 * 1024;
+        let mut l = TestLimiter::new(8 * mib);
+        assert!(l.memory_growing(0, 4 * mib, None).unwrap());
+        assert!(!l.denied);
+        assert!(!l.memory_growing(4 * mib, 16 * mib, None).unwrap());
+        assert!(l.denied);
+        assert!(l.table_growing(0, 10_000, None).unwrap());
     }
 }

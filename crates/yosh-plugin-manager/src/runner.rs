@@ -18,6 +18,9 @@ pub struct LoadedPlugin {
     pub engine: wasmtime::Engine,
     /// The invocation deadline, kept for the timeout hint text.
     pub timeout_ms: u64,
+    /// The linear-memory cap in MiB, kept for the memory-error message
+    /// and hint text.
+    pub max_memory_mb: u64,
     /// Keeps the epoch ticking until the invocation completes; stops
     /// and joins on drop.
     _tick: crate::tick::TickThread,
@@ -132,7 +135,11 @@ pub fn load_plugin_precompiled(
     )
     .map_err(|e| HarnessError::load(format!("bindings: {}", e)))?;
 
+    let max_memory_mb = state
+        .max_memory_mb
+        .unwrap_or(crate::test_host::DEFAULT_MAX_MEMORY_MB);
     let mut store = Store::new(engine, TestCtx::new(state));
+    store.limiter(|ctx| &mut ctx.limiter);
     // Deadline in ticks; the continuous tick thread bumps the epoch
     // every TICK_MS, so worst-case overshoot is one tick window.
     let ticks = (timeout.as_millis() as u64)
@@ -149,6 +156,7 @@ pub fn load_plugin_precompiled(
         store,
         engine: engine.clone(),
         timeout_ms: timeout.as_millis() as u64,
+        max_memory_mb,
         _tick: tick,
     })
 }
@@ -198,16 +206,14 @@ pub fn invoke_exec(mut loaded: LoadedPlugin, command: &str, args: &[String]) -> 
     let plugin = loaded.world.yosh_plugin_plugin();
     let res = plugin.call_exec(&mut loaded.store, command, args);
     let timeout_ms = loaded.timeout_ms;
-    let state = loaded.store.into_data().state;
+    let max_memory_mb = loaded.max_memory_mb;
+    let data = loaded.store.into_data();
+    let memory_denied = data.limiter.denied;
+    let state = data.state;
     match res {
         Ok(code) => RunOutcome::from_state(state, Some(code), None),
         Err(e) => {
-            let err = classify_failure(
-                &e,
-                false,
-                timeout_ms,
-                crate::test_host::DEFAULT_MAX_MEMORY_MB,
-            );
+            let err = classify_failure(&e, memory_denied, timeout_ms, max_memory_mb);
             RunOutcome::from_state(state, None, Some(err))
         }
     }
@@ -236,8 +242,7 @@ fn classify_trap(err: &wasmtime::Error) -> ErrorKind {
 /// `memory_denied` is the store limiter's flag — a refused
 /// `memory.grow` surfaces as a guest allocator abort whose trap text
 /// says nothing about memory, so the flag wins over trap/timeout
-/// classification. (The limiter lands in Task 7; until then callers
-/// pass `false`.)
+/// classification.
 fn classify_failure(
     err: &wasmtime::Error,
     memory_denied: bool,
@@ -298,16 +303,14 @@ pub fn invoke_hook(mut loaded: LoadedPlugin, hook: HookCall) -> RunOutcome {
         HookCall::PrePrompt => hooks.call_pre_prompt(&mut loaded.store),
     };
     let timeout_ms = loaded.timeout_ms;
-    let state = loaded.store.into_data().state;
+    let max_memory_mb = loaded.max_memory_mb;
+    let data = loaded.store.into_data();
+    let memory_denied = data.limiter.denied;
+    let state = data.state;
     match res {
         Ok(()) => RunOutcome::from_state(state, None, None),
         Err(e) => {
-            let err = classify_failure(
-                &e,
-                false,
-                timeout_ms,
-                crate::test_host::DEFAULT_MAX_MEMORY_MB,
-            );
+            let err = classify_failure(&e, memory_denied, timeout_ms, max_memory_mb);
             RunOutcome::from_state(state, None, Some(err))
         }
     }

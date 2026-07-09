@@ -20,7 +20,7 @@ pub struct Scenario {
     pub steps: Vec<Step>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct EnvConfig {
     #[serde(default)]
     pub caps: Vec<String>,
@@ -36,10 +36,37 @@ pub struct EnvConfig {
     pub sandbox_root: String,
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
+    #[serde(default = "default_max_memory_mb")]
+    pub max_memory_mb: u64,
 }
 
 fn default_timeout_ms() -> u64 {
     5000
+}
+
+fn default_max_memory_mb() -> u64 {
+    crate::test_host::DEFAULT_MAX_MEMORY_MB
+}
+
+// Manual `Default` (rather than `#[derive(Default)]`) so that an
+// entirely-absent `[env]` section in a scenario TOML — which makes
+// serde fall back to `EnvConfig::default()` wholesale instead of
+// applying each field's `#[serde(default = "...")]` — still gets the
+// real timeout/memory defaults instead of `0`. A `max_memory_mb` of 0
+// would deny the plugin's initial linear memory outright.
+impl Default for EnvConfig {
+    fn default() -> Self {
+        EnvConfig {
+            caps: Vec::new(),
+            vars: BTreeMap::new(),
+            exported: Vec::new(),
+            cwd: String::new(),
+            allow_exec: Vec::new(),
+            sandbox_root: String::new(),
+            timeout_ms: default_timeout_ms(),
+            max_memory_mb: default_max_memory_mb(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,6 +299,7 @@ fn build_state(scenario: &Scenario) -> TestState {
                 .insert(std::path::PathBuf::from(k), v.as_bytes().to_vec());
         }
     }
+    state.max_memory_mb = Some(scenario.env.max_memory_mb);
     state
 }
 
