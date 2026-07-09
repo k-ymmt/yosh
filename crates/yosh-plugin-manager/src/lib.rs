@@ -12,6 +12,7 @@ pub mod test_host;
 pub(crate) mod tick;
 pub mod update;
 pub mod verify;
+pub(crate) mod watch;
 
 /// wasmtime bindgen for the `plugin-world` WIT contract.
 ///
@@ -150,6 +151,10 @@ enum Commands {
         /// Output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
         format: OutputFormat,
+        /// Re-run the invocation whenever the wasm file changes
+        /// (mtime-polled every 300 ms). Ctrl-C to stop.
+        #[arg(long)]
+        watch: bool,
     },
     /// Run declarative scenarios (TOML) from a directory.
     Test {
@@ -183,6 +188,7 @@ pub fn run() -> i32 {
             sandbox_root,
             timeout,
             format,
+            watch,
         } => cmd_run(
             wasm,
             action,
@@ -194,6 +200,7 @@ pub fn run() -> i32 {
             sandbox_root,
             timeout,
             format,
+            watch,
         ),
         Commands::Test {
             path,
@@ -225,23 +232,55 @@ fn cmd_run(
     sandbox_root: Option<std::path::PathBuf>,
     timeout: u64,
     format: OutputFormat,
+    watch: bool,
 ) -> i32 {
-    match run_once(
-        &wasm,
-        &action,
-        &cap,
-        &vars,
-        &exports,
-        &cwd,
-        &allow_exec,
-        sandbox_root.as_deref(),
-        timeout,
-        format,
-    ) {
-        Ok(code) => code,
-        Err(e) => {
-            emit_harness_error(&e, format);
-            99
+    if !watch {
+        return match run_once(
+            &wasm,
+            &action,
+            &cap,
+            &vars,
+            &exports,
+            &cwd,
+            &allow_exec,
+            sandbox_root.as_deref(),
+            timeout,
+            format,
+        ) {
+            Ok(code) => code,
+            Err(e) => {
+                emit_harness_error(&e, format);
+                99
+            }
+        };
+    }
+    // --watch: re-run on every wasm mtime change until Ctrl-C (default
+    // SIGINT disposition kills the process — no handler needed). Errors
+    // don't end the loop: a broken build prints its error, then the
+    // next successful build re-runs.
+    let mut last = std::fs::metadata(&wasm).and_then(|m| m.modified()).ok();
+    loop {
+        match run_once(
+            &wasm,
+            &action,
+            &cap,
+            &vars,
+            &exports,
+            &cwd,
+            &allow_exec,
+            sandbox_root.as_deref(),
+            timeout,
+            format,
+        ) {
+            Ok(_) => {}
+            Err(e) => emit_harness_error(&e, format),
+        }
+        if matches!(format, OutputFormat::Human) {
+            eprintln!("--- watching {} (Ctrl-C to stop) ---", wasm.display());
+        }
+        last = Some(crate::watch::wait_for_change(&wasm, last));
+        if matches!(format, OutputFormat::Human) {
+            eprintln!("--- change detected, re-running ---");
         }
     }
 }
