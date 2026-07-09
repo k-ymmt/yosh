@@ -258,7 +258,31 @@ fn cmd_run(
     // SIGINT disposition kills the process — no handler needed). Errors
     // don't end the loop: a broken build prints its error, then the
     // next successful build re-runs.
-    let mut last = std::fs::metadata(&wasm).and_then(|m| m.modified()).ok();
+    //
+    // Watching is pointless if the wasm can't be read at startup (spec
+    // §3.6): run once and exit like non-watch mode. Once watching has
+    // started, later errors (e.g. a broken rebuild) keep the loop alive.
+    let Some(initial_mtime) = std::fs::metadata(&wasm).and_then(|m| m.modified()).ok() else {
+        return match run_once(
+            &wasm,
+            &action,
+            &cap,
+            &vars,
+            &exports,
+            &cwd,
+            &allow_exec,
+            sandbox_root.as_deref(),
+            timeout,
+            format,
+        ) {
+            Ok(code) => code,
+            Err(e) => {
+                emit_harness_error(&e, format);
+                99
+            }
+        };
+    };
+    let mut last = Some(initial_mtime);
     loop {
         match run_once(
             &wasm,
