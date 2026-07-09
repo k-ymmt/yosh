@@ -68,8 +68,10 @@ pub struct TestState {
     /// the current step. Reset by the scenario runner between steps.
     pub set_log: Vec<(String, String)>,
     pub export_log: Vec<(String, String)>,
-    /// (path, bytes-written) for each files::{write,append}-file call.
-    pub write_log: Vec<(PathBuf, usize)>,
+    /// (path, written bytes) for each files::{write,append}-file call.
+    /// Bytes are captured (not just the length) so scenarios can assert
+    /// content; test-plugin-scale payloads make the copy cost moot.
+    pub write_log: Vec<(PathBuf, Vec<u8>)>,
 }
 
 impl TestState {

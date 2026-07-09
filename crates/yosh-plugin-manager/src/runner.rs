@@ -164,7 +164,7 @@ pub struct RunOutcome {
     pub stderr: Vec<u8>,
     pub set_log: Vec<(String, String)>,
     pub export_log: Vec<(String, String)>,
-    pub write_log: Vec<(std::path::PathBuf, usize)>,
+    pub write_log: Vec<(std::path::PathBuf, Vec<u8>)>,
     pub exec_log: Vec<ExecRecord>,
     pub error: Option<String>, // populated on trap/denied/timeout
     pub error_kind: Option<&'static str>,
@@ -172,11 +172,7 @@ pub struct RunOutcome {
 }
 
 impl RunOutcome {
-    fn from_state(
-        state: TestState,
-        exit_code: Option<i32>,
-        error: Option<HarnessError>,
-    ) -> Self {
+    fn from_state(state: TestState, exit_code: Option<i32>, error: Option<HarnessError>) -> Self {
         let (kind, msg, hint) = match error {
             Some(e) => (Some(e.kind.as_str()), Some(e.message), e.hint),
             None => (None, None, None),
@@ -204,8 +200,12 @@ pub fn invoke_exec(mut loaded: LoadedPlugin, command: &str, args: &[String]) -> 
     match res {
         Ok(code) => RunOutcome::from_state(state, Some(code), None),
         Err(e) => {
-            let err =
-                classify_failure(&e, false, timeout_ms, crate::test_host::DEFAULT_MAX_MEMORY_MB);
+            let err = classify_failure(
+                &e,
+                false,
+                timeout_ms,
+                crate::test_host::DEFAULT_MAX_MEMORY_MB,
+            );
             RunOutcome::from_state(state, None, Some(err))
         }
     }
@@ -300,8 +300,12 @@ pub fn invoke_hook(mut loaded: LoadedPlugin, hook: HookCall) -> RunOutcome {
     match res {
         Ok(()) => RunOutcome::from_state(state, None, None),
         Err(e) => {
-            let err =
-                classify_failure(&e, false, timeout_ms, crate::test_host::DEFAULT_MAX_MEMORY_MB);
+            let err = classify_failure(
+                &e,
+                false,
+                timeout_ms,
+                crate::test_host::DEFAULT_MAX_MEMORY_MB,
+            );
             RunOutcome::from_state(state, None, Some(err))
         }
     }
@@ -327,8 +331,8 @@ pub fn format_human(o: &RunOutcome) -> String {
     for (k, v) in &o.export_log {
         let _ = writeln!(out, "[vars export] {}={}", k, v);
     }
-    for (p, n) in &o.write_log {
-        let _ = writeln!(out, "[files write] {} ({} bytes)", p.display(), n);
+    for (p, b) in &o.write_log {
+        let _ = writeln!(out, "[files write] {} ({} bytes)", p.display(), b.len());
     }
     for r in &o.exec_log {
         let _ = writeln!(
@@ -356,7 +360,11 @@ pub fn format_json(o: &RunOutcome) -> serde_json::Value {
         "stderr": String::from_utf8_lossy(&o.stderr),
         "vars_set":    o.set_log.iter().map(|(k,v)| serde_json::json!({"key":k,"value":v})).collect::<Vec<_>>(),
         "vars_export": o.export_log.iter().map(|(k,v)| serde_json::json!({"key":k,"value":v})).collect::<Vec<_>>(),
-        "files_write": o.write_log.iter().map(|(p,n)| serde_json::json!({"path": p.display().to_string(),"bytes": n})).collect::<Vec<_>>(),
+        "files_write": o.write_log.iter().map(|(p, b)| serde_json::json!({
+            "path": p.display().to_string(),
+            "bytes": b.len(),
+            "content": String::from_utf8_lossy(b),
+        })).collect::<Vec<_>>(),
         "exec":        o.exec_log.iter().map(|r| serde_json::json!({
             "program": r.program, "args": r.args, "exit": r.exit_code, "stdout_bytes": r.stdout_len
         })).collect::<Vec<_>>(),
@@ -488,6 +496,27 @@ mod tests {
     }
 
     #[test]
+    fn format_json_files_write_includes_content() {
+        let mut o = RunOutcome {
+            exit_code: Some(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            set_log: Vec::new(),
+            export_log: Vec::new(),
+            write_log: Vec::new(),
+            exec_log: Vec::new(),
+            error: None,
+            error_kind: None,
+            error_hint: None,
+        };
+        o.write_log
+            .push((std::path::PathBuf::from("/out"), b"hi".to_vec()));
+        let j = format_json(&o);
+        assert_eq!(j["files_write"][0]["bytes"], serde_json::json!(2));
+        assert_eq!(j["files_write"][0]["content"], serde_json::json!("hi"));
+    }
+
+    #[test]
     fn error_kind_serializes_lowercase() {
         assert_eq!(ErrorKind::Load.as_str(), "load");
         assert_eq!(ErrorKind::Metadata.as_str(), "metadata");
@@ -511,7 +540,12 @@ mod tests {
         assert_eq!(e.kind, ErrorKind::Metadata);
         assert!(e.hint.as_deref().unwrap().contains("side-effect-free"));
         let j = e.to_json();
-        assert!(j["error"]["hint"].as_str().unwrap().contains("side-effect-free"));
+        assert!(
+            j["error"]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("side-effect-free")
+        );
     }
 
     #[test]

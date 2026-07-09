@@ -314,6 +314,18 @@ fn build_hook_call(name: HookName, args: &[toml::Value]) -> Result<HookCall, Str
     }
 }
 
+/// Lossy-UTF-8 preview of written bytes for failure messages, capped
+/// at 200 chars so a large payload doesn't flood the summary.
+fn preview(bytes: &[u8]) -> String {
+    let s = String::from_utf8_lossy(bytes);
+    if s.chars().count() > 200 {
+        let head: String = s.chars().take(200).collect();
+        format!("{}…", head)
+    } else {
+        s.into_owned()
+    }
+}
+
 fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
     macro_rules! fail {
         ($check:expr, $expected:expr, $got:expr, $($t:tt)*) => {{
@@ -468,80 +480,50 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
     }
 
     if let Some(want) = &e.files_write {
-        let got: BTreeMap<String, usize> = o
+        let got: BTreeMap<String, &Vec<u8>> = o
             .write_log
             .iter()
-            .map(|(p, n)| (p.display().to_string(), *n))
+            .map(|(p, b)| (p.display().to_string(), b))
             .collect();
         for (path, expectation) in want {
-            match expectation {
-                FileExpect::Bytes(b) => {
-                    let want_len = b.len();
-                    match got.get(path) {
-                        Some(actual) if *actual == want_len => {}
-                        Some(actual) => fail!(
-                            "files_write",
-                            Some(serde_json::json!(want_len)),
-                            Some(serde_json::json!(actual)),
-                            "files_write[{}] len: want {}, got {}",
-                            path,
-                            want_len,
-                            actual
-                        ),
-                        None => fail!(
-                            "files_write",
-                            Some(serde_json::json!(path)),
-                            None,
-                            "files_write[{}] not written",
-                            path
-                        ),
-                    }
-                }
-                FileExpect::Struct { len, bytes_eq } => {
-                    if let Some(l) = len {
-                        match got.get(path) {
-                            Some(actual) if *actual == *l => {}
-                            Some(actual) => fail!(
-                                "files_write",
-                                Some(serde_json::json!(l)),
-                                Some(serde_json::json!(actual)),
-                                "files_write[{}] len: want {}, got {}",
-                                path,
-                                l,
-                                actual
-                            ),
-                            None => fail!(
-                                "files_write",
-                                Some(serde_json::json!(path)),
-                                None,
-                                "files_write[{}] not written",
-                                path
-                            ),
-                        }
-                    }
-                    if let Some(b) = bytes_eq {
-                        let want_len = b.len();
-                        match got.get(path) {
-                            Some(actual) if *actual == want_len => {}
-                            Some(actual) => fail!(
-                                "files_write",
-                                Some(serde_json::json!(want_len)),
-                                Some(serde_json::json!(actual)),
-                                "files_write[{}] bytes_eq len: want {}, got {}",
-                                path,
-                                want_len,
-                                actual
-                            ),
-                            None => fail!(
-                                "files_write",
-                                Some(serde_json::json!(path)),
-                                None,
-                                "files_write[{}] not written",
-                                path
-                            ),
-                        }
-                    }
-                }
+            let (want_len, want_bytes): (Option<usize>, Option<&str>) = match expectation {
+                FileExpect::Bytes(b) => (None, Some(b.as_str())),
+                FileExpect::Struct { len, bytes_eq } => (*len, bytes_eq.as_deref()),
+            };
+            let Some(actual) = got.get(path) else {
+                fail!(
+                    "files_write",
+                    Some(serde_json::json!(path)),
+                    None,
+                    "files_write[{}] not written",
+                    path
+                );
+            };
+            if let Some(l) = want_len
+                && actual.len() != l
+            {
+                fail!(
+                    "files_write",
+                    Some(serde_json::json!(l)),
+                    Some(serde_json::json!(actual.len())),
+                    "files_write[{}] len: want {}, got {}",
+                    path,
+                    l,
+                    actual.len()
+                );
+            }
+            if let Some(b) = want_bytes
+                && actual.as_slice() != b.as_bytes()
+            {
+                fail!(
+                    "files_write",
+                    Some(serde_json::json!(preview(b.as_bytes()))),
+                    Some(serde_json::json!(preview(actual))),
+                    "files_write[{}] content: want {:?}, got {:?}",
+                    path,
+                    preview(b.as_bytes()),
+                    preview(actual)
+                );
             }
         }
     }
@@ -664,6 +646,42 @@ mod evaluator_tests {
             ..Default::default()
         };
         assert!(matches!(evaluate(1, &o, &e), StepResult::Pass));
+    }
+
+    #[test]
+    fn files_write_content_match_passes() {
+        let mut o = outcome_with(Some(0), b"");
+        o.write_log
+            .push((std::path::PathBuf::from("/out"), b"hello".to_vec()));
+        let e = Expect {
+            files_write: Some(
+                [("/out".to_string(), FileExpect::Bytes("hello".into()))]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        assert!(matches!(evaluate(1, &o, &e), StepResult::Pass));
+    }
+
+    #[test]
+    fn files_write_same_length_different_content_fails() {
+        // The pre-content-capture bug: any 5-byte write matched "hello".
+        let mut o = outcome_with(Some(0), b"");
+        o.write_log
+            .push((std::path::PathBuf::from("/out"), b"xxxxx".to_vec()));
+        let e = Expect {
+            files_write: Some(
+                [("/out".to_string(), FileExpect::Bytes("hello".into()))]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        match evaluate(1, &o, &e) {
+            StepResult::Fail { check, .. } => assert_eq!(check, "files_write"),
+            _ => panic!("expected content mismatch to fail"),
+        }
     }
 
     #[test]
@@ -855,7 +873,8 @@ pub fn format_summary_json(reports: &[ScenarioReport]) -> String {
                 } => Some((*step, *check, expected.clone(), got.clone(), reason.clone())),
                 _ => None,
             });
-            let (step, check, expected, got, reason) = first.expect("failed report has a Fail step");
+            let (step, check, expected, got, reason) =
+                first.expect("failed report has a Fail step");
             let _ = writeln!(
                 out,
                 "{}",

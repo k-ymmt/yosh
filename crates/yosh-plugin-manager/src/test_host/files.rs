@@ -86,7 +86,7 @@ pub fn host_write_file(state: &mut TestState, path: &str, data: &[u8]) -> Result
             std::fs::write(&resolved, data).map_err(|_| ErrorCode::IoFailed)?;
         }
     }
-    state.write_log.push((resolved, data.len()));
+    state.write_log.push((resolved, data.to_vec()));
     Ok(())
 }
 
@@ -111,7 +111,7 @@ pub fn host_append_file(state: &mut TestState, path: &str, data: &[u8]) -> Resul
             f.write_all(data).map_err(|_| ErrorCode::IoFailed)?;
         }
     }
-    state.write_log.push((resolved, data.len()));
+    state.write_log.push((resolved, data.to_vec()));
     Ok(())
 }
 
