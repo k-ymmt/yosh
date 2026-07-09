@@ -127,13 +127,37 @@ use yosh_plugin_api::{capabilities_to_bitflags, parse_capability};
 #[derive(Debug)]
 pub enum StepResult {
     Pass,
-    Fail(String),
+    Fail {
+        /// 1-based step index; 0 = scenario-level failure (parse /
+        /// engine / read / compile), which precedes any step.
+        step: usize,
+        /// Which expectation (or phase) failed: an `Expect` key name
+        /// ("exit", "stdout", "vars_set", ...) or "parse" / "load" /
+        /// "args" for non-expectation failures.
+        check: &'static str,
+        /// The expected value, where the check has one.
+        expected: Option<serde_json::Value>,
+        /// The actual value, where the check has one.
+        got: Option<serde_json::Value>,
+        /// Human sentence — same wording the human summary prints.
+        reason: String,
+    },
+}
+
+fn scenario_fail(check: &'static str, reason: String) -> StepResult {
+    StepResult::Fail {
+        step: 0,
+        check,
+        expected: None,
+        got: None,
+        reason,
+    }
 }
 
 pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
     let scenario = match parse(path) {
         Ok(s) => s,
-        Err(e) => return vec![StepResult::Fail(format!("parse error: {}", e))],
+        Err(e) => return vec![scenario_fail("parse", format!("parse error: {}", e))],
     };
 
     let wasm_path = path
@@ -146,21 +170,20 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
     // (was: full re-read + recompile per step).
     let engine = match crate::precompile::make_engine() {
         Ok(e) => e,
-        Err(e) => return vec![StepResult::Fail(format!("engine: {}", e))],
+        Err(e) => return vec![scenario_fail("load", format!("engine: {}", e))],
     };
     let wasm_bytes = match std::fs::read(&wasm_path) {
         Ok(b) => b,
         Err(e) => {
-            return vec![StepResult::Fail(format!(
-                "load: read {}: {}",
-                wasm_path.display(),
-                e
-            ))];
+            return vec![scenario_fail(
+                "load",
+                format!("load: read {}: {}", wasm_path.display(), e),
+            )];
         }
     };
     let component = match wasmtime::component::Component::new(&engine, &wasm_bytes) {
         Ok(c) => c,
-        Err(e) => return vec![StepResult::Fail(format!("load: compile: {}", e))],
+        Err(e) => return vec![scenario_fail("load", format!("load: compile: {}", e))],
     };
 
     let mut results = Vec::new();
@@ -170,7 +193,13 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
         let loaded = match load_plugin_precompiled(&engine, &component, state, timeout) {
             Ok(l) => l,
             Err(e) => {
-                results.push(StepResult::Fail(format!("step {}: load: {}", idx + 1, e)));
+                results.push(StepResult::Fail {
+                    step: idx + 1,
+                    check: "load",
+                    expected: None,
+                    got: None,
+                    reason: format!("step {}: load: {}", idx + 1, e),
+                });
                 continue;
             }
         };
@@ -178,10 +207,13 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
         let (outcome, expect) = match step {
             Step::Exec { args, expect } => {
                 if args.is_empty() {
-                    results.push(StepResult::Fail(format!(
-                        "step {}: exec needs at least 1 arg",
-                        idx + 1
-                    )));
+                    results.push(StepResult::Fail {
+                        step: idx + 1,
+                        check: "args",
+                        expected: None,
+                        got: None,
+                        reason: format!("step {}: exec needs at least 1 arg", idx + 1),
+                    });
                     continue;
                 }
                 let (cmd, rest) = (&args[0], &args[1..]);
@@ -191,11 +223,13 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
                 let call = match build_hook_call(*name, args) {
                     Ok(c) => c,
                     Err(e) => {
-                        results.push(StepResult::Fail(format!(
-                            "step {}: hook args: {}",
-                            idx + 1,
-                            e
-                        )));
+                        results.push(StepResult::Fail {
+                            step: idx + 1,
+                            check: "args",
+                            expected: None,
+                            got: None,
+                            reason: format!("step {}: hook args: {}", idx + 1, e),
+                        });
                         continue;
                     }
                 };
@@ -282,14 +316,35 @@ fn build_hook_call(name: HookName, args: &[toml::Value]) -> Result<HookCall, Str
 
 fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
     macro_rules! fail {
-        ($($t:tt)*) => {{ return StepResult::Fail(format!("step {}: {}", step_idx, format_args!($($t)*))) }};
+        ($check:expr, $expected:expr, $got:expr, $($t:tt)*) => {{
+            return StepResult::Fail {
+                step: step_idx,
+                check: $check,
+                expected: $expected,
+                got: $got,
+                reason: format!("step {}: {}", step_idx, format_args!($($t)*)),
+            }
+        }};
     }
 
     if let Some(want) = e.exit {
         match o.exit_code {
             Some(got) if got == want => {}
-            Some(got) => fail!("exit: want {}, got {}", want, got),
-            None => fail!("exit: want {}, got (no exit code — hook?)", want),
+            Some(got) => fail!(
+                "exit",
+                Some(serde_json::json!(want)),
+                Some(serde_json::json!(got)),
+                "exit: want {}, got {}",
+                want,
+                got
+            ),
+            None => fail!(
+                "exit",
+                Some(serde_json::json!(want)),
+                None,
+                "exit: want {}, got (no exit code — hook?)",
+                want
+            ),
         }
     }
 
@@ -299,40 +354,88 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
     if let Some(want) = &e.stdout
         && stdout_str != *want
     {
-        fail!("stdout mismatch: want {:?}, got {:?}", want, stdout_str);
+        fail!(
+            "stdout",
+            Some(serde_json::json!(want)),
+            Some(serde_json::json!(stdout_str)),
+            "stdout mismatch: want {:?}, got {:?}",
+            want,
+            stdout_str
+        );
     }
     if let Some(want) = &e.stderr
         && stderr_str != *want
     {
-        fail!("stderr mismatch: want {:?}, got {:?}", want, stderr_str);
+        fail!(
+            "stderr",
+            Some(serde_json::json!(want)),
+            Some(serde_json::json!(stderr_str)),
+            "stderr mismatch: want {:?}, got {:?}",
+            want,
+            stderr_str
+        );
     }
     if let Some(sub) = &e.stdout_contains
         && !stdout_str.contains(sub.as_str())
     {
-        fail!("stdout_contains {:?} not found in {:?}", sub, stdout_str);
+        fail!(
+            "stdout_contains",
+            Some(serde_json::json!(sub)),
+            Some(serde_json::json!(stdout_str)),
+            "stdout_contains {:?} not found in {:?}",
+            sub,
+            stdout_str
+        );
     }
     if let Some(sub) = &e.stderr_contains
         && !stderr_str.contains(sub.as_str())
     {
-        fail!("stderr_contains {:?} not found in {:?}", sub, stderr_str);
+        fail!(
+            "stderr_contains",
+            Some(serde_json::json!(sub)),
+            Some(serde_json::json!(stderr_str)),
+            "stderr_contains {:?} not found in {:?}",
+            sub,
+            stderr_str
+        );
     }
     if let Some(re) = &e.stdout_regex {
-        let rx = regex::Regex::new(re).map_err(|err| err.to_string());
-        match rx {
-            Ok(rx) if !rx.is_match(&stdout_str) => {
-                fail!("stdout_regex {:?} did not match {:?}", re, stdout_str)
-            }
-            Err(err) => fail!("stdout_regex invalid: {}", err),
+        match regex::Regex::new(re) {
+            Ok(rx) if !rx.is_match(&stdout_str) => fail!(
+                "stdout_regex",
+                Some(serde_json::json!(re)),
+                Some(serde_json::json!(stdout_str)),
+                "stdout_regex {:?} did not match {:?}",
+                re,
+                stdout_str
+            ),
+            Err(err) => fail!(
+                "stdout_regex",
+                Some(serde_json::json!(re)),
+                None,
+                "stdout_regex invalid: {}",
+                err
+            ),
             _ => {}
         }
     }
     if let Some(re) = &e.stderr_regex {
-        let rx = regex::Regex::new(re).map_err(|err| err.to_string());
-        match rx {
-            Ok(rx) if !rx.is_match(&stderr_str) => {
-                fail!("stderr_regex {:?} did not match {:?}", re, stderr_str)
-            }
-            Err(err) => fail!("stderr_regex invalid: {}", err),
+        match regex::Regex::new(re) {
+            Ok(rx) if !rx.is_match(&stderr_str) => fail!(
+                "stderr_regex",
+                Some(serde_json::json!(re)),
+                Some(serde_json::json!(stderr_str)),
+                "stderr_regex {:?} did not match {:?}",
+                re,
+                stderr_str
+            ),
+            Err(err) => fail!(
+                "stderr_regex",
+                Some(serde_json::json!(re)),
+                None,
+                "stderr_regex invalid: {}",
+                err
+            ),
             _ => {}
         }
     }
@@ -340,13 +443,27 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
     if let Some(want) = &e.vars_set {
         let got: BTreeMap<String, String> = o.set_log.iter().cloned().collect();
         if got != *want {
-            fail!("vars_set: want {:?}, got {:?}", want, got);
+            fail!(
+                "vars_set",
+                Some(serde_json::json!(want)),
+                Some(serde_json::json!(got)),
+                "vars_set: want {:?}, got {:?}",
+                want,
+                got
+            );
         }
     }
     if let Some(want) = &e.vars_export {
         let got: BTreeMap<String, String> = o.export_log.iter().cloned().collect();
         if got != *want {
-            fail!("vars_export: want {:?}, got {:?}", want, got);
+            fail!(
+                "vars_export",
+                Some(serde_json::json!(want)),
+                Some(serde_json::json!(got)),
+                "vars_export: want {:?}, got {:?}",
+                want,
+                got
+            );
         }
     }
 
@@ -363,22 +480,43 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
                     match got.get(path) {
                         Some(actual) if *actual == want_len => {}
                         Some(actual) => fail!(
+                            "files_write",
+                            Some(serde_json::json!(want_len)),
+                            Some(serde_json::json!(actual)),
                             "files_write[{}] len: want {}, got {}",
                             path,
                             want_len,
                             actual
                         ),
-                        None => fail!("files_write[{}] not written", path),
+                        None => fail!(
+                            "files_write",
+                            Some(serde_json::json!(path)),
+                            None,
+                            "files_write[{}] not written",
+                            path
+                        ),
                     }
                 }
                 FileExpect::Struct { len, bytes_eq } => {
                     if let Some(l) = len {
                         match got.get(path) {
                             Some(actual) if *actual == *l => {}
-                            Some(actual) => {
-                                fail!("files_write[{}] len: want {}, got {}", path, l, actual)
-                            }
-                            None => fail!("files_write[{}] not written", path),
+                            Some(actual) => fail!(
+                                "files_write",
+                                Some(serde_json::json!(l)),
+                                Some(serde_json::json!(actual)),
+                                "files_write[{}] len: want {}, got {}",
+                                path,
+                                l,
+                                actual
+                            ),
+                            None => fail!(
+                                "files_write",
+                                Some(serde_json::json!(path)),
+                                None,
+                                "files_write[{}] not written",
+                                path
+                            ),
                         }
                     }
                     if let Some(b) = bytes_eq {
@@ -386,12 +524,21 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
                         match got.get(path) {
                             Some(actual) if *actual == want_len => {}
                             Some(actual) => fail!(
+                                "files_write",
+                                Some(serde_json::json!(want_len)),
+                                Some(serde_json::json!(actual)),
                                 "files_write[{}] bytes_eq len: want {}, got {}",
                                 path,
                                 want_len,
                                 actual
                             ),
-                            None => fail!("files_write[{}] not written", path),
+                            None => fail!(
+                                "files_write",
+                                Some(serde_json::json!(path)),
+                                None,
+                                "files_write[{}] not written",
+                                path
+                            ),
                         }
                     }
                 }
@@ -402,6 +549,9 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
     if let Some(want_seq) = &e.exec_called {
         if want_seq.len() != o.exec_log.len() {
             fail!(
+                "exec_called",
+                Some(serde_json::json!(want_seq.len())),
+                Some(serde_json::json!(o.exec_log.len())),
                 "exec_called: want {} calls, got {}",
                 want_seq.len(),
                 o.exec_log.len()
@@ -410,6 +560,9 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
         for (i, (w, g)) in want_seq.iter().zip(o.exec_log.iter()).enumerate() {
             if w.program != g.program {
                 fail!(
+                    "exec_called",
+                    Some(serde_json::json!(w.program)),
+                    Some(serde_json::json!(g.program)),
                     "exec_called[{}].program: want {}, got {}",
                     i,
                     w.program,
@@ -418,6 +571,9 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
             }
             if w.args != g.args {
                 fail!(
+                    "exec_called",
+                    Some(serde_json::json!(w.args)),
+                    Some(serde_json::json!(g.args)),
                     "exec_called[{}].args: want {:?}, got {:?}",
                     i,
                     w.args,
@@ -428,6 +584,9 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
                 && exit != g.exit_code
             {
                 fail!(
+                    "exec_called",
+                    Some(serde_json::json!(exit)),
+                    Some(serde_json::json!(g.exit_code)),
                     "exec_called[{}].exit: want {}, got {}",
                     i,
                     exit,
@@ -440,7 +599,14 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
     if let Some(want) = e.trap {
         let got = o.error_kind == Some("trap");
         if got != want {
-            fail!("trap: want {}, got {}", want, got);
+            fail!(
+                "trap",
+                Some(serde_json::json!(want)),
+                Some(serde_json::json!(got)),
+                "trap: want {}, got {}",
+                want,
+                got
+            );
         }
     }
 
@@ -485,7 +651,7 @@ mod evaluator_tests {
             ..Default::default()
         };
         match evaluate(1, &o, &e) {
-            StepResult::Fail(s) => assert!(s.contains("exit")),
+            StepResult::Fail { reason, .. } => assert!(reason.contains("exit")),
             _ => panic!("expected fail"),
         }
     }
@@ -524,6 +690,53 @@ mod evaluator_tests {
         let reports = vec![];
         let s = format_summary_json(&reports);
         assert!(s.contains("\"summary\""));
+    }
+
+    #[test]
+    fn fail_carries_structured_fields() {
+        let o = outcome_with(Some(2), b"");
+        let e = Expect {
+            exit: Some(0),
+            ..Default::default()
+        };
+        match evaluate(3, &o, &e) {
+            StepResult::Fail {
+                step,
+                check,
+                expected,
+                got,
+                reason,
+            } => {
+                assert_eq!(step, 3);
+                assert_eq!(check, "exit");
+                assert_eq!(expected, Some(serde_json::json!(0)));
+                assert_eq!(got, Some(serde_json::json!(2)));
+                assert!(reason.contains("exit"));
+            }
+            _ => panic!("expected fail"),
+        }
+    }
+
+    #[test]
+    fn format_summary_json_fail_line_has_structured_fields() {
+        let reports = vec![ScenarioReport {
+            file: std::path::PathBuf::from("t.toml"),
+            steps: vec![StepResult::Fail {
+                step: 2,
+                check: "vars_set",
+                expected: Some(serde_json::json!({"K": "v"})),
+                got: Some(serde_json::json!({})),
+                reason: "step 2: vars_set: want ..., got ...".into(),
+            }],
+        }];
+        let s = format_summary_json(&reports);
+        let first_line = s.lines().next().unwrap();
+        let v: serde_json::Value = serde_json::from_str(first_line).unwrap();
+        assert_eq!(v["status"], serde_json::json!("fail"));
+        assert_eq!(v["step"], serde_json::json!(2));
+        assert_eq!(v["check"], serde_json::json!("vars_set"));
+        assert_eq!(v["expected"], serde_json::json!({"K": "v"}));
+        assert_eq!(v["got"], serde_json::json!({}));
     }
 }
 
@@ -603,8 +816,8 @@ pub fn format_summary_human(reports: &[ScenarioReport]) -> String {
             failed += 1;
             let _ = writeln!(out, "  \u{2717} {}", r.file.display());
             for s in &r.steps {
-                if let StepResult::Fail(msg) = s {
-                    let _ = writeln!(out, "      {}", msg);
+                if let StepResult::Fail { reason, .. } = s {
+                    let _ = writeln!(out, "      {}", reason);
                 }
             }
         }
@@ -632,21 +845,28 @@ pub fn format_summary_json(reports: &[ScenarioReport]) -> String {
             );
         } else {
             failed += 1;
-            let reason = r
-                .steps
-                .iter()
-                .find_map(|s| match s {
-                    StepResult::Fail(m) => Some(m.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
+            let first = r.steps.iter().find_map(|s| match s {
+                StepResult::Fail {
+                    step,
+                    check,
+                    expected,
+                    got,
+                    reason,
+                } => Some((*step, *check, expected.clone(), got.clone(), reason.clone())),
+                _ => None,
+            });
+            let (step, check, expected, got, reason) = first.expect("failed report has a Fail step");
             let _ = writeln!(
                 out,
                 "{}",
                 serde_json::json!({
                     "file": r.file.display().to_string(),
                     "status": "fail",
-                    "reason": reason
+                    "step": step,
+                    "check": check,
+                    "expected": expected,
+                    "got": got,
+                    "reason": reason,
                 })
             );
         }
