@@ -99,6 +99,10 @@ impl std::fmt::Display for HarnessError {
     }
 }
 
+/// Path-based convenience wrapper: read + build engine + compile, then
+/// delegate. Callers that already hold the compiled artifacts (the
+/// `run` harness, the per-scenario loop) use
+/// [`load_plugin_precompiled`] directly and compile exactly once.
 pub fn load_plugin(
     wasm_path: &Path,
     state: TestState,
@@ -109,21 +113,31 @@ pub fn load_plugin(
         .map_err(|e| HarnessError::load(format!("read {}: {}", wasm_path.display(), e)))?;
     let component = Component::new(&engine, &wasm_bytes)
         .map_err(|e| HarnessError::load(format!("compile: {}", e)))?;
+    load_plugin_precompiled(&engine, &component, state, timeout)
+}
 
-    let mut linker = build_linker(&engine).map_err(|e| HarnessError::load(e.to_string()))?;
+pub fn load_plugin_precompiled(
+    engine: &wasmtime::Engine,
+    component: &Component,
+    state: TestState,
+    timeout: Duration,
+) -> Result<LoadedPlugin, HarnessError> {
+    let mut linker = build_linker(engine).map_err(|e| HarnessError::load(e.to_string()))?;
     register_imports(&mut linker).map_err(|e| HarnessError::load(e.to_string()))?;
 
     let pre = PluginWorldPre::new(
         linker
-            .instantiate_pre(&component)
+            .instantiate_pre(component)
             .map_err(|e| HarnessError::load(format!("instantiate_pre: {}", e)))?,
     )
     .map_err(|e| HarnessError::load(format!("bindings: {}", e)))?;
 
-    let mut store = Store::new(&engine, TestCtx::new(state));
+    let mut store = Store::new(engine, TestCtx::new(state));
     // Deadline in ticks; the continuous tick thread bumps the epoch
     // every TICK_MS, so worst-case overshoot is one tick window.
-    let ticks = (timeout.as_millis() as u64).div_ceil(crate::tick::TICK_MS).max(1);
+    let ticks = (timeout.as_millis() as u64)
+        .div_ceil(crate::tick::TICK_MS)
+        .max(1);
     store.set_epoch_deadline(ticks);
     let tick = crate::tick::TickThread::spawn(engine.clone());
 
@@ -133,7 +147,7 @@ pub fn load_plugin(
     Ok(LoadedPlugin {
         world,
         store,
-        engine,
+        engine: engine.clone(),
         timeout_ms: timeout.as_millis() as u64,
         _tick: tick,
     })

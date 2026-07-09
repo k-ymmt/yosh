@@ -226,61 +226,99 @@ fn cmd_run(
     timeout: u64,
     format: OutputFormat,
 ) -> i32 {
+    match run_once(
+        &wasm,
+        &action,
+        &cap,
+        &vars,
+        &exports,
+        &cwd,
+        &allow_exec,
+        sandbox_root.as_deref(),
+        timeout,
+        format,
+    ) {
+        Ok(code) => code,
+        Err(e) => {
+            emit_harness_error(&e, format);
+            99
+        }
+    }
+}
+
+/// Print a harness-level error: always the human line (+ hint) on
+/// stderr; in JSON mode additionally a parseable `{"error":{...}}`
+/// object on stdout so `--format json` consumers never have to scrape
+/// stderr (spec §3.1).
+fn emit_harness_error(e: &crate::runner::HarnessError, format: OutputFormat) {
+    eprintln!("yosh-plugin: {}", e);
+    if let Some(h) = &e.hint {
+        eprintln!("yosh-plugin: hint: {}", h);
+    }
+    if matches!(format, OutputFormat::Json) {
+        println!("{}", e.to_json());
+    }
+}
+
+/// One complete `run` invocation: read + compile (once) + optional
+/// metadata caps fallback + instantiate + invoke + print. Returns the
+/// process exit code; every harness-level failure funnels to the
+/// caller as `HarnessError`. Extracted so `--watch` (Task 3) can
+/// re-run the same body.
+#[allow(clippy::too_many_arguments)]
+fn run_once(
+    wasm: &std::path::Path,
+    action: &RunAction,
+    cap: &[String],
+    vars: &[(String, String)],
+    exports: &[(String, String)],
+    cwd: &std::path::Path,
+    allow_exec: &[String],
+    sandbox_root: Option<&std::path::Path>,
+    timeout: u64,
+    format: OutputFormat,
+) -> Result<i32, crate::runner::HarnessError> {
     use crate::runner::{
-        HookCall, format_human, format_json, invoke_exec, invoke_hook, load_plugin,
+        HarnessError, HookCall, format_human, format_json, invoke_exec, invoke_hook,
+        load_plugin_precompiled,
     };
     use crate::test_host::TestState;
+    use wasmtime::component::Component;
     use yosh_plugin_api::pattern::CommandPattern;
     use yosh_plugin_api::{capabilities_to_bitflags, parse_capability};
 
-    // Build TestState.
+    // Read + compile exactly once; the metadata fallback and
+    // instantiation share the artifacts (was: 2x read + 2x compile).
+    let bytes = std::fs::read(wasm)
+        .map_err(|e| HarnessError::load(format!("read {}: {}", wasm.display(), e)))?;
+    let engine = crate::precompile::make_engine()
+        .map_err(|e| HarnessError::load(format!("engine: {}", e)))?;
+    let component = Component::new(&engine, &bytes)
+        .map_err(|e| HarnessError::load(format!("compile: {}", e)))?;
+
     let mut state = TestState::default();
     let parsed_caps: Vec<_> = cap.iter().filter_map(|s| parse_capability(s)).collect();
     state.caps = if cap.is_empty() {
-        // Fall back to plugin-declared capabilities. We need them from
-        // the cached metadata, which requires reading plugins.lock OR
-        // running metadata_extract. For local-run UX, run metadata_extract
-        // inline on the same wasm bytes.
-        let bytes = match std::fs::read(&wasm) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("yosh-plugin: read {}: {}", wasm.display(), e);
-                return 99;
-            }
-        };
-        let engine = match crate::precompile::make_engine() {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("yosh-plugin: engine: {}", e);
-                return 99;
-            }
-        };
-        match crate::metadata_extract::extract(&engine, &bytes) {
-            Ok(m) => {
-                let caps: Vec<_> = m
-                    .required_capabilities
-                    .iter()
-                    .filter_map(|s| parse_capability(s))
-                    .collect();
-                capabilities_to_bitflags(&caps)
-            }
-            Err(e) => {
-                eprintln!("yosh-plugin: metadata: {}", e);
-                return 99;
-            }
-        }
+        let m = crate::metadata_extract::extract_component(&engine, &component)
+            .map_err(HarnessError::metadata)?;
+        let caps: Vec<_> = m
+            .required_capabilities
+            .iter()
+            .filter_map(|s| parse_capability(s))
+            .collect();
+        capabilities_to_bitflags(&caps)
     } else {
         capabilities_to_bitflags(&parsed_caps)
     };
 
     for (k, v) in vars {
-        state.vars.insert(k, v);
+        state.vars.insert(k.clone(), v.clone());
     }
     for (k, v) in exports {
-        state.vars.insert(k.clone(), v);
-        state.exported.insert(k);
+        state.vars.insert(k.clone(), v.clone());
+        state.exported.insert(k.clone());
     }
-    state.cwd = cwd;
+    state.cwd = cwd.to_path_buf();
     state.allow_exec = allow_exec
         .iter()
         .filter_map(|p| match CommandPattern::parse(p) {
@@ -294,29 +332,34 @@ fn cmd_run(
             }
         })
         .collect();
-    state.sandbox_root = sandbox_root.map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+    state.sandbox_root =
+        sandbox_root.map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
 
-    let loaded = match load_plugin(&wasm, state, std::time::Duration::from_millis(timeout)) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("yosh-plugin: {}", e);
-            return 99;
-        }
-    };
+    let loaded = load_plugin_precompiled(
+        &engine,
+        &component,
+        state,
+        std::time::Duration::from_millis(timeout),
+    )?;
 
     let outcome = match action {
-        RunAction::Exec { command, args } => invoke_exec(loaded, &command, &args),
+        RunAction::Exec { command, args } => invoke_exec(loaded, command, args),
         RunAction::Hook { which } => {
             let call = match which {
-                HookKind::PreExec { command_line } => HookCall::PreExec { command_line },
+                HookKind::PreExec { command_line } => HookCall::PreExec {
+                    command_line: command_line.clone(),
+                },
                 HookKind::PostExec {
                     command_line,
                     exit_code,
                 } => HookCall::PostExec {
-                    command_line,
-                    exit_code,
+                    command_line: command_line.clone(),
+                    exit_code: *exit_code,
                 },
-                HookKind::OnCd { old, new } => HookCall::OnCd { old, new },
+                HookKind::OnCd { old, new } => HookCall::OnCd {
+                    old: old.clone(),
+                    new: new.clone(),
+                },
                 HookKind::PrePrompt => HookCall::PrePrompt,
             };
             invoke_hook(loaded, call)
@@ -328,10 +371,10 @@ fn cmd_run(
         OutputFormat::Json => println!("{}", format_json(&outcome)),
     }
 
-    match outcome.error_kind {
+    Ok(match outcome.error_kind {
         Some(_) => 99,
         None => outcome.exit_code.unwrap_or(0),
-    }
+    })
 }
 
 fn cmd_install(source: &str, force: bool) -> i32 {

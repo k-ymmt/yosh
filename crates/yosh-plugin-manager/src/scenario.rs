@@ -119,7 +119,7 @@ pub fn parse(path: &std::path::Path) -> Result<Scenario, String> {
     Ok(parsed)
 }
 
-use crate::runner::{HookCall, RunOutcome, invoke_exec, invoke_hook, load_plugin};
+use crate::runner::{HookCall, RunOutcome, invoke_exec, invoke_hook, load_plugin_precompiled};
 use crate::test_host::TestState;
 use yosh_plugin_api::pattern::CommandPattern;
 use yosh_plugin_api::{capabilities_to_bitflags, parse_capability};
@@ -140,12 +140,34 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
         .parent()
         .map(|p| p.join(&scenario.plugin))
         .unwrap_or(scenario.plugin.clone());
-    let mut results = Vec::new();
 
+    // Compile once per scenario; each step still gets a fresh Store +
+    // TestState (isolation), sharing only the immutable artifacts
+    // (was: full re-read + recompile per step).
+    let engine = match crate::precompile::make_engine() {
+        Ok(e) => e,
+        Err(e) => return vec![StepResult::Fail(format!("engine: {}", e))],
+    };
+    let wasm_bytes = match std::fs::read(&wasm_path) {
+        Ok(b) => b,
+        Err(e) => {
+            return vec![StepResult::Fail(format!(
+                "load: read {}: {}",
+                wasm_path.display(),
+                e
+            ))];
+        }
+    };
+    let component = match wasmtime::component::Component::new(&engine, &wasm_bytes) {
+        Ok(c) => c,
+        Err(e) => return vec![StepResult::Fail(format!("load: compile: {}", e))],
+    };
+
+    let mut results = Vec::new();
     for (idx, step) in scenario.steps.iter().enumerate() {
         let state = build_state(&scenario);
         let timeout = std::time::Duration::from_millis(scenario.env.timeout_ms);
-        let loaded = match load_plugin(&wasm_path, state, timeout) {
+        let loaded = match load_plugin_precompiled(&engine, &component, state, timeout) {
             Ok(l) => l,
             Err(e) => {
                 results.push(StepResult::Fail(format!("step {}: load: {}", idx + 1, e)));

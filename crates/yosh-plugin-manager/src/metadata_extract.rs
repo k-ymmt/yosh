@@ -93,14 +93,21 @@ pub struct ExtractedMetadata {
     pub implemented_hooks: Vec<String>,
 }
 
-/// Extract plugin metadata. Compiles the wasm with the given engine,
-/// builds an all-deny linker, instantiates, calls `metadata()`, returns
-/// the result. A continuous epoch-tick thread interrupts the call within
-/// ~5 seconds if the plugin hangs.
+/// Extract plugin metadata from raw wasm bytes. Compiles the component
+/// and delegates to [`extract_component`].
 pub fn extract(engine: &Engine, wasm_bytes: &[u8]) -> Result<ExtractedMetadata, String> {
     let component = Component::new(engine, wasm_bytes)
         .map_err(|e| format!("metadata: compile component: {}", e))?;
+    extract_component(engine, &component)
+}
 
+/// Extract plugin metadata from an already-compiled component, so
+/// callers that also instantiate the plugin (the `run` harness) compile
+/// exactly once.
+pub fn extract_component(
+    engine: &Engine,
+    component: &Component,
+) -> Result<ExtractedMetadata, String> {
     let mut linker = Linker::<MetadataCtx>::new(engine);
     register_wasi(&mut linker).map_err(|e| format!("metadata: register WASI: {}", e))?;
     register_all_deny_imports(&mut linker)
@@ -108,7 +115,7 @@ pub fn extract(engine: &Engine, wasm_bytes: &[u8]) -> Result<ExtractedMetadata, 
 
     let pre = PluginWorldPre::new(
         linker
-            .instantiate_pre(&component)
+            .instantiate_pre(component)
             .map_err(|e| format!("metadata: instantiate_pre: {}", e))?,
     )
     .map_err(|e| format!("metadata: bindings pre-init: {}", e))?;
