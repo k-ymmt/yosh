@@ -438,13 +438,19 @@ Flags scope what the plugin can see:
 | `--watch` | Re-run the invocation whenever the wasm changes (300 ms mtime polling; Ctrl-C to stop) |
 | `--format <human\|json>` | Output format |
 
-Harness-level failures (load, metadata, trap, timeout, memory) exit 99
-and print a `yosh-plugin: <kind>: <message>` line — plus a `hint:` line
+Harness-level failures exit 99, but the surface differs by phase. Load
+and metadata failures (compiling, instantiating, or extracting
+`metadata()`) happen before any invocation and print a
+`yosh-plugin: <kind>: <message>` line on stderr — plus a `hint:` line
 when there is an obvious fix. With `--format json` the same object is
 also emitted on stdout as `{"error":{"kind":...,"message":...,"hint":...}}`,
-so CI never scrapes stderr. Capability denials are not errors (the
-plugin decides how to react); they are listed in a `[denied]` section
-(JSON: `"denied"` array) with per-capability remediation hints.
+so CI never scrapes stderr. Trap, timeout, and memory failures happen
+*during* the invocation and instead appear inside the run output: a
+`[error]`/`[hint]` line pair in human output, or the outcome object's
+`"error"` field in JSON — same `kind`/`message`/`hint` shape either
+way. Capability denials are not errors (the plugin decides how to
+react); they are listed in a `[denied]` section (JSON: `"denied"`
+array) with per-capability remediation hints.
 
 Set `YOSH_PLUGIN_TRACE=1` to trace every host-import call and runner
 phase on stderr (`yosh-plugin[trace]: ...`).

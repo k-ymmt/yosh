@@ -71,9 +71,18 @@ impl HarnessError {
     }
 
     pub fn metadata(message: impl Into<String>) -> Self {
+        // `metadata_extract` errors already start with "metadata: "
+        // (e.g. "metadata: call: boom"); strip that one occurrence so
+        // `Display` (which prepends "metadata: " via `kind.as_str()`)
+        // doesn't double it up.
+        let message = message.into();
+        let message = message
+            .strip_prefix("metadata: ")
+            .map(str::to_string)
+            .unwrap_or(message);
         HarnessError {
             kind: ErrorKind::Metadata,
-            message: message.into(),
+            message,
             hint: Some(
                 "the `metadata` function must be side-effect-free (no host imports); \
                  see docs/yosh/plugin.md §Plugin Development Guide"
@@ -150,9 +159,31 @@ pub fn load_plugin_precompiled(
     store.set_epoch_deadline(ticks);
     let tick = crate::tick::TickThread::spawn(engine.clone());
 
-    let world = pre
-        .instantiate(&mut store)
-        .map_err(|e| HarnessError::load(format!("instantiate: {}", e)))?;
+    let world = match pre.instantiate(&mut store) {
+        Ok(world) => world,
+        Err(e) => {
+            // A denied INITIAL memory growth during instantiation
+            // surfaces here (rather than via `classify_failure`, which
+            // only runs after a guest call) — the limiter still
+            // records it, so consult it before falling back to a
+            // generic load error.
+            if store.data().limiter.denied {
+                return Err(HarnessError {
+                    kind: ErrorKind::Memory,
+                    message: format!(
+                        "instantiate: {} (memory limit {} MiB exceeded)",
+                        e, max_memory_mb
+                    ),
+                    hint: Some(format!(
+                        "raise --max-memory-mb (or env.max_memory_mb in scenarios) above {} \
+                         if the plugin legitimately needs more",
+                        max_memory_mb
+                    )),
+                });
+            }
+            return Err(HarnessError::load(format!("instantiate: {}", e)));
+        }
+    };
     crate::trace::trace!(
         "instantiated (timeout {} ms, memory cap {} MiB)",
         timeout.as_millis(),
@@ -356,6 +387,16 @@ pub fn denied_hint(entry: &str) -> Option<String> {
              and grant --cap commands:exec",
             program
         ));
+    }
+    if entry.starts_with("commands:exec") {
+        return Some("grant --cap commands:exec (or add commands:exec to env.caps)".into());
+    }
+    if entry.starts_with("files:sandbox-escape") {
+        return Some(
+            "the path resolves outside --sandbox-root; write inside the sandbox root \
+             (or widen it)"
+                .into(),
+        );
     }
     if entry.starts_with("files:") {
         return Some(
@@ -618,6 +659,18 @@ mod tests {
     }
 
     #[test]
+    fn denied_hint_covers_bare_commands_exec() {
+        let h = denied_hint("commands:exec").unwrap();
+        assert!(h.contains("--cap commands:exec"));
+    }
+
+    #[test]
+    fn denied_hint_covers_sandbox_escape() {
+        let h = denied_hint("files:sandbox-escape: /x").unwrap();
+        assert!(h.contains("sandbox root"));
+    }
+
+    #[test]
     fn error_kind_serializes_lowercase() {
         assert_eq!(ErrorKind::Load.as_str(), "load");
         assert_eq!(ErrorKind::Metadata.as_str(), "metadata");
@@ -647,6 +700,17 @@ mod tests {
                 .unwrap()
                 .contains("side-effect-free")
         );
+    }
+
+    #[test]
+    fn metadata_error_strips_doubled_prefix() {
+        let e = HarnessError::metadata("metadata: call: boom");
+        assert!(!e.message.starts_with("metadata: "));
+        assert_eq!(e.message, "call: boom");
+        // Display prepends exactly one "metadata: " via kind.as_str().
+        let rendered = e.to_string();
+        assert_eq!(rendered, "metadata: call: boom");
+        assert_eq!(rendered.matches("metadata: ").count(), 1);
     }
 
     #[test]

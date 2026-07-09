@@ -171,8 +171,11 @@ impl Default for TestCtx {
 impl TestCtx {
     /// Build from an existing TestState (set up by the CLI / scenario).
     pub fn new(state: TestState) -> Self {
-        let cap_bytes =
-            (state.max_memory_mb.unwrap_or(DEFAULT_MAX_MEMORY_MB) as usize) * 1024 * 1024;
+        // Clamp like production does: 0 would deny the guest's own
+        // initial memory growth, and `saturating_mul` guards against
+        // overflow for pathologically large `--max-memory-mb` values.
+        let cap_bytes = (state.max_memory_mb.unwrap_or(DEFAULT_MAX_MEMORY_MB).max(1) as usize)
+            .saturating_mul(1024 * 1024);
         TestCtx {
             state,
             table: ResourceTable::new(),
@@ -432,6 +435,22 @@ mod tests {
         let engine = crate::precompile::make_engine().unwrap();
         let mut linker = build_linker(&engine).unwrap();
         register_imports(&mut linker).expect("yosh imports");
+    }
+
+    #[test]
+    fn test_ctx_new_clamps_zero_max_memory_mb_to_one_mib() {
+        use wasmtime::ResourceLimiter;
+        let state = TestState {
+            max_memory_mb: Some(0),
+            ..TestState::default()
+        };
+        let mut ctx = TestCtx::new(state);
+        assert!(ctx.limiter.memory_growing(0, 512 * 1024, None).unwrap());
+        assert!(
+            !ctx.limiter
+                .memory_growing(512 * 1024, 2 * 1024 * 1024, None)
+                .unwrap()
+        );
     }
 
     #[test]

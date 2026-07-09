@@ -28,6 +28,7 @@ mod tests {
             Err(ErrorCode::Denied)
         );
         assert!(s.stdout.is_empty());
+        assert_eq!(s.denied_log, vec!["io:write".to_string()]);
     }
 
     #[test]
