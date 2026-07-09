@@ -19,7 +19,7 @@ pub fn host_exec(
     args: &[String],
 ) -> Result<ExecOutput, ErrorCode> {
     if state.caps & CAP_COMMANDS_EXEC == 0 {
-        return Err(ErrorCode::Denied);
+        return Err(super::deny(state, "commands:exec", program));
     }
     if program.is_empty() {
         return Err(ErrorCode::InvalidArgument);
@@ -30,6 +30,9 @@ pub fn host_exec(
         .collect();
 
     if !state.allow_exec.iter().any(|p| p.matches(&argv)) {
+        state
+            .denied_log
+            .push(format!("commands:exec: {}", argv.join(" ")));
         return Err(ErrorCode::PatternNotAllowed);
     }
 
@@ -150,6 +153,16 @@ mod tests {
             host_exec(&mut s, "/bin/echo", &["hi".to_string()]),
             Err(ErrorCode::PatternNotAllowed)
         ));
+    }
+
+    #[test]
+    fn pattern_not_allowed_recorded_in_denied_log() {
+        let mut s = TestState::with_caps(CAP_COMMANDS_EXEC);
+        assert!(matches!(
+            host_exec(&mut s, "echo", &["hi".to_string()]),
+            Err(ErrorCode::PatternNotAllowed)
+        ));
+        assert_eq!(s.denied_log, vec!["commands:exec: echo hi".to_string()]);
     }
 
     #[test]

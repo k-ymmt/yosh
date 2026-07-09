@@ -6,16 +6,16 @@ use super::TestState;
 use crate::generated::yosh::plugin::types::ErrorCode;
 use yosh_plugin_api::{CAP_VARIABLES_READ, CAP_VARIABLES_WRITE};
 
-pub fn host_get(state: &TestState, name: &str) -> Result<Option<String>, ErrorCode> {
+pub fn host_get(state: &mut TestState, name: &str) -> Result<Option<String>, ErrorCode> {
     if state.caps & CAP_VARIABLES_READ == 0 {
-        return Err(ErrorCode::Denied);
+        return Err(super::deny(state, "variables:get", name));
     }
     Ok(state.vars.get(name).cloned())
 }
 
 pub fn host_set(state: &mut TestState, name: &str, value: &str) -> Result<(), ErrorCode> {
     if state.caps & CAP_VARIABLES_WRITE == 0 {
-        return Err(ErrorCode::Denied);
+        return Err(super::deny(state, "variables:set", name));
     }
     state.vars.insert(name.to_string(), value.to_string());
     state.set_log.push((name.to_string(), value.to_string()));
@@ -24,7 +24,7 @@ pub fn host_set(state: &mut TestState, name: &str, value: &str) -> Result<(), Er
 
 pub fn host_export_env(state: &mut TestState, name: &str, value: &str) -> Result<(), ErrorCode> {
     if state.caps & CAP_VARIABLES_WRITE == 0 {
-        return Err(ErrorCode::Denied);
+        return Err(super::deny(state, "variables:export-env", name));
     }
     state.vars.insert(name.to_string(), value.to_string());
     state.exported.insert(name.to_string());
@@ -38,21 +38,22 @@ mod tests {
 
     #[test]
     fn get_denied_without_cap() {
-        let s = TestState::with_caps(0);
-        assert_eq!(host_get(&s, "FOO"), Err(ErrorCode::Denied));
+        let mut s = TestState::with_caps(0);
+        assert_eq!(host_get(&mut s, "FOO"), Err(ErrorCode::Denied));
+        assert_eq!(s.denied_log, vec!["variables:get: FOO".to_string()]);
     }
 
     #[test]
     fn get_returns_none_for_unset() {
-        let s = TestState::with_caps(CAP_VARIABLES_READ);
-        assert_eq!(host_get(&s, "FOO"), Ok(None));
+        let mut s = TestState::with_caps(CAP_VARIABLES_READ);
+        assert_eq!(host_get(&mut s, "FOO"), Ok(None));
     }
 
     #[test]
     fn get_returns_value_when_set() {
         let mut s = TestState::with_caps(CAP_VARIABLES_READ);
         s.vars.insert("FOO".into(), "bar".into());
-        assert_eq!(host_get(&s, "FOO"), Ok(Some("bar".into())));
+        assert_eq!(host_get(&mut s, "FOO"), Ok(Some("bar".into())));
     }
 
     #[test]

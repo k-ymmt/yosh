@@ -166,6 +166,7 @@ pub struct RunOutcome {
     pub export_log: Vec<(String, String)>,
     pub write_log: Vec<(std::path::PathBuf, Vec<u8>)>,
     pub exec_log: Vec<ExecRecord>,
+    pub denied: Vec<String>,
     pub error: Option<String>, // populated on trap/denied/timeout
     pub error_kind: Option<&'static str>,
     pub error_hint: Option<String>,
@@ -185,6 +186,7 @@ impl RunOutcome {
             export_log: state.export_log,
             write_log: state.write_log,
             exec_log: state.exec_log,
+            denied: state.denied_log,
             error: msg,
             error_kind: kind,
             error_hint: hint,
@@ -313,6 +315,36 @@ pub fn invoke_hook(mut loaded: LoadedPlugin, hook: HookCall) -> RunOutcome {
 
 use std::fmt::Write as _;
 
+/// One-line remediation for a denied-log entry, keyed on the interface
+/// prefix. `None` when there is nothing actionable to suggest.
+pub fn denied_hint(entry: &str) -> Option<String> {
+    if let Some(rest) = entry.strip_prefix("commands:exec: ") {
+        let program = rest.split_whitespace().next().unwrap_or(rest);
+        return Some(format!(
+            "re-run with --allow-exec '{}:*' (or add it to env.allow_exec) \
+             and grant --cap commands:exec",
+            program
+        ));
+    }
+    if entry.starts_with("files:") {
+        return Some(
+            "add files:read / files:write to --cap (or env.caps); seed [files] \
+             for the virtual FS or pass --sandbox-root"
+                .into(),
+        );
+    }
+    if entry.starts_with("variables:") {
+        return Some("add variables:read / variables:write to --cap (or env.caps)".into());
+    }
+    if entry.starts_with("filesystem:") {
+        return Some("add filesystem to --cap (or env.caps)".into());
+    }
+    if entry.starts_with("io:") {
+        return Some("add io to --cap (or env.caps)".into());
+    }
+    None
+}
+
 pub fn format_human(o: &RunOutcome) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "[stdout]\n{}", String::from_utf8_lossy(&o.stdout));
@@ -344,6 +376,12 @@ pub fn format_human(o: &RunOutcome) -> String {
             r.stdout_len
         );
     }
+    for d in &o.denied {
+        let _ = writeln!(out, "[denied]      {}", d);
+        if let Some(h) = denied_hint(d) {
+            let _ = writeln!(out, "              hint: {}", h);
+        }
+    }
     if let (Some(kind), Some(msg)) = (o.error_kind, &o.error) {
         let _ = writeln!(out, "[error] {}: {}", kind, msg);
         if let Some(h) = &o.error_hint {
@@ -368,6 +406,7 @@ pub fn format_json(o: &RunOutcome) -> serde_json::Value {
         "exec":        o.exec_log.iter().map(|r| serde_json::json!({
             "program": r.program, "args": r.args, "exit": r.exit_code, "stdout_bytes": r.stdout_len
         })).collect::<Vec<_>>(),
+        "denied": o.denied,
         "error": o.error.as_ref().map(|m| serde_json::json!({
             "kind": o.error_kind, "message": m, "hint": o.error_hint
         })),
@@ -461,6 +500,7 @@ mod tests {
             export_log: Vec::new(),
             write_log: Vec::new(),
             exec_log: Vec::new(),
+            denied: Vec::new(),
             error: None,
             error_kind: None,
             error_hint: None,
@@ -485,6 +525,7 @@ mod tests {
             export_log: Vec::new(),
             write_log: Vec::new(),
             exec_log: Vec::new(),
+            denied: Vec::new(),
             error: None,
             error_kind: None,
             error_hint: None,
@@ -505,6 +546,7 @@ mod tests {
             export_log: Vec::new(),
             write_log: Vec::new(),
             exec_log: Vec::new(),
+            denied: Vec::new(),
             error: None,
             error_kind: None,
             error_hint: None,
@@ -514,6 +556,34 @@ mod tests {
         let j = format_json(&o);
         assert_eq!(j["files_write"][0]["bytes"], serde_json::json!(2));
         assert_eq!(j["files_write"][0]["content"], serde_json::json!("hi"));
+    }
+
+    #[test]
+    fn denied_hint_suggests_allow_exec_pattern() {
+        let h = denied_hint("commands:exec: git status --short").unwrap();
+        assert!(h.contains("--allow-exec 'git:*'"));
+        assert!(h.contains("--cap commands:exec"));
+    }
+
+    #[test]
+    fn denied_hint_covers_each_interface_prefix() {
+        assert!(
+            denied_hint("files:read: /x")
+                .unwrap()
+                .contains("files:read")
+        );
+        assert!(
+            denied_hint("variables:get: FOO")
+                .unwrap()
+                .contains("variables:read")
+        );
+        assert!(
+            denied_hint("filesystem:cwd")
+                .unwrap()
+                .contains("filesystem")
+        );
+        assert!(denied_hint("io:write").unwrap().contains("io"));
+        assert!(denied_hint("something:else").is_none());
     }
 
     #[test]

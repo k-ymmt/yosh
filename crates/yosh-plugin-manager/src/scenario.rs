@@ -82,15 +82,8 @@ pub struct Expect {
     pub files_write: Option<BTreeMap<String, FileExpect>>,
     pub exec_called: Option<Vec<ExecCallExpect>>,
     pub trap: Option<bool>,
+    pub denied: Option<bool>,
 }
-
-// Note: `denied: bool` (listed in spec §5 as a future expect key) is
-// intentionally not implemented here. Observing capability-denied
-// errors from the harness requires plumbing a counter through every
-// host import (each `Err(Denied)` increments). Deferred — for now,
-// authors detect denial via `stdout_regex` on guest-side error
-// handling or via specific `exit` codes the guest returns on
-// `Err(ErrorCode::Denied)`.
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -592,6 +585,21 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
         }
     }
 
+    if let Some(want) = e.denied {
+        let got = !o.denied.is_empty();
+        if got != want {
+            fail!(
+                "denied",
+                Some(serde_json::json!(want)),
+                Some(serde_json::json!(got)),
+                "denied: want {}, got {} (denied log: {:?})",
+                want,
+                got,
+                o.denied
+            );
+        }
+    }
+
     StepResult::Pass
 }
 
@@ -609,6 +617,7 @@ mod evaluator_tests {
             export_log: Vec::new(),
             write_log: Vec::new(),
             exec_log: Vec::new(),
+            denied: Vec::new(),
             error: None,
             error_kind: None,
             error_hint: None,
@@ -755,6 +764,33 @@ mod evaluator_tests {
         assert_eq!(v["check"], serde_json::json!("vars_set"));
         assert_eq!(v["expected"], serde_json::json!({"K": "v"}));
         assert_eq!(v["got"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn expect_denied_true_requires_a_denial() {
+        let o = outcome_with(Some(13), b"");
+        let e = Expect {
+            denied: Some(true),
+            ..Default::default()
+        };
+        match evaluate(1, &o, &e) {
+            StepResult::Fail { check, .. } => assert_eq!(check, "denied"),
+            _ => panic!("no denial recorded, expect denied=true must fail"),
+        }
+        let mut o2 = outcome_with(Some(13), b"");
+        o2.denied.push("files:read: /x".into());
+        assert!(matches!(evaluate(1, &o2, &e), StepResult::Pass));
+    }
+
+    #[test]
+    fn expect_denied_false_rejects_denials() {
+        let mut o = outcome_with(Some(0), b"");
+        o.denied.push("io:write".into());
+        let e = Expect {
+            denied: Some(false),
+            ..Default::default()
+        };
+        assert!(matches!(evaluate(1, &o, &e), StepResult::Fail { .. }));
     }
 }
 

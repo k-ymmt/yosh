@@ -142,3 +142,48 @@ fn case_8_unknown_expect_key_rejected_at_parse() {
     let err = scenario::parse(tmp.path()).unwrap_err();
     assert!(err.contains("unknown") || err.contains("unknown_key"));
 }
+
+#[test]
+fn case_9_denied_read_recorded_with_entry() {
+    let Some(w) = wasm() else { return };
+    // read-file needs files:read; grant nothing. The guest maps Denied
+    // to exit 13; the harness independently records the denial.
+    let s = TestState::default();
+    let loaded = load_plugin(&w, s, Duration::from_secs(5)).expect("load");
+    let outcome = invoke_exec(loaded, "read-file", &["/x".into()]);
+    assert_eq!(outcome.exit_code, Some(13));
+    assert_eq!(outcome.denied, vec!["files:read: /x".to_string()]);
+}
+
+#[test]
+fn case_10_scenario_denied_key() {
+    let Some(w) = wasm() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let scenario_path = tmp.path().join("denied.toml");
+    std::fs::write(
+        &scenario_path,
+        format!(
+            r#"
+plugin = "{}"
+
+[[step]]
+call = "exec"
+args = ["read-file", "/x"]
+
+  [step.expect]
+  exit = 13
+  denied = true
+"#,
+            w.canonicalize().unwrap().display()
+        ),
+    )
+    .unwrap();
+    let results = yosh_plugin_manager::scenario::run_scenario(&scenario_path);
+    assert!(
+        results
+            .iter()
+            .all(|r| matches!(r, yosh_plugin_manager::scenario::StepResult::Pass)),
+        "results: {:?}",
+        results
+    );
+}

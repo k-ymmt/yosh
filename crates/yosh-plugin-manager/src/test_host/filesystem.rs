@@ -8,16 +8,16 @@ use super::TestState;
 use crate::generated::yosh::plugin::types::ErrorCode;
 use yosh_plugin_api::CAP_FILESYSTEM;
 
-pub fn host_cwd(state: &TestState) -> Result<String, ErrorCode> {
+pub fn host_cwd(state: &mut TestState) -> Result<String, ErrorCode> {
     if state.caps & CAP_FILESYSTEM == 0 {
-        return Err(ErrorCode::Denied);
+        return Err(super::deny(state, "filesystem:cwd", ""));
     }
     Ok(state.cwd.to_string_lossy().into_owned())
 }
 
 pub fn host_set_cwd(state: &mut TestState, path: &str) -> Result<(), ErrorCode> {
     if state.caps & CAP_FILESYSTEM == 0 {
-        return Err(ErrorCode::Denied);
+        return Err(super::deny(state, "filesystem:set-cwd", path));
     }
     if path.is_empty() {
         return Err(ErrorCode::InvalidArgument);
@@ -32,15 +32,16 @@ mod tests {
 
     #[test]
     fn cwd_denied_without_cap() {
-        let s = TestState::default();
-        assert_eq!(host_cwd(&s), Err(ErrorCode::Denied));
+        let mut s = TestState::default();
+        assert_eq!(host_cwd(&mut s), Err(ErrorCode::Denied));
+        assert_eq!(s.denied_log, vec!["filesystem:cwd".to_string()]);
     }
 
     #[test]
     fn cwd_returns_state_cwd() {
         let mut s = TestState::with_caps(CAP_FILESYSTEM);
         s.cwd = PathBuf::from("/tmp");
-        assert_eq!(host_cwd(&s), Ok("/tmp".to_string()));
+        assert_eq!(host_cwd(&mut s), Ok("/tmp".to_string()));
     }
 
     #[test]

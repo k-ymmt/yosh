@@ -11,56 +11,59 @@ use crate::generated::yosh::plugin::files::{DirEntry, FileStat};
 use crate::generated::yosh::plugin::types::ErrorCode;
 use yosh_plugin_api::{CAP_FILES_READ, CAP_FILES_WRITE};
 
-fn require_read(state: &TestState) -> Result<(), ErrorCode> {
+fn require_read(state: &mut TestState, path: &str) -> Result<(), ErrorCode> {
     if state.caps & CAP_FILES_READ == 0 {
-        Err(ErrorCode::Denied)
+        Err(super::deny(state, "files:read", path))
     } else {
         Ok(())
     }
 }
 
-fn require_write(state: &TestState) -> Result<(), ErrorCode> {
+fn require_write(state: &mut TestState, path: &str) -> Result<(), ErrorCode> {
     if state.caps & CAP_FILES_WRITE == 0 {
-        Err(ErrorCode::Denied)
+        Err(super::deny(state, "files:write", path))
     } else {
         Ok(())
     }
 }
 
-/// In sandbox mode, return the canonicalised real path or `Denied` if
-/// it escapes `root`. Virtual mode returns the path as-is.
-fn resolve(state: &TestState, path: &str) -> Result<PathBuf, ErrorCode> {
-    match &state.sandbox_root {
-        None => Ok(PathBuf::from(path)),
-        Some(root) => {
-            let candidate = if Path::new(path).is_absolute() {
-                PathBuf::from(path)
-            } else {
-                root.join(path)
+/// In sandbox mode, return the canonicalised real path or a recorded
+/// `Denied` if it escapes `root`. Virtual mode returns the path as-is.
+fn resolve(state: &mut TestState, path: &str) -> Result<PathBuf, ErrorCode> {
+    let Some(root) = state.sandbox_root.clone() else {
+        return Ok(PathBuf::from(path));
+    };
+    let candidate = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        root.join(path)
+    };
+    // Canonicalise lazily: if the file doesn't exist yet
+    // (write/create), canonicalise the parent and re-join.
+    let canon = match std::fs::canonicalize(&candidate) {
+        Ok(p) => p,
+        Err(_) => {
+            let Some(parent) = candidate.parent() else {
+                return Err(super::deny(state, "files:sandbox-escape", path));
             };
-            // Canonicalise lazily: if the file doesn't exist yet
-            // (write/create), canonicalise the parent and re-join.
-            let canon = match std::fs::canonicalize(&candidate) {
-                Ok(p) => p,
-                Err(_) => {
-                    let parent = candidate.parent().ok_or(ErrorCode::Denied)?;
-                    let parent_canon =
-                        std::fs::canonicalize(parent).map_err(|_| ErrorCode::Denied)?;
-                    let file_name = candidate.file_name().ok_or(ErrorCode::Denied)?;
-                    parent_canon.join(file_name)
-                }
+            let Ok(parent_canon) = std::fs::canonicalize(parent) else {
+                return Err(super::deny(state, "files:sandbox-escape", path));
             };
-            if canon.starts_with(root) {
-                Ok(canon)
-            } else {
-                Err(ErrorCode::Denied)
-            }
+            let Some(file_name) = candidate.file_name() else {
+                return Err(super::deny(state, "files:sandbox-escape", path));
+            };
+            parent_canon.join(file_name)
         }
+    };
+    if canon.starts_with(&root) {
+        Ok(canon)
+    } else {
+        Err(super::deny(state, "files:sandbox-escape", path))
     }
 }
 
-pub fn host_read_file(state: &TestState, path: &str) -> Result<Vec<u8>, ErrorCode> {
-    require_read(state)?;
+pub fn host_read_file(state: &mut TestState, path: &str) -> Result<Vec<u8>, ErrorCode> {
+    require_read(state, path)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
         None => state
@@ -76,7 +79,7 @@ pub fn host_read_file(state: &TestState, path: &str) -> Result<Vec<u8>, ErrorCod
 }
 
 pub fn host_write_file(state: &mut TestState, path: &str, data: &[u8]) -> Result<(), ErrorCode> {
-    require_write(state)?;
+    require_write(state, path)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
         None => {
@@ -91,7 +94,7 @@ pub fn host_write_file(state: &mut TestState, path: &str, data: &[u8]) -> Result
 }
 
 pub fn host_append_file(state: &mut TestState, path: &str, data: &[u8]) -> Result<(), ErrorCode> {
-    require_write(state)?;
+    require_write(state, path)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
         None => {
@@ -120,7 +123,7 @@ pub fn host_create_dir(
     path: &str,
     recursive: bool,
 ) -> Result<(), ErrorCode> {
-    require_write(state)?;
+    require_write(state, path)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
         None => {
@@ -143,7 +146,7 @@ pub fn host_create_dir(
 }
 
 pub fn host_remove_file(state: &mut TestState, path: &str) -> Result<(), ErrorCode> {
-    require_write(state)?;
+    require_write(state, path)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
         None => state
@@ -163,7 +166,7 @@ pub fn host_remove_dir(
     path: &str,
     recursive: bool,
 ) -> Result<(), ErrorCode> {
-    require_write(state)?;
+    require_write(state, path)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
         None => {
@@ -187,8 +190,8 @@ pub fn host_remove_dir(
     }
 }
 
-pub fn host_read_dir(state: &TestState, path: &str) -> Result<Vec<DirEntry>, ErrorCode> {
-    require_read(state)?;
+pub fn host_read_dir(state: &mut TestState, path: &str) -> Result<Vec<DirEntry>, ErrorCode> {
+    require_read(state, path)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
         None => {
@@ -230,8 +233,8 @@ pub fn host_read_dir(state: &TestState, path: &str) -> Result<Vec<DirEntry>, Err
     }
 }
 
-pub fn host_metadata(state: &TestState, path: &str) -> Result<FileStat, ErrorCode> {
-    require_read(state)?;
+pub fn host_metadata(state: &mut TestState, path: &str) -> Result<FileStat, ErrorCode> {
+    require_read(state, path)?;
     let resolved = resolve(state, path)?;
     match &state.sandbox_root {
         None => {
@@ -270,22 +273,23 @@ mod tests {
 
     #[test]
     fn read_denied_without_cap() {
-        let s = TestState::default();
-        assert_eq!(host_read_file(&s, "/a"), Err(ErrorCode::Denied));
+        let mut s = TestState::default();
+        assert_eq!(host_read_file(&mut s, "/a"), Err(ErrorCode::Denied));
+        assert_eq!(s.denied_log, vec!["files:read: /a".to_string()]);
     }
 
     #[test]
     fn virtual_write_then_read_roundtrips() {
         let mut s = state_rw();
         host_write_file(&mut s, "/a", b"hello").unwrap();
-        assert_eq!(host_read_file(&s, "/a"), Ok(b"hello".to_vec()));
+        assert_eq!(host_read_file(&mut s, "/a"), Ok(b"hello".to_vec()));
         assert_eq!(s.write_log.len(), 1);
     }
 
     #[test]
     fn virtual_read_missing_returns_not_found() {
-        let s = state_rw();
-        assert_eq!(host_read_file(&s, "/missing"), Err(ErrorCode::NotFound));
+        let mut s = state_rw();
+        assert_eq!(host_read_file(&mut s, "/missing"), Err(ErrorCode::NotFound));
     }
 
     #[test]
@@ -293,7 +297,7 @@ mod tests {
         let mut s = state_rw();
         host_write_file(&mut s, "/a", b"hello ").unwrap();
         host_append_file(&mut s, "/a", b"world").unwrap();
-        assert_eq!(host_read_file(&s, "/a"), Ok(b"hello world".to_vec()));
+        assert_eq!(host_read_file(&mut s, "/a"), Ok(b"hello world".to_vec()));
     }
 
     #[test]
@@ -301,14 +305,14 @@ mod tests {
         let mut s = state_rw();
         host_write_file(&mut s, "/a", b"x").unwrap();
         host_remove_file(&mut s, "/a").unwrap();
-        assert_eq!(host_read_file(&s, "/a"), Err(ErrorCode::NotFound));
+        assert_eq!(host_read_file(&mut s, "/a"), Err(ErrorCode::NotFound));
     }
 
     #[test]
     fn virtual_metadata_reports_size() {
         let mut s = state_rw();
         host_write_file(&mut s, "/a", b"abc").unwrap();
-        let md = host_metadata(&s, "/a").unwrap();
+        let md = host_metadata(&mut s, "/a").unwrap();
         assert!(md.is_file);
         assert_eq!(md.size, 3);
     }
@@ -320,7 +324,7 @@ mod tests {
         let mut s = state_rw();
         s.sandbox_root = Some(root.clone());
         let outside = format!("{}/../etc/passwd", root.display());
-        let err = host_read_file(&s, &outside);
+        let err = host_read_file(&mut s, &outside);
         assert!(matches!(
             err,
             Err(ErrorCode::Denied) | Err(ErrorCode::NotFound)

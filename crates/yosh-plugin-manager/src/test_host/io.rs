@@ -7,7 +7,7 @@ use yosh_plugin_api::CAP_IO;
 
 pub fn host_write(state: &mut TestState, target: IoStream, data: &[u8]) -> Result<(), ErrorCode> {
     if state.caps & CAP_IO == 0 {
-        return Err(ErrorCode::Denied);
+        return Err(super::deny(state, "io:write", ""));
     }
     match target {
         IoStream::Stdout => state.stdout.extend_from_slice(data),

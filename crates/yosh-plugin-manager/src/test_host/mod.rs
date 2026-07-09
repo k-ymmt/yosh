@@ -72,6 +72,10 @@ pub struct TestState {
     /// Bytes are captured (not just the length) so scenarios can assert
     /// content; test-plugin-scale payloads make the copy cost moot.
     pub write_log: Vec<(PathBuf, Vec<u8>)>,
+    /// One entry per capability denial (`Err(Denied)` or
+    /// `PatternNotAllowed`), e.g. `"files:read: /etc/passwd"`. Recorded
+    /// state — the harness never guesses denials from error text.
+    pub denied_log: Vec<String>,
 }
 
 impl TestState {
@@ -85,6 +89,20 @@ impl TestState {
             ..TestState::default()
         }
     }
+}
+
+/// Record a capability denial (for `[denied]` reporting and the
+/// scenario `denied` expectation) and return `ErrorCode::Denied`.
+/// `interface` is the WIT-ish name (e.g. "files:read"); `detail` names
+/// the operand and may be empty.
+pub(crate) fn deny(state: &mut TestState, interface: &str, detail: &str) -> ErrorCode {
+    let entry = if detail.is_empty() {
+        interface.to_string()
+    } else {
+        format!("{}: {}", interface, detail)
+    };
+    state.denied_log.push(entry);
+    ErrorCode::Denied
 }
 
 /// Per-store wrapper. `state` is the shared in-memory backend; `wasi`
@@ -159,8 +177,8 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     let mut vars = linker.instance("yosh:plugin/variables@0.2.1")?;
     vars.func_wrap(
         "get",
-        |store: wasmtime::StoreContextMut<'_, TestCtx>, (name,): (String,)| {
-            Ok::<_, wasmtime::Error>((variables::host_get(&store.data().state, &name),))
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (name,): (String,)| {
+            Ok::<_, wasmtime::Error>((variables::host_get(&mut store.data_mut().state, &name),))
         },
     )?;
     vars.func_wrap(
@@ -188,8 +206,8 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     let mut fs = linker.instance("yosh:plugin/filesystem@0.2.1")?;
     fs.func_wrap(
         "cwd",
-        |store: wasmtime::StoreContextMut<'_, TestCtx>, (): ()| {
-            Ok::<_, wasmtime::Error>((filesystem::host_cwd(&store.data().state),))
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (): ()| {
+            Ok::<_, wasmtime::Error>((filesystem::host_cwd(&mut store.data_mut().state),))
         },
     )?;
     fs.func_wrap(
@@ -214,20 +232,20 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
     let mut f = linker.instance("yosh:plugin/files@0.2.1")?;
     f.func_wrap(
         "read-file",
-        |store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
-            Ok::<_, wasmtime::Error>((files::host_read_file(&store.data().state, &path),))
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
+            Ok::<_, wasmtime::Error>((files::host_read_file(&mut store.data_mut().state, &path),))
         },
     )?;
     f.func_wrap(
         "read-dir",
-        |store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
-            Ok::<_, wasmtime::Error>((files::host_read_dir(&store.data().state, &path),))
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
+            Ok::<_, wasmtime::Error>((files::host_read_dir(&mut store.data_mut().state, &path),))
         },
     )?;
     f.func_wrap(
         "metadata",
-        |store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
-            Ok::<_, wasmtime::Error>((files::host_metadata(&store.data().state, &path),))
+        |mut store: wasmtime::StoreContextMut<'_, TestCtx>, (path,): (String,)| {
+            Ok::<_, wasmtime::Error>((files::host_metadata(&mut store.data_mut().state, &path),))
         },
     )?;
     f.func_wrap(
