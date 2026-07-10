@@ -26,7 +26,21 @@ pub fn write_plugin_entry(
     target: &InstallTarget,
     force: bool,
 ) -> Result<(), String> {
-    let content = std::fs::read_to_string(config_path).unwrap_or_default();
+    // A missing config is a fresh install (empty document); any other
+    // read failure (permissions, invalid UTF-8) must abort — rewriting
+    // from an empty default would replace the user's whole config with
+    // just this entry.
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(format!(
+                "failed to read {}: {}",
+                config_path.display(),
+                e
+            ));
+        }
+    };
 
     let mut doc: DocumentMut = content
         .parse()
@@ -67,8 +81,7 @@ pub fn write_plugin_entry(
 
     plugins.push(entry);
 
-    std::fs::write(config_path, doc.to_string())
-        .map_err(|e| format!("failed to write {}: {}", config_path.display(), e))?;
+    config::write_atomic(config_path, &doc.to_string())?;
 
     Ok(())
 }
@@ -248,6 +261,31 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a config read failure (here: invalid UTF-8) must
+    /// surface as an error, not be swallowed by `unwrap_or_default()` —
+    /// which used to replace the user's whole plugins.toml with just
+    /// the newly installed entry.
+    #[test]
+    fn write_entry_read_failure_does_not_clobber_config() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let original: &[u8] = &[0xFF, 0xFE, b'#', b' ', b'c', b'f', b'g'];
+        std::fs::write(f.path(), original).unwrap();
+        let target = InstallTarget {
+            name: "foo".into(),
+            source: PluginSource::Local {
+                path: "/tmp/foo.wasm".into(),
+            },
+            version: None,
+        };
+        let result = write_plugin_entry(f.path(), &target, false);
+        assert!(result.is_err(), "unreadable config must be an error");
+        assert_eq!(
+            std::fs::read(f.path()).unwrap(),
+            original,
+            "config file must be left untouched"
+        );
+    }
 
     #[test]
     fn write_github_entry_to_empty_file() {

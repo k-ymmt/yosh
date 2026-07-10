@@ -32,9 +32,12 @@ use super::HostContext;
 /// Unconfined plugins get the path back verbatim (full-FS grant, see
 /// module docs). Confined plugins get the canonicalized real path, or
 /// `Denied` if it escapes the root. Canonicalization resolves symlinks,
-/// so a link inside the root pointing outside is also denied. For paths
-/// that do not exist yet (write/create), the parent is canonicalized
-/// and the final component re-joined.
+/// so a link inside the root pointing outside is also denied — including
+/// a *dangling* link (writing through it would materialize the outside
+/// target). For paths that do not exist yet (write / recursive create),
+/// the deepest existing ancestor is canonicalized and the missing
+/// plain-name suffix re-joined, so any number of missing trailing
+/// components inside the root is allowed.
 fn resolve(ctx: &HostContext, path: &str) -> Result<PathBuf, ErrorCode> {
     let Some(root) = &ctx.files_root else {
         return Ok(PathBuf::from(path));
@@ -47,10 +50,29 @@ fn resolve(ctx: &HostContext, path: &str) -> Result<PathBuf, ErrorCode> {
     let canon = match std::fs::canonicalize(&candidate) {
         Ok(p) => p,
         Err(_) => {
-            let parent = candidate.parent().ok_or(ErrorCode::Denied)?;
-            let parent_canon = std::fs::canonicalize(parent).map_err(|_| ErrorCode::Denied)?;
-            let file_name = candidate.file_name().ok_or(ErrorCode::Denied)?;
-            parent_canon.join(file_name)
+            // Split off the components that don't exist on disk yet.
+            let mut existing = candidate.as_path();
+            let mut missing: Vec<std::ffi::OsString> = Vec::new();
+            while std::fs::symlink_metadata(existing).is_err() {
+                let name = existing.file_name().ok_or(ErrorCode::Denied)?;
+                missing.push(name.to_os_string());
+                existing = existing.parent().ok_or(ErrorCode::Denied)?;
+            }
+            // The deepest on-disk component exists but the full path
+            // didn't canonicalize. If `existing` itself won't
+            // canonicalize it is a dangling symlink — deny rather than
+            // create through it at an unvetted target.
+            let base = std::fs::canonicalize(existing).map_err(|_| ErrorCode::Denied)?;
+            // The missing suffix must be plain names: `.`/`..` could
+            // step back out of the vetted base.
+            if missing.iter().any(|c| c == ".." || c == ".") {
+                return Err(ErrorCode::Denied);
+            }
+            let mut joined = base;
+            for name in missing.iter().rev() {
+                joined.push(name);
+            }
+            joined
         }
     };
     if canon.starts_with(root) {
@@ -436,6 +458,73 @@ mod tests {
         let ctx = ctx_with_files_root(&mut env, &root);
         let result = host_files_read_file(&ctx, &link.to_string_lossy());
         assert_eq!(result, Err(ErrorCode::Denied));
+    }
+
+    /// Regression: a pre-existing DANGLING symlink inside the root
+    /// pointing outside must not be writable through — the old
+    /// not-found fallback canonicalized only the parent and re-joined
+    /// the link name, so `write-file` created the outside target.
+    #[test]
+    fn files_root_denies_dangling_symlink_escape() {
+        let root_dir = tempdir().unwrap();
+        let outside_dir = tempdir().unwrap();
+        let root = canon_root(&root_dir);
+        let target = outside_dir.path().join("victim.txt"); // does not exist
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let ctx = ctx_with_files_root(&mut env, &root);
+        assert_eq!(
+            host_files_write_file(&ctx, &link.to_string_lossy(), b"pwned"),
+            Err(ErrorCode::Denied)
+        );
+        assert!(
+            !target.exists(),
+            "write through dangling symlink must not create the outside file"
+        );
+        assert_eq!(
+            host_files_append_file(&ctx, &link.to_string_lossy(), b"pwned"),
+            Err(ErrorCode::Denied)
+        );
+        assert!(!target.exists());
+    }
+
+    /// Regression: creating nested directories (≥2 missing trailing
+    /// components) inside the root was denied because the not-found
+    /// fallback canonicalized only one missing level.
+    #[test]
+    fn files_root_allows_multi_level_missing_create_dir() {
+        let root_dir = tempdir().unwrap();
+        let root = canon_root(&root_dir);
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let ctx = ctx_with_files_root(&mut env, &root);
+        let nested = root.join("a/b/c");
+        host_files_create_dir(&ctx, &nested.to_string_lossy(), true)
+            .expect("recursive create-dir of in-root path must be allowed");
+        assert!(nested.is_dir());
+        // Relative form too.
+        host_files_create_dir(&ctx, "x/y/z", true).unwrap();
+        assert!(root.join("x/y/z").is_dir());
+    }
+
+    /// `..` inside a not-yet-existing suffix must stay denied.
+    #[test]
+    fn files_root_denies_dotdot_through_missing_dir() {
+        let outer = tempdir().unwrap();
+        let root = outer.path().join("inner");
+        std::fs::create_dir(&root).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let ctx = ctx_with_files_root(&mut env, &root);
+        let escape = format!("{}/missing/../../escape", root.display());
+        assert_eq!(
+            host_files_create_dir(&ctx, &escape, true),
+            Err(ErrorCode::Denied)
+        );
+        assert!(!outer.path().join("escape").exists());
     }
 
     #[test]

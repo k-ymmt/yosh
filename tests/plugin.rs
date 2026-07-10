@@ -514,6 +514,62 @@ fn t09_wasm_sha_mismatch_refuses_to_load() {
     );
 }
 
+/// Lockfile entries with `sha256` but WITHOUT the cwasm tuple (e.g.
+/// sync's local-plugin tolerance path) must still be SHA-verified:
+/// integrity is decoupled from the cwasm-trust cache key. A mismatch
+/// refuses the load; a match loads via the in-memory fallback.
+#[test]
+fn sha_verified_even_without_cwasm_tuple_via_lockfile() {
+    use std::io::Write;
+
+    let _g = lock_test();
+    let wasm = test_plugin_wasm();
+    let good_sha = yosh::plugin::cache::sha256_hex(&std::fs::read(&wasm).expect("read wasm"));
+    let bad_sha = "0".repeat(64);
+
+    for (sha, should_load) in [(good_sha.as_str(), true), (bad_sha.as_str(), false)] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let lock_path = tmp.path().join("plugins.lock");
+        let mut f = std::fs::File::create(&lock_path).expect("create lock");
+        // No cwasm_path / wasmtime_version / target_triple /
+        // engine_config_hash: cache_key() is None, but the SHA check
+        // must still run.
+        writeln!(
+            f,
+            r#"
+[[plugin]]
+name = "test_plugin"
+path = "{wasm}"
+sha256 = "{sha}"
+enabled = true
+"#,
+            wasm = wasm.display(),
+            sha = sha,
+        )
+        .expect("write lock");
+        drop(f);
+
+        let mut env = ShellEnv::new("yosh", Vec::new());
+        let mut mgr = PluginManager::new();
+        mgr.load_from_config(&lock_path, &mut env);
+
+        let exec = mgr.exec_command(&mut env, "test_cmd", &["smoke".into()]);
+        if should_load {
+            assert!(
+                matches!(exec, PluginExec::Handled(0)),
+                "matching sha without cwasm tuple must load (got {:?})",
+                exec
+            );
+        } else {
+            assert!(
+                matches!(exec, PluginExec::NotHandled),
+                "mismatched sha must refuse to load even without a cwasm tuple (got {:?})",
+                exec
+            );
+        }
+    }
+}
+
 /// §8.5 — `files:read` granted: real read returns file contents.
 ///
 /// Creates a tempfile with the canonical YOSH_TEST_CONTENT marker, loads
@@ -954,22 +1010,26 @@ fn perf_plugin_three_aliases_load_independently() {
 [[plugin]]
 name = "perf_a"
 path = "{wasm}"
+sha256 = "{sha}"
 enabled = true
 capabilities = ["variables:read", "hooks:pre_prompt", "hooks:pre_exec", "hooks:post_exec"]
 
 [[plugin]]
 name = "perf_b"
 path = "{wasm}"
+sha256 = "{sha}"
 enabled = true
 capabilities = ["variables:read", "hooks:pre_prompt", "hooks:pre_exec", "hooks:post_exec"]
 
 [[plugin]]
 name = "perf_c"
 path = "{wasm}"
+sha256 = "{sha}"
 enabled = true
 capabilities = ["variables:read", "hooks:pre_prompt", "hooks:pre_exec", "hooks:post_exec"]
 "#,
-        wasm = wasm.display()
+        wasm = wasm.display(),
+        sha = yosh::plugin::cache::sha256_hex(&std::fs::read(&wasm).expect("read wasm")),
     )
     .expect("write lock");
     drop(f);

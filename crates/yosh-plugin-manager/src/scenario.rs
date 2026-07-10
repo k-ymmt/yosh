@@ -180,6 +180,13 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
         Err(e) => return vec![scenario_fail("parse", format!("parse error: {}", e))],
     };
 
+    // Fail fast on unparsable env entries — the rest of the schema is
+    // strict (deny_unknown_fields), so a typo'd capability or exec
+    // pattern must not silently grant nothing.
+    if let Err(e) = validate_env(&scenario.env) {
+        return vec![scenario_fail("env", format!("env: {}", e))];
+    }
+
     let wasm_path = path
         .parent()
         .map(|p| p.join(&scenario.plugin))
@@ -269,6 +276,25 @@ pub fn run_scenario(path: &std::path::Path) -> Vec<StepResult> {
     results
 }
 
+/// Reject unparsable `env.caps` / `env.allow_exec` entries up front.
+/// `build_state` can then assume every entry parses.
+fn validate_env(env: &EnvConfig) -> Result<(), String> {
+    for s in &env.caps {
+        if parse_capability(s).is_none() {
+            return Err(format!(
+                "unknown capability string '{}' in env.caps (expected e.g. \"io\", \"hooks:pre_exec\")",
+                s
+            ));
+        }
+    }
+    for p in &env.allow_exec {
+        if let Err(e) = CommandPattern::parse(p) {
+            return Err(format!("invalid env.allow_exec pattern '{}': {}", p, e));
+        }
+    }
+    Ok(())
+}
+
 fn build_state(scenario: &Scenario) -> TestState {
     let mut state = TestState::default();
     let parsed_caps: Vec<_> = scenario
@@ -294,7 +320,12 @@ fn build_state(scenario: &Scenario) -> TestState {
         .filter_map(|p| CommandPattern::parse(p).ok())
         .collect();
     if !scenario.env.sandbox_root.is_empty() {
-        state.sandbox_root = Some(std::path::PathBuf::from(&scenario.env.sandbox_root));
+        // Canonicalize to match the CLI path (`lib.rs` run_once) and
+        // `test_host::files::resolve`, which canonicalizes each
+        // candidate before the starts_with check — a symlinked or
+        // relative root would otherwise deny every files op.
+        let root = std::path::PathBuf::from(&scenario.env.sandbox_root);
+        state.sandbox_root = Some(std::fs::canonicalize(&root).unwrap_or(root));
     } else {
         for (k, v) in &scenario.files {
             state
@@ -361,6 +392,24 @@ fn evaluate(step_idx: usize, o: &RunOutcome, e: &Expect) -> StepResult {
                 reason: format!("step {}: {}", step_idx, format_args!($($t)*)),
             }
         }};
+    }
+
+    // A harness-level error (trap / timeout / memory / load) fails the
+    // step unless the scenario explicitly opts into traps with a
+    // `trap = ...` key. Spec §5: a step without an expect block must at
+    // least complete without trap/timeout.
+    if let Some(kind) = o.error_kind {
+        let handled_by_trap_key = e.trap.is_some() && kind == "trap";
+        if !handled_by_trap_key {
+            fail!(
+                "error",
+                None,
+                Some(serde_json::json!(kind)),
+                "step errored ({}): {}",
+                kind,
+                o.error.as_deref().unwrap_or("")
+            );
+        }
     }
 
     if let Some(want) = e.exit {
@@ -652,6 +701,139 @@ mod evaluator_tests {
             error: None,
             error_kind: None,
             error_hint: None,
+        }
+    }
+
+    fn outcome_with_error(kind: &'static str) -> RunOutcome {
+        let mut o = outcome_with(None, b"");
+        o.error = Some("boom".into());
+        o.error_kind = Some(kind);
+        o
+    }
+
+    /// Spec §5: a step with no (or an empty) expect block must at least
+    /// complete without trap/timeout — a harness-level error fails it.
+    #[test]
+    fn step_without_expect_fails_on_trap() {
+        let o = outcome_with_error("trap");
+        let e = Expect::default();
+        match evaluate(1, &o, &e) {
+            StepResult::Fail { check, .. } => assert_eq!(check, "error"),
+            StepResult::Pass => panic!("trapped step with empty expect must fail"),
+        }
+    }
+
+    #[test]
+    fn step_without_expect_fails_on_timeout() {
+        let o = outcome_with_error("timeout");
+        let e = Expect::default();
+        assert!(
+            matches!(evaluate(1, &o, &e), StepResult::Fail { .. }),
+            "timed-out step with empty expect must fail"
+        );
+    }
+
+    #[test]
+    fn step_without_expect_fails_on_memory_error() {
+        let o = outcome_with_error("memory");
+        let e = Expect::default();
+        assert!(
+            matches!(evaluate(1, &o, &e), StepResult::Fail { .. }),
+            "memory-limit step with empty expect must fail"
+        );
+    }
+
+    /// `trap = true` explicitly sanctions the trap — must keep passing.
+    #[test]
+    fn expected_trap_still_passes() {
+        let o = outcome_with_error("trap");
+        let e = Expect {
+            trap: Some(true),
+            ..Default::default()
+        };
+        assert!(matches!(evaluate(1, &o, &e), StepResult::Pass));
+    }
+
+    /// `trap = false` + an actual trap keeps failing via the trap check.
+    #[test]
+    fn trap_false_with_trap_fails() {
+        let o = outcome_with_error("trap");
+        let e = Expect {
+            trap: Some(false),
+            ..Default::default()
+        };
+        assert!(matches!(evaluate(1, &o, &e), StepResult::Fail { .. }));
+    }
+
+    /// The scenario path must canonicalize `env.sandbox_root` exactly
+    /// like the CLI path does — on macOS `/tmp/...` roots otherwise
+    /// resolve candidates to `/private/tmp/...` and every files op is
+    /// denied as an escape.
+    #[test]
+    fn build_state_canonicalizes_sandbox_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let toml_src = format!(
+            "plugin = \"x.wasm\"\n[env]\nsandbox_root = \"{}\"\n",
+            link.display()
+        );
+        let scenario: Scenario = toml::from_str(&toml_src).unwrap();
+        let state = build_state(&scenario);
+        assert_eq!(
+            state.sandbox_root,
+            Some(std::fs::canonicalize(&real).unwrap())
+        );
+    }
+
+    /// Unknown cap strings (e.g. the kebab-case hook spelling) must be
+    /// a hard scenario error, not silently grant nothing.
+    #[test]
+    fn validate_env_rejects_unknown_cap() {
+        let scenario: Scenario =
+            toml::from_str("plugin = \"x.wasm\"\n[env]\ncaps = [\"hooks:pre-exec\"]\n").unwrap();
+        let err = validate_env(&scenario.env).unwrap_err();
+        assert!(err.contains("hooks:pre-exec"), "{}", err);
+    }
+
+    #[test]
+    fn validate_env_rejects_bad_allow_exec() {
+        let scenario: Scenario =
+            toml::from_str("plugin = \"x.wasm\"\n[env]\nallow_exec = [\":*\"]\n").unwrap();
+        let err = validate_env(&scenario.env).unwrap_err();
+        assert!(err.contains(":*"), "{}", err);
+    }
+
+    #[test]
+    fn validate_env_accepts_valid_entries() {
+        let scenario: Scenario = toml::from_str(
+            "plugin = \"x.wasm\"\n[env]\ncaps = [\"io\", \"hooks:pre_exec\"]\nallow_exec = [\"git status:*\"]\n",
+        )
+        .unwrap();
+        assert!(validate_env(&scenario.env).is_ok());
+    }
+
+    /// A bad env must fail the scenario before any wasm is read, so the
+    /// plugin path here can be bogus.
+    #[test]
+    fn run_scenario_fails_fast_on_bad_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad-env.toml");
+        std::fs::write(
+            &path,
+            "plugin = \"nonexistent.wasm\"\n[env]\ncaps = [\"hooks:pre-exec\"]\n",
+        )
+        .unwrap();
+        let results = run_scenario(&path);
+        match &results[0] {
+            StepResult::Fail { check, reason, .. } => {
+                assert_eq!(*check, "env");
+                assert!(reason.contains("hooks:pre-exec"), "{}", reason);
+            }
+            StepResult::Pass => panic!("bad env must fail the scenario"),
         }
     }
 

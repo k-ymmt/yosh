@@ -47,14 +47,54 @@ pub fn host_exec(
     Ok(out)
 }
 
+/// Spawn a reader thread that drains `pipe` incrementally into a shared
+/// buffer, signalling EOF (or read error) on the returned channel. The
+/// buffer is shared so the caller can take whatever has been captured
+/// even when EOF never arrives — a grandchild that inherited the pipe
+/// write end keeps it open past the direct child's exit.
+fn spawn_pipe_reader(
+    mut pipe: impl std::io::Read + Send + 'static,
+) -> (
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    std::sync::mpsc::Receiver<()>,
+) {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let shared = buf.clone();
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => shared
+                    .lock()
+                    .expect("pipe buffer mutex")
+                    .extend_from_slice(&chunk[..n]),
+            }
+        }
+        let _ = tx.send(());
+    });
+    (buf, rx)
+}
+
+/// Wait for the reader's EOF signal until `until`, then take whatever
+/// bytes were captured. Never blocks past `until`.
+fn take_captured(
+    buf: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    done: &std::sync::mpsc::Receiver<()>,
+    until: std::time::Instant,
+) -> Vec<u8> {
+    let wait = until.saturating_duration_since(std::time::Instant::now());
+    let _ = done.recv_timeout(wait);
+    std::mem::take(&mut *buf.lock().expect("pipe buffer mutex"))
+}
+
 fn spawn_with_timeout(
     program: &str,
     args: &[&str],
     timeout: Duration,
 ) -> Result<ExecOutput, ErrorCode> {
-    use std::io::Read;
     use std::process::{Command, Stdio};
-    use std::sync::mpsc;
     use std::thread;
     use std::time::Instant;
 
@@ -70,20 +110,10 @@ fn spawn_with_timeout(
         Err(_) => return Err(ErrorCode::IoFailed),
     };
 
-    let mut stdout_pipe = child.stdout.take().expect("piped stdout");
-    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
-    let (out_tx, out_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>();
-    let (err_tx, err_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>();
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        let r = stdout_pipe.read_to_end(&mut buf).map(|_| buf);
-        let _ = out_tx.send(r);
-    });
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        let r = stderr_pipe.read_to_end(&mut buf).map(|_| buf);
-        let _ = err_tx.send(r);
-    });
+    let stdout_pipe = child.stdout.take().expect("piped stdout");
+    let stderr_pipe = child.stderr.take().expect("piped stderr");
+    let (out_buf, out_done) = spawn_pipe_reader(stdout_pipe);
+    let (err_buf, err_done) = spawn_pipe_reader(stderr_pipe);
 
     let deadline = Instant::now() + timeout;
     let exit_status = loop {
@@ -107,15 +137,24 @@ fn spawn_with_timeout(
                 }
                 thread::sleep(Duration::from_millis(10));
             }
-            let _ = out_rx.recv();
-            let _ = err_rx.recv();
+            // Bounded drain: a surviving grandchild can hold the pipes
+            // open past the child's death.
+            let drain = Instant::now() + Duration::from_millis(100);
+            let _ = take_captured(&out_buf, &out_done, drain);
+            let _ = take_captured(&err_buf, &err_done, drain);
             return Err(ErrorCode::Timeout);
         }
         thread::sleep(Duration::from_millis(10));
     };
 
-    let stdout = out_rx.recv().ok().and_then(|r| r.ok()).unwrap_or_default();
-    let stderr = err_rx.recv().ok().and_then(|r| r.ok()).unwrap_or_default();
+    // The child has exited. Wait for EOF up to the remaining exec
+    // budget (with a small floor if the child used it all), then take
+    // whatever was captured — never block indefinitely on a
+    // grandchild-held pipe.
+    let floor = Instant::now() + Duration::from_millis(100);
+    let drain = deadline.max(floor);
+    let stdout = take_captured(&out_buf, &out_done, drain);
+    let stderr = take_captured(&err_buf, &err_done, drain);
     Ok(ExecOutput {
         exit_code: exit_status.code().unwrap_or(-1),
         stdout,
@@ -173,6 +212,29 @@ mod tests {
         assert_eq!(out.stdout, b"hello\n");
         assert_eq!(s.exec_log.len(), 1);
         assert_eq!(s.exec_log[0].program, "/bin/echo");
+    }
+
+    /// Regression: a grandchild that inherits the pipe write ends
+    /// (`sh -c 'daemon & exit 0'`) must not hang `yosh-plugin run`/
+    /// `test` — the drain after child exit is deadline-bounded.
+    #[test]
+    fn exec_returns_when_grandchild_keeps_pipe_open() {
+        let mut s = state_with_allow(&["/bin/sh:*"]);
+        let start = std::time::Instant::now();
+        let result = host_exec(
+            &mut s,
+            "/bin/sh",
+            &["-c".to_string(), "echo out; sleep 5 & exit 7".to_string()],
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(3000),
+            "call blocked on grandchild-held pipe for {:?}",
+            elapsed
+        );
+        let out = result.expect("child exited normally");
+        assert_eq!(out.exit_code, 7);
+        assert_eq!(out.stdout, b"out\n");
     }
 
     #[test]

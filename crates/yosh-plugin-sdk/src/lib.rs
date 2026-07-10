@@ -91,9 +91,13 @@ pub trait Plugin: Send + Default + 'static {
 
     /// The capabilities this plugin needs to function.
     ///
-    /// Each capability listed here must be granted by host
-    /// configuration. Missing capabilities cause the plugin to fail
-    /// to load. Default: no capabilities.
+    /// The host intersects this list with the `capabilities`
+    /// allowlist in the user's `plugins.toml` (no allowlist grants
+    /// everything requested). The plugin still loads when some
+    /// capabilities are denied: the host prints a
+    /// "requested but not granted" warning per denied capability and
+    /// the corresponding host imports return `ErrorCode::Denied` at
+    /// call time. Default: no capabilities.
     fn required_capabilities(&self) -> &[Capability] {
         &[]
     }

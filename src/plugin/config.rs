@@ -16,8 +16,11 @@ pub struct PluginEntry {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub capabilities: Option<Vec<String>>,
-    #[serde(default)]
-    pub sha256: Option<String>,
+    /// SHA-256 of the on-disk `.wasm`, pinned by `yosh-plugin sync`.
+    /// Required: an entry without it refuses to parse (and therefore
+    /// to load) — integrity verification is unconditional and
+    /// independent of the cwasm cache tuple below.
+    pub sha256: String,
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
@@ -75,11 +78,13 @@ fn default_true() -> bool {
 impl PluginEntry {
     /// Reconstruct the four-tuple cwasm `CacheKey` from the flat lockfile
     /// fields written by `yosh-plugin sync`. Returns `None` when any of
-    /// the four required components is absent — in that case the host
-    /// must fall back to an in-memory `Component::new`.
+    /// the three cwasm components is absent — in that case the host
+    /// must fall back to an in-memory `Component::new`. This is solely
+    /// the cwasm-trust gate; SHA-256 integrity is verified separately
+    /// and unconditionally from the required `sha256` field.
     pub fn cache_key(&self) -> Option<crate::plugin::cache::CacheKey> {
         Some(crate::plugin::cache::CacheKey {
-            wasm_sha256: self.sha256.clone()?,
+            wasm_sha256: self.sha256.clone(),
             wasmtime_version: self.wasmtime_version.clone()?,
             target_triple: self.target_triple.clone()?,
             engine_config_hash: self.engine_config_hash.clone()?,
@@ -103,6 +108,17 @@ impl PluginConfig {
             std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))?;
         toml::from_str(&content).map_err(|e| format!("{}: {}", path.display(), e))
     }
+}
+
+/// Load the plugin config for shell startup. A missing file is the
+/// normal no-plugins-installed case and returns `Ok(None)` (silent);
+/// any other failure — unreadable file, corrupted TOML — is `Err` so
+/// the caller can report it instead of silently loading zero plugins.
+pub fn read_config_for_load(path: &Path) -> Result<Option<PluginConfig>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    PluginConfig::load(path).map(Some)
 }
 
 pub fn expand_tilde(path: &str) -> PathBuf {
@@ -154,11 +170,13 @@ mod tests {
 [[plugin]]
 name = "hello"
 path = "/usr/lib/libhello.dylib"
+sha256 = "testsha"
 enabled = true
 
 [[plugin]]
 name = "disabled"
 path = "/usr/lib/libdisabled.dylib"
+sha256 = "testsha"
 enabled = false
 "#
         )
@@ -187,6 +205,7 @@ enabled = false
 [[plugin]]
 name = "hello"
 path = "/usr/lib/libhello.dylib"
+sha256 = "testsha"
 "#
         )
         .unwrap();
@@ -198,6 +217,28 @@ path = "/usr/lib/libhello.dylib"
     fn missing_config_file_returns_error() {
         let result = PluginConfig::load(Path::new("/nonexistent/plugins.toml"));
         assert!(result.is_err());
+    }
+
+    /// Contract for `load_from_config` diagnostics: a missing lockfile
+    /// is the normal no-plugins case (silent), but a corrupted or
+    /// unreadable one must surface an error — otherwise every plugin
+    /// vanishes with zero diagnostics.
+    #[test]
+    fn read_config_for_load_missing_file_is_silent_none() {
+        let result = read_config_for_load(Path::new("/nonexistent/plugins.lock"));
+        assert!(matches!(result, Ok(None)));
+    }
+
+    #[test]
+    fn read_config_for_load_corrupted_file_is_error() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "this is [ not valid toml").unwrap();
+        let err = read_config_for_load(f.path()).unwrap_err();
+        assert!(
+            err.contains(&f.path().display().to_string()),
+            "error must name the file: {}",
+            err
+        );
     }
 
     #[test]
@@ -222,6 +263,7 @@ path = "/usr/lib/libhello.dylib"
 [[plugin]]
 name = "restricted"
 path = "/usr/lib/librestricted.dylib"
+sha256 = "testsha"
 capabilities = ["variables:read", "io", "hooks:pre_exec"]
 "#
         )
@@ -247,6 +289,7 @@ capabilities = ["variables:read", "io", "hooks:pre_exec"]
 [[plugin]]
 name = "trusted"
 path = "/usr/lib/libtrusted.dylib"
+sha256 = "testsha"
 "#
         )
         .unwrap();
@@ -313,6 +356,7 @@ path = "/usr/lib/libtrusted.dylib"
 [[plugin]]
 name = "git-prompt"
 path = "/tmp/git-prompt.wasm"
+sha256 = "testsha"
 capabilities = ["commands:exec"]
 allowed_commands = ["git status:*", "git rev-parse:*"]
 "#
@@ -338,6 +382,7 @@ allowed_commands = ["git status:*", "git rev-parse:*"]
 [[plugin]]
 name = "notes"
 path = "/tmp/notes.wasm"
+sha256 = "testsha"
 capabilities = ["files:read", "files:write"]
 files_root = "~/notes"
 "#
@@ -356,6 +401,7 @@ files_root = "~/notes"
 [[plugin]]
 name = "full-fs"
 path = "/tmp/x.wasm"
+sha256 = "testsha"
 "#
         )
         .unwrap();
@@ -372,6 +418,7 @@ path = "/tmp/x.wasm"
 [[plugin]]
 name = "no-exec"
 path = "/tmp/x.wasm"
+sha256 = "testsha"
 "#
         )
         .unwrap();
@@ -431,9 +478,11 @@ engine_config_hash = "deadbeefcafebabe0123456789abcdef0123456789abcdef0123456789
         );
     }
 
-    /// Entries written by an older sync (or `cwasm_path` missing) must
-    /// still load without a `cache_key`. The host falls back to an
-    /// in-memory compile in that case.
+    /// Entries without the cwasm tuple (e.g. sync's local-plugin
+    /// tolerance path when precompile failed) must still load without a
+    /// `cache_key` — the host falls back to an in-memory compile — but
+    /// the SHA-256 is still required and still verified: integrity is
+    /// decoupled from the cwasm-trust gate.
     #[test]
     fn parse_lockfile_without_cwasm_fields_yields_no_cache_key() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
@@ -453,7 +502,39 @@ version = "0.1.0"
         let config = PluginConfig::load(f.path()).unwrap();
         let entry = &config.plugin[0];
         assert!(entry.cwasm_path.is_none());
-        assert!(entry.cache_key().is_none());
+        assert!(
+            entry.cache_key().is_none(),
+            "no cwasm tuple → no cwasm-trust cache key"
+        );
+        assert_eq!(
+            entry.sha256, "deadbeef",
+            "sha256 is independent of the cache key and always available for verification"
+        );
+    }
+
+    /// No backward compat (pre-release decision 2026-07-11): an entry
+    /// without `sha256` is a parse error and refuses to load, instead
+    /// of silently loading unverified.
+    #[test]
+    fn parse_lockfile_without_sha256_is_error() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "unverified"
+path = "~/.yosh/plugins/unverified/unverified.wasm"
+enabled = true
+source = "github:owner/unverified"
+version = "0.1.0"
+"#
+        )
+        .unwrap();
+        let result = PluginConfig::load(f.path());
+        assert!(
+            result.is_err(),
+            "entry without sha256 must be a parse error"
+        );
     }
 
     #[test]
@@ -465,6 +546,7 @@ version = "0.1.0"
 [[plugin]]
 name = "limited"
 path = "/tmp/x.wasm"
+sha256 = "testsha"
 max_memory_mb = 64
 hook_timeout_ms = 1000
 command_timeout_ms = 30000
@@ -489,6 +571,7 @@ pre_prompt_timeout_ms = 250
 [[plugin]]
 name = "plain"
 path = "/tmp/x.wasm"
+sha256 = "testsha"
 "#
         )
         .unwrap();

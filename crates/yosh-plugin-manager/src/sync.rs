@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{self, PluginDecl, PluginSource};
 use crate::github::GitHubClient;
@@ -24,14 +24,6 @@ fn config_dir() -> PathBuf {
     }
 }
 
-/// Per-plugin cwasm cache root. Mirrors `<HOME>/.yosh/plugins/<name>/`
-/// — the `.cwasm` and sidecar live next to the source `.wasm`. The host
-/// cache validator checks that the directory is mode 0700 and uid-owned,
-/// so we co-locate them under the plugin dir which we already control.
-fn cache_dir_for(plugin_name: &str) -> PathBuf {
-    plugin_dir().join(plugin_name)
-}
-
 pub fn config_path() -> PathBuf {
     config_dir().join("plugins.toml")
 }
@@ -47,12 +39,25 @@ pub struct SyncResult {
 
 /// Run the sync flow: read config, diff against lock, download/verify, write lock.
 pub fn sync(prune: bool) -> Result<SyncResult, String> {
-    let config_path = config_path();
-    let lock_path = lock_path();
+    sync_with_paths(
+        &config_path(),
+        &lock_path(),
+        &plugin_dir(),
+        prune,
+        &GitHubClient::new(),
+    )
+}
 
-    let decls = config::load_config(&config_path)?;
+fn sync_with_paths(
+    config_path: &Path,
+    lock_path: &Path,
+    plugin_root: &Path,
+    prune: bool,
+    client: &GitHubClient,
+) -> Result<SyncResult, String> {
+    let decls = config::load_config(config_path)?;
 
-    let existing_lock = match load_lockfile(&lock_path) {
+    let existing_lock = match load_lockfile(lock_path) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("yosh-plugin: warning: {}", e);
@@ -60,7 +65,6 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
         }
     };
 
-    let client = GitHubClient::new();
     // One engine each, shared across plugins. Building engines is non-trivial
     // (cranelift initialisation), so reusing them for the whole sync run
     // amortises the cost. precompile and metadata engines are flag-equivalent
@@ -75,9 +79,10 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
 
     for decl in &decls {
         match sync_one(
-            &client,
+            client,
             decl,
             &existing_lock,
+            plugin_root,
             &precompile_engine,
             &metadata_engine,
         ) {
@@ -87,22 +92,42 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
             }
             Err(e) => {
                 eprintln!("yosh-plugin: {}: {}", decl.name, e);
+                // A transient per-plugin failure must not drop the
+                // plugin's previously-good lock entry — the shell loads
+                // from plugins.lock, and the valid install is still on
+                // disk. Carry the old entry forward.
+                if let Some(prev) = existing_lock.plugin.iter().find(|p| p.name == decl.name) {
+                    eprintln!("yosh-plugin: {}: keeping previous lock entry", decl.name);
+                    new_entries.push(prev.clone());
+                }
                 failed.push((decl.name.clone(), e));
             }
         }
     }
 
-    // Prune: delete binaries for plugins removed from config
+    // Prune: delete binaries for plugins removed from config. Only the
+    // manager's own copies are touched: a `local:` plugin's `path` is
+    // the user's artifact (e.g. a build output inside their project),
+    // so it is left alone — only the lock entry and the manager-managed
+    // cwasm cache go away.
     if prune {
         for old in &existing_lock.plugin {
             if !decls.iter().any(|d| d.name == old.name) {
+                let is_local = old.source.starts_with("local:");
                 let path = config::expand_tilde_path(&old.path);
-                if path.exists() {
+                if !is_local && path.exists() {
                     if let Err(e) = std::fs::remove_file(&path) {
                         eprintln!("yosh-plugin: prune {}: {}", old.name, e);
                     } else {
                         eprintln!("yosh-plugin: pruned {}", old.name);
                     }
+                }
+                if is_local {
+                    eprintln!(
+                        "yosh-plugin: pruned {} (local artifact kept at {})",
+                        old.name,
+                        path.display()
+                    );
                 }
                 // Also drop any stale cwasm + sidecar.
                 if let Some(cwasm) = &old.cwasm_path {
@@ -117,7 +142,7 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
                 // is typically empty. `remove_dir` fails fast if not
                 // empty (e.g. user dropped a stray file there); we
                 // ignore the error in that case.
-                if let Some(parent) = path.parent() {
+                if !is_local && let Some(parent) = path.parent() {
                     let _ = std::fs::remove_dir(parent);
                 }
                 if let Some(cwasm) = &old.cwasm_path {
@@ -133,15 +158,20 @@ pub fn sync(prune: bool) -> Result<SyncResult, String> {
     let new_lock = LockFile {
         plugin: new_entries,
     };
-    save_lockfile(&lock_path, &new_lock)?;
+    save_lockfile(lock_path, &new_lock)?;
 
     Ok(SyncResult { succeeded, failed })
 }
 
+/// `plugin_root` is the manager-managed install root (production:
+/// `~/.yosh/plugins`). Each plugin's wasm, cwasm, and sidecar live
+/// under `<plugin_root>/<name>/`; the host cache validator checks that
+/// the directory is mode 0700 and uid-owned.
 fn sync_one(
     client: &GitHubClient,
     decl: &PluginDecl,
     existing_lock: &LockFile,
+    plugin_root: &Path,
     precompile_engine: &wasmtime::Engine,
     metadata_engine: &wasmtime::Engine,
 ) -> Result<LockEntry, String> {
@@ -151,35 +181,39 @@ fn sync_one(
         PluginSource::GitHub { owner, repo } => {
             let version = decl.version.as_deref().unwrap(); // validated in config
             let asset_name = asset_filename(&decl.name, decl.asset.as_deref());
-            let dest_dir = plugin_dir().join(&decl.name);
+            let dest_dir = plugin_root.join(&decl.name);
             let dest_path = dest_dir.join(&asset_name);
 
-            // Fast path: existing entry, same version, file present and
-            // checksum matches, AND we already have cwasm + metadata cached
-            // in the lock. If anything is missing fall through to the
-            // download / precompile / metadata path so we can repair.
+            // Verify the local file against the lock entry whenever we
+            // could otherwise skip the download (same version, file
+            // present). A mismatch or verify error marks the file
+            // untrusted so the download below repairs it — never
+            // re-hash and re-pin tampered content.
+            let same_version = existing
+                .map(|e| e.version.as_deref() == Some(version))
+                .unwrap_or(false);
+            let mut local_file_trusted = false;
             if let Some(existing) = existing
-                && existing.version.as_deref() == Some(version)
+                && same_version
                 && dest_path.exists()
-                && existing.cwasm_path.is_some()
-                && existing.required_capabilities.is_some()
             {
                 match verify_checksum(&dest_path, &existing.sha256) {
                     Ok(true) => {
-                        // cwasm sidecar might still be stale on disk
-                        // (e.g. prior `prune` removed it). Verify the
-                        // file is present; if not, re-precompile only
-                        // (skip download).
+                        local_file_trusted = true;
+                        // Fast path: checksum ok AND cwasm + metadata
+                        // already cached in the lock. cwasm sidecar might
+                        // still be stale on disk (e.g. prior `prune`
+                        // removed it); if so fall through to re-run
+                        // precompile + metadata (skip download).
                         let cwasm_present = existing
                             .cwasm_path
                             .as_deref()
                             .map(config::expand_tilde_path)
                             .map(|p| p.exists())
                             .unwrap_or(false);
-                        if cwasm_present {
+                        if existing.required_capabilities.is_some() && cwasm_present {
                             return Ok(with_decl_limits(existing, decl));
                         }
-                        // Fall through to re-run precompile + metadata.
                     }
                     Ok(false) => {
                         eprintln!(
@@ -188,16 +222,16 @@ fn sync_one(
                         );
                     }
                     Err(e) => {
-                        eprintln!("yosh-plugin: {}: verify failed: {}", decl.name, e);
+                        eprintln!(
+                            "yosh-plugin: {}: verify failed: {}; re-downloading",
+                            decl.name, e
+                        );
                     }
                 }
             }
 
-            // Download (only if file is missing or stale).
-            let need_download = !dest_path.exists()
-                || existing
-                    .map(|e| e.version.as_deref() != Some(version))
-                    .unwrap_or(true);
+            // Download if the file is missing, stale, or untrusted.
+            let need_download = !dest_path.exists() || !same_version || !local_file_trusted;
             let upstream_sha256 = if need_download {
                 let url = client.find_asset_url(owner, repo, version, &asset_name)?;
                 std::fs::create_dir_all(&dest_dir)
@@ -232,7 +266,7 @@ fn sync_one(
             let metadata = metadata_extract::extract(metadata_engine, &wasm_bytes)
                 .map_err(|e| format!("metadata extract: {}", e))?;
 
-            let cache_dir = cache_dir_for(&decl.name);
+            let cache_dir = plugin_root.join(&decl.name);
             let pre = precompile::precompile(&dest_path, &cache_dir, precompile_engine)
                 .map_err(|e| format!("precompile: {}", e))?;
             let cwasm_rel = format!(
@@ -281,7 +315,7 @@ fn sync_one(
                 .map_err(|e| format!("read {}: {}", resolved.display(), e))?;
 
             let metadata_result = metadata_extract::extract(metadata_engine, &wasm_bytes);
-            let cache_dir = cache_dir_for(&decl.name);
+            let cache_dir = plugin_root.join(&decl.name);
             let pre_result = precompile::precompile(&resolved, &cache_dir, precompile_engine);
 
             // Local-plugin tolerance: if precompile or metadata fails (e.g.
@@ -403,9 +437,18 @@ mod tests {
         };
         let client = GitHubClient::new();
         let empty_lock = LockFile { plugin: vec![] };
+        let root = tempfile::tempdir().unwrap();
         let pre_engine = precompile::make_engine().unwrap();
         let meta_engine = precompile::make_engine().unwrap();
-        let entry = sync_one(&client, &decl, &empty_lock, &pre_engine, &meta_engine).unwrap();
+        let entry = sync_one(
+            &client,
+            &decl,
+            &empty_lock,
+            root.path(),
+            &pre_engine,
+            &meta_engine,
+        )
+        .unwrap();
         assert_eq!(entry.name, "local-test");
         assert_eq!(entry.path, path);
         assert!(!entry.sha256.is_empty());
@@ -435,10 +478,174 @@ mod tests {
         };
         let client = GitHubClient::new();
         let empty_lock = LockFile { plugin: vec![] };
+        let root = tempfile::tempdir().unwrap();
         let pre_engine = precompile::make_engine().unwrap();
         let meta_engine = precompile::make_engine().unwrap();
-        let result = sync_one(&client, &decl, &empty_lock, &pre_engine, &meta_engine);
+        let result = sync_one(
+            &client,
+            &decl,
+            &empty_lock,
+            root.path(),
+            &pre_engine,
+            &meta_engine,
+        );
         assert!(result.is_err());
+    }
+
+    /// Regression: a local file whose checksum no longer matches the
+    /// lock entry (tampered or corrupted) must be re-downloaded, not
+    /// silently re-hashed and re-pinned into the lockfile. The mock
+    /// server 404s, so an attempted re-download surfaces as a
+    /// "failed to fetch release" error — whereas the old buggy path
+    /// never contacted the network and failed later in metadata
+    /// extraction (or worse, re-pinned a valid tampered component).
+    #[test]
+    fn sync_one_github_checksum_mismatch_triggers_redownload() {
+        let root = tempfile::tempdir().unwrap();
+        let dest_dir = root.path().join("gh-test");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        // Content hash differs from the lock entry's pinned sha256.
+        std::fs::write(dest_dir.join("gh_test.wasm"), b"tampered content").unwrap();
+
+        let mut server = mockito::Server::new();
+        let _m1 = server
+            .mock("GET", "/repos/owner/repo/releases/tags/v1.0.0")
+            .with_status(404)
+            .create();
+        let _m2 = server
+            .mock("GET", "/repos/owner/repo/releases/tags/1.0.0")
+            .with_status(404)
+            .create();
+        let client = crate::github::GitHubClientWithBase::new(&server.url()).into_client();
+
+        let existing = sample_lock_entry(); // sha256 "aaa" != actual hash
+        let lock = LockFile {
+            plugin: vec![existing],
+        };
+        let decl = sample_decl_with_limits(None, None, None, None); // github owner/repo @1.0.0
+        let pre_engine = precompile::make_engine().unwrap();
+        let meta_engine = precompile::make_engine().unwrap();
+        let err = sync_one(&client, &decl, &lock, root.path(), &pre_engine, &meta_engine)
+            .expect_err("mismatched checksum must attempt re-download, which 404s here");
+        assert!(
+            err.contains("release not found"),
+            "expected a re-download attempt, got: {}",
+            err
+        );
+    }
+
+    /// Regression: a per-plugin sync failure (here: upstream 404) must
+    /// not drop the plugin's previously-good lock entry — the shell
+    /// loads from plugins.lock and the valid install is still on disk.
+    #[test]
+    fn sync_keeps_previous_lock_entry_when_plugin_fails() {
+        let home = tempfile::tempdir().unwrap();
+        let config_path = home.path().join("plugins.toml");
+        let lock_path = home.path().join("plugins.lock");
+        let plugin_root = home.path().join("plugins");
+        std::fs::write(
+            &config_path,
+            "[[plugin]]\nname = \"gh-test\"\nsource = \"github:owner/repo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let prev = sample_lock_entry();
+        save_lockfile(
+            &lock_path,
+            &LockFile {
+                plugin: vec![prev.clone()],
+            },
+        )
+        .unwrap();
+
+        // No local file installed and the mock upstream 404s → this
+        // plugin's sync fails.
+        let mut server = mockito::Server::new();
+        let _m1 = server
+            .mock("GET", "/repos/owner/repo/releases/tags/v1.0.0")
+            .with_status(404)
+            .create();
+        let _m2 = server
+            .mock("GET", "/repos/owner/repo/releases/tags/1.0.0")
+            .with_status(404)
+            .create();
+        let client = crate::github::GitHubClientWithBase::new(&server.url()).into_client();
+
+        let result =
+            sync_with_paths(&config_path, &lock_path, &plugin_root, false, &client).unwrap();
+        assert_eq!(result.failed.len(), 1);
+
+        let lock = load_lockfile(&lock_path).unwrap();
+        assert_eq!(
+            lock.plugin.len(),
+            1,
+            "failed plugin's previous lock entry must be preserved"
+        );
+        assert_eq!(lock.plugin[0], prev);
+    }
+
+    /// Regression: `sync --prune` must not delete the artifact of a
+    /// `local:` plugin — that path is the user's own build output, not
+    /// a manager-managed copy under the plugin root. Manager-managed
+    /// cwasm sidecars are still removed.
+    #[test]
+    fn prune_keeps_local_plugin_artifact() {
+        let home = tempfile::tempdir().unwrap();
+        let config_path = home.path().join("plugins.toml");
+        let lock_path = home.path().join("plugins.lock");
+        let plugin_root = home.path().join("plugins");
+        // Plugin removed from config → prune target.
+        std::fs::write(&config_path, "").unwrap();
+
+        let artifact_dir = home.path().join("user-project/target");
+        std::fs::create_dir_all(&artifact_dir).unwrap();
+        let artifact = artifact_dir.join("my_plugin.wasm");
+        std::fs::write(&artifact, b"user build output").unwrap();
+
+        // Manager-managed cwasm for the same plugin — this one SHOULD go.
+        let cwasm_dir = plugin_root.join("my_plugin");
+        std::fs::create_dir_all(&cwasm_dir).unwrap();
+        let cwasm = cwasm_dir.join("my_plugin.cwasm");
+        std::fs::write(&cwasm, b"cwasm").unwrap();
+
+        let artifact_str = artifact.to_string_lossy().to_string();
+        let entry = LockEntry {
+            name: "my_plugin".into(),
+            path: artifact_str.clone(),
+            enabled: true,
+            capabilities: None,
+            sha256: "abc".into(),
+            upstream_sha256: None,
+            source: format!("local:{}", artifact_str),
+            version: None,
+            cwasm_path: Some(cwasm.to_string_lossy().to_string()),
+            wasmtime_version: None,
+            target_triple: None,
+            engine_config_hash: None,
+            required_capabilities: None,
+            implemented_hooks: None,
+            max_memory_mb: None,
+            hook_timeout_ms: None,
+            command_timeout_ms: None,
+            pre_prompt_timeout_ms: None,
+        };
+        save_lockfile(
+            &lock_path,
+            &LockFile {
+                plugin: vec![entry],
+            },
+        )
+        .unwrap();
+
+        let client = GitHubClient::new();
+        sync_with_paths(&config_path, &lock_path, &plugin_root, true, &client).unwrap();
+
+        assert!(
+            artifact.exists(),
+            "local: plugin artifact must survive --prune"
+        );
+        assert!(!cwasm.exists(), "manager-managed cwasm must be pruned");
+        let lock = load_lockfile(&lock_path).unwrap();
+        assert!(lock.plugin.is_empty());
     }
 
     #[test]

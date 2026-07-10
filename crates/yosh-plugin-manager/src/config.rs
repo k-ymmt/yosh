@@ -157,6 +157,23 @@ pub fn expand_tilde_path(path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(path)
 }
 
+/// Atomically replace `path` with `content` (tempfile in the same
+/// directory + rename), mirroring `lockfile::save_lockfile`. An
+/// interrupt mid-write can no longer leave a truncated config behind.
+pub fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{}: no parent directory", path.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| format!("{}: {}", path.display(), e))?;
+    tmp.write_all(content.as_bytes())
+        .map_err(|e| format!("{}: {}", path.display(), e))?;
+    tmp.persist(path)
+        .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

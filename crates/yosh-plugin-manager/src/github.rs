@@ -1,4 +1,3 @@
-use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -177,23 +176,8 @@ impl GitHubClient {
             .call()
             .map_err(|e| format!("download request failed: {}", e))?;
 
-        let mut file = fs::File::create(dest)
-            .map_err(|e| format!("failed to create {}: {}", dest.display(), e))?;
-
         let mut reader = response.body_mut().as_reader();
-        let mut buf = [0u8; 8192];
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| format!("failed to read response body: {}", e))?;
-            if n == 0 {
-                break;
-            }
-            file.write_all(&buf[..n])
-                .map_err(|e| format!("failed to write to {}: {}", dest.display(), e))?;
-        }
-
-        Ok(())
+        stream_to_file(&mut reader, dest)
     }
 
     /// Get the latest release tag for a repo, stripping a leading `v` prefix.
@@ -226,6 +210,33 @@ impl Default for GitHubClient {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Stream `reader` into a temp file next to `dest`, then atomically
+/// rename over `dest` once the stream completed. A mid-stream failure
+/// leaves any previously-installed file at `dest` untouched (the temp
+/// file is cleaned up on drop). Extracted from `download` so the write
+/// path is unit-testable without a network.
+fn stream_to_file(reader: &mut impl Read, dest: &Path) -> Result<(), String> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| format!("{}: no parent directory", dest.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| format!("failed to create temp file in {}: {}", parent.display(), e))?;
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("failed to read response body: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        tmp.write_all(&buf[..n])
+            .map_err(|e| format!("failed to write to {}: {}", dest.display(), e))?;
+    }
+    tmp.persist(dest)
+        .map_err(|e| format!("failed to persist {}: {}", dest.display(), e))?;
+    Ok(())
 }
 
 /// Test-only client that uses a custom base URL (for mockito tests).
@@ -325,6 +336,61 @@ mod tests {
             .iter()
             .any(|a| a["name"].as_str() == Some("libfoo-linux-x86_64.so"));
         assert!(!found);
+    }
+
+    /// A reader that yields some bytes, then fails — models a network
+    /// connection dropping mid-download.
+    struct FailingReader {
+        chunks: Vec<Vec<u8>>,
+    }
+
+    impl Read for FailingReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.chunks.pop() {
+                Some(chunk) => {
+                    buf[..chunk.len()].copy_from_slice(&chunk);
+                    Ok(chunk.len())
+                }
+                None => Err(std::io::Error::other("connection reset mid-stream")),
+            }
+        }
+    }
+
+    /// Regression: a mid-stream download failure must not destroy the
+    /// previously-installed file at `dest` — the working binary a
+    /// version bump is replacing.
+    #[test]
+    fn stream_to_file_failure_preserves_existing_dest() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("plugin.wasm");
+        std::fs::write(&dest, b"installed working binary").unwrap();
+
+        let mut reader = FailingReader {
+            chunks: vec![b"partial garbage".to_vec()],
+        };
+        let err = stream_to_file(&mut reader, &dest).unwrap_err();
+        assert!(err.contains("failed to read response body"), "{}", err);
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"installed working binary",
+            "dest must be untouched after a failed download"
+        );
+        // No stray partial files left next to dest.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path() != dest)
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {:?}", leftovers);
+    }
+
+    #[test]
+    fn stream_to_file_success_writes_dest() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("plugin.wasm");
+        let mut reader = std::io::Cursor::new(b"new version bytes".to_vec());
+        stream_to_file(&mut reader, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new version bytes");
     }
 
     #[test]

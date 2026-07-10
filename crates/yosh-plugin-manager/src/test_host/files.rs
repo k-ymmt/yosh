@@ -29,6 +29,10 @@ fn require_write(state: &mut TestState, path: &str) -> Result<(), ErrorCode> {
 
 /// In sandbox mode, return the canonicalised real path or a recorded
 /// `Denied` if it escapes `root`. Virtual mode returns the path as-is.
+/// Mirrors `src/plugin/host/files.rs::resolve`: a dangling in-root
+/// symlink is denied (writing through it would materialize the outside
+/// target), while any number of missing plain-name trailing components
+/// inside the root is allowed (recursive create).
 fn resolve(state: &mut TestState, path: &str) -> Result<PathBuf, ErrorCode> {
     let Some(root) = state.sandbox_root.clone() else {
         return Ok(PathBuf::from(path));
@@ -39,20 +43,35 @@ fn resolve(state: &mut TestState, path: &str) -> Result<PathBuf, ErrorCode> {
         root.join(path)
     };
     // Canonicalise lazily: if the file doesn't exist yet
-    // (write/create), canonicalise the parent and re-join.
+    // (write/create), canonicalise the deepest existing ancestor and
+    // re-join the missing suffix.
     let canon = match std::fs::canonicalize(&candidate) {
         Ok(p) => p,
         Err(_) => {
-            let Some(parent) = candidate.parent() else {
+            let mut existing = candidate.as_path();
+            let mut missing: Vec<std::ffi::OsString> = Vec::new();
+            while std::fs::symlink_metadata(existing).is_err() {
+                let Some(name) = existing.file_name() else {
+                    return Err(super::deny(state, "files:sandbox-escape", path));
+                };
+                missing.push(name.to_os_string());
+                let Some(parent) = existing.parent() else {
+                    return Err(super::deny(state, "files:sandbox-escape", path));
+                };
+                existing = parent;
+            }
+            // Exists but didn't canonicalise → dangling symlink.
+            let Ok(base) = std::fs::canonicalize(existing) else {
                 return Err(super::deny(state, "files:sandbox-escape", path));
             };
-            let Ok(parent_canon) = std::fs::canonicalize(parent) else {
+            if missing.iter().any(|c| c == ".." || c == ".") {
                 return Err(super::deny(state, "files:sandbox-escape", path));
-            };
-            let Some(file_name) = candidate.file_name() else {
-                return Err(super::deny(state, "files:sandbox-escape", path));
-            };
-            parent_canon.join(file_name)
+            }
+            let mut joined = base;
+            for name in missing.iter().rev() {
+                joined.push(name);
+            }
+            joined
         }
     };
     if canon.starts_with(&root) {
@@ -329,6 +348,44 @@ mod tests {
             err,
             Err(ErrorCode::Denied) | Err(ErrorCode::NotFound)
         ));
+    }
+
+    /// Regression: a dangling in-root symlink pointing outside must not
+    /// be writable through (mirrors src/plugin/host/files.rs).
+    #[test]
+    fn sandbox_denies_dangling_symlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let target = outside.path().join("victim.txt"); // does not exist
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let mut s = state_rw();
+        s.sandbox_root = Some(root.clone());
+        assert_eq!(
+            host_write_file(&mut s, &link.to_string_lossy(), b"pwned"),
+            Err(ErrorCode::Denied)
+        );
+        assert!(!target.exists());
+    }
+
+    /// Regression: ≥2 missing trailing components inside the root were
+    /// denied (and mislabeled as files:sandbox-escape).
+    #[test]
+    fn sandbox_allows_multi_level_missing_create_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let mut s = state_rw();
+        s.sandbox_root = Some(root.clone());
+        host_create_dir(&mut s, "a/b/c", true)
+            .expect("recursive create-dir of in-root path must be allowed");
+        assert!(root.join("a/b/c").is_dir());
+        assert!(
+            s.denied_log.is_empty(),
+            "no sandbox-escape denial for an in-root path: {:?}",
+            s.denied_log
+        );
     }
 
     #[test]

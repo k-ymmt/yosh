@@ -218,6 +218,16 @@ pub fn run() -> i32 {
 
 fn cmd_test(path: std::path::PathBuf, filter: Option<String>, format: OutputFormat) -> i32 {
     let reports = crate::scenario::run_dir(&path, filter.as_deref());
+    // Zero scenarios means the path is wrong (or the filter matched
+    // nothing) — "0 passed, 0 failed" exiting 0 would let a typo'd CI
+    // path go green with no tests run.
+    if reports.is_empty() {
+        eprintln!(
+            "yosh-plugin: no scenario .toml files found under {}",
+            path.display()
+        );
+        return 1;
+    }
     let all_passed = reports.iter().all(|r| r.passed());
     match format {
         OutputFormat::Human => print!("{}", crate::scenario::format_summary_human(&reports)),
@@ -625,4 +635,29 @@ fn cmd_verify() -> i32 {
     }
 
     if all_ok { 0 } else { 1 }
+}
+
+#[cfg(test)]
+mod cmd_tests {
+    use super::*;
+
+    /// Regression: `yosh-plugin test <nonexistent-path>` used to report
+    /// "0 passed, 0 failed" and exit 0 — a typo'd path in CI went green
+    /// with no tests run.
+    #[test]
+    fn cmd_test_nonexistent_path_fails() {
+        let code = cmd_test(
+            std::path::PathBuf::from("/nonexistent/scenario-dir"),
+            None,
+            OutputFormat::Human,
+        );
+        assert_eq!(code, 1, "zero scenarios must not exit 0");
+    }
+
+    #[test]
+    fn cmd_test_empty_dir_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = cmd_test(dir.path().to_path_buf(), None, OutputFormat::Human);
+        assert_eq!(code, 1, "a directory with no .toml scenarios must not exit 0");
+    }
 }

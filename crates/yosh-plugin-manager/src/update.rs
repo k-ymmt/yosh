@@ -124,8 +124,7 @@ pub fn update(
     }
 
     if any_updated {
-        std::fs::write(config_path, doc.to_string())
-            .map_err(|e| format!("write {}: {}", config_path.display(), e))?;
+        crate::config::write_atomic(config_path, &doc.to_string())?;
     }
 
     Ok(UpdateOutcome {

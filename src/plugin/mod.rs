@@ -40,7 +40,7 @@ use yosh_plugin_api::{
 use crate::env::ShellEnv;
 
 use self::cache::{CacheKey, sha256_hex, sidecar_path, validate_cwasm};
-use self::config::{PluginConfig, expand_tilde};
+use self::config::expand_tilde;
 use self::host::HostContext;
 
 // ── wasmtime bindgen for our WIT contract ───────────────────────────────
@@ -283,11 +283,18 @@ impl PluginManager {
     }
 
     /// Load plugins listed in the config file. Errors are printed to stderr
-    /// and the failing plugin is skipped.
+    /// and the failing plugin is skipped. A missing config file is the
+    /// normal no-plugins case and stays silent; a corrupted/unreadable
+    /// one is reported — otherwise every plugin would vanish with zero
+    /// diagnostics.
     pub fn load_from_config(&mut self, config_path: &Path, env: &mut ShellEnv) {
-        let config = match PluginConfig::load(config_path) {
-            Ok(c) => c,
-            Err(_) => return,
+        let config = match config::read_config_for_load(config_path) {
+            Ok(Some(c)) => c,
+            Ok(None) => return,
+            Err(e) => {
+                eprintln!("yosh: plugin: {}", e);
+                return;
+            }
         };
         for entry in &config.plugin {
             if !entry.enabled {
@@ -304,6 +311,7 @@ impl PluginManager {
                 &path,
                 env,
                 config_caps,
+                Some(&entry.sha256),
                 entry.cwasm_path.as_deref(),
                 cache_key.as_ref(),
                 entry.allowed_commands.as_deref().unwrap_or_default(),
@@ -325,6 +333,7 @@ impl PluginManager {
         self.load_one(
             path,
             env,
+            None,
             None,
             None,
             None,
@@ -358,6 +367,10 @@ impl PluginManager {
     /// Load one plugin.
     ///   * `config_capabilities`: `None` → grant every requested capability;
     ///     `Some(bits)` → intersect requested with `bits`.
+    ///   * `expected_sha256`: lockfile-pinned SHA-256 of the wasm bytes.
+    ///     Always `Some` for lockfile loads (the field is required in
+    ///     `plugins.lock`); a mismatch refuses the load. `None` only for
+    ///     the manual `load_plugin` API, which has no lockfile pin.
     ///   * `cwasm_path` + `expected_key`: when both are present, attempt to
     ///     `Component::deserialize` from the trusted cache instead of
     ///     re-compiling the wasm bytes. Any of the 5 trust conditions
@@ -375,6 +388,7 @@ impl PluginManager {
         path: &Path,
         env: &mut ShellEnv,
         config_capabilities: Option<u32>,
+        expected_sha256: Option<&str>,
         cwasm_path: Option<&Path>,
         expected_key: Option<&CacheKey>,
         allowed_commands: &[String],
@@ -384,18 +398,19 @@ impl PluginManager {
         // 1. Read the wasm bytes (needed for SHA verify and/or in-memory compile).
         let wasm_bytes = std::fs::read(path).map_err(|e| format!("{}: {}", path.display(), e))?;
 
-        // 2. If the lockfile pinned a SHA, verify the on-disk wasm matches
+        // 2. Verify the on-disk wasm against the lockfile-pinned SHA
         //    BEFORE trusting any cwasm. Per spec §5 step 1: this check is
-        //    unconditional. A mismatch refuses the load (does NOT silently
-        //    fall back to a cached cwasm).
-        if let Some(key) = expected_key {
+        //    unconditional for lockfile loads — it does NOT depend on the
+        //    cwasm cache tuple being present. A mismatch refuses the load
+        //    (does NOT silently fall back to a cached cwasm).
+        if let Some(expected) = expected_sha256 {
             let actual = sha256_hex(&wasm_bytes);
-            if actual != key.wasm_sha256 {
+            if actual != expected {
                 return Err(format!(
                     "{}: wasm SHA-256 mismatch (lockfile {}, actual {}); \
                      refusing to load. Run 'yosh-plugin sync' to refresh.",
                     path.display(),
-                    &key.wasm_sha256,
+                    expected,
                     &actual,
                 ));
             }
@@ -973,9 +988,9 @@ fn parse_required_capabilities(plugin_info: &PluginInfo, plugin_name: &str) -> u
     bits
 }
 
-/// Log requested-but-not-granted capabilities in the same shape as the
-/// dlopen-era `log_denied_capabilities` — preserves user-visible behaviour.
-fn log_denied_capabilities(plugin_name: &str, denied: u32) {
+/// Names of the capabilities present in the `denied` bitfield. Must
+/// enumerate every `Capability` variant so no denial goes unreported.
+fn denied_capability_names(denied: u32) -> Vec<&'static str> {
     let caps = [
         Capability::VariablesRead,
         Capability::VariablesWrite,
@@ -987,15 +1002,22 @@ fn log_denied_capabilities(plugin_name: &str, denied: u32) {
         Capability::HookPrePrompt,
         Capability::FilesRead,
         Capability::FilesWrite,
+        Capability::CommandsExec,
     ];
-    for cap in caps {
-        if denied & cap.to_bitflag() != 0 {
-            eprintln!(
-                "yosh: plugin '{}': capability '{}' requested but not granted",
-                plugin_name,
-                cap.as_str()
-            );
-        }
+    caps.into_iter()
+        .filter(|cap| denied & cap.to_bitflag() != 0)
+        .map(|cap| cap.as_str())
+        .collect()
+}
+
+/// Log requested-but-not-granted capabilities in the same shape as the
+/// dlopen-era `log_denied_capabilities` — preserves user-visible behaviour.
+fn log_denied_capabilities(plugin_name: &str, denied: u32) {
+    for name in denied_capability_names(denied) {
+        eprintln!(
+            "yosh: plugin '{}': capability '{}' requested but not granted",
+            plugin_name, name
+        );
     }
 }
 
@@ -1024,6 +1046,7 @@ pub mod test_helpers {
             Some(caps),
             None,
             None,
+            None,
             allowed_commands,
             None,
             limits::LimitsConfig::default(),
@@ -1046,6 +1069,7 @@ pub mod test_helpers {
             path,
             env,
             Some(caps),
+            Some(&expected_key.wasm_sha256),
             Some(cwasm_path),
             Some(expected_key),
             allowed_commands,
@@ -1063,7 +1087,7 @@ pub mod test_helpers {
         caps: u32,
         limits_cfg: limits::LimitsConfig,
     ) -> Result<(), String> {
-        manager.load_one(path, env, Some(caps), None, None, &[], None, limits_cfg)
+        manager.load_one(path, env, Some(caps), None, None, None, &[], None, limits_cfg)
     }
 
     /// Returns true if the most-recently-loaded plugin's `Store` has a
@@ -1125,6 +1149,37 @@ mod tests {
         // to call_pre_exec / call_post_exec.
         let mgr = PluginManager::new();
         assert!(!mgr.has_exec_hooks());
+    }
+
+    /// Regression: `commands:exec` was missing from the denial
+    /// enumeration, so a denied exec capability was the only one that
+    /// produced no "requested but not granted" warning. Every
+    /// capability bit must map to a name here.
+    #[test]
+    fn denied_capability_names_covers_every_capability() {
+        use yosh_plugin_api::*;
+        let all = [
+            (CAP_VARIABLES_READ, "variables:read"),
+            (CAP_VARIABLES_WRITE, "variables:write"),
+            (CAP_FILESYSTEM, "filesystem"),
+            (CAP_IO, "io"),
+            (CAP_HOOK_PRE_EXEC, "hooks:pre_exec"),
+            (CAP_HOOK_POST_EXEC, "hooks:post_exec"),
+            (CAP_HOOK_ON_CD, "hooks:on_cd"),
+            (CAP_HOOK_PRE_PROMPT, "hooks:pre_prompt"),
+            (CAP_FILES_READ, "files:read"),
+            (CAP_FILES_WRITE, "files:write"),
+            (CAP_COMMANDS_EXEC, "commands:exec"),
+        ];
+        for (bit, name) in all {
+            assert_eq!(
+                denied_capability_names(bit),
+                vec![name],
+                "capability {:#x} must be reported as '{}'",
+                bit,
+                name
+            );
+        }
     }
 
     #[test]
