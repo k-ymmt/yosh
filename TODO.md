@@ -1,5 +1,139 @@
 # TODO
 
+## Audit 2026-07-11: Plugin Mechanism Bugs
+
+Findings from a four-lens audit of the plugin subsystem (shell-side
+runtime `src/plugin/`, manager install pipeline, runner/scenario
+tooling, SDK/API crates). Every item below was re-verified against the
+code on 2026-07-11; line numbers cite that day's tree.
+
+### Security / Integrity
+
+- [ ] `sync_one` checksum-mismatch path prints "local checksum mismatch,
+      re-downloading" but never re-downloads: `need_download` is computed from
+      file-exists + version-changed only, so with the file present and the
+      version unchanged the tampered file is kept, and the no-download branch
+      hashes it and writes that hash as both `sha256` and `upstream_sha256` —
+      the lockfile is silently re-pinned to the tampered content and a later
+      `yosh-plugin verify` reports ✓. Tamper evidence is destroyed
+      (`crates/yosh-plugin-manager/src/sync.rs:184-225`).
+- [ ] `load_one` skips the lockfile SHA-256 check whenever
+      `entry.cache_key()` is `None` (any of `wasmtime_version` /
+      `target_triple` / `engine_config_hash` missing), despite the step-2
+      comment saying the check is unconditional. A legacy lock entry with only
+      `sha256` set loads a tampered wasm without any integrity error. Key the
+      check off `entry.sha256` alone, not the 4-field tuple
+      (`src/plugin/mod.rs:391`, `src/plugin/config.rs:80`).
+- [ ] `files_root` confinement is escapable through a *dangling* symlink:
+      `resolve`'s not-found fallback canonicalizes the parent and rejoins the
+      final component, so a pre-existing `root/link -> /outside/target`
+      (target absent) passes `starts_with(root)`, and `write-file` /
+      `append-file` then create `/outside/target` through the symlink.
+      Existing-target symlinks are correctly denied; only the dangling case
+      escapes (`src/plugin/host/files.rs:47-60`; same code in
+      `crates/yosh-plugin-manager/src/test_host/files.rs:43-60`).
+
+### Data loss
+
+- [ ] `GitHubClient::download` truncates the destination in place
+      (`fs::File::create(dest)`) with no temp-file+rename, so a mid-stream
+      network failure during a version bump destroys the installed working
+      binary and leaves partial garbage at the install path
+      (`crates/yosh-plugin-manager/src/github.rs:180`).
+- [ ] `sync` rebuilds `plugins.lock` from this run's successes only; any
+      per-plugin failure (transient network error, precompile/metadata
+      failure) silently drops that plugin's previously-good lock entry, and
+      the shell — which loads from `plugins.lock` — stops loading a plugin
+      whose valid install still exists on disk
+      (`crates/yosh-plugin-manager/src/sync.rs:72-136`).
+- [ ] `sync --prune` deletes the file at the lock entry's `path` verbatim;
+      for `local:` plugins that path is the user's own artifact (e.g. a build
+      output inside their project tree), not a manager-managed copy under
+      `~/.yosh/plugins` (`crates/yosh-plugin-manager/src/sync.rs:99-121`,
+      local `path` recorded verbatim at `sync.rs:317`).
+- [ ] `write_plugin_entry` swallows plugins.toml read errors with
+      `unwrap_or_default()` and then rewrites the file — a transient read
+      failure (permissions, invalid UTF-8) on an existing config replaces the
+      whole file with just the newly installed entry
+      (`crates/yosh-plugin-manager/src/install.rs:29`).
+- [ ] plugins.toml is rewritten with plain non-atomic `std::fs::write` in
+      both install and update, unlike plugins.lock which uses
+      tempfile+persist; an interrupt mid-write leaves a truncated config that
+      the next sync fails to parse
+      (`crates/yosh-plugin-manager/src/install.rs:70`,
+      `crates/yosh-plugin-manager/src/update.rs:127`).
+
+### Hangs / runtime correctness
+
+- [ ] `spawn_with_timeout`'s blocking `out_rx.recv()` / `err_rx.recv()` hang
+      the shell when the exec'd child spawns a grandchild that inherits the
+      stdout/stderr pipe write ends (e.g. `sh -c 'daemon & exit 0'`, or git
+      background maintenance): the reader threads never hit EOF, and the
+      epoch deadline cannot interrupt code blocked inside a host import. The
+      "cannot hang" comments hold only for children that spawn nothing
+      (`src/plugin/host/commands.rs:136-147`; duplicated in
+      `crates/yosh-plugin-manager/src/test_host/commands.rs:110-118`, where
+      it hangs `yosh-plugin run`/`test`).
+- [ ] Confined `create-dir(recursive=true)` (and `write-file` into a missing
+      subdirectory) returns `Denied` for legitimate in-root paths when ≥2
+      trailing components don't exist: the not-found fallback canonicalizes
+      only one missing level, so `canonicalize(root/a)` also fails and maps
+      to `Denied` (`src/plugin/host/files.rs:47-54`; same in
+      `test_host/files.rs:43-57`, where the denial is additionally mislabeled
+      `files:sandbox-escape`).
+- [ ] `load_from_config` returns silently when `PluginConfig::load` fails,
+      so a corrupted/hand-edited plugins.lock makes every plugin vanish with
+      zero diagnostics — contradicting its own doc comment "Errors are
+      printed to stderr". Only the file-missing case should stay silent
+      (`src/plugin/mod.rs:288-291`).
+- [ ] `log_denied_capabilities` omits `Capability::CommandsExec` from its
+      capability array, so a denied `commands:exec` is the only capability
+      that produces no "requested but not granted" warning
+      (`src/plugin/mod.rs:978-990`).
+
+### Test tooling (yosh-plugin run/test)
+
+- [ ] Scenario `evaluate` never inspects `outcome.error` / `error_kind`
+      except via the optional `trap = true` key, so a step that traps, times
+      out, or blows the memory limit still PASSES when the scenario has no
+      (or an empty) `expect` block. The design spec §5 says a step without
+      `expect` must at least complete without trap/timeout
+      (`crates/yosh-plugin-manager/src/scenario.rs:634`,
+      docs/superpowers/specs/2026-05-12-plugin-dev-test-runner-design.md).
+- [ ] Scenario `env.sandbox_root` is used raw — never canonicalized — while
+      `test_host::files::resolve` canonicalizes each candidate before
+      `starts_with(root)`. On macOS a `/tmp/...` root resolves candidates to
+      `/private/tmp/...` so every files op is denied as
+      `files:sandbox-escape`; a relative root denies everything. The CLI path
+      canonicalizes; the scenario path must match
+      (`crates/yosh-plugin-manager/src/scenario.rs:297`; cf. `lib.rs:411`).
+- [ ] `yosh-plugin test <nonexistent-path>` produces zero reports and
+      `all()` over the empty vec is `true` → "0 passed, 0 failed", exit 0. A
+      typo'd path in CI goes green with no tests run
+      (`crates/yosh-plugin-manager/src/scenario.rs:867` `run_dir`,
+      `crates/yosh-plugin-manager/src/lib.rs:219-226` `cmd_test`).
+- [ ] Scenario `env.caps` / `env.allow_exec` entries that fail to parse are
+      silently discarded via `filter_map` — e.g. `caps = ["hooks:pre-exec"]`
+      (kebab-case, matching the step-level hook spelling) grants nothing with
+      no warning, in a schema that is otherwise strict. The CLI warns for bad
+      `--allow-exec`; the scenario path prints nothing
+      (`crates/yosh-plugin-manager/src/scenario.rs:274-295`).
+- [ ] `watch::wait_for_change` sleeps one poll interval after detecting a
+      change (torn-write guard) but returns the mtime observed *before* the
+      sleep and never re-stats — a rebuild that keeps writing during the
+      settle window yields one run against a possibly-torn wasm plus an
+      immediate duplicate re-run. Re-stat after the settle sleep
+      (`crates/yosh-plugin-manager/src/watch.rs:15-27`).
+
+### Documentation contract
+
+- [ ] `Plugin::required_capabilities` rustdoc claims "Missing capabilities
+      cause the plugin to fail to load", but the host intersects
+      requested∩allowed and loads the plugin with deny-stubs; the denied
+      calls just return `ErrorCode::Denied` at runtime. Fix the doc to match
+      the negotiate-and-deny behavior (or make the load fail)
+      (`crates/yosh-plugin-sdk/src/lib.rs:94-96`, `src/plugin/mod.rs:515-525`).
+
 ## Audit 2026-07-02: Security / Correctness / Performance
 
 Findings from a three-lens codebase audit (security, POSIX correctness,
