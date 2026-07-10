@@ -20,10 +20,24 @@ code on 2026-07-11; line numbers cite that day's tree.
 - [ ] `load_one` skips the lockfile SHA-256 check whenever
       `entry.cache_key()` is `None` (any of `wasmtime_version` /
       `target_triple` / `engine_config_hash` missing), despite the step-2
-      comment saying the check is unconditional. A legacy lock entry with only
-      `sha256` set loads a tampered wasm without any integrity error. Key the
-      check off `entry.sha256` alone, not the 4-field tuple
+      comment saying the check is unconditional. Not just a legacy-file
+      issue: the current sync's local-plugin tolerance path
+      (`crates/yosh-plugin-manager/src/sync.rs:292`) still emits entries
+      with `sha256` set but no cwasm tuple, and those load unverified
       (`src/plugin/mod.rs:391`, `src/plugin/config.rs:80`).
+      Fix approach (decided 2026-07-11, no backward compat — pre-release):
+      (1) make `PluginEntry.sha256` required (`Option<String>` → `String`);
+      entries without it are a parse error and refuse to load — the writer
+      side (`lockfile.rs::LockEntry.sha256: String`) already always emits
+      it; (2) decouple integrity from the cwasm cache key: pass
+      `expected_sha256: &str` to `load_one` as its own argument and verify
+      unconditionally, keeping `cache_key()` solely as the cwasm-trust
+      gate (in-memory-compile fallback unchanged); (3) rewrite
+      `parse_lockfile_without_cwasm_fields_yields_no_cache_key` to assert
+      "no cache key, but SHA is still verified". Accepted consequence:
+      rebuilding a local plugin without re-running `yosh-plugin sync`
+      now refuses to load on SHA mismatch (matches GitHub-plugin
+      behavior; the dev loop belongs to `yosh-plugin run --watch`).
 - [ ] `files_root` confinement is escapable through a *dangling* symlink:
       `resolve`'s not-found fallback canonicalizes the parent and rejoins the
       final component, so a pre-existing `root/link -> /outside/target`
