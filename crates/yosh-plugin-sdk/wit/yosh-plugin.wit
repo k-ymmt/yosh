@@ -117,6 +117,19 @@ interface commands {
     exec: func(program: string, args: list<string>) -> result<exec-output, error-code>;
 }
 
+interface settings {
+    use types.{error-code};
+
+    /// Contents of this plugin's own settings file
+    /// (`~/.config/yosh/plugins/<plugin-name>/settings.toml`).
+    ///
+    /// Requires no capability — every plugin may read its own
+    /// settings. Returns `none` when the file does not exist (the
+    /// normal "no settings" case). The host returns the raw TOML
+    /// text; parsing is the plugin's concern.
+    read: func() -> result<option<string>, error-code>;
+}
+
 interface plugin {
     use types.{plugin-info};
     metadata:  func() -> plugin-info;
@@ -138,6 +151,7 @@ world plugin-world {
     import files;
     import io;
     import commands;
+    import settings;
 
     export plugin;
     export hooks;
