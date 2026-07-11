@@ -1111,6 +1111,78 @@ pub mod yosh {
                 }
             }
         }
+        #[allow(dead_code, clippy::all)]
+        pub mod settings {
+            #[used]
+            #[doc(hidden)]
+            static __FORCE_SECTION_REF: fn() = super::super::super::__link_custom_section_describing_imports;
+            use super::super::super::_rt;
+            pub type ErrorCode = super::super::super::yosh::plugin::types::ErrorCode;
+            #[allow(unused_unsafe, clippy::all)]
+            /// Contents of this plugin's own settings file
+            /// (`~/.config/yosh/plugins/<plugin-name>/settings.toml`).
+            ///
+            /// Requires no capability — every plugin may read its own
+            /// settings. Returns `none` when the file does not exist (the
+            /// normal "no settings" case). The host returns the raw TOML
+            /// text; parsing is the plugin's concern.
+            pub fn read() -> Result<Option<_rt::String>, ErrorCode> {
+                unsafe {
+                    #[repr(align(1))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 10]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 10]);
+                    let ptr0 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "yosh:plugin/settings@0.2.1")]
+                    extern "C" {
+                        #[link_name = "read"]
+                        fn wit_import(_: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fn wit_import(_: *mut u8) {
+                        unreachable!()
+                    }
+                    wit_import(ptr0);
+                    let l1 = i32::from(*ptr0.add(0).cast::<u8>());
+                    match l1 {
+                        0 => {
+                            let e = {
+                                let l2 = i32::from(*ptr0.add(1).cast::<u8>());
+                                match l2 {
+                                    0 => None,
+                                    1 => {
+                                        let e = {
+                                            let l3 = *ptr0.add(2).cast::<*mut u8>();
+                                            let l4 = *ptr0.add(6).cast::<usize>();
+                                            let len5 = l4;
+                                            let bytes5 = _rt::Vec::from_raw_parts(
+                                                l3.cast(),
+                                                len5,
+                                                len5,
+                                            );
+                                            _rt::string_lift(bytes5)
+                                        };
+                                        Some(e)
+                                    }
+                                    _ => _rt::invalid_enum_discriminant(),
+                                }
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l6 = i32::from(*ptr0.add(1).cast::<u8>());
+                                super::super::super::yosh::plugin::types::ErrorCode::_lift(
+                                    l6 as u8,
+                                )
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    }
+                }
+            }
+        }
     }
 }
 #[allow(dead_code)]
@@ -1601,9 +1673,9 @@ pub(crate) use __export_plugin_world_impl as export;
 #[cfg(target_arch = "wasm32")]
 #[link_section = "component-type:wit-bindgen:0.31.0:yosh:plugin@0.2.1:plugin-world:encoded world"]
 #[doc(hidden)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1701] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa2\x0c\x01A\x02\x01\
-A\x13\x01B\x0a\x01m\x07\x06denied\x10invalid-argument\x09io-failed\x09not-found\x05\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1779] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xf0\x0c\x01A\x02\x01\
+A\x15\x01B\x0a\x01m\x07\x06denied\x10invalid-argument\x09io-failed\x09not-found\x05\
 other\x07timeout\x13pattern-not-allowed\x04\0\x0aerror-code\x03\0\0\x01m\x02\x06\
 stdout\x06stderr\x04\0\x09io-stream\x03\0\x02\x01m\x04\x08pre-exec\x09post-exec\x05\
 on-cd\x0apre-prompt\x04\0\x09hook-name\x03\0\x04\x01ps\x01p\x05\x01r\x05\x04name\
@@ -1631,15 +1703,17 @@ eam\x03\0\0\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\x02\x01p}\x01j\0\x01\x
 :plugin/io@0.2.1\x05\x06\x01B\x09\x02\x03\x02\x01\x01\x04\0\x0aerror-code\x03\0\0\
 \x01p}\x01r\x03\x09exit-codez\x06stdout\x02\x06stderr\x02\x04\0\x0bexec-output\x03\
 \0\x03\x01ps\x01j\x01\x04\x01\x01\x01@\x02\x07programs\x04args\x05\0\x06\x04\0\x04\
-exec\x01\x07\x03\x01\x1ayosh:plugin/commands@0.2.1\x05\x07\x02\x03\0\0\x0bplugin\
--info\x01B\x0c\x02\x03\x02\x01\x08\x04\0\x0bplugin-info\x03\0\0\x01@\0\0\x01\x04\
+exec\x01\x07\x03\x01\x1ayosh:plugin/commands@0.2.1\x05\x07\x01B\x06\x02\x03\x02\x01\
+\x01\x04\0\x0aerror-code\x03\0\0\x01ks\x01j\x01\x02\x01\x01\x01@\0\0\x03\x04\0\x04\
+read\x01\x04\x03\x01\x1ayosh:plugin/settings@0.2.1\x05\x08\x02\x03\0\0\x0bplugin\
+-info\x01B\x0c\x02\x03\x02\x01\x09\x04\0\x0bplugin-info\x03\0\0\x01@\0\0\x01\x04\
 \0\x08metadata\x01\x02\x01j\0\x01s\x01@\0\0\x03\x04\0\x07on-load\x01\x04\x01ps\x01\
 @\x02\x07commands\x04args\x05\0z\x04\0\x04exec\x01\x06\x01@\0\x01\0\x04\0\x09on-\
-unload\x01\x07\x04\x01\x18yosh:plugin/plugin@0.2.1\x05\x09\x01B\x08\x01@\x01\x07\
+unload\x01\x07\x04\x01\x18yosh:plugin/plugin@0.2.1\x05\x0a\x01B\x08\x01@\x01\x07\
 commands\x01\0\x04\0\x08pre-exec\x01\0\x01@\x02\x07commands\x09exit-codez\x01\0\x04\
 \0\x09post-exec\x01\x01\x01@\x02\x07old-dirs\x07new-dirs\x01\0\x04\0\x05on-cd\x01\
 \x02\x01@\0\x01\0\x04\0\x0apre-prompt\x01\x03\x04\x01\x17yosh:plugin/hooks@0.2.1\
-\x05\x0a\x04\x01\x1eyosh:plugin/plugin-world@0.2.1\x04\0\x0b\x12\x01\0\x0cplugin\
+\x05\x0b\x04\x01\x1eyosh:plugin/plugin-world@0.2.1\x04\0\x0b\x12\x01\0\x0cplugin\
 -world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.216\
 .0\x10wit-bindgen-rust\x060.31.0";
 #[inline(never)]
