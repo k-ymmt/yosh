@@ -21,6 +21,7 @@ pub mod commands;
 pub mod files;
 pub mod filesystem;
 pub mod io;
+pub mod settings;
 pub mod variables;
 
 /// Record of one external command spawn (commands:exec). One entry
@@ -79,6 +80,9 @@ pub struct TestState {
     /// Linear-memory cap in MiB. `None` = `DEFAULT_MAX_MEMORY_MB`.
     /// `Option` so `#[derive(Default)]` doesn't silently mean 0.
     pub max_memory_mb: Option<u64>,
+    /// Content served by the capability-free `settings:read` import
+    /// (the plugin's own settings.toml). `None` = no settings file.
+    pub settings: Option<String>,
 }
 
 impl TestState {
@@ -388,6 +392,20 @@ pub fn register_imports(linker: &mut Linker<TestCtx>) -> wasmtime::Result<()> {
                 program,
                 args,
                 r.as_ref().map(|o| o.exit_code)
+            );
+            Ok::<_, wasmtime::Error>((r,))
+        },
+    )?;
+
+    // settings (capability-free, like the production host)
+    let mut st = linker.instance("yosh:plugin/settings@0.2.1")?;
+    st.func_wrap(
+        "read",
+        |store: wasmtime::StoreContextMut<'_, TestCtx>, (): ()| {
+            let r = settings::host_read(&store.data().state);
+            crate::trace::trace!(
+                "settings:read -> {:?}",
+                r.as_ref().map(|o| o.as_ref().map(|s| s.len()))
             );
             Ok::<_, wasmtime::Error>((r,))
         },
