@@ -224,9 +224,36 @@ phase_test() {
   echo "yosh-release: building debug binary for e2e..." >&2
   cargo build || fail "cargo build failed — fix and rerun"
 
-  echo "yosh-release: pre-compiling test binaries..." >&2
-  cargo test --no-run --workspace \
-    || fail "cargo test --no-run failed — fix and rerun"
+  # Pre-compile each job's exact cargo invocation. A single
+  # `cargo test --no-run --workspace` is NOT equivalent: --workspace
+  # unifies features across every member's dev-deps (mockito -> tokio/
+  # hyper via yosh-plugin-manager, wit-bindgen -> wasmparser via the
+  # wasm test plugins), producing different build variants of tokio/
+  # wasmtime/wasmtime-wasi than the per-job `-p yosh` / `--features
+  # test-helpers` graphs. The 2026-07-11 release run precompiled only
+  # the workspace variant, so the jobs rebuilt their own variants
+  # DURING the parallel test window (7-17 min of compile + cargo-lock
+  # serialization), starving the 5-15s timeout budgets in signals/PTY/
+  # plugin-exec tests. Precompiling per-job guarantees a compile-free
+  # test window and self-adapts as PHASE_TEST_JOBS evolves.
+  echo "yosh-release: pre-compiling test binaries (per job)..." >&2
+  local job name group cmd
+  for job in "${PHASE_TEST_JOBS[@]}"; do
+    IFS='|' read -r name group cmd <<<"$job"
+    # `cargo test --doc` rejects --no-run, and its doctest lib unit is
+    # NOT produced by `--lib --no-run` (verified 2026-07-11: one 10s
+    # compile leaked into the test window). Doctests are currently
+    # zero, so just run the doc job here to warm its cache.
+    if [[ "$name" == "doc" ]]; then
+      # shellcheck disable=SC2086
+      cargo $cmd >/dev/null 2>&1 \
+        || fail "cargo $cmd failed during precompile — fix and rerun"
+      continue
+    fi
+    # shellcheck disable=SC2086  # cmd is intentionally word-split
+    cargo $cmd --no-run \
+      || fail "cargo $cmd --no-run failed — fix and rerun"
+  done
 
   # Reserve a unique lock path. mktemp -d creates it; rmdir removes it so the
   # path is absent on entry. Absent = unlocked, present = held.
