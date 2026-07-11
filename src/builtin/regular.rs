@@ -906,6 +906,11 @@ mod tests {
         // (e.g. `plugin::host::commands` invoking `/bin/sh`): the child
         // inherits the dangling cwd once the tempdir drops, and sh stalls
         // trying to recover.
+        //
+        // This test still *depends* on a stable cwd (the probe dir is
+        // resolved via `./<name>`), so hold the cwd lock against tests
+        // that legitimately chdir (see `crate::test_sync`).
+        let _cwd = crate::test_sync::lock_cwd();
         let tmp = tempfile::tempdir_in(".").unwrap();
         let name = tmp
             .path()

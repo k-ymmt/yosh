@@ -8,6 +8,8 @@ mod lexer;
 mod parser;
 mod plugin;
 mod signal;
+#[cfg(test)]
+mod test_sync;
 
 use std::env as std_env;
 use std::fs;

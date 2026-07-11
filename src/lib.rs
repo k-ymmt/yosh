@@ -9,3 +9,5 @@ pub mod lexer;
 pub mod parser;
 pub mod plugin;
 pub mod signal;
+#[cfg(test)]
+pub(crate) mod test_sync;

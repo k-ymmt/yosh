@@ -58,10 +58,13 @@ mod tests {
     fn set_cwd_updates_pwd_and_oldpwd() {
         // set-cwd is a process-global chdir by design (CAP_FILESYSTEM);
         // it must keep the shell's PWD/OLDPWD bookkeeping consistent,
-        // exactly like the cd builtin.
+        // exactly like the cd builtin. The chdir target must be a
+        // directory that outlives the test process, and the whole body
+        // holds the cwd lock — see `crate::test_sync` for the parallel
+        // subprocess-spawn hazard.
+        let _cwd = crate::test_sync::lock_cwd();
         let orig = std::env::current_dir().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let canon = std::fs::canonicalize(tmp.path()).unwrap();
+        let canon = std::fs::canonicalize(std::env::temp_dir()).unwrap();
 
         let mut env = ShellEnv::new("yosh", vec![]);
         env.vars
@@ -71,7 +74,7 @@ mod tests {
         let result = host_filesystem_set_cwd(&ctx, &canon.to_string_lossy());
 
         // Restore the process cwd before asserting so a failure does not
-        // leave the lib-test process in a soon-to-be-deleted tempdir.
+        // leave the lib-test process outside the repo.
         std::env::set_current_dir(&orig).unwrap();
 
         assert_eq!(result, Ok(()));
