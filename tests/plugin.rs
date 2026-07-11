@@ -1290,3 +1290,66 @@ fn t30_stale_mem_denied_cleared_on_next_dispatch() {
 
     assert_eq!(test_helpers::mem_denied_for_tests(&mgr), Some(false));
 }
+
+/// Settings API: a plugin reads its own settings.toml with ZERO files
+/// capabilities. Only variables:write is granted (to report the
+/// content back to the test); the read itself needs no grant.
+#[test]
+fn t31_settings_read_without_any_files_capability() {
+    let _guard = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    let allowed = yosh_plugin_api::CAP_VARIABLES_WRITE;
+    test_helpers::load_plugin_with_caps(&mut mgr, &wasm, &mut env, allowed, &[])
+        .expect("load test_plugin");
+
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.toml");
+    std::fs::write(&settings, "greeting = \"hello\"\n").unwrap();
+    test_helpers::set_settings_path_for_tests(&mut mgr, Some(settings));
+
+    let exec = mgr.exec_command(&mut env, "read-settings", &[]);
+    assert!(
+        matches!(exec, PluginExec::Handled(0)),
+        "read-settings must succeed with content, got {:?}",
+        exec
+    );
+    assert_eq!(
+        env.vars.get("YOSH_TEST_SETTINGS"),
+        Some("greeting = \"hello\"\n"),
+        "settings content must round-trip"
+    );
+}
+
+/// Settings API: absent settings.toml is the normal case — read()
+/// returns none (test plugin maps it to exit 1 + '<none>' sentinel).
+#[test]
+fn t32_settings_read_missing_file_is_none() {
+    let _guard = lock_test();
+    let wasm = test_plugin_wasm();
+    let mut env = fresh_env();
+    let mut mgr = PluginManager::new();
+
+    test_helpers::load_plugin_with_caps(
+        &mut mgr,
+        &wasm,
+        &mut env,
+        yosh_plugin_api::CAP_VARIABLES_WRITE,
+        &[],
+    )
+    .expect("load test_plugin");
+
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("settings.toml"); // never created
+    test_helpers::set_settings_path_for_tests(&mut mgr, Some(missing));
+
+    let exec = mgr.exec_command(&mut env, "read-settings", &[]);
+    assert!(
+        matches!(exec, PluginExec::Handled(1)),
+        "read-settings on a missing file must report none (exit 1), got {:?}",
+        exec
+    );
+    assert_eq!(env.vars.get("YOSH_TEST_SETTINGS"), Some("<none>"));
+}

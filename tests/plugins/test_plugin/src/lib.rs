@@ -27,6 +27,7 @@ impl Plugin for TestPlugin {
             "read-file",
             "write-file",
             "run-echo",
+            "read-settings",
         ]
     }
 
@@ -141,6 +142,17 @@ impl Plugin for TestPlugin {
                     Err(_) => 1,
                 }
             }
+            "read-settings" => match yosh_plugin_sdk::read_settings() {
+                Ok(Some(text)) => {
+                    let _ = set_var("YOSH_TEST_SETTINGS", &text);
+                    0
+                }
+                Ok(None) => {
+                    let _ = set_var("YOSH_TEST_SETTINGS", "<none>");
+                    1
+                }
+                Err(_) => 2,
+            },
             _ => 127,
         }
     }
