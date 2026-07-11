@@ -40,7 +40,7 @@ use yosh_plugin_api::{
 use crate::env::ShellEnv;
 
 use self::cache::{CacheKey, sha256_hex, sidecar_path, validate_cwasm};
-use self::config::expand_tilde;
+use self::config::{expand_tilde, settings_path_for};
 use self::host::HostContext;
 
 // ── wasmtime bindgen for our WIT contract ───────────────────────────────
@@ -578,6 +578,7 @@ impl PluginManager {
         // will then fail starts_with — deny-by-default).
         host_ctx.files_root =
             files_root.map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
+        host_ctx.settings_path = settings_path_for(&plugin_info.name);
         let mut store = Store::new(&self.engine, host_ctx);
         store.limiter(|ctx| &mut ctx.mem_limiter);
         // Default-effectively-never deadline. `call_pre_prompt` overrides
@@ -1100,6 +1101,18 @@ pub mod test_helpers {
     pub fn env_pointer_is_null_in_store(manager: &PluginManager) -> Option<bool> {
         let plugin = manager.plugins.last()?;
         Some(plugin.store.data().env.is_null())
+    }
+
+    /// Override the most-recently-loaded plugin's resolved settings
+    /// path, so integration tests can point `settings.read` at a
+    /// tempdir file without mutating the process HOME.
+    pub fn set_settings_path_for_tests(
+        manager: &mut PluginManager,
+        path: Option<std::path::PathBuf>,
+    ) {
+        if let Some(plugin) = manager.plugins.last_mut() {
+            plugin.store.data_mut().settings_path = path;
+        }
     }
 
     /// Force the most-recently-loaded plugin's `mem_limiter.denied` flag,

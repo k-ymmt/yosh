@@ -34,7 +34,7 @@ use super::host::{
     host_commands_exec, host_files_append_file, host_files_create_dir, host_files_metadata,
     host_files_read_dir, host_files_read_file, host_files_remove_dir, host_files_remove_file,
     host_files_write_file, host_filesystem_cwd, host_filesystem_set_cwd, host_io_write,
-    host_variables_export_env, host_variables_get, host_variables_set,
+    host_settings_read, host_variables_export_env, host_variables_get, host_variables_set,
 };
 
 #[inline]
@@ -319,6 +319,17 @@ pub fn build_linker(engine: &Engine, allowed: u32) -> Result<Linker<HostContext>
             },
         )?;
     }
+
+    // ── yosh:plugin/settings ───────────────────────────────────────────
+    //
+    // Capability-free: every plugin may read its own settings.toml.
+    // The path is fixed per-plugin in `HostContext::settings_path`
+    // (resolved at load time from the plugin name), so no broader
+    // filesystem access is exposed and no deny stub exists.
+    let mut settings = linker.instance("yosh:plugin/settings@0.2.1")?;
+    settings.func_wrap("read", |store, (): ()| {
+        Ok((host_settings_read(store.data()),))
+    })?;
 
     // ── yosh:plugin/commands ───────────────────────────────────────────
     let mut commands = linker.instance("yosh:plugin/commands@0.2.1")?;

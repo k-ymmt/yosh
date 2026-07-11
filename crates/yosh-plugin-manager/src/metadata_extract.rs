@@ -271,6 +271,14 @@ fn register_all_deny_imports(linker: &mut Linker<MetadataCtx>) -> wasmtime::Resu
             Ok::<_, wasmtime::Error>((Err::<ExecOutput, ErrorCode>(ErrorCode::Denied),))
         },
     )?;
+
+    let mut settings = linker.instance("yosh:plugin/settings@0.2.1")?;
+    settings.func_wrap(
+        "read",
+        |_store: wasmtime::StoreContextMut<'_, MetadataCtx>, (): ()| {
+            Ok::<_, wasmtime::Error>((Err::<Option<String>, ErrorCode>(ErrorCode::Denied),))
+        },
+    )?;
     Ok(())
 }
 
