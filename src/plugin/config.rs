@@ -130,6 +130,26 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Absolute path of a plugin's own settings file:
+/// `$HOME/.config/yosh/plugins/<name>/settings.toml`.
+///
+/// Returns `None` when HOME is unset or when `name` is not a safe
+/// single path component (empty, `.`, `..`, or contains `/`) —
+/// lockfile names are trusted, but this is cheap defense in depth.
+/// A `None` makes `settings.read` report "no settings file".
+pub fn settings_path_for(name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return None;
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(
+        PathBuf::from(home)
+            .join(".config/yosh/plugins")
+            .join(name)
+            .join("settings.toml"),
+    )
+}
+
 /// Parse a single capability string to its bitflag value.
 pub fn capability_from_str(s: &str) -> Option<u32> {
     match s {
@@ -252,6 +272,30 @@ sha256 = "testsha"
     fn expand_tilde_no_tilde() {
         let result = expand_tilde("/absolute/path/lib.dylib");
         assert_eq!(result, PathBuf::from("/absolute/path/lib.dylib"));
+    }
+
+    #[test]
+    fn settings_path_for_builds_config_dir_path() {
+        // HOME is always set in the test environment.
+        let path = settings_path_for("git-prompt").expect("HOME is set");
+        assert!(
+            path.to_string_lossy()
+                .ends_with(".config/yosh/plugins/git-prompt/settings.toml"),
+            "unexpected path: {}",
+            path.display()
+        );
+        assert!(!path.to_string_lossy().starts_with("~"));
+    }
+
+    #[test]
+    fn settings_path_for_rejects_unsafe_names() {
+        // Not a single safe path component → None. Do NOT test the
+        // HOME-unset branch: mutating HOME races with parallel tests.
+        assert_eq!(settings_path_for(""), None);
+        assert_eq!(settings_path_for("."), None);
+        assert_eq!(settings_path_for(".."), None);
+        assert_eq!(settings_path_for("a/b"), None);
+        assert_eq!(settings_path_for("../escape"), None);
     }
 
     #[test]
