@@ -307,12 +307,16 @@ impl PluginManager {
                 .map(|strs| config::capabilities_from_strs(strs));
             let cache_key = entry.cache_key();
             let files_root = entry.files_root.as_deref().map(expand_tilde);
+            let cwasm_path = entry
+                .cwasm_path
+                .as_deref()
+                .map(|p| expand_tilde(&p.to_string_lossy()));
             if let Err(e) = self.load_one(
                 &path,
                 env,
                 config_caps,
                 Some(&entry.sha256),
-                entry.cwasm_path.as_deref(),
+                cwasm_path.as_deref(),
                 cache_key.as_ref(),
                 entry.allowed_commands.as_deref().unwrap_or_default(),
                 files_root.as_deref(),
