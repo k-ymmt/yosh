@@ -25,6 +25,7 @@ mod commands;
 mod files;
 mod filesystem;
 mod io;
+mod settings;
 mod variables;
 
 pub(super) use commands::{deny_commands_exec, host_commands_exec};
@@ -38,6 +39,7 @@ pub(super) use filesystem::{
     deny_filesystem_cwd, deny_filesystem_set_cwd, host_filesystem_cwd, host_filesystem_set_cwd,
 };
 pub(super) use io::{deny_io_write, host_io_write};
+pub(super) use settings::host_settings_read;
 pub(super) use variables::{
     deny_variables_export_env, deny_variables_get, deny_variables_set, host_variables_export_env,
     host_variables_get, host_variables_set,
@@ -62,6 +64,12 @@ pub struct HostContext {
     /// full-filesystem grant; `Some(root)` confines every `files` host
     /// call to paths inside `root` (canonicalized, symlink-escape safe).
     pub(super) files_root: Option<std::path::PathBuf>,
+    /// Absolute path of this plugin's own settings.toml, resolved at
+    /// load time from `$HOME/.config/yosh/plugins/<name>/settings.toml`
+    /// (`config::settings_path_for`). `None` when HOME is unset or the
+    /// plugin name is unsafe as a path component — `settings.read`
+    /// then reports "no settings file".
+    pub(super) settings_path: Option<std::path::PathBuf>,
     /// Linear-memory limiter installed on the owning `Store` via
     /// `Store::limiter`. Its `denied` flag is read (and reset) by
     /// `with_env` after a trap to attribute memory-cap kills.
@@ -96,6 +104,7 @@ impl HostContext {
             resource_table: ResourceTable::new(),
             allowed_commands: Vec::new(),
             files_root: None,
+            settings_path: None,
             mem_limiter: crate::plugin::limits::MemoryLimiter::new(max_memory_bytes),
         }
     }
@@ -207,6 +216,12 @@ pub(super) mod test_helpers {
     pub fn ctx_with_files_root(env: &mut ShellEnv, root: &std::path::Path) -> HostContext {
         let mut ctx = bound_env_ctx(env);
         ctx.files_root = Some(root.to_path_buf());
+        ctx
+    }
+
+    pub fn ctx_with_settings_path(env: &mut ShellEnv, path: &std::path::Path) -> HostContext {
+        let mut ctx = bound_env_ctx(env);
+        ctx.settings_path = Some(path.to_path_buf());
         ctx
     }
 }
