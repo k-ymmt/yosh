@@ -10,6 +10,8 @@
 //! Without the matching capability, the underlying host call returns
 //! [`ErrorCode::Denied`]. (Some helpers like [`exists`] swallow this
 //! into a default value — see each function's docs.)
+//! The one exception is `settings` ([`read_settings`]): reading the
+//! plugin's own `settings.toml` requires no capability.
 //!
 //! # `metadata` is special
 //!
@@ -63,6 +65,7 @@ pub use self::yosh::plugin::files as host_files;
 pub use self::yosh::plugin::files::{DirEntry, FileStat};
 pub use self::yosh::plugin::filesystem as host_filesystem;
 pub use self::yosh::plugin::io as host_io;
+pub use self::yosh::plugin::settings as host_settings;
 pub use self::yosh::plugin::types::{ErrorCode, HookName, IoStream, PluginInfo};
 pub use self::yosh::plugin::variables as host_variables;
 
@@ -416,6 +419,26 @@ pub fn write_string(path: &str, s: &str) -> Result<(), ErrorCode> {
 ///   collapses here, as with [`write_file`]).
 pub fn append_file(path: &str, data: &[u8]) -> Result<(), ErrorCode> {
     host_files::append_file(path, data)
+}
+
+/// Read this plugin's own settings file
+/// (`~/.config/yosh/plugins/<plugin-name>/settings.toml`).
+///
+/// This is the one capability-free host interface: every plugin may
+/// read its own settings without declaring anything in
+/// [`Plugin::required_capabilities`]. Returns `Ok(None)` when no
+/// settings file exists. The raw TOML text is returned; parsing is
+/// the plugin's choice (e.g. the `toml` crate, which compiles to
+/// `wasm32-wasip2`).
+///
+/// # Errors
+///
+/// - [`ErrorCode::Denied`] — called from `metadata()` (no active
+///   shell binding; see the crate-level "metadata is special" note).
+/// - [`ErrorCode::IoFailed`] — the file exists but could not be read
+///   (permissions, invalid UTF-8).
+pub fn read_settings() -> Result<Option<String>, ErrorCode> {
+    host_settings::read()
 }
 
 /// Create a directory at `path`. Fails if any ancestor is missing.
