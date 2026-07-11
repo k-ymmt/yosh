@@ -301,6 +301,7 @@ fn sync_one(
                 hook_timeout_ms: decl.hook_timeout_ms,
                 command_timeout_ms: decl.command_timeout_ms,
                 pre_prompt_timeout_ms: decl.pre_prompt_timeout_ms,
+                allowed_commands: decl.allowed_commands.clone(),
             })
         }
         PluginSource::Local { path } => {
@@ -365,24 +366,27 @@ fn sync_one(
                 hook_timeout_ms: decl.hook_timeout_ms,
                 command_timeout_ms: decl.command_timeout_ms,
                 pre_prompt_timeout_ms: decl.pre_prompt_timeout_ms,
+                allowed_commands: decl.allowed_commands.clone(),
             })
         }
     }
 }
 
 /// Clone `entry` but refresh the four per-plugin resource-limit fields
-/// from `decl`. Used on the GitHub "already synced" fast path so that
-/// editing a limit in `plugins.toml` and re-running `sync` takes effect
-/// without forcing a re-download/re-precompile. Note: `enabled` and
-/// `capabilities` are deliberately left untouched here — their identical
-/// staleness on this fast path is pre-existing behaviour tracked
-/// separately.
+/// and the `commands:exec` allowlist from `decl`. Used on the GitHub
+/// "already synced" fast path so that editing a limit or
+/// `allowed_commands` in `plugins.toml` and re-running `sync` takes
+/// effect without forcing a re-download/re-precompile. Note: `enabled`
+/// and `capabilities` are deliberately left untouched here — their
+/// identical staleness on this fast path is pre-existing behaviour
+/// tracked separately.
 fn with_decl_limits(entry: &LockEntry, decl: &PluginDecl) -> LockEntry {
     let mut refreshed = entry.clone();
     refreshed.max_memory_mb = decl.max_memory_mb;
     refreshed.hook_timeout_ms = decl.hook_timeout_ms;
     refreshed.command_timeout_ms = decl.command_timeout_ms;
     refreshed.pre_prompt_timeout_ms = decl.pre_prompt_timeout_ms;
+    refreshed.allowed_commands = decl.allowed_commands.clone();
     refreshed
 }
 
@@ -434,6 +438,7 @@ mod tests {
             hook_timeout_ms: None,
             command_timeout_ms: None,
             pre_prompt_timeout_ms: None,
+            allowed_commands: None,
         };
         let client = GitHubClient::new();
         let empty_lock = LockFile { plugin: vec![] };
@@ -475,6 +480,7 @@ mod tests {
             hook_timeout_ms: None,
             command_timeout_ms: None,
             pre_prompt_timeout_ms: None,
+            allowed_commands: None,
         };
         let client = GitHubClient::new();
         let empty_lock = LockFile { plugin: vec![] };
@@ -627,6 +633,7 @@ mod tests {
             hook_timeout_ms: None,
             command_timeout_ms: None,
             pre_prompt_timeout_ms: None,
+            allowed_commands: None,
         };
         save_lockfile(
             &lock_path,
@@ -691,6 +698,7 @@ mod tests {
             hook_timeout_ms: Some(500),
             command_timeout_ms: Some(10_000),
             pre_prompt_timeout_ms: Some(100),
+            allowed_commands: Some(vec!["stale-cmd".into()]),
         }
     }
 
@@ -716,6 +724,7 @@ mod tests {
             hook_timeout_ms,
             command_timeout_ms,
             pre_prompt_timeout_ms,
+            allowed_commands: Some(vec!["whoami".into(), "git status:*".into()]),
         }
     }
 
@@ -730,6 +739,62 @@ mod tests {
         assert_eq!(refreshed.hook_timeout_ms, Some(1_000));
         assert_eq!(refreshed.command_timeout_ms, Some(30_000));
         assert_eq!(refreshed.pre_prompt_timeout_ms, Some(250));
+    }
+
+    /// Regression: `allowed_commands` from `plugins.toml` must reach the
+    /// lock entry, both on a fresh sync and on the already-synced fast
+    /// path — the shell host reads the exec allowlist from the lock, so
+    /// dropping it here silently denies every `commands:exec` call.
+    #[test]
+    fn sync_one_local_propagates_allowed_commands() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(b"fake binary content").unwrap();
+        let path = f.path().to_string_lossy().to_string();
+
+        let decl = PluginDecl {
+            name: "local-test".into(),
+            source: PluginSource::Local { path },
+            version: None,
+            enabled: true,
+            capabilities: None,
+            asset: None,
+            max_memory_mb: None,
+            hook_timeout_ms: None,
+            command_timeout_ms: None,
+            pre_prompt_timeout_ms: None,
+            allowed_commands: Some(vec!["whoami".into(), "hostname".into()]),
+        };
+        let client = GitHubClient::new();
+        let empty_lock = LockFile { plugin: vec![] };
+        let root = tempfile::tempdir().unwrap();
+        let pre_engine = precompile::make_engine().unwrap();
+        let meta_engine = precompile::make_engine().unwrap();
+        let entry = sync_one(
+            &client,
+            &decl,
+            &empty_lock,
+            root.path(),
+            &pre_engine,
+            &meta_engine,
+        )
+        .unwrap();
+        assert_eq!(
+            entry.allowed_commands,
+            Some(vec!["whoami".to_string(), "hostname".to_string()])
+        );
+    }
+
+    #[test]
+    fn with_decl_limits_refreshes_allowed_commands() {
+        let existing = sample_lock_entry(); // allowed_commands: ["stale-cmd"]
+        let decl = sample_decl_with_limits(None, None, None, None);
+
+        let refreshed = with_decl_limits(&existing, &decl);
+
+        assert_eq!(
+            refreshed.allowed_commands,
+            Some(vec!["whoami".to_string(), "git status:*".to_string()])
+        );
     }
 
     #[test]

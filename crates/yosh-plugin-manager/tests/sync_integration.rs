@@ -68,6 +68,7 @@ fn lockfile_round_trip_with_multiple_entries() {
                 hook_timeout_ms: None,
                 command_timeout_ms: None,
                 pre_prompt_timeout_ms: None,
+                allowed_commands: Some(vec!["whoami".into()]),
             },
             yosh_plugin_manager::lockfile::LockEntry {
                 name: "b".into(),
@@ -88,6 +89,7 @@ fn lockfile_round_trip_with_multiple_entries() {
                 hook_timeout_ms: None,
                 command_timeout_ms: None,
                 pre_prompt_timeout_ms: None,
+                allowed_commands: None,
             },
         ],
     };
@@ -100,4 +102,9 @@ fn lockfile_round_trip_with_multiple_entries() {
     assert_eq!(loaded.plugin[1].name, "b");
     assert!(!loaded.plugin[1].enabled);
     assert!(loaded.plugin[1].version.is_none());
+    assert_eq!(
+        loaded.plugin[0].allowed_commands,
+        Some(vec!["whoami".to_string()])
+    );
+    assert!(loaded.plugin[1].allowed_commands.is_none());
 }

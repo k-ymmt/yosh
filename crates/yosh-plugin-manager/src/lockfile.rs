@@ -73,6 +73,12 @@ pub struct LockEntry {
     pub command_timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_prompt_timeout_ms: Option<u64>,
+    /// `commands:exec` allowlist patterns, passed through verbatim from
+    /// `plugins.toml`. The shell host reads the allowlist from this lock
+    /// entry at load time; `None` (or empty) means every exec is denied
+    /// with `PatternNotAllowed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_commands: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -128,6 +134,7 @@ mod tests {
             hook_timeout_ms: None,
             command_timeout_ms: None,
             pre_prompt_timeout_ms: None,
+            allowed_commands: None,
         }
     }
 
@@ -198,6 +205,7 @@ mod tests {
             hook_timeout_ms: None,
             command_timeout_ms: None,
             pre_prompt_timeout_ms: None,
+            allowed_commands: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let lock_path = dir.path().join("plugins.lock");

@@ -20,6 +20,7 @@ pub struct PluginDecl {
     pub hook_timeout_ms: Option<u64>,
     pub command_timeout_ms: Option<u64>,
     pub pre_prompt_timeout_ms: Option<u64>,
+    pub allowed_commands: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +42,7 @@ struct RawPluginEntry {
     hook_timeout_ms: Option<u64>,
     command_timeout_ms: Option<u64>,
     pre_prompt_timeout_ms: Option<u64>,
+    allowed_commands: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -131,6 +133,7 @@ pub fn load_config(path: &Path) -> Result<Vec<PluginDecl>, String> {
                 hook_timeout_ms: entry.hook_timeout_ms,
                 command_timeout_ms: entry.command_timeout_ms,
                 pre_prompt_timeout_ms: entry.pre_prompt_timeout_ms,
+                allowed_commands: entry.allowed_commands,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -246,6 +249,46 @@ capabilities = ["io"]
         assert_eq!(decls[1].name, "local-tool");
         assert!(matches!(&decls[1].source, PluginSource::Local { .. }));
         assert!(decls[1].version.is_none());
+    }
+
+    #[test]
+    fn load_config_parses_allowed_commands() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "p"
+source = "local:/tmp/plugin.wasm"
+allowed_commands = ["whoami", "hostname", "git status:*"]
+"#
+        )
+        .unwrap();
+        let decls = load_config(f.path()).unwrap();
+        assert_eq!(
+            decls[0].allowed_commands,
+            Some(vec![
+                "whoami".to_string(),
+                "hostname".to_string(),
+                "git status:*".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn load_config_missing_allowed_commands_is_none() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[plugin]]
+name = "p"
+source = "local:/tmp/plugin.wasm"
+"#
+        )
+        .unwrap();
+        let decls = load_config(f.path()).unwrap();
+        assert!(decls[0].allowed_commands.is_none());
     }
 
     #[test]
