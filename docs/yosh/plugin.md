@@ -141,6 +141,19 @@ relative program names through the shell's `$PATH` and runs matching
 commands with the shell's privileges; prefer absolute paths in
 `allowed_commands` patterns when the plugin is untrusted.
 
+#### Per-Plugin Settings File
+
+Each plugin can read its own settings file at:
+
+```
+~/.config/yosh/plugins/<plugin-name>/settings.toml
+```
+
+Create the file to configure a plugin that supports it (consult the
+plugin's README for its keys). Reading this file requires **no
+capability** — it is always available to the plugin, read-only, and a
+plugin can only ever see its own file, never another plugin's.
+
 #### Resource Limits
 
 Every plugin runs under a linear-memory cap (`max_memory_mb`, default
@@ -343,6 +356,21 @@ print("output message\n")?;
 // Write to stderr
 eprint("error message\n")?;
 ```
+
+#### Settings (no capability required)
+
+```rust
+// Contents of ~/.config/yosh/plugins/<your-plugin>/settings.toml.
+// Ok(None) when the file doesn't exist. Raw TOML text — parse it
+// yourself (the `toml` crate compiles to wasm32-wasip2).
+let settings: Option<String> = read_settings()?;
+```
+
+`settings` is the one capability-free host interface: do not add
+anything to `required_capabilities` for it. Typical use is in
+`on_load`. Note that `metadata()` runs before the shell binds the
+environment, so calling `read_settings` there returns
+`Err(ErrorCode::Denied)` like every other host call.
 
 ### Hooks
 
