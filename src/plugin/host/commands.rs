@@ -6,10 +6,27 @@ use super::super::generated::yosh::plugin::commands::ExecOutput;
 use super::super::generated::yosh::plugin::types::ErrorCode;
 use super::HostContext;
 
+/// Per-exec wall-clock budget for plugin-initiated commands (spec §5).
+const EXEC_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1000);
+
 pub fn host_commands_exec(
     ctx: &HostContext,
     program: &str,
     args: &[std::borrow::Cow<'_, str>],
+) -> Result<ExecOutput, ErrorCode> {
+    host_commands_exec_with_timeout(ctx, program, args, EXEC_TIMEOUT)
+}
+
+/// [`host_commands_exec`] with an explicit timeout. Split out so tests
+/// that assert on *semantics* (allowlisting, PATH resolution, stream
+/// capture) can use a budget generous enough to survive parallel-suite
+/// load — the 1s production budget has its own dedicated timing tests
+/// and is otherwise an unrelated failure mode for those tests.
+fn host_commands_exec_with_timeout(
+    ctx: &HostContext,
+    program: &str,
+    args: &[std::borrow::Cow<'_, str>],
+    timeout: std::time::Duration,
 ) -> Result<ExecOutput, ErrorCode> {
     // The metadata-contract guard runs first. CWD and environment
     // inheritance happen implicitly via std::process::Command::new
@@ -55,11 +72,7 @@ pub fn host_commands_exec(
         }
     };
 
-    spawn_with_timeout(
-        &exec_program,
-        &argv[1..],
-        std::time::Duration::from_millis(1000),
-    )
+    spawn_with_timeout(&exec_program, &argv[1..], timeout)
 }
 
 pub fn deny_commands_exec() -> Result<ExecOutput, ErrorCode> {
@@ -290,8 +303,17 @@ mod tests {
             .set("PATH", dir.path().to_string_lossy().into_owned())
             .unwrap();
         let ctx = ctx_with_allowed(&mut env, &["yosh-exec-probe:*"]);
-        let result = host_commands_exec(&ctx, "yosh-exec-probe", &[])
-            .expect("relative name should resolve via the shell's PATH");
+        // Generous budget: this test asserts PATH-resolution semantics,
+        // not the 1s production budget (which has its own timing tests).
+        // Under full parallel-suite load, /bin/sh spawn latency alone
+        // exceeded 1s deterministically (4/4 release runs, 2026-07-11).
+        let result = host_commands_exec_with_timeout(
+            &ctx,
+            "yosh-exec-probe",
+            &[],
+            std::time::Duration::from_secs(10),
+        )
+        .expect("relative name should resolve via the shell's PATH");
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, b"probe-ok\n");
     }
