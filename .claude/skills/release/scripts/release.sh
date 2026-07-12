@@ -204,6 +204,28 @@ _run_all_tests_parallel() {
   trap - EXIT INT TERM
 }
 
+# Refuse to start the test phase on an already-loaded machine. The suite's
+# wall-clock budgets (1s plugin-exec, 15s PTY prompt, 45s e2e) assume the
+# parallel window is the dominant load; a pre-existing CPU hog pushes
+# process-spawn latency into the 10-45s range and fails those tests on
+# timing they never meant to assert. Real case (2026-07-11/12): eight
+# orphaned `yes` processes from a debugging session saturated all 8 cores
+# for a day and were misdiagnosed as a dyld-contention flake across two
+# release attempts. Override with YOSH_RELEASE_SKIP_LOAD_CHECK=1.
+check_baseline_load() {
+  [[ "${YOSH_RELEASE_SKIP_LOAD_CHECK:-0}" == "1" ]] && return 0
+  local max_load="${YOSH_RELEASE_MAX_LOAD:-4}"
+  local load1
+  load1="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print int($2)}')"
+  [[ -n "$load1" ]] || return 0  # can't sample (non-macOS) — skip the guard
+  if (( load1 >= max_load )); then
+    echo "yosh-release: 1-min load average is ${load1} (limit ${max_load}) BEFORE tests start." >&2
+    echo "yosh-release: top CPU consumers:" >&2
+    ps -Ao pcpu,pid,lstart,comm -r | head -6 >&2
+    fail "machine is already loaded — kill stray processes (or YOSH_RELEASE_SKIP_LOAD_CHECK=1 to override)"
+  fi
+}
+
 phase_test() {
   local dry_run=0
   if [[ "${1:-}" == "--dry-run" ]]; then
@@ -220,6 +242,8 @@ phase_test() {
     echo "  e2e|-|./e2e/run_tests.sh" >&2
     return 0
   fi
+
+  check_baseline_load
 
   echo "yosh-release: building debug binary for e2e..." >&2
   cargo build || fail "cargo build failed — fix and rerun"
