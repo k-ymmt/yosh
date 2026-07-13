@@ -79,6 +79,17 @@ impl Executor {
                     self.env.traps.reset_for_subshell();
                     if self.env.mode.options.monitor {
                         signal::setup_foreground_child_signals(&ignored);
+                        // A pipeline element is a subshell, not a
+                        // job-controlling shell: with monitor left on, a
+                        // nested external command would be forked into its
+                        // own new process group and the element would call
+                        // tcsetpgrp around it. Those calls race with the
+                        // parent shell and the other elements for terminal
+                        // ownership, and tcsetpgrp from a non-foreground
+                        // process group stops the whole pipeline with
+                        // SIGTTOU. Nested commands must instead stay in
+                        // this pipeline's process group.
+                        self.env.mode.options.monitor = false;
                     } else {
                         signal::reset_child_signals(&ignored);
                     }
@@ -148,7 +159,17 @@ impl Executor {
                     .copied()
                     .unwrap_or(0))
             } else {
-                Ok(result.last_status)
+                // POSIX: a pipeline's exit status is that of its LAST
+                // element. result.last_status is the last-REAPED process,
+                // which can be an earlier element — e.g. `cat big | false`,
+                // where cat outlives false and exits 0 after it.
+                let last_pid = children[n - 1];
+                Ok(result
+                    .process_statuses
+                    .iter()
+                    .find(|(pid, _)| *pid == last_pid)
+                    .map(|(_, code)| *code)
+                    .unwrap_or(result.last_status))
             }
         } else {
             // Non-monitor mode: simple wait loop (existing behavior)

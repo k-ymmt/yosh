@@ -128,6 +128,13 @@ impl Executor {
                 self.env.traps.reset_for_subshell();
                 if self.env.mode.options.monitor {
                     signal::setup_background_child_signals(&ignored);
+                    // A background job is a subshell, not a job-controlling
+                    // shell: with monitor left on, a nested external command
+                    // would be forked into its own new process group and this
+                    // (background) subshell would call tcsetpgrp around it,
+                    // stopping the job with SIGTTOU. Nested commands must
+                    // stay in this job's process group instead.
+                    self.env.mode.options.monitor = false;
                 } else {
                     signal::reset_child_signals(&ignored);
                 }

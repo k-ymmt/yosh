@@ -534,6 +534,89 @@ fn test_pty_set_minus_m_reenables_job_control() {
 }
 
 #[test]
+fn test_pty_external_pipeline_not_stopped_by_sigttou() {
+    // Regression test: a pipeline of two EXTERNAL commands (e.g.
+    // `cat file | pbcopy`) was reported as "Stopped(SIGTTOU)" instead of
+    // running to completion. Pipeline elements inherited monitor=on, so
+    // each element forked its external command into a new process group
+    // and called tcsetpgrp around it; whichever element called tcsetpgrp
+    // while its (pipeline) process group was no longer the terminal's
+    // foreground group received SIGTTOU, stopping the whole pipeline.
+    // Two external commands make the collision deterministic — a builtin
+    // first element does not reproduce it.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("/bin/echo pipe_ok | /bin/cat\r").unwrap();
+    expect_output(&mut s, "pipe_ok", "external pipeline produced no output");
+    wait_for_prompt(&mut s);
+
+    // The pipeline must have completed: jobs reports nothing for it.
+    drain_pty_buffer(&mut s);
+    s.send("jobs; echo jobs_done\r").unwrap();
+    let m = s
+        .expect(Regex(r"\r?\njobs_done"))
+        .expect("jobs did not complete");
+    let before = String::from_utf8_lossy(m.before()).to_string();
+    assert!(
+        !before.contains("Stopped"),
+        "pipeline was stopped by SIGTTOU: {:?}",
+        before
+    );
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_pipeline_exit_status_is_last_element() {
+    // Regression test: in monitor mode the pipeline's exit status was
+    // taken from the last-REAPED process instead of the last pipeline
+    // element. Here sleep (element 1) exits 0 AFTER false (element 2)
+    // exits 1, so the buggy version reported $? = 0.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("/bin/sleep 0.2 | /usr/bin/false; echo RC=$?\r").unwrap();
+    expect_output(&mut s, "RC=1", "pipeline exit status should be the last element's");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_background_external_not_stopped_by_sigttou() {
+    // Regression test: `sleep 0.3 &` with an external command was stopped
+    // with SIGTTOU. The background subshell kept monitor=on, forked the
+    // external command into its own new process group, and called
+    // tcsetpgrp from a background process group — raising SIGTTOU.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("/bin/sleep 0.2 &\r").unwrap();
+    wait_for_prompt(&mut s);
+    std::thread::sleep(Duration::from_millis(600));
+
+    drain_pty_buffer(&mut s);
+    s.send("jobs; echo jobs_done\r").unwrap();
+    let m = s
+        .expect(Regex(r"\r?\njobs_done"))
+        .expect("jobs did not complete");
+    let before = String::from_utf8_lossy(m.before()).to_string();
+    assert!(
+        !before.contains("Stopped"),
+        "background job was stopped by SIGTTOU: {:?}",
+        before
+    );
+    assert!(
+        before.contains("Done"),
+        "background job should have completed with Done: {:?}",
+        before
+    );
+
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_shell_termios_restored_after_stopped_job() {
     // Regression test for: a foreground job that modifies termios (here,
     // via `stty raw`) must not leave the shell stuck in raw mode after
