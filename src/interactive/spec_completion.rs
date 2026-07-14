@@ -163,6 +163,60 @@ fn validate_level(level: Level<'_>) -> Result<(), String> {
     Ok(())
 }
 
+// ── SpecStore: lazy per-command loading ─────────────────────────────
+
+/// Lazy loader and per-session cache for completion specs.
+///
+/// Specs live at `<dir>/<command>.toml`. Each command name is looked up
+/// on disk at most once per session: both missing files and parse
+/// failures are cached as `None`, which also makes the parse-error
+/// warning naturally print only once.
+pub struct SpecStore {
+    dir: std::path::PathBuf,
+    cache: std::collections::HashMap<String, Option<CompletionSpec>>,
+}
+
+impl SpecStore {
+    pub fn new(dir: std::path::PathBuf) -> Self {
+        Self {
+            dir,
+            cache: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Store rooted at the standard location under `home`
+    /// (`~/.config/yosh/completions`).
+    pub fn from_home(home: &str) -> Self {
+        Self::new(std::path::PathBuf::from(home).join(".config/yosh/completions"))
+    }
+
+    /// Look up the spec for `command`. Only the final path component is
+    /// used: `/usr/bin/git` and `git` both resolve to `git.toml`.
+    pub fn get(&mut self, command: &str) -> Option<&CompletionSpec> {
+        let name = command.rsplit('/').next().unwrap_or(command);
+        if name.is_empty() || name == "." || name == ".." {
+            return None;
+        }
+        if !self.cache.contains_key(name) {
+            let loaded = self.load(name);
+            self.cache.insert(name.to_string(), loaded);
+        }
+        self.cache.get(name).and_then(|entry| entry.as_ref())
+    }
+
+    fn load(&self, name: &str) -> Option<CompletionSpec> {
+        let path = self.dir.join(format!("{name}.toml"));
+        let text = std::fs::read_to_string(&path).ok()?;
+        match CompletionSpec::parse(&text) {
+            Ok(spec) => Some(spec),
+            Err(err) => {
+                eprintln!("yosh: completion: {name}.toml: {err}");
+                None
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,5 +372,60 @@ name = \"add\"
             err.contains("duplicate subcommand"),
             "unexpected error: {err}"
         );
+    }
+
+    // ── SpecStore ────────────────────────────────────────────────────
+
+    use std::path::PathBuf;
+
+    fn store_with(specs: &[(&str, &str)]) -> (tempfile::TempDir, SpecStore) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for (name, text) in specs {
+            std::fs::write(tmp.path().join(format!("{name}.toml")), text).unwrap();
+        }
+        let store = SpecStore::new(tmp.path().to_path_buf());
+        (tmp, store)
+    }
+
+    #[test]
+    fn store_loads_spec_by_command_name() {
+        let (_tmp, mut store) = store_with(&[("mytool", "[[args]]\nvalues = [\"a\"]\n")]);
+        let spec = store.get("mytool").unwrap();
+        assert_eq!(spec.args.len(), 1);
+    }
+
+    #[test]
+    fn store_resolves_final_path_component() {
+        let (_tmp, mut store) = store_with(&[("git", "[[subcommands]]\nname = \"log\"\n")]);
+        assert!(store.get("/usr/bin/git").is_some());
+    }
+
+    #[test]
+    fn store_missing_file_returns_none() {
+        let (_tmp, mut store) = store_with(&[]);
+        assert!(store.get("nosuch").is_none());
+    }
+
+    #[test]
+    fn store_caches_first_load() {
+        let (tmp, mut store) = store_with(&[("mytool", "[[args]]\nvalues = [\"a\"]\n")]);
+        assert!(store.get("mytool").is_some());
+        // Overwrite with garbage; the cached parse must still be served.
+        std::fs::write(tmp.path().join("mytool.toml"), "not [ valid").unwrap();
+        assert!(store.get("mytool").is_some());
+    }
+
+    #[test]
+    fn store_parse_error_returns_none() {
+        let (_tmp, mut store) = store_with(&[("bad", "not [ valid toml")]);
+        assert!(store.get("bad").is_none());
+        // Negative-cached: repeat lookups stay None.
+        assert!(store.get("bad").is_none());
+    }
+
+    #[test]
+    fn store_empty_command_returns_none() {
+        let (_tmp, mut store) = store_with(&[]);
+        assert!(store.get("").is_none());
     }
 }
