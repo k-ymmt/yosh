@@ -391,6 +391,69 @@ pub fn command_words(buf: &str, word_start: usize) -> Option<(String, Vec<String
     Some((cmd, words))
 }
 
+// ── exec runner ─────────────────────────────────────────────────────
+
+/// Budget for `exec` candidate commands. Chosen to keep Tab latency
+/// bounded; see completion.md.
+pub const EXEC_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Run `sh -c <cmd>` and return its stdout lines (empty lines dropped).
+/// A timeout kills the child; timeouts and non-zero exits both yield an
+/// empty Vec. Runs as a child process so completion can never mutate
+/// shell state.
+pub fn run_exec(cmd: &str, timeout: std::time::Duration) -> Vec<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+
+    let mut child = match Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return Vec::new(),
+    };
+
+    // Drain stdout on a helper thread so a pipe-buffer-filling child can
+    // never deadlock the timeout loop below.
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        out
+    });
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(_) => break None,
+        }
+    };
+
+    let out = reader.join().unwrap_or_default();
+    match status {
+        Some(status) if status.success() => out
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -861,5 +924,42 @@ values = [\"second\"]
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    // ── run_exec ─────────────────────────────────────────────────────
+
+    use std::time::Duration;
+
+    #[test]
+    fn exec_splits_stdout_lines_and_drops_empties() {
+        let lines = run_exec("printf 'alpha\\n\\nbeta\\n'", Duration::from_secs(5));
+        assert_eq!(lines, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn exec_nonzero_exit_yields_no_candidates() {
+        let lines = run_exec("echo out; exit 1", Duration::from_secs(5));
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn exec_timeout_kills_child_and_yields_no_candidates() {
+        let start = std::time::Instant::now();
+        let lines = run_exec("sleep 5", Duration::from_millis(100));
+        assert!(lines.is_empty());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "timeout did not fire: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn exec_inherits_cwd() {
+        // The child runs in the shell's cwd, so `pwd` output is non-empty
+        // and matches the current dir.
+        let cwd = std::env::current_dir().unwrap();
+        let lines = run_exec("pwd", Duration::from_secs(5));
+        assert_eq!(lines, vec![cwd.to_string_lossy().to_string()]);
     }
 }
