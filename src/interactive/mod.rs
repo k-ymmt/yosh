@@ -13,6 +13,7 @@ pub mod line_editor;
 pub mod parse_status;
 pub mod prompt;
 pub mod selector;
+pub mod spec_completion;
 pub mod terminal;
 pub mod undo;
 
