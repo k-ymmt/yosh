@@ -28,6 +28,7 @@ use highlight::{CheckerEnv, HighlightScanner};
 use line_editor::LineEditor;
 use parse_status::{ParseStatus, classify_parse};
 use prompt::{PromptInfo, expand_prompt};
+use spec_completion::SpecStore;
 use terminal::CrosstermTerminal;
 
 pub struct Repl {
@@ -36,6 +37,7 @@ pub struct Repl {
     terminal: CrosstermTerminal,
     scanner: HighlightScanner,
     command_completer: CommandCompleter,
+    spec_store: SpecStore,
 }
 
 impl Repl {
@@ -129,12 +131,15 @@ impl Repl {
             }
         }
 
+        let spec_store = SpecStore::from_home(&home);
+
         Self {
             executor,
             line_editor: LineEditor::new(),
             terminal: CrosstermTerminal::new(),
             scanner: HighlightScanner::new(),
             command_completer: CommandCompleter::new(),
+            spec_store,
         }
     }
 
@@ -210,6 +215,7 @@ impl Repl {
                 &mut self.terminal,
                 &comp_ctx,
                 &mut cmd_ctx,
+                &mut self.spec_store,
                 &mut self.scanner,
                 &checker_env,
                 &input_buffer,

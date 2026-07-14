@@ -1082,6 +1082,9 @@ fn test_tab_completes_single_candidate() {
         path: "",
         aliases: &aliases,
     };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
     let result = editor
         .read_line_with_completion(
             "$ ",
@@ -1090,6 +1093,7 @@ fn test_tab_completes_single_candidate() {
             &mut term,
             &ctx,
             &mut cmd_ctx,
+            &mut spec_store,
             &mut scanner,
             &checker_env,
             "",
@@ -1131,6 +1135,9 @@ fn test_tab_completes_common_prefix() {
         path: "",
         aliases: &aliases,
     };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
     let result = editor
         .read_line_with_completion(
             "$ ",
@@ -1139,6 +1146,7 @@ fn test_tab_completes_common_prefix() {
             &mut term,
             &ctx,
             &mut cmd_ctx,
+            &mut spec_store,
             &mut scanner,
             &checker_env,
             "",
@@ -1179,6 +1187,9 @@ fn test_tab_directory_appends_slash() {
         path: "",
         aliases: &aliases,
     };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
     let result = editor
         .read_line_with_completion(
             "$ ",
@@ -1187,6 +1198,7 @@ fn test_tab_directory_appends_slash() {
             &mut term,
             &ctx,
             &mut cmd_ctx,
+            &mut spec_store,
             &mut scanner,
             &checker_env,
             "",
@@ -1227,6 +1239,9 @@ fn test_tab_no_match_does_nothing() {
         path: "",
         aliases: &aliases,
     };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
     let result = editor
         .read_line_with_completion(
             "$ ",
@@ -1235,6 +1250,7 @@ fn test_tab_no_match_does_nothing() {
             &mut term,
             &ctx,
             &mut cmd_ctx,
+            &mut spec_store,
             &mut scanner,
             &checker_env,
             "",
@@ -1283,6 +1299,9 @@ fn test_double_tab_opens_completion_ui() {
         path: "",
         aliases: &aliases,
     };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
     let result = editor
         .read_line_with_completion(
             "$ ",
@@ -1291,6 +1310,7 @@ fn test_double_tab_opens_completion_ui() {
             &mut term,
             &ctx,
             &mut cmd_ctx,
+            &mut spec_store,
             &mut scanner,
             &checker_env,
             "",
@@ -1343,6 +1363,9 @@ fn test_tab_command_completion_at_line_start() {
         path: "",
         aliases: &aliases,
     };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
     let result = editor
         .read_line_with_completion(
             "$ ",
@@ -1351,6 +1374,7 @@ fn test_tab_command_completion_at_line_start() {
             &mut term,
             &ctx,
             &mut cmd_ctx,
+            &mut spec_store,
             &mut scanner,
             &checker_env,
             "",
@@ -1393,6 +1417,9 @@ fn test_tab_command_position_path_fallback() {
         path: "",
         aliases: &aliases,
     };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
     let result = editor
         .read_line_with_completion(
             "$ ",
@@ -1401,6 +1428,7 @@ fn test_tab_command_position_path_fallback() {
             &mut term,
             &ctx,
             &mut cmd_ctx,
+            &mut spec_store,
             &mut scanner,
             &checker_env,
             "",
@@ -1442,6 +1470,9 @@ fn test_tab_argument_position_uses_path_completion() {
         path: "",
         aliases: &aliases,
     };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
     let result = editor
         .read_line_with_completion(
             "$ ",
@@ -1450,6 +1481,7 @@ fn test_tab_argument_position_uses_path_completion() {
             &mut term,
             &ctx,
             &mut cmd_ctx,
+            &mut spec_store,
             &mut scanner,
             &checker_env,
             "",
@@ -1490,6 +1522,9 @@ fn test_tab_completes_builtin() {
         path: "",
         aliases: &aliases,
     };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
     let result = editor
         .read_line_with_completion(
             "$ ",
@@ -1498,12 +1533,180 @@ fn test_tab_completes_builtin() {
             &mut term,
             &ctx,
             &mut cmd_ctx,
+            &mut spec_store,
             &mut scanner,
             &checker_env,
             "",
         )
         .unwrap();
     assert_eq!(result, Some("export ".to_string()));
+}
+
+#[test]
+fn test_tab_spec_completion_subcommand_values() {
+    use yosh::interactive::spec_completion::SpecStore;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let spec_dir = tmp.path().join("completions");
+    fs::create_dir_all(&spec_dir).unwrap();
+    fs::write(
+        spec_dir.join("mytool.toml"),
+        "[[subcommands]]\nname = \"deploy\"\n\n[[subcommands.args]]\nvalues = [\"prod\", \"stage\"]\n",
+    )
+    .unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+
+    // "mytool deploy pr" + Tab → unique candidate "prod" is inserted.
+    let mut events = chars("mytool deploy pr");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
+    let mut spec_store = SpecStore::new(spec_dir);
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
+    let result = editor
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut spec_store,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
+        .unwrap();
+    assert_eq!(result, Some("mytool deploy prod ".to_string()));
+}
+
+#[test]
+fn test_tab_spec_none_source_suppresses_path_completion() {
+    use yosh::interactive::spec_completion::SpecStore;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    // A file that plain path completion WOULD match.
+    fs::File::create(tmp.path().join("unique_file.txt")).unwrap();
+    let spec_dir = tmp.path().join("completions");
+    fs::create_dir_all(&spec_dir).unwrap();
+    fs::write(spec_dir.join("mytool.toml"), "[[args]]\ntype = \"none\"\n").unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+
+    let mut events = chars("mytool uni");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
+    let mut spec_store = SpecStore::new(spec_dir);
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
+    let result = editor
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut spec_store,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
+        .unwrap();
+    // Tab must NOT expand to unique_file.txt.
+    assert_eq!(result, Some("mytool uni".to_string()));
+}
+
+#[test]
+fn test_tab_no_spec_falls_back_to_path_completion() {
+    use yosh::interactive::spec_completion::SpecStore;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    fs::File::create(tmp.path().join("unique_file.txt")).unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+
+    let mut events = chars("ls uni");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
+    // Store pointing at a dir with no specs — behavior must be identical
+    // to the pre-feature path completion.
+    let mut spec_store = SpecStore::new(tmp.path().join("no_specs"));
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
+    let result = editor
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut spec_store,
+            &mut scanner,
+            &checker_env,
+            "",
+        )
+        .unwrap();
+    assert_eq!(result, Some("ls unique_file.txt ".to_string()));
 }
 
 // ── Kill ring tests ───────────────────────────────────────────────────

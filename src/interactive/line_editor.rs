@@ -13,6 +13,7 @@ use super::highlight::{CheckerEnv, ColorSpan, HighlightScanner, HighlightStyle, 
 use super::history::History;
 use super::keymap::{BufferState, Keymap};
 use super::kill_ring::KillRing;
+use super::spec_completion::{self, SpecStore};
 use super::terminal::Terminal;
 use super::undo::UndoManager;
 
@@ -1172,6 +1173,7 @@ impl LineEditor {
         term: &mut T,
         ctx: &CompletionContext,
         cmd_ctx: &mut CommandCompletionContext<'_>,
+        specs: &mut SpecStore,
         scanner: &mut HighlightScanner,
         checker_env: &CheckerEnv<'_>,
         accumulated: &str,
@@ -1185,6 +1187,7 @@ impl LineEditor {
             term,
             ctx,
             cmd_ctx,
+            specs,
             scanner,
             checker_env,
             accumulated,
@@ -1202,6 +1205,7 @@ impl LineEditor {
         term: &mut T,
         ctx: &CompletionContext,
         cmd_ctx: &mut CommandCompletionContext<'_>,
+        specs: &mut SpecStore,
         scanner: &mut HighlightScanner,
         checker_env: &CheckerEnv<'_>,
         accumulated: &str,
@@ -1255,7 +1259,14 @@ impl LineEditor {
                         }
                         KeyAction::TabComplete => {
                             term.reset_style()?;
-                            self.handle_tab_complete(term, prompt, upper_lines, ctx, cmd_ctx)?;
+                            self.handle_tab_complete(
+                                term,
+                                prompt,
+                                upper_lines,
+                                ctx,
+                                cmd_ctx,
+                                specs,
+                            )?;
                         }
                         KeyAction::ClearScreen => {
                             term.clear_all()?;
@@ -1292,6 +1303,7 @@ impl LineEditor {
         upper_lines: &[String],
         ctx: &CompletionContext,
         cmd_ctx: &mut CommandCompletionContext<'_>,
+        specs: &mut SpecStore,
     ) -> io::Result<()> {
         let (word_start, word) = {
             let buf = self.buffer();
@@ -1312,6 +1324,11 @@ impl LineEditor {
                 cmd_ctx.aliases,
             );
             (cands, common, String::new())
+        } else if let Some(result) =
+            spec_completion::try_complete(&self.buffer(), word_start, &word, specs, ctx, cmd_ctx)
+        {
+            // Spec-based completion (user-defined per-command TOML)
+            (result.candidates, result.common_prefix, result.keep_prefix)
         } else {
             // Path completion (existing)
             let result = completion::complete(&self.buffer(), self.pos, ctx);
