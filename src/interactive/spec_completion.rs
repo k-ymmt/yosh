@@ -217,6 +217,180 @@ impl SpecStore {
     }
 }
 
+// ── Matching engine ─────────────────────────────────────────────────
+
+/// What the word under the cursor should be completed as.
+#[derive(Debug)]
+pub enum Resolution<'a> {
+    /// Complete a flag's value from this source.
+    FlagValue(&'a CandidateSource),
+    /// The current word starts with `-`: complete flag spellings.
+    FlagNames(Vec<String>),
+    /// Positional: subcommand names at the current level, plus the
+    /// candidate source for the current positional index (if any).
+    Positional {
+        subcommands: Vec<String>,
+        source: Option<&'a CandidateSource>,
+    },
+}
+
+/// Walk `prior_words` (the words between the command name and the
+/// cursor) down the spec tree and decide what `current_word` completes.
+///
+/// Returns the resolution plus `keep_prefix`: the leading part of the
+/// current word to re-insert verbatim (non-empty only for `--flag=value`
+/// forms, where it is `--flag=`).
+pub fn resolve<'a>(
+    spec: &'a CompletionSpec,
+    prior_words: &[String],
+    current_word: &str,
+) -> (Resolution<'a>, String) {
+    let mut level = spec.level();
+    let mut positional_index = 0usize;
+    let mut pending_value_flag: Option<&FlagSpec> = None;
+
+    for word in prior_words {
+        if pending_value_flag.take().is_some() {
+            continue; // consumed as the pending flag's value
+        }
+        if let Some(sub) = level.subcommands.iter().find(|s| s.name == *word) {
+            level = sub.level();
+            positional_index = 0;
+            continue;
+        }
+        if word.starts_with('-') {
+            // `--flag=value` is self-contained; a bare value-taking flag
+            // makes the NEXT word its value. Unknown flags are consumed
+            // as booleans.
+            let name = word.split('=').next().unwrap_or(word);
+            if let Some(flag) = find_flag(level, name)
+                && flag.value.is_some()
+                && !word.contains('=')
+            {
+                pending_value_flag = Some(flag);
+            }
+            continue;
+        }
+        positional_index += 1;
+    }
+
+    if let Some(flag) = pending_value_flag {
+        let source = flag.value.as_ref().expect("pending flag takes a value");
+        return (Resolution::FlagValue(source), String::new());
+    }
+
+    if current_word.starts_with('-') {
+        if let Some(eq) = current_word.find('=') {
+            let name = &current_word[..eq];
+            if let Some(flag) = find_flag(level, name)
+                && let Some(source) = flag.value.as_ref()
+            {
+                return (
+                    Resolution::FlagValue(source),
+                    current_word[..=eq].to_string(),
+                );
+            }
+        }
+        let names: Vec<String> = level
+            .flags
+            .iter()
+            .flat_map(|f| f.names.iter().cloned())
+            .collect();
+        return (Resolution::FlagNames(names), String::new());
+    }
+
+    let subcommands: Vec<String> = level.subcommands.iter().map(|s| s.name.clone()).collect();
+    let source = if level.args.is_empty() {
+        None
+    } else {
+        Some(&level.args[positional_index.min(level.args.len() - 1)])
+    };
+    (
+        Resolution::Positional {
+            subcommands,
+            source,
+        },
+        String::new(),
+    )
+}
+
+fn find_flag<'a>(level: Level<'a>, name: &str) -> Option<&'a FlagSpec> {
+    level
+        .flags
+        .iter()
+        .find(|f| f.names.iter().any(|n| n == name))
+}
+
+/// Split the current pipeline segment of `buf[..word_start]` into the
+/// command word and the argument words before the cursor. Quote
+/// characters wrapping a word are stripped; a leading `!` word is
+/// skipped. Returns `None` when the cursor word is itself the command.
+pub fn command_words(buf: &str, word_start: usize) -> Option<(String, Vec<String>)> {
+    let bytes = buf.as_bytes();
+    let end = word_start.min(buf.len());
+    let mut seg_start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    // Find the start of the current pipeline segment
+    for (i, &ch) in bytes.iter().enumerate().take(end) {
+        match ch {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'|' | b';' | b'&' | b'(' if !in_single && !in_double => seg_start = i + 1,
+            _ => {}
+        }
+    }
+
+    // Parse words, treating quoted strings as single tokens
+    let segment = &buf[seg_start..end];
+    let mut words = Vec::new();
+    let mut current_word = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    for ch in segment.chars() {
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                current_word.push(ch);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                current_word.push(ch);
+            }
+            ' ' | '\t' | '\n' if !in_single && !in_double => {
+                if !current_word.is_empty() {
+                    words.push(current_word.clone());
+                    current_word.clear();
+                }
+            }
+            _ => current_word.push(ch),
+        }
+    }
+    if !current_word.is_empty() {
+        words.push(current_word);
+    }
+
+    // Strip quotes from all words
+    words = words
+        .into_iter()
+        .map(|w| w.trim_matches(|c| c == '\'' || c == '"').to_string())
+        .collect();
+
+    // Skip leading `!`
+    if words.first().is_some_and(|w| w == "!") {
+        words.remove(0);
+    }
+
+    if words.is_empty() {
+        return None;
+    }
+
+    let cmd = words.remove(0);
+    Some((cmd, words))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,5 +599,267 @@ name = \"add\"
     fn store_empty_command_returns_none() {
         let (_tmp, mut store) = store_with(&[]);
         assert!(store.get("").is_none());
+    }
+
+    // ── command_words ────────────────────────────────────────────────
+
+    #[test]
+    fn words_simple() {
+        // "git checkout ma|" — word_start = 13
+        let (cmd, args) = command_words("git checkout ma", 13).unwrap();
+        assert_eq!(cmd, "git");
+        assert_eq!(args, vec!["checkout"]);
+    }
+
+    #[test]
+    fn words_cursor_on_command_is_none() {
+        assert!(command_words("gi", 0).is_none());
+        assert!(command_words("", 0).is_none());
+    }
+
+    #[test]
+    fn words_pipeline_segment_only() {
+        // "cat f | git checkout ma|" — word_start = 21
+        let (cmd, args) = command_words("cat f | git checkout ma", 21).unwrap();
+        assert_eq!(cmd, "git");
+        assert_eq!(args, vec!["checkout"]);
+    }
+
+    #[test]
+    fn words_after_semicolon() {
+        // "echo a; git lo|" — word_start = 12
+        let (cmd, args) = command_words("echo a; git lo", 12).unwrap();
+        assert_eq!(cmd, "git");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn words_strips_quotes() {
+        // "git commit -m 'a b' |" — word_start = 20
+        let (cmd, args) = command_words("git commit -m 'a b' ", 20).unwrap();
+        assert_eq!(cmd, "git");
+        assert_eq!(args, vec!["commit", "-m", "a b"]);
+    }
+
+    #[test]
+    fn words_skips_bang_prefix() {
+        // "! git lo|" — word_start = 6
+        let (cmd, args) = command_words("! git lo", 6).unwrap();
+        assert_eq!(cmd, "git");
+        assert!(args.is_empty());
+    }
+
+    // ── resolve ──────────────────────────────────────────────────────
+
+    fn as_strings(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn resolve_top_level_positional() {
+        let spec = CompletionSpec::parse(GIT_SPEC).unwrap();
+        let (res, keep) = resolve(&spec, &[], "");
+        match res {
+            Resolution::Positional {
+                subcommands,
+                source,
+            } => {
+                assert_eq!(subcommands, vec!["checkout", "remote"]);
+                assert_eq!(source, Some(&CandidateSource::Builtin(BuiltinType::File)));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert_eq!(keep, "");
+    }
+
+    #[test]
+    fn resolve_descends_into_subcommand() {
+        let spec = CompletionSpec::parse(GIT_SPEC).unwrap();
+        let (res, _) = resolve(&spec, &as_strings(&["checkout"]), "ma");
+        match res {
+            Resolution::Positional {
+                subcommands,
+                source,
+            } => {
+                assert!(subcommands.is_empty());
+                assert_eq!(
+                    source,
+                    Some(&CandidateSource::Exec(
+                        "git branch --format='%(refname:short)'".to_string()
+                    ))
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_nested_subcommand() {
+        let spec = CompletionSpec::parse(GIT_SPEC).unwrap();
+        let (res, _) = resolve(&spec, &as_strings(&["remote", "remove"]), "");
+        match res {
+            Resolution::Positional { source, .. } => {
+                assert_eq!(
+                    source,
+                    Some(&CandidateSource::Exec("git remote".to_string()))
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_value_flag_completes_next_word() {
+        let spec = CompletionSpec::parse(GIT_SPEC).unwrap();
+        let (res, _) = resolve(&spec, &as_strings(&["-C"]), "");
+        match res {
+            Resolution::FlagValue(source) => {
+                assert_eq!(source, &CandidateSource::Builtin(BuiltinType::Directory));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_value_flag_consumes_its_value() {
+        let spec = CompletionSpec::parse(GIT_SPEC).unwrap();
+        // "-C /tmp checkout <cursor>" — /tmp is the value of -C, then descend.
+        let (res, _) = resolve(&spec, &as_strings(&["-C", "/tmp", "checkout"]), "");
+        match res {
+            Resolution::Positional { source, .. } => {
+                assert_eq!(
+                    source,
+                    Some(&CandidateSource::Exec(
+                        "git branch --format='%(refname:short)'".to_string()
+                    ))
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_boolean_flag_is_consumed() {
+        let spec = CompletionSpec::parse(GIT_SPEC).unwrap();
+        let (res, _) = resolve(&spec, &as_strings(&["--no-pager"]), "");
+        assert!(matches!(res, Resolution::Positional { .. }));
+    }
+
+    #[test]
+    fn resolve_unknown_dash_word_is_consumed_as_boolean() {
+        let spec = CompletionSpec::parse(GIT_SPEC).unwrap();
+        let (res, _) = resolve(&spec, &as_strings(&["-q", "checkout"]), "");
+        match res {
+            Resolution::Positional { source, .. } => {
+                assert_eq!(
+                    source,
+                    Some(&CandidateSource::Exec(
+                        "git branch --format='%(refname:short)'".to_string()
+                    ))
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_dash_word_completes_flag_names() {
+        let spec = CompletionSpec::parse(GIT_SPEC).unwrap();
+        let (res, keep) = resolve(&spec, &[], "--n");
+        match res {
+            Resolution::FlagNames(names) => {
+                assert_eq!(names, vec!["-C", "--no-pager"]);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert_eq!(keep, "");
+    }
+
+    #[test]
+    fn resolve_flag_eq_value_form() {
+        let text = "\
+[[flags]]
+names = [\"--format\"]
+value = { values = [\"json\", \"yaml\"] }
+";
+        let spec = CompletionSpec::parse(text).unwrap();
+        let (res, keep) = resolve(&spec, &[], "--format=j");
+        match res {
+            Resolution::FlagValue(source) => {
+                assert_eq!(
+                    source,
+                    &CandidateSource::Values(vec!["json".to_string(), "yaml".to_string()])
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert_eq!(keep, "--format=");
+    }
+
+    #[test]
+    fn resolve_flag_eq_value_in_prior_word_is_self_contained() {
+        let text = "\
+[[flags]]
+names = [\"--format\"]
+value = { values = [\"json\"] }
+[[args]]
+values = [\"target\"]
+";
+        let spec = CompletionSpec::parse(text).unwrap();
+        // "--format=json <cursor>" must NOT treat the cursor word as the
+        // flag's value.
+        let (res, _) = resolve(&spec, &as_strings(&["--format=json"]), "");
+        match res {
+            Resolution::Positional { source, .. } => {
+                assert_eq!(
+                    source,
+                    Some(&CandidateSource::Values(vec!["target".to_string()]))
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_positional_index_and_repeat_last() {
+        let text = "\
+[[args]]
+values = [\"first\"]
+[[args]]
+values = [\"second\"]
+";
+        let spec = CompletionSpec::parse(text).unwrap();
+        let expect_values = |res: Resolution<'_>, want: &str| match res {
+            Resolution::Positional { source, .. } => {
+                assert_eq!(
+                    source,
+                    Some(&CandidateSource::Values(vec![want.to_string()]))
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        };
+        let (res, _) = resolve(&spec, &[], "");
+        expect_values(res, "first");
+        let (res, _) = resolve(&spec, &as_strings(&["x"]), "");
+        expect_values(res, "second");
+        // Last entry repeats for further positionals.
+        let (res, _) = resolve(&spec, &as_strings(&["x", "y"]), "");
+        expect_values(res, "second");
+    }
+
+    #[test]
+    fn resolve_no_args_declared_has_no_source() {
+        let spec = CompletionSpec::parse("[[subcommands]]\nname = \"sub\"\n").unwrap();
+        let (res, _) = resolve(&spec, &[], "");
+        match res {
+            Resolution::Positional {
+                subcommands,
+                source,
+            } => {
+                assert_eq!(subcommands, vec!["sub"]);
+                assert_eq!(source, None);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }
