@@ -436,6 +436,9 @@ retained below for tracking.
 - [ ] Emacs keybindings: undo group boundary on space — spec says space triggers undo group boundary but implementation defers boundary to next non-space char; undo granularity is slightly coarser than readline (`src/interactive/line_editor.rs`)
 - [ ] Emacs keybindings: PTY E2E tests — kill/yank round-trip, undo, word movement, numeric arg scenarios not covered by PTY tests (`tests/pty_interactive.rs`)
 - [ ] PTY tests: remaining `thread::sleep` after send — autosuggest/tab completion/syntax highlight/`set -m` tests still rely on 50–200ms fixed waits for UI render or child startup (not raw-mode races); if CI flakiness appears on those paths, migrate them to condition-based waits similar to `wait_for_raw_mode` (`tests/pty_interactive.rs`)
+- [ ] Spec completion: `command_words` treats unquoted `&` in `2>&1` as a segment separator and counts assignment prefixes (`FOO=1 cmd`) / redirection words as command/positional words — spec lookup misses, degrading gracefully to path completion (`src/interactive/spec_completion.rs`)
+- [ ] Spec completion: parse-error warning `eprintln!` fires while the terminal is in raw mode (staircase output, prompt not redrawn; once per session per bad file) (`src/interactive/spec_completion.rs`)
+- [ ] Spec completion: quoted flag values (`--flag="path`) keep the quote inside `keep_prefix`, diverging from `completion::complete`'s quote-stripping convention (`src/interactive/spec_completion.rs`)
 
 ## Future: Plugin System Enhancements
 

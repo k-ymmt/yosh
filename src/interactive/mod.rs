@@ -200,6 +200,9 @@ impl Repl {
                 aliases: &self.executor.env.aliases,
             };
 
+            self.spec_store
+                .set_exec_env(self.executor.env.vars.environ().to_vec());
+
             let mut cmd_ctx = CommandCompletionContext {
                 completer: &mut self.command_completer,
                 path: &path_val,

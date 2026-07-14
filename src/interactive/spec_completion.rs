@@ -174,6 +174,7 @@ fn validate_level(level: Level<'_>) -> Result<(), String> {
 pub struct SpecStore {
     dir: std::path::PathBuf,
     cache: std::collections::HashMap<String, Option<CompletionSpec>>,
+    exec_env: Option<Vec<(String, String)>>,
 }
 
 impl SpecStore {
@@ -181,7 +182,14 @@ impl SpecStore {
         Self {
             dir,
             cache: std::collections::HashMap::new(),
+            exec_env: None,
         }
+    }
+
+    /// Per-prompt snapshot of the shell's exported variables, passed to
+    /// `exec` candidate commands. `None` inherits the process env.
+    pub fn set_exec_env(&mut self, env: Vec<(String, String)>) {
+        self.exec_env = Some(env);
     }
 
     /// Store rooted at the standard location under `home`
@@ -401,30 +409,48 @@ pub const EXEC_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5
 /// A timeout kills the child; timeouts and non-zero exits both yield an
 /// empty Vec. Runs as a child process so completion can never mutate
 /// shell state.
-pub fn run_exec(cmd: &str, timeout: std::time::Duration) -> Vec<String> {
+///
+/// `env`: `None` inherits the process environment (used by unit tests);
+/// `Some(pairs)` runs the child with exactly `pairs` as its environment
+/// (the shell's exported variables, snapshotted per-prompt).
+pub fn run_exec(
+    cmd: &str,
+    timeout: std::time::Duration,
+    env: Option<&[(String, String)]>,
+) -> Vec<String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
-    let mut child = match Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg("-c")
         .arg(cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+        .stderr(Stdio::null());
+    if let Some(pairs) = env {
+        command
+            .env_clear()
+            .envs(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(_) => return Vec::new(),
     };
 
     // Drain stdout on a helper thread so a pipe-buffer-filling child can
-    // never deadlock the timeout loop below.
+    // never deadlock the timeout loop below. Send the result over a
+    // channel rather than joining: a backgrounded grandchild that
+    // inherits the write end of the pipe can keep it open long after
+    // this child exits, and joining unconditionally would then hang the
+    // line editor.
     let mut stdout = child.stdout.take().expect("stdout is piped");
-    let reader = std::thread::spawn(move || {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut out = String::new();
         let _ = stdout.read_to_string(&mut out);
-        out
+        let _ = tx.send(out);
     });
 
     let deadline = Instant::now() + timeout;
@@ -439,19 +465,34 @@ pub fn run_exec(cmd: &str, timeout: std::time::Duration) -> Vec<String> {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            Err(_) => break None,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
         }
     };
 
-    let out = reader.join().unwrap_or_default();
-    match status {
-        Some(status) if status.success() => out
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_string)
-            .collect(),
-        _ => Vec::new(),
+    let Some(status) = status else {
+        // Timed out: the reader thread detaches and dies with the pipe.
+        return Vec::new();
+    };
+    if !status.success() {
+        return Vec::new();
     }
+    // The child exited, but a backgrounded grandchild may still hold the
+    // pipe's write end and delay EOF forever — bound the wait by the
+    // remaining budget instead of joining unconditionally.
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now())
+        + std::time::Duration::from_millis(100);
+    let out = match rx.recv_timeout(remaining) {
+        Ok(out) => out,
+        Err(_) => return Vec::new(),
+    };
+    out.lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 // ── Candidate generation ────────────────────────────────────────────
@@ -483,6 +524,9 @@ pub fn try_complete(
     cmd_ctx: &mut CommandCompletionContext<'_>,
 ) -> Option<SpecCompletion> {
     let (cmd, prior_words) = command_words(buf, word_start)?;
+    // Snapshot before `store.get`: its returned reference borrows `store`
+    // for the rest of this function, so `store.exec_env` must be read first.
+    let exec_env = store.exec_env.clone();
     let spec = store.get(&cmd)?;
     let (resolution, keep_prefix) = resolve(spec, &prior_words, word);
     let filter = &word[keep_prefix.len()..];
@@ -494,9 +538,15 @@ pub fn try_complete(
             candidates.sort();
             finish(candidates, String::new())
         }
-        Resolution::FlagValue(source) => {
-            complete_source(source, filter, keep_prefix, &[], ctx, cmd_ctx)
-        }
+        Resolution::FlagValue(source) => complete_source(
+            source,
+            filter,
+            keep_prefix,
+            &[],
+            ctx,
+            cmd_ctx,
+            exec_env.as_deref(),
+        ),
         Resolution::Positional {
             subcommands,
             source,
@@ -506,9 +556,15 @@ pub fn try_complete(
                 .filter(|s| s.starts_with(filter))
                 .collect();
             match source {
-                Some(source) => {
-                    complete_source(source, filter, keep_prefix, &sub_matches, ctx, cmd_ctx)
-                }
+                Some(source) => complete_source(
+                    source,
+                    filter,
+                    keep_prefix,
+                    &sub_matches,
+                    ctx,
+                    cmd_ctx,
+                    exec_env.as_deref(),
+                ),
                 None => finish(sub_matches, keep_prefix),
             }
         }
@@ -548,13 +604,16 @@ fn complete_source(
     sub_matches: &[String],
     ctx: &CompletionContext,
     cmd_ctx: &mut CommandCompletionContext<'_>,
+    exec_env: Option<&[(String, String)]>,
 ) -> Option<SpecCompletion> {
     let (mut candidates, keep_prefix) = match source {
         CandidateSource::Builtin(BuiltinType::None) => {
-            // Suppression: an empty result the caller treats as final.
+            // Suppression covers source candidates and the path-completion
+            // fallback — statically declared sibling subcommands still
+            // complete. Empty sub_matches keeps this a final empty result.
             return Some(SpecCompletion {
-                candidates: Vec::new(),
-                common_prefix: String::new(),
+                common_prefix: completion::longest_common_prefix(sub_matches),
+                candidates: sub_matches.to_vec(),
                 keep_prefix,
             });
         }
@@ -588,7 +647,7 @@ fn complete_source(
             (cands, keep_prefix)
         }
         CandidateSource::Exec(cmd) => {
-            let cands: Vec<String> = run_exec(cmd, EXEC_TIMEOUT)
+            let cands: Vec<String> = run_exec(cmd, EXEC_TIMEOUT, exec_env)
                 .into_iter()
                 .filter(|c| c.starts_with(filter))
                 .collect();
@@ -1093,20 +1152,20 @@ values = [\"second\"]
 
     #[test]
     fn exec_splits_stdout_lines_and_drops_empties() {
-        let lines = run_exec("printf 'alpha\\n\\nbeta\\n'", Duration::from_secs(5));
+        let lines = run_exec("printf 'alpha\\n\\nbeta\\n'", Duration::from_secs(5), None);
         assert_eq!(lines, vec!["alpha", "beta"]);
     }
 
     #[test]
     fn exec_nonzero_exit_yields_no_candidates() {
-        let lines = run_exec("echo out; exit 1", Duration::from_secs(5));
+        let lines = run_exec("echo out; exit 1", Duration::from_secs(5), None);
         assert!(lines.is_empty());
     }
 
     #[test]
     fn exec_timeout_kills_child_and_yields_no_candidates() {
         let start = std::time::Instant::now();
-        let lines = run_exec("sleep 5", Duration::from_millis(100));
+        let lines = run_exec("sleep 5", Duration::from_millis(100), None);
         assert!(lines.is_empty());
         assert!(
             start.elapsed() < Duration::from_secs(2),
@@ -1117,11 +1176,38 @@ values = [\"second\"]
 
     #[test]
     fn exec_inherits_cwd() {
+        let _guard = crate::test_sync::lock_cwd();
         // The child runs in the shell's cwd, so `pwd` output is non-empty
         // and matches the current dir.
         let cwd = std::env::current_dir().unwrap();
-        let lines = run_exec("pwd", Duration::from_secs(5));
+        let lines = run_exec("pwd", Duration::from_secs(5), None);
         assert_eq!(lines, vec![cwd.to_string_lossy().to_string()]);
+    }
+
+    #[test]
+    fn exec_backgrounded_grandchild_does_not_hang() {
+        let start = std::time::Instant::now();
+        let lines = run_exec("sleep 5 & echo hi", Duration::from_millis(100), None);
+        assert!(lines.is_empty());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "reader join must be bounded: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn exec_uses_provided_env() {
+        let env = vec![
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            ("YOSH_TEST_MARKER".to_string(), "marker42".to_string()),
+        ];
+        let lines = run_exec(
+            "printf '%s\\n' \"$YOSH_TEST_MARKER\"",
+            Duration::from_secs(5),
+            Some(&env),
+        );
+        assert_eq!(lines, vec!["marker42"]);
     }
 
     // ── try_complete ─────────────────────────────────────────────────
@@ -1178,6 +1264,13 @@ values = [\"second\"]
         let result =
             spec_complete("mytool", "[[args]]\ntype = \"none\"\n", "mytool x", "/").unwrap();
         assert!(result.candidates.is_empty());
+    }
+
+    #[test]
+    fn complete_none_source_still_offers_subcommands() {
+        let text = "[[args]]\ntype = \"none\"\n[[subcommands]]\nname = \"deploy\"\n";
+        let result = spec_complete("mytool", text, "mytool dep", "/").unwrap();
+        assert_eq!(result.candidates, vec!["deploy"]);
     }
 
     #[test]
