@@ -7,7 +7,6 @@
 # done
 # END
 # EXPECT_EXIT: 0
-# XFAIL: yosh does not set SIGINT/SIGQUIT to ignore in async children
 ( /bin/sh -c 'kill -INT $$; echo int-survived' ) &
 wait "$!"
 ( /bin/sh -c 'kill -QUIT $$; echo quit-survived' ) &

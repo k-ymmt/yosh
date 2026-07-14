@@ -14,30 +14,54 @@ impl Executor {
         match cmd {
             Command::Simple(simple) => match self.exec_simple_command(simple) {
                 Ok(status) => status,
-                Err(e) => {
-                    eprintln!("{}", e);
-                    let code = e.exit_code();
-                    self.env.exec.last_exit_status = code;
-                    code
-                }
+                Err(e) => self.report_command_error(&e),
             },
             Command::Compound(compound, redirects) => {
                 match self.exec_compound_command(compound, redirects) {
                     Ok(status) => status,
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        self.env.exec.last_exit_status = e.exit_code();
-                        e.exit_code()
-                    }
+                    Err(e) => self.report_command_error(&e),
                 }
             }
             Command::FunctionDef(func_def) => {
+                // POSIX §2.9.5: a function may not be named after a special
+                // built-in; the definition is an error, and per §2.8.1 a
+                // non-interactive shell exits on it.
+                if matches!(
+                    crate::builtin::classify_builtin(&func_def.name),
+                    crate::builtin::BuiltinKind::Special
+                ) {
+                    eprintln!(
+                        "yosh: {}: cannot define a function named after a special builtin",
+                        func_def.name
+                    );
+                    self.env.exec.last_exit_status = 2;
+                    if !self.env.mode.is_interactive {
+                        self.exit_requested = Some(2);
+                    }
+                    return 2;
+                }
                 self.env
                     .functions
                     .insert(func_def.name.clone(), func_def.clone());
                 0
             }
         }
+    }
+
+    /// Print a command-level `ShellError` and return its exit code.
+    /// Per the POSIX §2.8.1 consequences table, expansion errors and
+    /// variable-assignment errors terminate a non-interactive shell —
+    /// requested via `exit_requested` so the top-level driver unwinds
+    /// (and fires the EXIT trap) instead of `process::exit`ing from
+    /// arbitrarily deep in the executor.
+    fn report_command_error(&mut self, e: &ShellError) -> i32 {
+        eprintln!("{}", e);
+        let code = e.exit_code();
+        self.env.exec.last_exit_status = code;
+        if !self.env.mode.is_interactive && e.requires_noninteractive_exit() {
+            self.exit_requested = Some(code);
+        }
+        code
     }
 
     /// Execute an AND-OR list.
@@ -114,11 +138,33 @@ impl Executor {
 
     /// Execute a command asynchronously (background with &).
     fn exec_async(&mut self, and_or: &AndOrList) -> Result<i32, ShellError> {
+        // Block signals across the fork: the child inherits the parent's
+        // self-pipe handler AND the shared pipe, so a signal delivered to
+        // the child before reset_child_signals runs would be written into
+        // the pipe and later misread by the parent as its own (observed as
+        // `kill -TERM $!` racing the child's signal reset and terminating
+        // the parent shell). Both sides restore the mask below.
+        let all_signals = nix::sys::signal::SigSet::all();
+        let prev_mask = nix::sys::signal::SigSet::empty();
+        let mut prev_mask_opt = Some(prev_mask);
+        let _ = nix::sys::signal::sigprocmask(
+            nix::sys::signal::SigmaskHow::SIG_BLOCK,
+            Some(&all_signals),
+            prev_mask_opt.as_mut(),
+        );
+        let prev_mask = prev_mask_opt.unwrap();
         match unsafe { fork() } {
-            Err(e) => Err(ShellError::runtime(
-                RuntimeErrorKind::IoError,
-                format!("fork: {}", e),
-            )),
+            Err(e) => {
+                let _ = nix::sys::signal::sigprocmask(
+                    nix::sys::signal::SigmaskHow::SIG_SETMASK,
+                    Some(&prev_mask),
+                    None,
+                );
+                Err(ShellError::runtime(
+                    RuntimeErrorKind::IoError,
+                    format!("fork: {}", e),
+                ))
+            }
             Ok(ForkResult::Child) => {
                 // Set process group BEFORE signal setup to ensure proper isolation.
                 let pid = nix::unistd::getpid();
@@ -136,16 +182,50 @@ impl Executor {
                     // stay in this job's process group instead.
                     self.env.mode.options.monitor = false;
                 } else {
+                    // POSIX §2.9.3.1 / §2.11: with job control disabled,
+                    // commands in an asynchronous list ignore SIGINT and
+                    // SIGQUIT, and read stdin from /dev/null (before any
+                    // explicit redirection, which happens later during
+                    // command execution). Record the ignores in the trap
+                    // store so nested forks (subshells, exec'd commands)
+                    // keep them ignored; a `trap` in the async list may
+                    // still override them.
+                    let mut ignored = ignored;
+                    self.env
+                        .traps
+                        .signal_traps
+                        .insert(libc::SIGINT, crate::env::TrapAction::Ignore);
+                    self.env
+                        .traps
+                        .signal_traps
+                        .insert(libc::SIGQUIT, crate::env::TrapAction::Ignore);
+                    ignored.push(libc::SIGINT);
+                    ignored.push(libc::SIGQUIT);
                     signal::reset_child_signals(&ignored);
+                    if let Ok(devnull) = std::fs::File::open("/dev/null") {
+                        use std::os::fd::AsRawFd;
+                        unsafe {
+                            libc::dup2(devnull.as_raw_fd(), libc::STDIN_FILENO);
+                        }
+                    }
                 }
+                // Signal dispositions are now the child's own — deliver
+                // anything that arrived while the fork window was blocked.
+                let _ = nix::sys::signal::sigprocmask(
+                    nix::sys::signal::SigmaskHow::SIG_SETMASK,
+                    Some(&prev_mask),
+                    None,
+                );
 
-                // Note: we do NOT call ignore_signal(SIGINT/SIGQUIT) here.
-                // setpgid already isolates this process from keyboard signals,
-                // and reset_child_signals would undo the ignore anyway.
                 let status = self.exec_and_or(and_or);
                 exit_child(status);
             }
             Ok(ForkResult::Parent { child }) => {
+                let _ = nix::sys::signal::sigprocmask(
+                    nix::sys::signal::SigmaskHow::SIG_SETMASK,
+                    Some(&prev_mask),
+                    None,
+                );
                 nix::unistd::setpgid(child, child).ok();
                 let command_name = preview_command(and_or);
                 let job_id = self

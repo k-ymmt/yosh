@@ -41,7 +41,7 @@ impl Lexer {
                         if !literal.is_empty() {
                             parts.push(WordPart::Literal(std::mem::take(&mut literal)));
                         }
-                        let part = self.read_dollar()?;
+                        let part = self.read_dollar(true)?;
                         parts.push(part);
                     }
                     b'\\' => {
@@ -107,7 +107,7 @@ impl Lexer {
                         if !literal.is_empty() {
                             parts.push(WordPart::Literal(std::mem::take(&mut literal)));
                         }
-                        let part = self.read_dollar()?;
+                        let part = self.read_dollar(false)?;
                         parts.push(part);
                     }
                     b'`' => {
@@ -287,8 +287,14 @@ impl Lexer {
             "!" => ParamExpr::Special(SpecialParam::Bang),
             "0" => ParamExpr::Special(SpecialParam::Zero),
             s if s.chars().all(|c| c.is_ascii_digit()) => {
+                // Leading zeros are decimal (`${01}` ≡ `$1`); all-zero
+                // digit strings denote `$0`.
                 let n: usize = s.parse().unwrap_or(0);
-                ParamExpr::Positional(n)
+                if n == 0 {
+                    ParamExpr::Special(SpecialParam::Zero)
+                } else {
+                    ParamExpr::Positional(n)
+                }
             }
             s => ParamExpr::Simple(s.to_string()),
         }
@@ -306,11 +312,13 @@ impl Lexer {
         }
         let ch = self.current_byte();
         match ch {
-            b'@' | b'*' | b'?' | b'-' | b'$' | b'!' | b'0' | b'#' => {
+            b'@' | b'*' | b'?' | b'-' | b'$' | b'!' | b'#' => {
                 self.advance();
                 Ok((ch as char).to_string())
             }
-            b'1'..=b'9' => {
+            // POSIX §2.5.1: a positional parameter is a decimal digit string;
+            // leading zeros are allowed (`${01}` ≡ `$1`).
+            b'0'..=b'9' => {
                 let mut digits = String::new();
                 while !self.at_end() && self.current_byte().is_ascii_digit() {
                     digits.push(self.current_byte() as char);
@@ -827,7 +835,9 @@ impl Lexer {
     }
 
     /// Handles `$`. Dispatches to appropriate expansion method.
-    fn read_dollar(&mut self) -> error::Result<WordPart> {
+    /// `in_double_quote`: POSIX 2024 §2.2.4 — `$'...'` is only recognized
+    /// outside double-quotes; inside `"..."` the `$` stays literal.
+    fn read_dollar(&mut self, in_double_quote: bool) -> error::Result<WordPart> {
         self.advance(); // consume '$'
 
         if self.at_end() {
@@ -836,6 +846,7 @@ impl Lexer {
 
         let ch = self.current_byte();
         match ch {
+            b'\'' if in_double_quote => Ok(WordPart::Literal("$".to_string())),
             b'\'' => self.read_dollar_single_quote(),
             b'{' => self.read_param_expansion_braced(),
             b'(' => {

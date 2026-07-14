@@ -11,6 +11,11 @@ pub enum FlowControl {
 pub struct ExecState {
     pub last_exit_status: i32,
     pub flow_control: Option<FlowControl>,
+    /// `$?` as it was when the currently-executing trap action started.
+    /// `Some` only while a trap action runs; `exit` without an operand
+    /// inside a trap action uses this instead of `last_exit_status`
+    /// (POSIX §2.11 / exit special built-in).
+    pub trap_context_status: Option<i32>,
     /// Number of currently-executing loop bodies (for / while / until).
     /// Used by `break` / `continue` to detect out-of-loop usage and to
     /// clamp `n` against the outermost loop (POSIX §2.14.1 / §2.14.5).

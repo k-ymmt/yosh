@@ -210,6 +210,43 @@ impl TrapStore {
             }
         }
     }
+
+    /// Print traps for just the named conditions (POSIX 2024
+    /// `trap -p CONDITION...`), in the same re-input format as
+    /// [`Self::display_all`]. Unknown condition names and conditions at
+    /// their default action print nothing.
+    pub fn display_conditions(&self, conditions: &[String]) {
+        let (exit_trap, signal_traps) = if let Some(saved) = &self.saved_traps {
+            (&saved.0, &saved.1)
+        } else {
+            (&self.exit_trap, &self.signal_traps)
+        };
+
+        for cond in conditions {
+            let Some(num) = Self::signal_name_to_number(cond) else {
+                continue;
+            };
+            if num == 0 {
+                match exit_trap {
+                    Some(TrapAction::Command(cmd)) => println!("trap -- '{}' EXIT", cmd),
+                    Some(TrapAction::Ignore) => println!("trap -- '' EXIT"),
+                    _ => {}
+                }
+                continue;
+            }
+            let name = Self::signal_number_to_name(num);
+            match signal_traps.get(&num) {
+                Some(TrapAction::Command(cmd)) => println!("trap -- '{}' SIG{}", cmd, name),
+                Some(TrapAction::Ignore) => println!("trap -- '' SIG{}", name),
+                Some(TrapAction::Default) => {}
+                None => {
+                    if crate::signal::is_ignored_on_entry(num) {
+                        println!("trap -- '' SIG{}", name);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

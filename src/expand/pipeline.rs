@@ -161,9 +161,10 @@ fn expand_param_to_fields(
         }
 
         // "$*" inside double quotes: join all positional params with IFS[0].
+        // A set-but-null IFS joins with no separator (POSIX §2.5.2).
         ParamExpr::Special(SpecialParam::Star) if in_double_quote => {
-            let sep = ifs_first_char(env);
-            let joined = env.vars.positional_params().join(&sep.to_string());
+            let sep = ifs_join_separator(env);
+            let joined = env.vars.positional_params().join(&sep);
             fields.last_mut().unwrap().push_quoted(&joined);
         }
 
@@ -197,12 +198,14 @@ fn expand_param_to_fields(
     Ok(())
 }
 
-/// Return the first character of IFS, defaulting to space.
-fn ifs_first_char(env: &ShellEnv) -> char {
-    env.vars
-        .get("IFS")
-        .and_then(|s| s.chars().next())
-        .unwrap_or(' ')
+/// Return the `"$*"` join separator: the first character of IFS.
+/// Unset IFS joins with a space; set-but-null IFS joins with nothing
+/// (POSIX §2.5.2).
+fn ifs_join_separator(env: &ShellEnv) -> String {
+    match env.vars.get("IFS") {
+        None => " ".to_string(),
+        Some(s) => s.chars().next().map(String::from).unwrap_or_default(),
+    }
 }
 
 #[cfg(test)]

@@ -365,8 +365,16 @@ impl Executor {
         self.plugins
             .call_pre_exec(&mut self.env, &cmd_str_for_hooks);
 
-        // Check for function call (before builtins, matching POSIX lookup order)
-        if let Some(func_def) = self.env.functions.get(&command_name).cloned() {
+        // Check for function call. POSIX §2.9.1.4: special built-ins are
+        // found before functions, so a function may never shadow one;
+        // functions do take precedence over regular built-ins and PATH.
+        let shadowed_by_special = matches!(
+            crate::builtin::classify_builtin(&command_name),
+            crate::builtin::BuiltinKind::Special
+        );
+        if !shadowed_by_special
+            && let Some(func_def) = self.env.functions.get(&command_name).cloned()
+        {
             let saved = self
                 .apply_temp_assignments(&cmd.assignments)
                 .inspect_err(|_| {

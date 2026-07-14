@@ -124,11 +124,12 @@ pub fn builtin_unalias(args: &[String], env: &mut ShellEnv) -> Result<i32, Shell
     Ok(status)
 }
 
-pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> Result<i32, ShellError> {
+pub fn builtin_kill(args: &[String], env: &ShellEnv) -> Result<i32, ShellError> {
+    let shell_pgid = env.process.shell_pgid;
     if args.is_empty() {
         return Err(ShellError::runtime(
             RuntimeErrorKind::InvalidArgument,
-            "kill: usage: kill [-s sigspec | -signum] pid...",
+            "kill: usage: kill [-s sigspec | -signum] pid | %jobspec ...",
         ));
     }
 
@@ -148,6 +149,32 @@ pub fn builtin_kill(args: &[String], shell_pgid: Pid) -> Result<i32, ShellError>
 
     let mut status = 0;
     for pid_str in pid_args {
+        // %jobspec operand: signal the job's process group (POSIX kill).
+        if pid_str.starts_with('%') {
+            let pgid = env
+                .process
+                .jobs
+                .resolve_job_spec(pid_str)
+                .ok()
+                .and_then(|id| env.process.jobs.get(id))
+                .map(|job| job.pgid);
+            match pgid {
+                Some(pgid) => {
+                    if let Err(e) = nix::sys::signal::kill(
+                        Pid::from_raw(-pgid.as_raw()),
+                        nix::sys::signal::Signal::try_from(sig_num).ok(),
+                    ) {
+                        eprintln!("yosh: kill: ({}) - {}", pid_str, e);
+                        status = 1;
+                    }
+                }
+                None => {
+                    eprintln!("yosh: kill: {}: no such job", pid_str);
+                    status = 1;
+                }
+            }
+            continue;
+        }
         let pid: i32 = match pid_str.parse() {
             Ok(n) => n,
             Err(_) => {

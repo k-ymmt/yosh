@@ -178,8 +178,10 @@ fn main() {
             } else if let Some(status) = try_subcommand(&args[1..]) {
                 process::exit(status);
             } else {
+                // POSIX §2.1: with a script file operand, $0 is the script
+                // path and the remaining operands are $1, $2, ...
                 let positional: Vec<String> = args[2..].to_vec();
-                let status = run_file(&args[1], shell_name, positional);
+                let status = run_file(&args[1], args[1].clone(), positional);
                 process::exit(status);
             }
         }
@@ -214,7 +216,6 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_stri
     env::default_path::ensure_default_path(&mut executor.env);
     executor.load_plugins();
     executor.env.mode.options.cmd_string = cmd_string;
-    executor.verbose_print(input);
 
     // Parse and execute one complete command at a time so that aliases
     // defined by earlier commands are available for later ones.
@@ -261,9 +262,16 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_stri
                 let consumed_text = &remaining[..consumed];
                 current_line += consumed_text.chars().filter(|&c| c == '\n').count();
                 drop(p);
+                // set -v: echo input to stderr as it is read (POSIX §2.15 set).
+                executor.verbose_print(consumed_text.trim_end_matches('\n'));
                 status = executor.exec_complete_command(&cmd);
                 // Check for flow control (exit handled by std::process::exit in builtin)
                 if executor.env.exec.flow_control.is_some() {
+                    break;
+                }
+                // POSIX §2.8.1 shell errors request exit via exit_requested.
+                if let Some(code) = executor.exit_requested {
+                    status = code;
                     break;
                 }
                 executor.check_errexit(status);

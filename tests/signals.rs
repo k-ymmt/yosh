@@ -126,10 +126,12 @@ fn test_kill_default_sigterm() {
 
 #[test]
 fn test_kill_dash_s() {
+    // Use TERM, not INT: async children ignore SIGINT/SIGQUIT when job
+    // control is off (POSIX §2.11), so INT would never kill the sleep.
     let (stdout, _stderr, code) =
-        yosh_exec_timeout("exec sleep 100 & kill -s INT $!; wait $!; echo $?", 10);
+        yosh_exec_timeout("exec sleep 100 & kill -s TERM $!; wait $!; echo $?", 10);
     assert_eq!(code, Some(0));
-    assert_eq!(stdout.trim(), "130"); // 128 + 2 (SIGINT)
+    assert_eq!(stdout.trim(), "143"); // 128 + 15 (SIGTERM)
 }
 
 #[test]
@@ -142,10 +144,11 @@ fn test_kill_dash_9() {
 
 #[test]
 fn test_kill_dash_signal_name() {
+    // TERM instead of INT — see test_kill_dash_s.
     let (stdout, _stderr, code) =
-        yosh_exec_timeout("exec sleep 100 & kill -INT $!; wait $!; echo $?", 10);
+        yosh_exec_timeout("exec sleep 100 & kill -TERM $!; wait $!; echo $?", 10);
     assert_eq!(code, Some(0));
-    assert_eq!(stdout.trim(), "130");
+    assert_eq!(stdout.trim(), "143");
 }
 
 #[test]

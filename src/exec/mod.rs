@@ -152,19 +152,40 @@ impl Executor {
         }
     }
 
+    /// Execute a trap action string, exposing the pre-trap `$?` to the
+    /// `exit` special built-in via `trap_context_status` (POSIX §2.11:
+    /// `exit` without an operand inside a trap action uses the value `$?`
+    /// had when the trap action started).
+    pub(crate) fn run_trap_action(&mut self, cmd: &str) {
+        let prev = self
+            .env
+            .exec
+            .trap_context_status
+            .replace(self.env.exec.last_exit_status);
+        self.with_errexit_suppressed(|exec| {
+            exec.eval_string(cmd);
+        });
+        self.env.exec.trap_context_status = prev;
+    }
+
     /// Execute the EXIT trap if set.
     pub fn execute_exit_trap(&mut self) {
         if let Some(crate::env::TrapAction::Command(cmd)) = self.env.traps.exit_trap.take() {
-            self.with_errexit_suppressed(|exec| {
-                exec.eval_string(&cmd);
-            });
+            self.run_trap_action(&cmd);
         }
     }
 
     /// Process any pending signals from the self-pipe.
     pub fn process_pending_signals(&mut self) {
         let signals = signal::drain_pending_signals();
-        for sig in signals {
+        self.run_signal_traps(&signals);
+    }
+
+    /// Run the trap/default action for each already-drained signal.
+    /// Split from `process_pending_signals` so callers that drained the
+    /// self-pipe themselves (e.g. `wait`) can still fire the trap actions.
+    pub(crate) fn run_signal_traps(&mut self, signals: &[i32]) {
+        for &sig in signals {
             // SIGCHLD default action is to ignore (just reap children).
             // We must not route it through handle_default_signal which
             // exits the shell.  Reaping is already handled by
@@ -175,18 +196,14 @@ impl Executor {
                 if let Some(crate::env::TrapAction::Command(cmd)) =
                     self.env.traps.get_signal_trap(sig).cloned()
                 {
-                    self.with_errexit_suppressed(|exec| {
-                        exec.eval_string(&cmd);
-                    });
+                    self.run_trap_action(&cmd);
                 }
                 continue;
             }
 
             match self.env.traps.get_signal_trap(sig).cloned() {
                 Some(crate::env::TrapAction::Command(cmd)) => {
-                    self.with_errexit_suppressed(|exec| {
-                        exec.eval_string(&cmd);
-                    });
+                    self.run_trap_action(&cmd);
                 }
                 Some(crate::env::TrapAction::Ignore) => {}
                 Some(crate::env::TrapAction::Default) | None => {

@@ -6,7 +6,6 @@
 # wait-gt-128
 # END
 # EXPECT_EXIT: 0
-# XFAIL: yosh interrupts wait with status >128 but never executes the trap action
 trap 'echo trap-ran' USR1
 ( sleep 0.5; kill -USR1 $$ ) &
 wait "$!"

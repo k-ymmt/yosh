@@ -47,6 +47,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 exec: crate::env::ExecState {
                     last_exit_status: env.exec.last_exit_status,
                     flow_control: None,
+                    trap_context_status: None,
                     loop_depth: 0,
                     indirection_level: 0,
                     lineno: env.exec.lineno,

@@ -3,6 +3,5 @@
 # DESCRIPTION: ${1=word} assignment to a positional parameter is an error
 # EXPECT_OUTPUT: error-ok
 # EXPECT_EXIT: 0
-# XFAIL: yosh performs the assignment instead of reporting an error
 out=$(./target/debug/yosh -c 'echo ${1=x}' 2>/dev/null)
 [ $? -ne 0 ] && echo error-ok

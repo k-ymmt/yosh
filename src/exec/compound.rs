@@ -182,6 +182,9 @@ impl Executor {
     ) -> i32 {
         let mut status = 0;
         loop {
+            if self.exit_requested.is_some() {
+                break;
+            }
             let cond_status = self.with_errexit_suppressed(|e| e.exec_body(condition));
             if self.env.exec.flow_control.is_some() {
                 return cond_status;
@@ -249,6 +252,9 @@ impl Executor {
 
         let mut status = 0;
         for item in &items {
+            if self.exit_requested.is_some() {
+                break;
+            }
             if let Err(e) = self.env.vars.set(var, item.as_str()) {
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::ReadonlyVariable,

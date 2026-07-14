@@ -70,6 +70,14 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             let val = lookup_var(env, name);
             let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
             if is_unset_or_null {
+                // POSIX §2.6.2: attempting to assign a positional or special
+                // parameter with ${name=word} is an error.
+                if is_unassignable_param(name) {
+                    eprintln!("yosh: {}: cannot assign in this way", name);
+                    env.exec.last_exit_status = 1;
+                    env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
+                    return Ok(String::new());
+                }
                 let new_val = match word.as_ref() {
                     Some(w) => expand_word_to_string(env, w)?,
                     None => String::new(),
@@ -166,12 +174,31 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
 /// Resolve a variable by name, intercepting `LINENO` as a computed
 /// pseudo-variable backed by `env.exec.lineno` rather than a real
 /// `VarStore` entry (see `ExecState::lineno` doc comment for rationale).
+/// Digit-string names are positional parameters (POSIX §2.5.1 — leading
+/// zeros are decimal, so `01` ≡ `1`); an index past `$#` is unset (`None`).
 /// All other names delegate to `VarStore::get`.
 fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
     if name == "LINENO" {
         return Some(env.exec.lineno.to_string());
     }
+    if !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
+        let n: usize = name.parse().unwrap_or(0);
+        if n == 0 {
+            return Some(env.shell_name.clone());
+        }
+        return env.vars.positional_params().get(n - 1).cloned();
+    }
     env.vars.get(name).map(|s| s.to_string())
+}
+
+/// True when `name` denotes a positional or special parameter, which
+/// `${name=word}` may not assign to (POSIX §2.6.2).
+fn is_unassignable_param(name: &str) -> bool {
+    !name.is_empty()
+        && !name
+            .bytes()
+            .next()
+            .is_some_and(|b| b == b'_' || b.is_ascii_alphabetic())
 }
 
 fn is_unset_or_null_inner(val: &Option<String>, null_check: bool) -> bool {

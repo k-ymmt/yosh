@@ -1,77 +1,5 @@
 # TODO
 
-## 2026-07-14: POSIX deviations surfaced by the posix-shell-test.md gap closure
-
-The missing-coverage list in `posix-shell-test.md` (2026-07-13 gap analysis)
-was implemented as e2e tests on 2026-07-14. Behaviors where yosh deviates
-from POSIX are checked in as `XFAIL` tests; each item below names the test
-that starts passing (flips to XPASS) once fixed. All verified against the
-debug binary on 2026-07-14.
-
-- [ ] Script file operand invocation leaves `$0` as the shell name instead of
-      the script path (`yosh script.sh a` → `$0` = `yosh`)
-      (`e2e/posix_spec/2_01_shell_introduction/script_operand_invocation.sh`).
-- [ ] `$'...'` is recognized and expanded inside double-quotes; POSIX 2024
-      keeps `$'` literal there
-      (`e2e/posix_spec/2_02_quoting/dollar_single_not_in_dquotes.sh`).
-- [ ] `${01}` is rejected ("unexpected character in parameter expansion")
-      instead of being read as decimal 1 ≡ `$1`
-      (`e2e/posix_spec/2_05_01_positional_params/leading_zero_positional.sh`).
-- [ ] `"$*"` with null `IFS=''` joins fields with a space instead of no
-      separator
-      (`e2e/posix_spec/2_05_02_special_params/star_quoted_join_null_ifs.sh`).
-- [ ] An `IFS` value inherited from the environment is kept; POSIX 2024
-      requires IFS = `<space><tab><newline>` at shell startup
-      (`e2e/posix_spec/2_05_03_shell_variables/ifs_reset_at_startup.sh`).
-- [ ] All conditional expansion forms (`-`, `:-`, `+`, `:+`, `?`, `:?`) treat
-      positional parameters as unset even when they are set: `set -- one;
-      echo ${1:-d}` prints `d`, and `${1:?}` errors, despite `$1` = `one`.
-      Named variables behave correctly, so the fault is in the set/null
-      classification of positionals
-      (`e2e/posix_spec/2_06_02_parameter_expansion/conditional_on_positional.sh`,
-      `e2e/posix_spec/2_06_02_parameter_expansion/conditional_null_positional.sh`).
-- [ ] `${1=word}` silently assigns instead of reporting the POSIX-required
-      error for assignment to a positional parameter
-      (`e2e/posix_spec/2_06_02_parameter_expansion/assign_positional_error.sh`).
-- [ ] An arithmetic-expansion error (e.g. `$((1 +))`) prints a diagnostic but
-      the non-interactive shell continues and exits 0; §2.8.1 requires exit
-      (`e2e/posix_spec/2_06_04_arithmetic_expansion/invalid_expression_error.sh`).
-- [ ] Assignment to a readonly variable prints the error but the
-      non-interactive shell continues; the §2.8.1 table requires exit
-      (`e2e/posix_spec/2_08_01_consequences_of_shell_errors/readonly_assignment_exits.sh`).
-- [ ] A function may be defined with (and then shadows) a special built-in
-      name (`eval() { ...; }` accepted, later `eval` runs the function);
-      POSIX makes the definition an error and finds special built-ins before
-      functions
-      (`e2e/posix_spec/2_09_05_function_definition/special_builtin_name_error.sh`,
-      `e2e/posix_spec/2_09_01_simple_commands/special_builtin_not_shadowed.sh`).
-- [ ] With job control off, async commands read the shell's stdin instead of
-      `/dev/null` (§2.9.3.1)
-      (`e2e/posix_spec/2_09_03_lists/async_stdin_devnull.sh`).
-- [ ] Async commands do not have SIGINT/SIGQUIT set to ignore when job
-      control is off (§2.11)
-      (`e2e/posix_spec/2_11_signals_and_error_handling/async_ignores_int_quit.sh`).
-- [ ] A signal arriving during `wait` interrupts it with status >128 but the
-      trap action never executes (§2.12 wait)
-      (`e2e/posix_spec/2_11_signals_and_error_handling/signal_during_wait.sh`).
-- [ ] `exit` without an operand inside a trap action exits with the status of
-      the last command *in the trap action* instead of the pre-trap `$?`
-      (`e2e/posix_spec/2_11_signals_and_error_handling/exit_in_trap_pretrap_status.sh`).
-- [ ] `trap -p CONDITION` ignores the condition operand and prints all traps
-      (POSIX 2024 filters to the named conditions)
-      (`e2e/posix_spec/2_11_signals_and_error_handling/trap_p_condition_filter.sh`).
-- [ ] `set -v` (verbose) is accepted but never echoes input lines to stderr
-      (`e2e/posix_spec/4_special_builtin/set_verbose.sh`).
-- [ ] `set -h` is rejected with "unknown option: -h" (POSIX requires
-      accepting it; the locate-utilities behavior itself is obsolescent)
-      (`e2e/posix_spec/4_special_builtin/set_locate_hash_accepted.sh`).
-- [ ] `break`/`continue` inside a function called from a loop break the
-      caller's loop; POSIX 2024 requires lexical containment. Already tracked
-      as the `loop_depth` SP1 follow-up below; now also pinned by
-      (`e2e/posix_spec/4_special_builtin/break_continue_lexical.sh`).
-- [ ] `kill` does not accept `%jobspec` operands (`kill %1` → "invalid pid")
-      (`e2e/posix_spec/4_required_builtin/kill_jobspec.sh`).
-
 ## Audit 2026-07-02: Security / Correctness / Performance
 
 Findings from a three-lens codebase audit (security, POSIX correctness,
@@ -186,7 +114,6 @@ retained below for tracking.
       escapes even with `CLICOLOR_FORCE=1`. Discovered during 2026-06-03
       POSIX byte semantics stage-1 verification; unrelated to the byte
       semantics change set.
-- [ ] `exec_function_call` does not clear `env.exec.loop_depth` on entry, so `break`/`continue` inside a function called from a loop affects the caller's loop. Matches dash; bash treats it as out-of-loop. Decide intent and either save/restore `loop_depth` on function entry or document the deviation (`src/exec/function.rs`).
 - [ ] `exit_child` doc comment (`src/exec/mod.rs:24`) says "Use ONLY after fork() in the child branch, never in the shell parent", but SP1 G5b added a top-level non-interactive call site in `src/exec/simple.rs` (BuiltinKind::Special redirect-error). Either update the doc to permit non-interactive shell exit, or introduce a dedicated `exit_shell(status)` helper.
 - [ ] `builtin_exec` absolute-path branch (`cmd.contains('/')`) has no dedicated unit/e2e test. `exec_keeps_env.sh` covers the PATH-walk branch only. Add a focused test like `export m=v; exec /bin/sh -c 'echo $m'` (`src/builtin/special.rs::builtin_exec`).
 - [ ] `export -p foo=v` silently drops `foo=v` operand (the `-p` branch prints and returns). Pre-existing, made more visible by SP1 G2's stricter validation. Either accept operands after `-p` or document the limitation (`src/builtin/special.rs::builtin_export`).
@@ -539,6 +466,18 @@ retained below for tracking.
 - [ ] Auto-regenerated `tests/plugins/{test_plugin,trap_plugin,slow_plugin}/src/bindings.rs` — `cargo component build` regenerates these files on every invocation, dirtying the git tree. Either add them to `.gitignore` (and have `cargo component build` run as part of any test that needs them, which already happens via `ensure_built`) or pin a stable regeneration mode in the build pipeline. Operational nit observed during 2026-05-04 pre_prompt-timeout work.
 
 ## Future: Code Quality Improvements
+
+- [ ] Self-pipe fork race in remaining fork sites — a forked child inherits
+      the parent's self-pipe handler and the shared pipe until
+      `reset_child_signals` runs, so a signal delivered to the child in that
+      window is written into the pipe and later misread by the parent as its
+      own (parent then exits via `handle_default_signal`). `exec_async`
+      (`src/exec/control.rs`) now blocks all signals across the fork and
+      restores the mask on both sides after dispositions are set; the same
+      latent race exists in `exec_subshell` (`src/exec/compound.rs`) and the
+      pipeline child forks (`src/exec/pipeline.rs`). Apply the same
+      block/restore pattern there if a repro surfaces (2026-07-14: observed
+      only for async lists via `kill -TERM $!` racing the child's reset).
 
 - [ ] `JobTable::update_status` per-process status tracking — currently overwrites the overall `job.status` on each child exit; if per-process status tracking (e.g., `$PIPESTATUS` array) is needed in the future, the `Job` struct will need a `Vec<(Pid, JobStatus)>` field instead of a single `status` (`src/env/jobs/mod.rs`)
 - [ ] `exec_regular_builtin` "internal error" guards for `wait` / `fg`/`bg`/`jobs` / `command` are growing — consider factoring "Executor-requiring builtins" into an explicit classification or dispatch table instead of per-name guards (`src/builtin/mod.rs`)

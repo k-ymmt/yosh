@@ -60,7 +60,14 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
 
 fn builtin_exit(args: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
     let code = if args.is_empty() {
-        executor.env.exec.last_exit_status
+        // POSIX §2.11: inside a trap action, `exit` without an operand
+        // uses the value $? had when the trap action started, not the
+        // status of the last command in the trap action.
+        executor
+            .env
+            .exec
+            .trap_context_status
+            .unwrap_or(executor.env.exec.last_exit_status)
     } else {
         match args[0].parse::<i32>() {
             Ok(n) => n & 0xFF,
@@ -475,7 +482,13 @@ fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> 
         return Ok(0);
     }
     if args[0] == "-p" {
-        env.traps.display_all();
+        // POSIX 2024: with condition operands, print only the named
+        // conditions; with none, print all traps.
+        if args.len() == 1 {
+            env.traps.display_all();
+        } else {
+            env.traps.display_conditions(&args[1..]);
+        }
         return Ok(0);
     }
     if args.len() == 1 {

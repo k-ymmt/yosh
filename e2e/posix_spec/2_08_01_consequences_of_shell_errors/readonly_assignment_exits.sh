@@ -6,7 +6,6 @@
 # exited-nonzero
 # END
 # EXPECT_EXIT: 0
-# XFAIL: yosh reports the readonly error but continues executing
 out=$(./target/debug/yosh -c 'readonly r=1; r=2; echo unreached' 2>/dev/null)
 st=$?
 case $out in *unreached*) ;; *) echo did-not-continue ;; esac

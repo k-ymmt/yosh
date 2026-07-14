@@ -59,6 +59,9 @@ impl ShellEnv {
     pub fn new(shell_name: impl Into<String>, args: Vec<String>) -> Self {
         let mut vars = VarStore::from_environ();
         vars.set_positional_params(args);
+        // POSIX 2024 §2.5.3: the shell sets IFS to <space><tab><newline> at
+        // startup, regardless of any value inherited from the environment.
+        let _ = vars.set("IFS", " \t\n");
         // POSIX: "OPTIND shall be initialized to 1 when the shell is invoked."
         let _ = vars.set("OPTIND", "1");
         // POSIX §2.5.3: $PPID is the parent PID of the invoking shell,
@@ -69,6 +72,7 @@ impl ShellEnv {
             exec: ExecState {
                 last_exit_status: 0,
                 flow_control: None,
+                trap_context_status: None,
                 loop_depth: 0,
                 indirection_level: 0,
                 lineno: 0,

@@ -7,7 +7,6 @@
 # has-diagnostic
 # END
 # EXPECT_EXIT: 0
-# XFAIL: yosh reports the error but keeps executing and exits 0
 out=$(./target/debug/yosh -c 'echo $((1 +)); echo unreached' 2>"$TEST_TMPDIR/err")
 st=$?
 case $out in *unreached*) ;; *) echo no-continue ;; esac

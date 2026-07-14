@@ -9,7 +9,6 @@
 # done
 # END
 # EXPECT_EXIT: 0
-# XFAIL: break/continue inside a function break out of the calling loop in yosh
 f() { break; }
 for i in 1 2; do f; echo "i=$i"; done
 g() { continue; }

@@ -6,6 +6,5 @@
 # y=data
 # END
 # EXPECT_EXIT: 0
-# XFAIL: yosh lets async commands read the shell's stdin instead of /dev/null
 printf 'data\n' > "$TEST_TMPDIR/in"
 ./target/debug/yosh -c 'read x & wait $!; echo "st=$?"; read y; echo "y=$y"' < "$TEST_TMPDIR/in"

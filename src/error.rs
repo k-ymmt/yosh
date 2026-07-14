@@ -103,6 +103,17 @@ impl ShellError {
         }
     }
 
+    /// True when the POSIX §2.8.1 consequences table requires a
+    /// non-interactive shell to exit on this error: expansion errors
+    /// and variable-assignment errors.
+    pub fn requires_noninteractive_exit(&self) -> bool {
+        matches!(
+            self.kind,
+            ShellErrorKind::Expansion(_)
+                | ShellErrorKind::Runtime(RuntimeErrorKind::ReadonlyVariable)
+        )
+    }
+
     /// Map this error to an appropriate POSIX exit code.
     pub fn exit_code(&self) -> i32 {
         match &self.kind {

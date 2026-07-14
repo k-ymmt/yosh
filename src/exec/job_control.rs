@@ -184,7 +184,11 @@ impl Executor {
                             {
                                 let signals = signal::drain_pending_signals();
                                 if !signals.is_empty() {
-                                    self.process_pending_signals();
+                                    // The self-pipe is already drained, so run
+                                    // the trap actions for the drained signals
+                                    // directly (process_pending_signals would
+                                    // find an empty pipe and do nothing).
+                                    self.run_signal_traps(&signals);
                                     last_status = 128 + *signals.last().unwrap();
                                     return Ok(last_status);
                                 }

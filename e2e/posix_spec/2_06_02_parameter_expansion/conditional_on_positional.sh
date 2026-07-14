@@ -8,7 +8,6 @@
 # alt
 # END
 # EXPECT_EXIT: 0
-# XFAIL: yosh treats positional parameters as unset in all conditional expansion forms (set -- one; ${1:-d} yields d)
 set -- one
 echo "${1:-d}"
 echo "${2:-d}"

@@ -54,7 +54,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "ulimit" => regular::builtin_ulimit(args),
         "alias" => regular::builtin_alias(args, env),
         "unalias" => regular::builtin_unalias(args, env),
-        "kill" => regular::builtin_kill(args, env.process.shell_pgid),
+        "kill" => regular::builtin_kill(args, env),
         "wait" => {
             // Handled in Executor::exec_simple_command — should not reach here
             eprintln!("yosh: wait: internal error");

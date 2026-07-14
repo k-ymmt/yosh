@@ -4,7 +4,7 @@
 # EXPECT_OUTPUT: /home/x/bin
 # EXPECT_EXIT: 0
 # Verify command-prefix assignment with tilde expansion by invoking a child
-# yosh ($0 is the shell running this script per e2e/run_tests.sh) instead of
-# an external sh -c, so the test is hermetic on minimal environments.
+# yosh directly ($0 is the script path per POSIX §2.1, so it can no longer
+# be used to re-invoke the shell under test).
 HOME=/home/x
-PREFIXED=~/bin "$0" -c 'echo "$PREFIXED"'
+PREFIXED=~/bin ./target/debug/yosh -c 'echo "$PREFIXED"'

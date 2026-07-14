@@ -14,13 +14,9 @@ pub fn evaluate(env: &mut ShellEnv, expr: &str) -> Result<String, String> {
         env,
     };
 
-    match parser.expr() {
-        Ok(val) => Ok(val.to_string()),
-        Err(msg) => {
-            eprintln!("yosh: arithmetic: {}", msg);
-            Err(msg)
-        }
-    }
+    // Callers print the diagnostic (heredoc expansion directly, word
+    // expansion via the ShellError path in `exec_command`).
+    parser.expr().map(|val| val.to_string())
 }
 
 /// Look up a variable name in the arithmetic context.

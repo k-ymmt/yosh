@@ -67,6 +67,9 @@ impl ShellOptions {
             'f' => self.noglob = on,
             'm' => self.monitor = on,
             'n' => self.noexec = on,
+            // POSIX requires accepting -h (locate utilities); the behavior
+            // itself is obsolescent, so it is a no-op.
+            'h' => {}
             'u' => self.nounset = on,
             'v' => self.verbose = on,
             'x' => self.xtrace = on,
