@@ -1,107 +1,106 @@
-# Command Completion Definition Files — Design
+# コマンド補完定義ファイル — 設計
 
-Status: **Draft (design approved, not yet implemented)**
-Date: 2026-07-14
+ステータス: **ドラフト(設計承認済み、未実装)**
+日付: 2026-07-14
 
-User-definable tab completion for commands: subcommands, flags, and
-argument candidates, declared in per-command TOML files.
+コマンドに対するタブ補完(サブコマンド、フラグ、引数候補)を、
+コマンドごとの TOML ファイルでユーザーが自由に定義できるようにする。
 
-## Goals
+## ゴール
 
-- Let users freely define completions for any command without writing
-  Rust code or building a wasm plugin.
-- Declarative first: static structure (subcommands, flags) is declared
-  in TOML; dynamic candidates (e.g. `git branch` output) are produced
-  by running a shell command declared as a string.
-- Zero startup cost: definitions are loaded lazily, per command, on
-  first Tab.
-- Never break the line editor: any failure (missing file, parse error,
-  slow/failing `exec`) degrades gracefully to the existing path
-  completion.
+- Rust コードや wasm プラグインのビルドなしで、任意のコマンドの補完を
+  ユーザーが定義できること。
+- 宣言的であることを第一とする: 静的な構造(サブコマンド、フラグ)は
+  TOML で宣言し、動的な候補(`git branch` の出力など)は文字列として
+  宣言したシェルコマンドの実行で生成する。
+- 起動コストゼロ: 定義は初回 Tab 時にコマンド単位で遅延ロードする。
+- 行エディタを決して壊さない: あらゆる失敗(ファイル欠如、パース
+  エラー、`exec` の遅延・失敗)は既存のパス補完へ緩やかに
+  フォールバックする。
 
-## Non-goals (v1)
+## 非ゴール(v1)
 
-- Candidate descriptions in the selector UI (fish-style
-  `candidate — description`). The schema deliberately leaves room to
-  add a `description` field later, but v1 neither parses nor displays
-  it.
-- Project-local completion directories (`./.yosh/completions/`).
-- A `complete` builtin / shell-function-based completion API.
-- Completion for words that need full shell expansion (globs,
-  parameter expansion) inside the completed word.
+- セレクタ UI での候補説明文表示(fish 風の `候補 — 説明`)。
+  後から `description` フィールドを追加できる余地はスキーマに
+  残すが、v1 ではパースも表示もしない。
+- プロジェクトローカルの補完ディレクトリ(`./.yosh/completions/`)。
+- `complete` ビルトイン / シェル関数ベースの補完 API。
+- 補完対象ワード内での完全なシェル展開(グロブ、パラメータ展開)を
+  要するワードの補完。
 
-## File location and discovery
+## ファイル配置と発見
 
 ```
-~/.config/yosh/completions/<command>.toml
+~/.config/yosh/completions/<コマンド名>.toml
 ```
 
-- The file name (minus `.toml`) is the command name it completes.
-  Only the final path component of the typed command is matched:
-  `/usr/bin/git` and `git` both resolve to `git.toml`.
-- Loaded lazily: the first Tab press whose command word is `git` reads
-  and parses `git.toml`. The parsed spec is cached in the interactive
-  session (keyed by command name). A missing file is also cached as a
-  negative entry so repeated Tabs don't re-stat the directory.
-- A parse error prints one warning per session to stderr —
-  `yosh: completion: git.toml: <error>` — and falls back to path
-  completion for that command.
-- The directory location follows the existing convention used by
-  `plugins.lock` (`~/.config/yosh/`).
+- ファイル名(`.toml` を除く)が補完対象のコマンド名。入力された
+  コマンドは最終パス要素のみでマッチする: `/usr/bin/git` も `git` も
+  `git.toml` に解決される。
+- 遅延ロード: コマンドワードが `git` である最初の Tab 押下で
+  `git.toml` を読み込みパースする。パース結果は対話セッション内で
+  キャッシュされる(コマンド名がキー)。ファイルが存在しない場合も
+  ネガティブエントリとしてキャッシュし、Tab のたびにディレクトリを
+  再 stat しない。
+- パースエラーはセッションごとに1回だけ stderr に警告を出し —
+  `yosh: completion: git.toml: <error>` — そのコマンドについては
+  パス補完にフォールバックする。
+- ディレクトリの場所は `plugins.lock` が使っている既存の慣習
+  (`~/.config/yosh/`)に従う。
 
-## Schema
+## スキーマ
 
-### Candidate sources
+### 候補ソース(candidate source)
 
-Everywhere the schema needs "how to produce candidates" it accepts a
-**candidate source** — a table with exactly one of these keys:
+スキーマ中で「候補をどう生成するか」が必要な箇所はすべて
+**候補ソース**を受け取る。以下のキーのうち、ちょうど1つを持つ
+テーブルである:
 
-| Key      | Type     | Meaning                                                        |
-| -------- | -------- | -------------------------------------------------------------- |
-| `type`   | string   | Built-in generator: `"file"`, `"directory"`, `"command"`, `"none"` |
-| `values` | [string] | Static candidate list                                          |
-| `exec`   | string   | Shell command; stdout is split on newlines, one candidate per line |
+| キー     | 型       | 意味                                                             |
+| -------- | -------- | ---------------------------------------------------------------- |
+| `type`   | string   | 組み込みジェネレータ: `"file"`, `"directory"`, `"command"`, `"none"` |
+| `values` | [string] | 静的な候補リスト                                                 |
+| `exec`   | string   | シェルコマンド。stdout を改行で分割し、1行 = 1候補               |
 
-- `type = "file"` / `"directory"` reuse the existing path-completion
-  logic (`src/interactive/completion.rs`), with `directory` filtering
-  to directories only.
-- `type = "command"` reuses the existing command-name completer
-  (PATH executables + builtins + aliases) — useful for wrappers like
-  `sudo`, `time`, `xargs`.
-- `type = "none"` produces no candidates **and** suppresses the
-  default path-completion fallback (for free-form values such as a new
-  branch name or a commit message).
-- Specifying zero keys or more than one key is a parse error.
+- `type = "file"` / `"directory"` は既存のパス補完ロジック
+  (`src/interactive/completion.rs`)を再利用する。`directory` は
+  ディレクトリのみにフィルタする。
+- `type = "command"` は既存のコマンド名補完(PATH 実行ファイル +
+  ビルトイン + エイリアス)を再利用する — `sudo`、`time`、`xargs` の
+  ようなラッパーに有用。
+- `type = "none"` は候補を生成せず、**かつ**デフォルトのパス補完
+  フォールバックも抑止する(新しいブランチ名やコミットメッセージの
+  ような自由入力値向け)。
+- キーが0個、または2個以上指定されている場合はパースエラー。
 
-### Top-level structure
+### トップレベル構造
 
-The top level of the file describes the command itself. `args`,
-`flags`, and `subcommands` may each appear at any level of the
-subcommand tree; all are optional.
+ファイルのトップレベルはコマンド自体を表す。`args`、`flags`、
+`subcommands` はサブコマンドツリーの任意の階層に置ける。すべて省略可。
 
 ```toml
 # ~/.config/yosh/completions/git.toml
 
-# Positional arguments of the bare command (used when the command has
-# no subcommands, or for words before the first subcommand).
+# コマンド直下の位置引数(サブコマンドを持たないコマンド用、
+# または最初のサブコマンドより前のワード用)。
 [[args]]
 type = "file"
 
-# Flags. `names` lists all spellings of one flag.
+# フラグ。`names` は1つのフラグの全綴りを列挙する。
 [[flags]]
 names = ["-C"]
-value = { type = "directory" }   # presence of `value` = flag takes a value
+value = { type = "directory" }   # `value` があれば値を取るフラグ
 
 [[flags]]
-names = ["--no-pager"]           # no `value` = boolean flag
+names = ["--no-pager"]           # `value` なし = 真偽フラグ
 
-# Subcommands. Nest arbitrarily deep via [[subcommands.subcommands]].
+# サブコマンド。[[subcommands.subcommands]] で任意の深さにネスト可。
 [[subcommands]]
 name = "checkout"
 
 [[subcommands.flags]]
 names = ["-b"]
-value = { type = "none" }        # new branch name: no candidates
+value = { type = "none" }        # 新ブランチ名: 候補なし
 
 [[subcommands.args]]
 exec = "git branch --format='%(refname:short)'"
@@ -119,125 +118,122 @@ name = "remove"
 exec = "git remote"
 ```
 
-Field reference:
+フィールドリファレンス:
 
-- `args` — array of candidate sources, one per positional argument,
-  in order. The **last** entry repeats: a command whose `args` has one
-  entry completes every positional argument from that source. An empty
-  or absent `args` means positional arguments fall back to path
-  completion (unless suppressed with `type = "none"`).
-- `flags` — array of tables:
-  - `names` (required, non-empty) — all spellings, e.g.
-    `["-b"]` or `["-m", "--message"]`. Short (`-x`) and long (`--xyz`)
-    forms are both just strings; the engine does not synthesize one
-    from the other.
-  - `value` (optional) — a candidate source. If present the flag takes
-    a value, completed from this source. If absent the flag is boolean.
-- `subcommands` — array of tables:
-  - `name` (required) — the literal subcommand word.
-  - `args` / `flags` / `subcommands` — same shapes, recursively.
+- `args` — 候補ソースの配列。位置引数1つにつき1エントリ、順序どおり。
+  **最後**のエントリは繰り返し適用される: `args` にエントリが1つの
+  コマンドは、すべての位置引数をそのソースから補完する。`args` が
+  空または省略の場合、位置引数はパス補完にフォールバックする
+  (`type = "none"` で抑止しない限り)。
+- `flags` — テーブルの配列:
+  - `names`(必須、非空)— 全綴り。例: `["-b"]` や
+    `["-m", "--message"]`。短形式(`-x`)と長形式(`--xyz`)は
+    どちらも単なる文字列であり、エンジンが一方から他方を合成する
+    ことはない。
+  - `value`(省略可)— 候補ソース。存在すればそのフラグは値を取り、
+    このソースから補完される。省略時は真偽フラグ。
+- `subcommands` — テーブルの配列:
+  - `name`(必須)— サブコマンドのリテラルワード。
+  - `args` / `flags` / `subcommands` — 同じ形が再帰的に使える。
 
-Duplicate `name` within one `subcommands` array, or duplicate flag
-spelling within one level, is a parse error.
+同一の `subcommands` 配列内での `name` の重複、同一階層内での
+フラグ綴りの重複はパースエラー。
 
-## Matching semantics
+## マッチングのセマンティクス
 
-On Tab, the engine:
+Tab 押下時、エンジンは:
 
-1. Extracts the current word and the words before it on the current
-   simple command, reusing the existing word-extraction logic
-   (`extract_completion_word` and the command-position scanner). Only
-   the current pipeline segment is considered — words after `|`, `;`,
-   `&&` etc. start a fresh command.
-2. Resolves the first word to a spec file (basename, lazy load). No
-   spec → existing behavior (path completion / command completion).
-3. Walks the preceding words left to right against the spec tree:
-   - A word matching a `subcommands[].name` at the current level
-     descends into that subcommand. Matching resumes at the new level.
-   - A word matching a boolean flag is consumed.
-   - A word matching a value-taking flag consumes the **next** word as
-     its value (`-C /path`). A word of the form `--flag=value` is
-     self-contained.
-   - Any other word is counted as a positional argument at the current
-     level.
-4. Generates candidates for the word under the cursor:
-   - If the previous word is a value-taking flag → that flag's `value`
-     source.
-   - Else if the current word starts with `-` → all flag spellings at
-     the current level (prefix-filtered). For `--flag=` with a cursor
-     after the `=`, the flag's `value` source.
-   - Else → the current level's `subcommands` names **plus** the
-     candidate source for the current positional index in `args`.
-5. Prefix-filters candidates by the current word and hands them to the
-   existing completion flow (longest-common-prefix insertion, selector
-   UI on multiple matches).
+1. 現在のワードと、同じ単純コマンド上でそれより前にあるワード群を
+   抽出する。既存のワード抽出ロジック(`extract_completion_word` と
+   コマンド位置スキャナ)を再利用する。対象は現在のパイプライン
+   セグメントのみ — `|`、`;`、`&&` 等の後のワードは新しいコマンドと
+   して扱う。
+2. 先頭ワードをスペックファイルに解決する(basename、遅延ロード)。
+   スペックがなければ既存動作(パス補完 / コマンド補完)。
+3. 先行するワード群をスペックツリーに対して左から右へ辿る:
+   - 現在の階層の `subcommands[].name` にマッチするワードはその
+     サブコマンドへ降りる。マッチングは新しい階層で再開する。
+   - 真偽フラグにマッチするワードは消費される。
+   - 値を取るフラグにマッチするワードは、**次の**ワードをその値と
+     して消費する(`-C /path`)。`--flag=value` 形式のワードは
+     それ自体で完結する。
+   - それ以外のワードは現在の階層の位置引数としてカウントする。
+4. カーソル下のワードの候補を生成する:
+   - 直前のワードが値を取るフラグ → そのフラグの `value` ソース。
+   - そうでなく現在のワードが `-` で始まる → 現在の階層の全フラグ
+     綴り(前方一致フィルタ)。カーソルが `--flag=` の `=` の後に
+     ある場合は、そのフラグの `value` ソース。
+   - それ以外 → 現在の階層の `subcommands` 名 **に加えて**、`args` の
+     現在の位置インデックスに対応する候補ソース。
+5. 候補を現在のワードで前方一致フィルタし、既存の補完フロー
+   (最長共通接頭辞の挿入、複数マッチ時のセレクタ UI)に渡す。
 
-Fallback rule: if the resolved source produces zero candidates and the
-source was not `type = "none"`, fall back to path completion — a wrong
-or stale spec should never make Tab dead.
+フォールバックルール: 解決されたソースが候補を1つも生成せず、かつ
+そのソースが `type = "none"` でない場合、パス補完にフォールバック
+する — 誤った・古いスペックのせいで Tab が死んではならない。
 
-## `exec` execution
+## `exec` の実行
 
-- Runs as a child process: `sh -c '<exec string>'` with the shell's
-  current working directory and exported environment. Running in a
-  child (not the in-process executor) guarantees completion can never
-  mutate shell state (variables, cwd, traps) and can be killed on
-  timeout.
-- stdout is split on `\n`; empty lines are dropped; no further parsing
-  or word-splitting is applied. stderr is discarded.
-- **Timeout: 500 ms.** On timeout the child is killed and the result
-  is treated as zero candidates (triggering the fallback rule above).
-  A non-zero exit status is likewise treated as zero candidates.
-- Results are not cached — each Tab reruns the command, so candidates
-  (branches, remotes, containers…) are always fresh.
-- Security stance: definition files are user-owned configuration, the
-  same trust level as `.profile`. No sandboxing is applied, but the
-  500 ms timeout bounds the interactive cost.
+- 子プロセスとして実行する: `sh -c '<exec 文字列>'` を、シェルの
+  現在の作業ディレクトリとエクスポート済み環境変数で起動する。
+  (インプロセスのエグゼキュータではなく)子プロセスで実行すること
+  で、補完がシェル状態(変数、cwd、トラップ)を決して変更しない
+  こと、およびタイムアウト時に kill できることを保証する。
+- stdout を `\n` で分割する。空行は捨てる。それ以上のパースや
+  ワード分割は行わない。stderr は破棄する。
+- **タイムアウト: 500 ms。** タイムアウト時は子プロセスを kill し、
+  結果は候補ゼロとして扱う(上記フォールバックルールが発動)。
+  非ゼロ終了ステータスも同様に候補ゼロとして扱う。
+- 結果はキャッシュしない — Tab のたびにコマンドを再実行するので、
+  候補(ブランチ、リモート、コンテナ…)は常に新鮮である。
+- セキュリティ上の立場: 定義ファイルはユーザー所有の設定であり、
+  `.profile` と同じ信頼レベル。サンドボックス化は行わないが、
+  500 ms のタイムアウトが対話時のコストを抑える。
 
-## Error handling summary
+## エラーハンドリングまとめ
 
-| Failure                          | Behavior                                          |
-| -------------------------------- | ------------------------------------------------- |
-| No spec file for command         | Existing path/command completion                  |
-| TOML parse / schema error        | Warn once per session on stderr; path completion  |
-| `exec` non-zero / timeout        | Zero candidates → fallback rule                   |
-| `exec` output empty              | Zero candidates → fallback rule                   |
-| Source is `type = "none"`        | No candidates, no fallback                        |
+| 失敗                              | 挙動                                                   |
+| --------------------------------- | ------------------------------------------------------ |
+| コマンドのスペックファイルなし    | 既存のパス補完 / コマンド補完                          |
+| TOML パース / スキーマエラー      | セッションごとに1回 stderr に警告; パス補完            |
+| `exec` 非ゼロ終了 / タイムアウト  | 候補ゼロ → フォールバックルール                        |
+| `exec` 出力が空                   | 候補ゼロ → フォールバックルール                        |
+| ソースが `type = "none"`          | 候補なし、フォールバックもなし                         |
 
-## Implementation sketch
+## 実装スケッチ
 
-New module `src/interactive/spec_completion.rs`:
+新モジュール `src/interactive/spec_completion.rs`:
 
-- `struct CompletionSpec` — deserialized via `serde` + `toml`
-  (both already in the dependency tree via the plugin config).
-- `struct SpecStore` — lazy loader + per-session cache
-  (`HashMap<String, Option<CompletionSpec>>`), lives next to
-  `CommandCompleter` in the interactive loop's state.
-- `fn resolve(spec, words, current_word) -> ResolvedSource` — pure
-  function implementing the matching semantics; unit-testable without
-  a terminal.
-- Integration point: `LineEditor::handle_tab_complete`
-  (`src/interactive/line_editor.rs`) — before the existing
-  path-completion call, consult `SpecStore`; on a resolved source,
-  produce candidates and feed the existing selector/common-prefix
-  machinery.
+- `struct CompletionSpec` — `serde` + `toml` でデシリアライズ
+  (どちらもプラグイン設定経由で依存ツリーに既存)。
+- `struct SpecStore` — 遅延ローダ + セッション内キャッシュ
+  (`HashMap<String, Option<CompletionSpec>>`)。対話ループの状態と
+  して `CommandCompleter` の隣に置く。
+- `fn resolve(spec, words, current_word) -> ResolvedSource` —
+  マッチングセマンティクスを実装する純関数。ターミナルなしで
+  ユニットテスト可能。
+- 統合ポイント: `LineEditor::handle_tab_complete`
+  (`src/interactive/line_editor.rs`)— 既存のパス補完呼び出しの
+  前に `SpecStore` を参照し、ソースが解決されたら候補を生成して
+  既存のセレクタ / 共通接頭辞の機構に渡す。
 
-## Testing
+## テスト
 
-- **Unit tests** for schema parsing (valid, invalid, duplicate names,
-  multi-key sources) and for `resolve` over a fixture spec — table
-  cases for subcommand descent, flag value position, `--flag=` forms,
-  positional indexing, repeat-last-arg.
-- **Unit tests** for `exec` execution with a tempdir spec: newline
-  splitting, timeout kill, non-zero exit.
-- **PTY E2E** (`tests/pty_interactive.rs`): one end-to-end case —
-  spec file in a temp `$HOME`, type `cmd <Tab>`, assert the candidate
-  is inserted. Keep timeouts generous per existing PTY-test guidance.
+- **ユニットテスト**: スキーマパース(正常系、異常系、名前重複、
+  複数キーのソース)と、フィクスチャスペックに対する `resolve` —
+  サブコマンド降下、フラグ値の位置、`--flag=` 形式、位置引数の
+  インデックス、最終引数の繰り返し、をテーブルケースで網羅。
+- **ユニットテスト**: tempdir のスペックを使った `exec` 実行:
+  改行分割、タイムアウト kill、非ゼロ終了。
+- **PTY E2E**(`tests/pty_interactive.rs`): エンドツーエンド1ケース —
+  一時 `$HOME` にスペックファイルを置き、`cmd <Tab>` を入力して
+  候補が挿入されることをアサートする。既存の PTY テストの指針に
+  従いタイムアウトは余裕を持たせる。
 
-## Future extensions (explicitly out of v1)
+## 将来の拡張(明示的に v1 の対象外)
 
-- `description` on subcommands/flags/values, displayed in the
-  selector UI.
-- Project-local `./.yosh/completions/` search path.
-- A `complete` builtin for script-driven registration.
-- Caching/TTL for expensive `exec` sources.
+- サブコマンド / フラグ / 値への `description` と、セレクタ UI での
+  表示。
+- プロジェクトローカルの `./.yosh/completions/` 検索パス。
+- スクリプト駆動の登録用 `complete` ビルトイン。
+- 高コストな `exec` ソースのキャッシュ / TTL。
