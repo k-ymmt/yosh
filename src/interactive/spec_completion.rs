@@ -376,8 +376,6 @@ name = \"add\"
 
     // ── SpecStore ────────────────────────────────────────────────────
 
-    use std::path::PathBuf;
-
     fn store_with(specs: &[(&str, &str)]) -> (tempfile::TempDir, SpecStore) {
         let tmp = tempfile::TempDir::new().unwrap();
         for (name, text) in specs {
