@@ -745,3 +745,32 @@ fn test_pty_bg_then_fg_preserves_shell_termios_restoration() {
 
     exit_shell(&mut s);
 }
+
+// ── Spec-based completion ──────────────────────────────────────────────
+
+#[test]
+fn tab_spec_completion_inserts_candidate() {
+    let (mut session, tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut session);
+
+    // Specs load lazily on first Tab, so writing after startup is safe.
+    let dir = tmpdir.path().join(".config/yosh/completions");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("echo.toml"),
+        "[[args]]\nvalues = [\"alpha\", \"omega\"]\n",
+    )
+    .unwrap();
+
+    session.send("echo al").unwrap();
+    // Allow the editor to render before sending Tab (matches the other
+    // tab-completion PTY tests; see TODO.md on fixed waits).
+    std::thread::sleep(Duration::from_millis(100));
+    session.send("\t").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    session.send("\r").unwrap();
+
+    // Tab completed "al" → "alpha", so the command ran as `echo alpha`.
+    expect_output(&mut session, "alpha", "spec completion did not insert candidate");
+    exit_shell(&mut session);
+}
