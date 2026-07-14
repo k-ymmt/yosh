@@ -468,16 +468,14 @@ pub struct SpecCompletion {
     pub keep_prefix: String,
 }
 
-/// Try spec-based completion for the word at `word_start..pos`.
+/// Try spec-based completion for `word`, which starts at `word_start`.
 ///
 /// Returns `None` when there is no spec or the spec gives no guidance
 /// (including the fallback rule: a source that produced zero candidates)
 /// — the caller should then run its existing path completion. Returns
 /// `Some` with empty candidates only for `type = "none"` suppression.
-#[allow(clippy::too_many_arguments)]
 pub fn try_complete(
     buf: &str,
-    pos: usize,
     word_start: usize,
     word: &str,
     store: &mut SpecStore,
@@ -497,7 +495,7 @@ pub fn try_complete(
             finish(candidates, String::new())
         }
         Resolution::FlagValue(source) => {
-            complete_source(source, filter, keep_prefix, &[], buf, pos, ctx, cmd_ctx)
+            complete_source(source, filter, keep_prefix, &[], ctx, cmd_ctx)
         }
         Resolution::Positional {
             subcommands,
@@ -508,32 +506,46 @@ pub fn try_complete(
                 .filter(|s| s.starts_with(filter))
                 .collect();
             match source {
-                Some(source) => complete_source(
-                    source,
-                    filter,
-                    keep_prefix,
-                    &sub_matches,
-                    buf,
-                    pos,
-                    ctx,
-                    cmd_ctx,
-                ),
+                Some(source) => {
+                    complete_source(source, filter, keep_prefix, &sub_matches, ctx, cmd_ctx)
+                }
                 None => finish(sub_matches, keep_prefix),
             }
         }
     }
 }
 
+/// Path-complete an arbitrary word string (used for flag values where
+/// the word to complete is the part after `--flag=`, which the
+/// buffer-based `completion::complete` cannot see in isolation).
+/// Returns the candidates and the word's directory prefix (kept
+/// verbatim on insertion).
+fn complete_path_word(word: &str, ctx: &CompletionContext) -> (Vec<String>, String) {
+    let (dir_part, prefix) = completion::split_path(word, &ctx.home);
+    let resolved_dir = if dir_part.is_empty() {
+        ctx.cwd.clone()
+    } else if dir_part.starts_with('/') {
+        dir_part.clone()
+    } else {
+        let mut path = std::path::PathBuf::from(&ctx.cwd);
+        path.push(&dir_part);
+        path.to_string_lossy().into_owned()
+    };
+    let candidates = completion::generate_candidates(&resolved_dir, prefix, ctx.show_dotfiles);
+    let dir_prefix = match word.rfind('/') {
+        Some(pos) => word[..=pos].to_string(),
+        None => String::new(),
+    };
+    (candidates, dir_prefix)
+}
+
 /// Generate candidates for one source, merge in already-filtered
 /// subcommand names, and apply the fallback rule.
-#[allow(clippy::too_many_arguments)]
 fn complete_source(
     source: &CandidateSource,
     filter: &str,
     keep_prefix: String,
     sub_matches: &[String],
-    buf: &str,
-    pos: usize,
     ctx: &CompletionContext,
     cmd_ctx: &mut CommandCompletionContext<'_>,
 ) -> Option<SpecCompletion> {
@@ -547,22 +559,18 @@ fn complete_source(
             });
         }
         CandidateSource::Builtin(BuiltinType::File) => {
-            if sub_matches.is_empty() {
+            if sub_matches.is_empty() && keep_prefix.is_empty() {
                 // Pure file completion: defer to the caller's existing
                 // path completion (identical behavior, fewer moving parts).
                 return None;
             }
-            let result = completion::complete(buf, pos, ctx);
-            (result.candidates, result.dir_prefix)
+            let (cands, dir_prefix) = complete_path_word(filter, ctx);
+            (cands, format!("{keep_prefix}{dir_prefix}"))
         }
         CandidateSource::Builtin(BuiltinType::Directory) => {
-            let result = completion::complete(buf, pos, ctx);
-            let dirs: Vec<String> = result
-                .candidates
-                .into_iter()
-                .filter(|c| c.ends_with('/'))
-                .collect();
-            (dirs, result.dir_prefix)
+            let (cands, dir_prefix) = complete_path_word(filter, ctx);
+            let dirs: Vec<String> = cands.into_iter().filter(|c| c.ends_with('/')).collect();
+            (dirs, format!("{keep_prefix}{dir_prefix}"))
         }
         CandidateSource::Builtin(BuiltinType::Command) => {
             let cands =
@@ -1142,7 +1150,7 @@ values = [\"second\"]
         let pos = line.len();
         let (word_start, word) = crate::interactive::completion::extract_completion_word(line, pos);
         let word = word.to_string();
-        try_complete(line, pos, word_start, &word, &mut store, &ctx, &mut cmd_ctx)
+        try_complete(line, word_start, &word, &mut store, &ctx, &mut cmd_ctx)
     }
 
     #[test]
@@ -1241,6 +1249,40 @@ value = { values = [\"json\", \"yaml\"] }
         )
         .unwrap();
         assert_eq!(result.candidates, vec!["subdir/"]);
+    }
+
+    #[test]
+    fn complete_flag_eq_directory_value() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+        std::fs::File::create(tmp.path().join("subfile.txt")).unwrap();
+        let text = "[[flags]]\nnames = [\"--dest\"]\nvalue = { type = \"directory\" }\n";
+        let result = spec_complete(
+            "mytool",
+            text,
+            "mytool --dest=su",
+            tmp.path().to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result.candidates, vec!["subdir/"]);
+        assert_eq!(result.keep_prefix, "--dest=");
+    }
+
+    #[test]
+    fn complete_flag_eq_file_value_in_subdir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        std::fs::File::create(tmp.path().join("sub").join("nested.txt")).unwrap();
+        let text = "[[flags]]\nnames = [\"--config\"]\nvalue = { type = \"file\" }\n";
+        let result = spec_complete(
+            "mytool",
+            text,
+            "mytool --config=sub/ne",
+            tmp.path().to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result.candidates, vec!["nested.txt"]);
+        assert_eq!(result.keep_prefix, "--config=sub/");
     }
 
     #[test]
