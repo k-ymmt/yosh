@@ -1,5 +1,77 @@
 # TODO
 
+## 2026-07-14: POSIX deviations surfaced by the posix-shell-test.md gap closure
+
+The missing-coverage list in `posix-shell-test.md` (2026-07-13 gap analysis)
+was implemented as e2e tests on 2026-07-14. Behaviors where yosh deviates
+from POSIX are checked in as `XFAIL` tests; each item below names the test
+that starts passing (flips to XPASS) once fixed. All verified against the
+debug binary on 2026-07-14.
+
+- [ ] Script file operand invocation leaves `$0` as the shell name instead of
+      the script path (`yosh script.sh a` → `$0` = `yosh`)
+      (`e2e/posix_spec/2_01_shell_introduction/script_operand_invocation.sh`).
+- [ ] `$'...'` is recognized and expanded inside double-quotes; POSIX 2024
+      keeps `$'` literal there
+      (`e2e/posix_spec/2_02_quoting/dollar_single_not_in_dquotes.sh`).
+- [ ] `${01}` is rejected ("unexpected character in parameter expansion")
+      instead of being read as decimal 1 ≡ `$1`
+      (`e2e/posix_spec/2_05_01_positional_params/leading_zero_positional.sh`).
+- [ ] `"$*"` with null `IFS=''` joins fields with a space instead of no
+      separator
+      (`e2e/posix_spec/2_05_02_special_params/star_quoted_join_null_ifs.sh`).
+- [ ] An `IFS` value inherited from the environment is kept; POSIX 2024
+      requires IFS = `<space><tab><newline>` at shell startup
+      (`e2e/posix_spec/2_05_03_shell_variables/ifs_reset_at_startup.sh`).
+- [ ] All conditional expansion forms (`-`, `:-`, `+`, `:+`, `?`, `:?`) treat
+      positional parameters as unset even when they are set: `set -- one;
+      echo ${1:-d}` prints `d`, and `${1:?}` errors, despite `$1` = `one`.
+      Named variables behave correctly, so the fault is in the set/null
+      classification of positionals
+      (`e2e/posix_spec/2_06_02_parameter_expansion/conditional_on_positional.sh`,
+      `e2e/posix_spec/2_06_02_parameter_expansion/conditional_null_positional.sh`).
+- [ ] `${1=word}` silently assigns instead of reporting the POSIX-required
+      error for assignment to a positional parameter
+      (`e2e/posix_spec/2_06_02_parameter_expansion/assign_positional_error.sh`).
+- [ ] An arithmetic-expansion error (e.g. `$((1 +))`) prints a diagnostic but
+      the non-interactive shell continues and exits 0; §2.8.1 requires exit
+      (`e2e/posix_spec/2_06_04_arithmetic_expansion/invalid_expression_error.sh`).
+- [ ] Assignment to a readonly variable prints the error but the
+      non-interactive shell continues; the §2.8.1 table requires exit
+      (`e2e/posix_spec/2_08_01_consequences_of_shell_errors/readonly_assignment_exits.sh`).
+- [ ] A function may be defined with (and then shadows) a special built-in
+      name (`eval() { ...; }` accepted, later `eval` runs the function);
+      POSIX makes the definition an error and finds special built-ins before
+      functions
+      (`e2e/posix_spec/2_09_05_function_definition/special_builtin_name_error.sh`,
+      `e2e/posix_spec/2_09_01_simple_commands/special_builtin_not_shadowed.sh`).
+- [ ] With job control off, async commands read the shell's stdin instead of
+      `/dev/null` (§2.9.3.1)
+      (`e2e/posix_spec/2_09_03_lists/async_stdin_devnull.sh`).
+- [ ] Async commands do not have SIGINT/SIGQUIT set to ignore when job
+      control is off (§2.11)
+      (`e2e/posix_spec/2_11_signals_and_error_handling/async_ignores_int_quit.sh`).
+- [ ] A signal arriving during `wait` interrupts it with status >128 but the
+      trap action never executes (§2.12 wait)
+      (`e2e/posix_spec/2_11_signals_and_error_handling/signal_during_wait.sh`).
+- [ ] `exit` without an operand inside a trap action exits with the status of
+      the last command *in the trap action* instead of the pre-trap `$?`
+      (`e2e/posix_spec/2_11_signals_and_error_handling/exit_in_trap_pretrap_status.sh`).
+- [ ] `trap -p CONDITION` ignores the condition operand and prints all traps
+      (POSIX 2024 filters to the named conditions)
+      (`e2e/posix_spec/2_11_signals_and_error_handling/trap_p_condition_filter.sh`).
+- [ ] `set -v` (verbose) is accepted but never echoes input lines to stderr
+      (`e2e/posix_spec/4_special_builtin/set_verbose.sh`).
+- [ ] `set -h` is rejected with "unknown option: -h" (POSIX requires
+      accepting it; the locate-utilities behavior itself is obsolescent)
+      (`e2e/posix_spec/4_special_builtin/set_locate_hash_accepted.sh`).
+- [ ] `break`/`continue` inside a function called from a loop break the
+      caller's loop; POSIX 2024 requires lexical containment. Already tracked
+      as the `loop_depth` SP1 follow-up below; now also pinned by
+      (`e2e/posix_spec/4_special_builtin/break_continue_lexical.sh`).
+- [ ] `kill` does not accept `%jobspec` operands (`kill %1` → "invalid pid")
+      (`e2e/posix_spec/4_required_builtin/kill_jobspec.sh`).
+
 ## Audit 2026-07-02: Security / Correctness / Performance
 
 Findings from a three-lens codebase audit (security, POSIX correctness,
