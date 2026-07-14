@@ -454,6 +454,159 @@ pub fn run_exec(cmd: &str, timeout: std::time::Duration) -> Vec<String> {
     }
 }
 
+// ── Candidate generation ────────────────────────────────────────────
+
+use super::command_completion::CommandCompletionContext;
+use super::completion::{self, CompletionContext};
+
+/// The outcome of a spec-based completion attempt.
+pub struct SpecCompletion {
+    pub candidates: Vec<String>,
+    pub common_prefix: String,
+    /// Re-inserted verbatim before the selected candidate: a `--flag=`
+    /// prefix or the directory part of a path.
+    pub keep_prefix: String,
+}
+
+/// Try spec-based completion for the word at `word_start..pos`.
+///
+/// Returns `None` when there is no spec or the spec gives no guidance
+/// (including the fallback rule: a source that produced zero candidates)
+/// — the caller should then run its existing path completion. Returns
+/// `Some` with empty candidates only for `type = "none"` suppression.
+#[allow(clippy::too_many_arguments)]
+pub fn try_complete(
+    buf: &str,
+    pos: usize,
+    word_start: usize,
+    word: &str,
+    store: &mut SpecStore,
+    ctx: &CompletionContext,
+    cmd_ctx: &mut CommandCompletionContext<'_>,
+) -> Option<SpecCompletion> {
+    let (cmd, prior_words) = command_words(buf, word_start)?;
+    let spec = store.get(&cmd)?;
+    let (resolution, keep_prefix) = resolve(spec, &prior_words, word);
+    let filter = &word[keep_prefix.len()..];
+
+    match resolution {
+        Resolution::FlagNames(names) => {
+            let mut candidates: Vec<String> =
+                names.into_iter().filter(|n| n.starts_with(word)).collect();
+            candidates.sort();
+            finish(candidates, String::new())
+        }
+        Resolution::FlagValue(source) => {
+            complete_source(source, filter, keep_prefix, &[], buf, pos, ctx, cmd_ctx)
+        }
+        Resolution::Positional {
+            subcommands,
+            source,
+        } => {
+            let sub_matches: Vec<String> = subcommands
+                .into_iter()
+                .filter(|s| s.starts_with(filter))
+                .collect();
+            match source {
+                Some(source) => complete_source(
+                    source,
+                    filter,
+                    keep_prefix,
+                    &sub_matches,
+                    buf,
+                    pos,
+                    ctx,
+                    cmd_ctx,
+                ),
+                None => finish(sub_matches, keep_prefix),
+            }
+        }
+    }
+}
+
+/// Generate candidates for one source, merge in already-filtered
+/// subcommand names, and apply the fallback rule.
+#[allow(clippy::too_many_arguments)]
+fn complete_source(
+    source: &CandidateSource,
+    filter: &str,
+    keep_prefix: String,
+    sub_matches: &[String],
+    buf: &str,
+    pos: usize,
+    ctx: &CompletionContext,
+    cmd_ctx: &mut CommandCompletionContext<'_>,
+) -> Option<SpecCompletion> {
+    let (mut candidates, keep_prefix) = match source {
+        CandidateSource::Builtin(BuiltinType::None) => {
+            // Suppression: an empty result the caller treats as final.
+            return Some(SpecCompletion {
+                candidates: Vec::new(),
+                common_prefix: String::new(),
+                keep_prefix,
+            });
+        }
+        CandidateSource::Builtin(BuiltinType::File) => {
+            if sub_matches.is_empty() {
+                // Pure file completion: defer to the caller's existing
+                // path completion (identical behavior, fewer moving parts).
+                return None;
+            }
+            let result = completion::complete(buf, pos, ctx);
+            (result.candidates, result.dir_prefix)
+        }
+        CandidateSource::Builtin(BuiltinType::Directory) => {
+            let result = completion::complete(buf, pos, ctx);
+            let dirs: Vec<String> = result
+                .candidates
+                .into_iter()
+                .filter(|c| c.ends_with('/'))
+                .collect();
+            (dirs, result.dir_prefix)
+        }
+        CandidateSource::Builtin(BuiltinType::Command) => {
+            let cands =
+                cmd_ctx
+                    .completer
+                    .complete(filter, cmd_ctx.path, cmd_ctx.builtins, cmd_ctx.aliases);
+            (cands, keep_prefix)
+        }
+        CandidateSource::Values(values) => {
+            let cands: Vec<String> = values
+                .iter()
+                .filter(|v| v.starts_with(filter))
+                .cloned()
+                .collect();
+            (cands, keep_prefix)
+        }
+        CandidateSource::Exec(cmd) => {
+            let cands: Vec<String> = run_exec(cmd, EXEC_TIMEOUT)
+                .into_iter()
+                .filter(|c| c.starts_with(filter))
+                .collect();
+            (cands, keep_prefix)
+        }
+    };
+
+    candidates.extend(sub_matches.iter().cloned());
+    candidates.sort();
+    candidates.dedup();
+    finish(candidates, keep_prefix)
+}
+
+/// Apply the fallback rule (empty → None) and compute the common prefix.
+fn finish(candidates: Vec<String>, keep_prefix: String) -> Option<SpecCompletion> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let common_prefix = completion::longest_common_prefix(&candidates);
+    Some(SpecCompletion {
+        candidates,
+        common_prefix,
+        keep_prefix,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -961,5 +1114,164 @@ values = [\"second\"]
         let cwd = std::env::current_dir().unwrap();
         let lines = run_exec("pwd", Duration::from_secs(5));
         assert_eq!(lines, vec![cwd.to_string_lossy().to_string()]);
+    }
+
+    // ── try_complete ─────────────────────────────────────────────────
+
+    use crate::env::aliases::AliasStore;
+    use crate::interactive::command_completion::{CommandCompleter, CommandCompletionContext};
+    use crate::interactive::completion::CompletionContext;
+
+    /// Run try_complete over `line` (cursor at end) against a single spec
+    /// named `cmd`, using a scratch cwd.
+    fn spec_complete(cmd: &str, spec_text: &str, line: &str, cwd: &str) -> Option<SpecCompletion> {
+        let (_tmp, mut store) = store_with(&[(cmd, spec_text)]);
+        let ctx = CompletionContext {
+            cwd: cwd.to_string(),
+            home: "/home/user".to_string(),
+            show_dotfiles: false,
+        };
+        let aliases = AliasStore::default();
+        let mut completer = CommandCompleter::new();
+        let mut cmd_ctx = CommandCompletionContext {
+            completer: &mut completer,
+            path: "",
+            builtins: &["echo", "exit", "cd"],
+            aliases: &aliases,
+        };
+        let pos = line.len();
+        let (word_start, word) = crate::interactive::completion::extract_completion_word(line, pos);
+        let word = word.to_string();
+        try_complete(line, pos, word_start, &word, &mut store, &ctx, &mut cmd_ctx)
+    }
+
+    #[test]
+    fn complete_values_filters_by_prefix() {
+        let result = spec_complete(
+            "mytool",
+            "[[args]]\nvalues = [\"alpha\", \"omega\", \"alto\"]\n",
+            "mytool al",
+            "/",
+        )
+        .unwrap();
+        assert_eq!(result.candidates, vec!["alpha", "alto"]);
+        assert_eq!(result.common_prefix, "al");
+        assert_eq!(result.keep_prefix, "");
+    }
+
+    #[test]
+    fn complete_no_spec_returns_none() {
+        let result = spec_complete("mytool", "[[args]]\nvalues = [\"a\"]\n", "other x", "/");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn complete_none_source_suppresses_fallback() {
+        let result =
+            spec_complete("mytool", "[[args]]\ntype = \"none\"\n", "mytool x", "/").unwrap();
+        assert!(result.candidates.is_empty());
+    }
+
+    #[test]
+    fn complete_zero_matches_falls_back() {
+        // Candidates exist but none match the word → fallback (None).
+        let result = spec_complete(
+            "mytool",
+            "[[args]]\nvalues = [\"alpha\"]\n",
+            "mytool zz",
+            "/",
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn complete_subcommand_names_merge_with_values() {
+        let text = "\
+[[args]]
+values = [\"deep\"]
+[[subcommands]]
+name = \"deploy\"
+";
+        let result = spec_complete("mytool", text, "mytool de", "/").unwrap();
+        assert_eq!(result.candidates, vec!["deep", "deploy"]);
+    }
+
+    #[test]
+    fn complete_flag_names() {
+        let text = "\
+[[flags]]
+names = [\"--verbose\", \"-v\"]
+[[flags]]
+names = [\"--version\"]
+";
+        let result = spec_complete("mytool", text, "mytool --ver", "/").unwrap();
+        assert_eq!(result.candidates, vec!["--verbose", "--version"]);
+    }
+
+    #[test]
+    fn complete_flag_eq_value_keeps_prefix() {
+        let text = "\
+[[flags]]
+names = [\"--format\"]
+value = { values = [\"json\", \"yaml\"] }
+";
+        let result = spec_complete("mytool", text, "mytool --format=j", "/").unwrap();
+        assert_eq!(result.candidates, vec!["json"]);
+        assert_eq!(result.keep_prefix, "--format=");
+    }
+
+    #[test]
+    fn complete_pure_file_source_falls_back_to_path_completion() {
+        // type = "file" with no subcommands defers entirely to the
+        // caller's existing path completion.
+        let result = spec_complete("mytool", "[[args]]\ntype = \"file\"\n", "mytool x", "/");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn complete_directory_source_filters_to_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+        std::fs::File::create(tmp.path().join("subfile.txt")).unwrap();
+        let result = spec_complete(
+            "mytool",
+            "[[args]]\ntype = \"directory\"\n",
+            "mytool su",
+            tmp.path().to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result.candidates, vec!["subdir/"]);
+    }
+
+    #[test]
+    fn complete_command_source_uses_command_completer() {
+        let result =
+            spec_complete("mytool", "[[args]]\ntype = \"command\"\n", "mytool e", "/").unwrap();
+        // builtins list in the harness: echo, exit (both match "e"), cd.
+        assert_eq!(result.candidates, vec!["echo", "exit"]);
+    }
+
+    #[test]
+    fn complete_exec_source_runs_command() {
+        let result = spec_complete(
+            "mytool",
+            "[[args]]\nexec = \"printf 'alpha\\\\nomega\\\\n'\"\n",
+            "mytool al",
+            "/",
+        )
+        .unwrap();
+        assert_eq!(result.candidates, vec!["alpha"]);
+    }
+
+    #[test]
+    fn complete_exec_empty_output_falls_back() {
+        let result = spec_complete("mytool", "[[args]]\nexec = \"true\"\n", "mytool x", "/");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn complete_cursor_on_command_word_returns_none() {
+        let result = spec_complete("mytool", "[[args]]\nvalues = [\"a\"]\n", "mytoo", "/");
+        assert!(result.is_none());
     }
 }
