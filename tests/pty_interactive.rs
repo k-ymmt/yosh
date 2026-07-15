@@ -783,3 +783,32 @@ fn tab_spec_completion_inserts_candidate() {
     );
     exit_shell(&mut session);
 }
+
+#[test]
+fn tab_spec_completion_completes_flag_names() {
+    let (mut session, tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut session);
+
+    let dir = tmpdir.path().join(".config/yosh/completions");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("echo.toml"),
+        "[[flags]]\nnames = [\"-C\"]\n\n[[flags]]\nnames = [\"--no-pager\"]\n",
+    )
+    .unwrap();
+
+    // A dash-initial word completes from the level's flag spellings:
+    // `--n` has the unique match `--no-pager`, inserted by one Tab.
+    session.send("echo --n").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    session.send("\t").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    session.send("\r").unwrap();
+
+    expect_output(
+        &mut session,
+        "--no-pager",
+        "spec completion did not complete flag name",
+    );
+    exit_shell(&mut session);
+}
