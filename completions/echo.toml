@@ -1,0 +1,4 @@
+# yosh builtin: echo — operands fall back to default path completion
+
+[[flags]]
+names = ["-n"]

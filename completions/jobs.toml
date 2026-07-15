@@ -1,0 +1,10 @@
+# yosh builtin: jobs — operands are %job-ids (free input)
+
+[[flags]]
+names = ["-l"]
+
+[[flags]]
+names = ["-p"]
+
+[[args]]
+type = "none"

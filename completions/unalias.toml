@@ -1,0 +1,7 @@
+# yosh builtin: unalias — operands are alias names (free input)
+
+[[flags]]
+names = ["-a"]
+
+[[args]]
+type = "none"

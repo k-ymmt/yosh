@@ -1,0 +1,7 @@
+# yosh builtin: exec — first operand is the command to replace the shell with
+
+[[args]]
+type = "command"
+
+[[args]]
+type = "file"

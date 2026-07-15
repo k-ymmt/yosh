@@ -1,0 +1,4 @@
+# yosh builtin: continue — operand is a number (free input)
+
+[[args]]
+type = "none"

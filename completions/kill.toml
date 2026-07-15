@@ -1,0 +1,28 @@
+# yosh builtin: kill — operands are pids / %job-ids (free input)
+
+[[flags]]
+names = ["-l"]
+
+[[flags]]
+names = ["-s"]
+value = { values = [
+    "HUP",
+    "INT",
+    "QUIT",
+    "ABRT",
+    "KILL",
+    "USR1",
+    "USR2",
+    "PIPE",
+    "ALRM",
+    "TERM",
+    "CHLD",
+    "CONT",
+    "STOP",
+    "TSTP",
+    "TTIN",
+    "TTOU",
+] }
+
+[[args]]
+type = "none"

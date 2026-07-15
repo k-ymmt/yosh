@@ -831,6 +831,23 @@ name = \"add\"
         );
     }
 
+    #[test]
+    fn bundled_completion_specs_parse() {
+        // Every spec shipped in <repo>/completions/ must stay valid.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("completions");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "toml") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                CompletionSpec::parse(&text)
+                    .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no bundled specs found in {}", dir.display());
+    }
+
     // ── SpecStore ────────────────────────────────────────────────────
 
     fn store_with(specs: &[(&str, &str)]) -> (tempfile::TempDir, SpecStore) {

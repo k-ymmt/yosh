@@ -1,0 +1,7 @@
+# yosh builtin: read — operands are variable names (free input)
+
+[[flags]]
+names = ["-r"]
+
+[[args]]
+type = "none"

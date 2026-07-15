@@ -1,0 +1,10 @@
+# yosh builtin: unset — operands are variable/function names (free input)
+
+[[flags]]
+names = ["-f"]
+
+[[flags]]
+names = ["-v"]
+
+[[args]]
+type = "none"

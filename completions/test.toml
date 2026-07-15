@@ -1,0 +1,69 @@
+# yosh builtin: test — file operators complete their operand as a path
+
+[[flags]]
+names = ["-b"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-c"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-d"]
+value = { type = "directory" }
+
+[[flags]]
+names = ["-e"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-f"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-g"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-h", "-L"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-p"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-S"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-s"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-r"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-w"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-x"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-u"]
+value = { type = "file" }
+
+[[flags]]
+names = ["-t"]
+value = { type = "none" }
+
+[[flags]]
+names = ["-n"]
+value = { type = "none" }
+
+[[flags]]
+names = ["-z"]
+value = { type = "none" }

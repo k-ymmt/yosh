@@ -1,0 +1,10 @@
+# yosh builtin: cd
+
+[[flags]]
+names = ["-L"]
+
+[[flags]]
+names = ["-P"]
+
+[[args]]
+type = "directory"

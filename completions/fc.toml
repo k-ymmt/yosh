@@ -1,0 +1,20 @@
+# yosh builtin: fc — operands are history numbers/prefixes (free input)
+
+[[flags]]
+names = ["-e"]
+value = { type = "command" }
+
+[[flags]]
+names = ["-l"]
+
+[[flags]]
+names = ["-n"]
+
+[[flags]]
+names = ["-r"]
+
+[[flags]]
+names = ["-s"]
+
+[[args]]
+type = "none"

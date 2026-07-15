@@ -1,0 +1,7 @@
+# yosh builtin: export — operands are NAME or NAME=value (free input)
+
+[[flags]]
+names = ["-p"]
+
+[[args]]
+type = "none"

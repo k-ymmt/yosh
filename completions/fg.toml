@@ -1,0 +1,4 @@
+# yosh builtin: fg
+
+[[args]]
+type = "none"

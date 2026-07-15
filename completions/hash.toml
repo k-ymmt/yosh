@@ -1,0 +1,7 @@
+# yosh builtin: hash
+
+[[flags]]
+names = ["-r"]
+
+[[args]]
+type = "command"

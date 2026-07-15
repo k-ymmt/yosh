@@ -1,0 +1,7 @@
+# yosh builtin: ulimit — operand is a block count or "unlimited"
+
+[[flags]]
+names = ["-f"]
+
+[[args]]
+values = ["unlimited"]

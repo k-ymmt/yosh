@@ -1,0 +1,4 @@
+# yosh builtin: alias — operands are name or name=value (free input)
+
+[[args]]
+type = "none"

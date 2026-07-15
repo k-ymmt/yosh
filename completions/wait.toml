@@ -1,0 +1,4 @@
+# yosh builtin: wait
+
+[[args]]
+type = "none"

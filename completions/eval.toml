@@ -1,0 +1,7 @@
+# yosh builtin: eval — the first word usually names a command
+
+[[args]]
+type = "command"
+
+[[args]]
+type = "file"

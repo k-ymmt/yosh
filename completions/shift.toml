@@ -1,0 +1,4 @@
+# yosh builtin: shift — operand is a number (free input)
+
+[[args]]
+type = "none"

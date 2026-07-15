@@ -1,0 +1,7 @@
+# yosh builtin: umask — operand is an octal mode (free input)
+
+[[flags]]
+names = ["-S"]
+
+[[args]]
+type = "none"

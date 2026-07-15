@@ -1,0 +1,16 @@
+# yosh builtin: command — first operand is the command to run
+
+[[flags]]
+names = ["-p"]
+
+[[flags]]
+names = ["-v"]
+
+[[flags]]
+names = ["-V"]
+
+[[args]]
+type = "command"
+
+[[args]]
+type = "file"

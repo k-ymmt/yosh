@@ -1,0 +1,51 @@
+# yosh builtin: set
+
+[[flags]]
+names = ["-a"]
+
+[[flags]]
+names = ["-b"]
+
+[[flags]]
+names = ["-C"]
+
+[[flags]]
+names = ["-e"]
+
+[[flags]]
+names = ["-f"]
+
+[[flags]]
+names = ["-h"]
+
+[[flags]]
+names = ["-m"]
+
+[[flags]]
+names = ["-n"]
+
+[[flags]]
+names = ["-u"]
+
+[[flags]]
+names = ["-v"]
+
+[[flags]]
+names = ["-x"]
+
+[[flags]]
+names = ["-o"]
+value = { values = [
+    "allexport",
+    "errexit",
+    "ignoreeof",
+    "monitor",
+    "noclobber",
+    "noexec",
+    "noglob",
+    "notify",
+    "nounset",
+    "pipefail",
+    "verbose",
+    "xtrace",
+] }

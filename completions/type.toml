@@ -1,0 +1,4 @@
+# yosh builtin: type — operands are command names
+
+[[args]]
+type = "command"

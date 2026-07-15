@@ -1,0 +1,28 @@
+# yosh builtin: trap — first operand is the action, the rest are conditions
+
+[[flags]]
+names = ["-p"]
+
+[[args]]
+type = "none"
+
+[[args]]
+values = [
+    "EXIT",
+    "HUP",
+    "INT",
+    "QUIT",
+    "ABRT",
+    "KILL",
+    "USR1",
+    "USR2",
+    "PIPE",
+    "ALRM",
+    "TERM",
+    "CHLD",
+    "CONT",
+    "STOP",
+    "TSTP",
+    "TTIN",
+    "TTOU",
+]

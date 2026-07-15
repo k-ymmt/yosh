@@ -1,0 +1,4 @@
+# yosh builtin: break — operand is a number (free input)
+
+[[args]]
+type = "none"

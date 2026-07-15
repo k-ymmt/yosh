@@ -1,0 +1,4 @@
+# yosh builtin: getopts — operands are optstring / variable name (free input)
+
+[[args]]
+type = "none"
