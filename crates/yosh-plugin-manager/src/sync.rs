@@ -531,8 +531,15 @@ mod tests {
         let decl = sample_decl_with_limits(None, None, None, None); // github owner/repo @1.0.0
         let pre_engine = precompile::make_engine().unwrap();
         let meta_engine = precompile::make_engine().unwrap();
-        let err = sync_one(&client, &decl, &lock, root.path(), &pre_engine, &meta_engine)
-            .expect_err("mismatched checksum must attempt re-download, which 404s here");
+        let err = sync_one(
+            &client,
+            &decl,
+            &lock,
+            root.path(),
+            &pre_engine,
+            &meta_engine,
+        )
+        .expect_err("mismatched checksum must attempt re-download, which 404s here");
         assert!(
             err.contains("release not found"),
             "expected a re-download attempt, got: {}",

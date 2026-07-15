@@ -96,7 +96,11 @@ pub(super) fn resolve_limits(
         }
         Some(ms) => ms,
     };
-    let hook_timeout_ms = clamp_timeout("hook_timeout_ms", cfg.hook_timeout_ms, DEFAULT_HOOK_TIMEOUT_MS);
+    let hook_timeout_ms = clamp_timeout(
+        "hook_timeout_ms",
+        cfg.hook_timeout_ms,
+        DEFAULT_HOOK_TIMEOUT_MS,
+    );
     let command_timeout_ms = clamp_timeout("command_timeout_ms", cfg.command_timeout_ms, 0);
 
     let pre_prompt_timeout_ms = match cfg.pre_prompt_timeout_ms {
@@ -140,7 +144,10 @@ pub(in crate::plugin) struct MemoryLimiter {
 
 impl MemoryLimiter {
     pub(in crate::plugin) fn new(max_memory_bytes: usize) -> Self {
-        MemoryLimiter { max_memory_bytes, denied: false }
+        MemoryLimiter {
+            max_memory_bytes,
+            denied: false,
+        }
     }
 }
 
@@ -205,14 +212,20 @@ mod tests {
     #[test]
     fn memory_clamps_zero_to_one_and_huge_to_ceiling() {
         let (l, w) = resolve_limits(
-            &LimitsConfig { max_memory_mb: Some(0), ..Default::default() },
+            &LimitsConfig {
+                max_memory_mb: Some(0),
+                ..Default::default()
+            },
             500,
             "p",
         );
         assert_eq!(l.max_memory_bytes, MIB as usize);
         assert_eq!(w.len(), 1);
         let (l, w) = resolve_limits(
-            &LimitsConfig { max_memory_mb: Some(100_000), ..Default::default() },
+            &LimitsConfig {
+                max_memory_mb: Some(100_000),
+                ..Default::default()
+            },
             500,
             "p",
         );
@@ -251,14 +264,20 @@ mod tests {
         let (l, _) = resolve_limits(&LimitsConfig::default(), 123, "p");
         assert_eq!(l.pre_prompt_timeout_ms, 123);
         let (l, w) = resolve_limits(
-            &LimitsConfig { pre_prompt_timeout_ms: Some(0), ..Default::default() },
+            &LimitsConfig {
+                pre_prompt_timeout_ms: Some(0),
+                ..Default::default()
+            },
             123,
             "p",
         );
         assert_eq!(l.pre_prompt_timeout_ms, 123);
         assert_eq!(w.len(), 1);
         let (l, w) = resolve_limits(
-            &LimitsConfig { pre_prompt_timeout_ms: Some(90_000), ..Default::default() },
+            &LimitsConfig {
+                pre_prompt_timeout_ms: Some(90_000),
+                ..Default::default()
+            },
             123,
             "p",
         );
@@ -286,7 +305,10 @@ mod tests {
         let mut l = MemoryLimiter::new((8 * MIB) as usize);
         assert!(l.memory_growing(0, (4 * MIB) as usize, None).unwrap());
         assert!(!l.denied);
-        assert!(!l.memory_growing((4 * MIB) as usize, (16 * MIB) as usize, None).unwrap());
+        assert!(
+            !l.memory_growing((4 * MIB) as usize, (16 * MIB) as usize, None)
+                .unwrap()
+        );
         assert!(l.denied);
         // Table growth is never memory-capped.
         assert!(l.table_growing(0, 10_000, None).unwrap());

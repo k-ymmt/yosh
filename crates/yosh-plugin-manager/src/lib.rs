@@ -658,6 +658,9 @@ mod cmd_tests {
     fn cmd_test_empty_dir_fails() {
         let dir = tempfile::tempdir().unwrap();
         let code = cmd_test(dir.path().to_path_buf(), None, OutputFormat::Human);
-        assert_eq!(code, 1, "a directory with no .toml scenarios must not exit 0");
+        assert_eq!(
+            code, 1,
+            "a directory with no .toml scenarios must not exit 0"
+        );
     }
 }

@@ -34,11 +34,7 @@ pub fn write_plugin_entry(
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => {
-            return Err(format!(
-                "failed to read {}: {}",
-                config_path.display(),
-                e
-            ));
+            return Err(format!("failed to read {}: {}", config_path.display(), e));
         }
     };
 

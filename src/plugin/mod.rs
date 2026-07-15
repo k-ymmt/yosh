@@ -22,8 +22,8 @@
 
 pub mod cache;
 pub mod config;
-pub mod limits;
 mod host;
+pub mod limits;
 mod linker;
 pub mod pattern;
 
@@ -892,7 +892,11 @@ fn with_env<R>(
                 let memory_denied =
                     std::mem::replace(&mut plugin.store.data_mut().mem_limiter.denied, false);
                 plugin.invalidated = true;
-                Err(WithEnvError::Trapped { is_interrupt, memory_denied, trap })
+                Err(WithEnvError::Trapped {
+                    is_interrupt,
+                    memory_denied,
+                    trap,
+                })
             } else {
                 Err(WithEnvError::Other(e))
             }
@@ -954,7 +958,11 @@ fn log_with_env_failure(plugin_name: &str, err: &WithEnvError, max_memory_mb: u6
         // match `Trapped { .. }`, and Rust picks the first arm whose
         // pattern matches, so this more-specific `memory_denied: true`
         // arm has to come first or it would be unreachable.
-        WithEnvError::Trapped { memory_denied: true, trap, .. } => {
+        WithEnvError::Trapped {
+            memory_denied: true,
+            trap,
+            ..
+        } => {
             eprintln!(
                 "yosh: plugin '{}': trapped: {} (memory limit {} MiB exceeded) — disabling for the rest of this session",
                 plugin_name, trap, max_memory_mb
@@ -1092,7 +1100,17 @@ pub mod test_helpers {
         caps: u32,
         limits_cfg: limits::LimitsConfig,
     ) -> Result<(), String> {
-        manager.load_one(path, env, Some(caps), None, None, None, &[], None, limits_cfg)
+        manager.load_one(
+            path,
+            env,
+            Some(caps),
+            None,
+            None,
+            None,
+            &[],
+            None,
+            limits_cfg,
+        )
     }
 
     /// Returns true if the most-recently-loaded plugin's `Store` has a

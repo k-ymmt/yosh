@@ -576,8 +576,13 @@ fn test_pty_pipeline_exit_status_is_last_element() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
-    s.send("/bin/sleep 0.2 | /usr/bin/false; echo RC=$?\r").unwrap();
-    expect_output(&mut s, "RC=1", "pipeline exit status should be the last element's");
+    s.send("/bin/sleep 0.2 | /usr/bin/false; echo RC=$?\r")
+        .unwrap();
+    expect_output(
+        &mut s,
+        "RC=1",
+        "pipeline exit status should be the last element's",
+    );
     wait_for_prompt(&mut s);
 
     exit_shell(&mut s);
@@ -771,6 +776,10 @@ fn tab_spec_completion_inserts_candidate() {
     session.send("\r").unwrap();
 
     // Tab completed "al" → "alpha", so the command ran as `echo alpha`.
-    expect_output(&mut session, "alpha", "spec completion did not insert candidate");
+    expect_output(
+        &mut session,
+        "alpha",
+        "spec completion did not insert candidate",
+    );
     exit_shell(&mut session);
 }
