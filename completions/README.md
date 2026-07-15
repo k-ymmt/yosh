@@ -1,8 +1,8 @@
 # Bundled completion specs
 
 Spec-based tab-completion definitions for yosh's POSIX builtin
-commands, in the TOML format described in `completion.md` at the
-repository root.
+commands, plus a few common external commands (`git`), in the TOML
+format described in `completion.md` at the repository root.
 
 yosh loads specs from `~/.config/yosh/completions/<command>.toml`.
 These files are not read from the repository — copy them into place
@@ -25,6 +25,10 @@ cp completions/*.toml ~/.config/yosh/completions/
 - Flag lists and `set -o` / `trap` / `kill -s` candidate values match
   what yosh actually implements (see `src/builtin/`, `src/signal.rs`,
   `src/env/shell_mode.rs`), not the full POSIX surface.
+- External-command specs (`git.toml`) cover common porcelain
+  subcommands and flags, not the full CLI surface; dynamic candidates
+  (branches, remotes, tags, stashes) use `exec` sources so they stay
+  fresh.
 
 ## Deliberately absent
 

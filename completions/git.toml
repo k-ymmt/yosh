@@ -1,0 +1,690 @@
+# git — external command; common porcelain subcommands.
+# Dynamic candidates (branches, remotes, tags, stashes) come from
+# `exec` sources so they are always fresh.
+
+[[flags]]
+names = ["-C"]
+value = { type = "directory" }
+
+[[flags]]
+names = ["-c"]
+value = { type = "none" }
+
+[[flags]]
+names = ["--git-dir"]
+value = { type = "directory" }
+
+[[flags]]
+names = ["--work-tree"]
+value = { type = "directory" }
+
+[[flags]]
+names = ["-p", "--paginate"]
+
+[[flags]]
+names = ["--no-pager"]
+
+[[flags]]
+names = ["--version"]
+
+[[flags]]
+names = ["--help"]
+
+# ── status ──────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "status"
+
+[[subcommands.flags]]
+names = ["-s", "--short"]
+
+[[subcommands.flags]]
+names = ["-b", "--branch"]
+
+[[subcommands.flags]]
+names = ["--porcelain"]
+
+# ── add ─────────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "add"
+
+[[subcommands.flags]]
+names = ["-A", "--all"]
+
+[[subcommands.flags]]
+names = ["-p", "--patch"]
+
+[[subcommands.flags]]
+names = ["-u", "--update"]
+
+[[subcommands.flags]]
+names = ["-n", "--dry-run"]
+
+[[subcommands.flags]]
+names = ["-f", "--force"]
+
+[[subcommands.args]]
+type = "file"
+
+# ── commit ──────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "commit"
+
+[[subcommands.flags]]
+names = ["-m", "--message"]
+value = { type = "none" }
+
+[[subcommands.flags]]
+names = ["-a", "--all"]
+
+[[subcommands.flags]]
+names = ["--amend"]
+
+[[subcommands.flags]]
+names = ["--no-edit"]
+
+[[subcommands.flags]]
+names = ["-p", "--patch"]
+
+[[subcommands.flags]]
+names = ["-v", "--verbose"]
+
+[[subcommands.args]]
+type = "file"
+
+# ── branch ──────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "branch"
+
+[[subcommands.flags]]
+names = ["-d", "--delete"]
+
+[[subcommands.flags]]
+names = ["-D"]
+
+[[subcommands.flags]]
+names = ["-m", "--move"]
+
+[[subcommands.flags]]
+names = ["-M"]
+
+[[subcommands.flags]]
+names = ["-a", "--all"]
+
+[[subcommands.flags]]
+names = ["-r", "--remotes"]
+
+[[subcommands.flags]]
+names = ["--list"]
+
+[[subcommands.args]]
+exec = "git branch --format='%(refname:short)'"
+
+# ── checkout ────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "checkout"
+
+[[subcommands.flags]]
+names = ["-b"]
+value = { type = "none" }
+
+[[subcommands.flags]]
+names = ["-B"]
+value = { type = "none" }
+
+[[subcommands.flags]]
+names = ["-t", "--track"]
+
+[[subcommands.args]]
+exec = "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags"
+
+# ── switch ──────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "switch"
+
+[[subcommands.flags]]
+names = ["-c", "--create"]
+value = { type = "none" }
+
+[[subcommands.flags]]
+names = ["-C", "--force-create"]
+value = { type = "none" }
+
+[[subcommands.flags]]
+names = ["-d", "--detach"]
+
+[[subcommands.args]]
+exec = "git branch --format='%(refname:short)'"
+
+# ── restore ─────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "restore"
+
+[[subcommands.flags]]
+names = ["-s", "--source"]
+value = { exec = "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags" }
+
+[[subcommands.flags]]
+names = ["-S", "--staged"]
+
+[[subcommands.flags]]
+names = ["-W", "--worktree"]
+
+[[subcommands.flags]]
+names = ["-p", "--patch"]
+
+[[subcommands.args]]
+type = "file"
+
+# ── merge ───────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "merge"
+
+[[subcommands.flags]]
+names = ["--no-ff"]
+
+[[subcommands.flags]]
+names = ["--ff-only"]
+
+[[subcommands.flags]]
+names = ["--squash"]
+
+[[subcommands.flags]]
+names = ["--abort"]
+
+[[subcommands.flags]]
+names = ["--continue"]
+
+[[subcommands.flags]]
+names = ["-m"]
+value = { type = "none" }
+
+[[subcommands.args]]
+exec = "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes"
+
+# ── rebase ──────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "rebase"
+
+[[subcommands.flags]]
+names = ["-i", "--interactive"]
+
+[[subcommands.flags]]
+names = ["--continue"]
+
+[[subcommands.flags]]
+names = ["--abort"]
+
+[[subcommands.flags]]
+names = ["--skip"]
+
+[[subcommands.flags]]
+names = ["--onto"]
+value = { exec = "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes" }
+
+[[subcommands.args]]
+exec = "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes"
+
+# ── reset ───────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "reset"
+
+[[subcommands.flags]]
+names = ["--soft"]
+
+[[subcommands.flags]]
+names = ["--mixed"]
+
+[[subcommands.flags]]
+names = ["--hard"]
+
+[[subcommands.args]]
+exec = "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags"
+
+# ── log ─────────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "log"
+
+[[subcommands.flags]]
+names = ["--oneline"]
+
+[[subcommands.flags]]
+names = ["--graph"]
+
+[[subcommands.flags]]
+names = ["--all"]
+
+[[subcommands.flags]]
+names = ["-p", "--patch"]
+
+[[subcommands.flags]]
+names = ["--stat"]
+
+[[subcommands.flags]]
+names = ["-n", "--max-count"]
+value = { type = "none" }
+
+[[subcommands.args]]
+exec = "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags"
+
+# ── diff ────────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "diff"
+
+[[subcommands.flags]]
+names = ["--staged", "--cached"]
+
+[[subcommands.flags]]
+names = ["--stat"]
+
+[[subcommands.flags]]
+names = ["--name-only"]
+
+[[subcommands.flags]]
+names = ["--name-status"]
+
+[[subcommands.args]]
+type = "file"
+
+# ── show ────────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "show"
+
+[[subcommands.flags]]
+names = ["--stat"]
+
+[[subcommands.flags]]
+names = ["--name-only"]
+
+[[subcommands.args]]
+exec = "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags"
+
+# ── fetch ───────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "fetch"
+
+[[subcommands.flags]]
+names = ["--all"]
+
+[[subcommands.flags]]
+names = ["-p", "--prune"]
+
+[[subcommands.flags]]
+names = ["-t", "--tags"]
+
+[[subcommands.args]]
+exec = "git remote"
+
+[[subcommands.args]]
+exec = "git branch --format='%(refname:short)'"
+
+# ── pull ────────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "pull"
+
+[[subcommands.flags]]
+names = ["--rebase"]
+
+[[subcommands.flags]]
+names = ["--ff-only"]
+
+[[subcommands.flags]]
+names = ["-p", "--prune"]
+
+[[subcommands.args]]
+exec = "git remote"
+
+[[subcommands.args]]
+exec = "git branch --format='%(refname:short)'"
+
+# ── push ────────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "push"
+
+[[subcommands.flags]]
+names = ["-u", "--set-upstream"]
+
+[[subcommands.flags]]
+names = ["-f", "--force"]
+
+[[subcommands.flags]]
+names = ["--force-with-lease"]
+
+[[subcommands.flags]]
+names = ["--tags"]
+
+[[subcommands.flags]]
+names = ["-d", "--delete"]
+
+[[subcommands.flags]]
+names = ["-n", "--dry-run"]
+
+[[subcommands.args]]
+exec = "git remote"
+
+[[subcommands.args]]
+exec = "git branch --format='%(refname:short)'"
+
+# ── clone ───────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "clone"
+
+[[subcommands.flags]]
+names = ["--depth"]
+value = { type = "none" }
+
+[[subcommands.flags]]
+names = ["-b", "--branch"]
+value = { type = "none" }
+
+[[subcommands.flags]]
+names = ["--recursive"]
+
+[[subcommands.args]]
+type = "none"
+
+[[subcommands.args]]
+type = "directory"
+
+# ── remote ──────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "remote"
+
+[[subcommands.flags]]
+names = ["-v", "--verbose"]
+
+[[subcommands.subcommands]]
+name = "add"
+
+[[subcommands.subcommands.args]]
+type = "none"
+
+[[subcommands.subcommands]]
+name = "remove"
+
+[[subcommands.subcommands.args]]
+exec = "git remote"
+
+[[subcommands.subcommands]]
+name = "rename"
+
+[[subcommands.subcommands.args]]
+exec = "git remote"
+
+[[subcommands.subcommands]]
+name = "set-url"
+
+[[subcommands.subcommands.args]]
+exec = "git remote"
+
+[[subcommands.subcommands.args]]
+type = "none"
+
+[[subcommands.subcommands]]
+name = "show"
+
+[[subcommands.subcommands.args]]
+exec = "git remote"
+
+[[subcommands.subcommands]]
+name = "prune"
+
+[[subcommands.subcommands.args]]
+exec = "git remote"
+
+# ── stash ───────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "stash"
+
+[[subcommands.subcommands]]
+name = "push"
+
+[[subcommands.subcommands.flags]]
+names = ["-m", "--message"]
+value = { type = "none" }
+
+[[subcommands.subcommands.args]]
+type = "file"
+
+[[subcommands.subcommands]]
+name = "pop"
+
+[[subcommands.subcommands.args]]
+exec = "git stash list --format='%gd'"
+
+[[subcommands.subcommands]]
+name = "apply"
+
+[[subcommands.subcommands.args]]
+exec = "git stash list --format='%gd'"
+
+[[subcommands.subcommands]]
+name = "drop"
+
+[[subcommands.subcommands.args]]
+exec = "git stash list --format='%gd'"
+
+[[subcommands.subcommands]]
+name = "show"
+
+[[subcommands.subcommands.args]]
+exec = "git stash list --format='%gd'"
+
+[[subcommands.subcommands]]
+name = "list"
+
+[[subcommands.subcommands]]
+name = "clear"
+
+# ── tag ─────────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "tag"
+
+[[subcommands.flags]]
+names = ["-a", "--annotate"]
+
+[[subcommands.flags]]
+names = ["-d", "--delete"]
+
+[[subcommands.flags]]
+names = ["-m", "--message"]
+value = { type = "none" }
+
+[[subcommands.flags]]
+names = ["-l", "--list"]
+
+[[subcommands.args]]
+exec = "git tag"
+
+# ── cherry-pick ─────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "cherry-pick"
+
+[[subcommands.flags]]
+names = ["--continue"]
+
+[[subcommands.flags]]
+names = ["--abort"]
+
+[[subcommands.flags]]
+names = ["-n", "--no-commit"]
+
+[[subcommands.args]]
+exec = "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags"
+
+# ── revert ──────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "revert"
+
+[[subcommands.flags]]
+names = ["--continue"]
+
+[[subcommands.flags]]
+names = ["--abort"]
+
+[[subcommands.flags]]
+names = ["-n", "--no-commit"]
+
+[[subcommands.args]]
+exec = "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags"
+
+# ── rm / mv / clean ─────────────────────────────────────────────────
+
+[[subcommands]]
+name = "rm"
+
+[[subcommands.flags]]
+names = ["-r"]
+
+[[subcommands.flags]]
+names = ["--cached"]
+
+[[subcommands.flags]]
+names = ["-f", "--force"]
+
+[[subcommands.args]]
+type = "file"
+
+[[subcommands]]
+name = "mv"
+
+[[subcommands.args]]
+type = "file"
+
+[[subcommands]]
+name = "clean"
+
+[[subcommands.flags]]
+names = ["-f", "--force"]
+
+[[subcommands.flags]]
+names = ["-d"]
+
+[[subcommands.flags]]
+names = ["-n", "--dry-run"]
+
+[[subcommands.flags]]
+names = ["-x"]
+
+[[subcommands.args]]
+type = "file"
+
+# ── init / config / grep / reflog ───────────────────────────────────
+
+[[subcommands]]
+name = "init"
+
+[[subcommands.flags]]
+names = ["--bare"]
+
+[[subcommands.args]]
+type = "directory"
+
+[[subcommands]]
+name = "config"
+
+[[subcommands.flags]]
+names = ["--global"]
+
+[[subcommands.flags]]
+names = ["--local"]
+
+[[subcommands.flags]]
+names = ["--list"]
+
+[[subcommands.flags]]
+names = ["--unset"]
+
+[[subcommands.flags]]
+names = ["--get"]
+
+[[subcommands.args]]
+type = "none"
+
+[[subcommands]]
+name = "grep"
+
+[[subcommands.flags]]
+names = ["-n", "--line-number"]
+
+[[subcommands.flags]]
+names = ["-i", "--ignore-case"]
+
+[[subcommands.flags]]
+names = ["-l", "--files-with-matches"]
+
+[[subcommands.args]]
+type = "none"
+
+[[subcommands.args]]
+type = "file"
+
+[[subcommands]]
+name = "reflog"
+
+# ── worktree ────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "worktree"
+
+[[subcommands.subcommands]]
+name = "add"
+
+[[subcommands.subcommands.args]]
+type = "directory"
+
+[[subcommands.subcommands.args]]
+exec = "git branch --format='%(refname:short)'"
+
+[[subcommands.subcommands]]
+name = "list"
+
+[[subcommands.subcommands]]
+name = "remove"
+
+[[subcommands.subcommands.args]]
+type = "directory"
+
+[[subcommands.subcommands]]
+name = "prune"
+
+# ── bisect ──────────────────────────────────────────────────────────
+
+[[subcommands]]
+name = "bisect"
+
+[[subcommands.subcommands]]
+name = "start"
+
+[[subcommands.subcommands]]
+name = "good"
+
+[[subcommands.subcommands]]
+name = "bad"
+
+[[subcommands.subcommands]]
+name = "skip"
+
+[[subcommands.subcommands]]
+name = "reset"
