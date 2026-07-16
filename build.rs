@@ -36,6 +36,8 @@ fn main() {
     // target triple at runtime via env!(...) without needing a runtime probe.
     let triple = std::env::var("TARGET").unwrap_or_else(|_| "unknown".into());
     println!("cargo:rustc-env=TARGET_TRIPLE_OR_RUST_BUILT_IN={}", triple);
+
+    generate_embedded_completions();
 }
 
 /// Verify the bundled WIT copy stays in sync with the canonical source
@@ -65,4 +67,46 @@ fn verify_bundled_wit(canonical: &str, bundled: &str) {
             bundled, canonical, canonical, bundled
         );
     }
+}
+
+/// Generate `$OUT_DIR/embedded_completions.rs`: a static array embedding
+/// every `completions/*.toml` so specs work without any user setup.
+/// `spec_completion.rs` pulls it in with `include!`.
+fn generate_embedded_completions() {
+    println!("cargo:rerun-if-changed=completions");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let dir = Path::new(&manifest_dir).join("completions");
+    let mut entries: Vec<(String, String)> = std::fs::read_dir(&dir)
+        .expect("completions/ must exist")
+        .map(|e| e.expect("readable dir entry").path())
+        .filter(|p| p.extension().is_some_and(|e| e == "toml"))
+        .map(|p| {
+            let name = p
+                .file_stem()
+                .expect("spec file has a stem")
+                .to_str()
+                .expect("spec file name is UTF-8")
+                .to_string();
+            // Use relative path from manifest dir for portability
+            let rel_path = format!("completions/{}", p.file_name().unwrap().to_str().unwrap());
+            (name, rel_path)
+        })
+        .collect();
+    entries.sort();
+
+    let mut code = String::from(
+        "/// Completion specs compiled in from `completions/*.toml`, sorted by name.\n\
+         /// Used as the fallback layer when no user spec file exists.\n\
+         pub static EMBEDDED_SPECS: &[(&str, &str)] = &[\n",
+    );
+    for (name, path) in &entries {
+        // Use concat! with env!("CARGO_MANIFEST_DIR") to create portable absolute paths
+        code.push_str(&format!(
+            "    ({name:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{path}\"))),\n"
+        ));
+    }
+    code.push_str("];\n");
+
+    let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("embedded_completions.rs");
+    std::fs::write(&out, code).expect("write embedded_completions.rs");
 }
