@@ -182,6 +182,7 @@ pub struct SpecStore {
     dir: std::path::PathBuf,
     cache: std::collections::HashMap<String, Option<CompletionSpec>>,
     exec_env: Option<Vec<(String, String)>>,
+    use_embedded: bool,
 }
 
 impl SpecStore {
@@ -190,6 +191,17 @@ impl SpecStore {
             dir,
             cache: std::collections::HashMap::new(),
             exec_env: None,
+            use_embedded: false,
+        }
+    }
+
+    /// Store that serves [`EMBEDDED_SPECS`] for commands with no spec
+    /// file in `dir`. A file in `dir` always wins over the embedded
+    /// spec, including a file that fails to parse.
+    pub fn with_embedded(dir: std::path::PathBuf) -> Self {
+        Self {
+            use_embedded: true,
+            ..Self::new(dir)
         }
     }
 
@@ -200,9 +212,9 @@ impl SpecStore {
     }
 
     /// Store rooted at the standard location under `home`
-    /// (`~/.config/yosh/completions`).
+    /// (`~/.config/yosh/completions`), with embedded-spec fallback.
     pub fn from_home(home: &str) -> Self {
-        Self::new(std::path::PathBuf::from(home).join(".config/yosh/completions"))
+        Self::with_embedded(std::path::PathBuf::from(home).join(".config/yosh/completions"))
     }
 
     /// Look up the spec for `command`. Only the final path component is
@@ -221,14 +233,29 @@ impl SpecStore {
 
     fn load(&self, name: &str) -> Option<CompletionSpec> {
         let path = self.dir.join(format!("{name}.toml"));
-        let text = std::fs::read_to_string(&path).ok()?;
-        match CompletionSpec::parse(&text) {
-            Ok(spec) => Some(spec),
-            Err(err) => {
-                eprintln!("yosh: completion: {name}.toml: {err}");
-                None
-            }
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match CompletionSpec::parse(&text) {
+                Ok(spec) => Some(spec),
+                // A broken user file must not silently fall back to the
+                // embedded spec — the warning tells the user which file
+                // to fix, and stale defaults would mask their edits.
+                Err(err) => {
+                    eprintln!("yosh: completion: {name}.toml: {err}");
+                    None
+                }
+            },
+            Err(_) => self.load_embedded(name),
         }
+    }
+
+    fn load_embedded(&self, name: &str) -> Option<CompletionSpec> {
+        if !self.use_embedded {
+            return None;
+        }
+        let (_, text) = EMBEDDED_SPECS.iter().find(|(n, _)| *n == name)?;
+        // Embedded specs are validated by unit tests; a parse failure
+        // here means a build-toolchain bug, not a user error.
+        CompletionSpec::parse(text).ok()
     }
 }
 
@@ -961,6 +988,44 @@ name = \"add\"
     fn store_empty_command_returns_none() {
         let (_tmp, mut store) = store_with(&[]);
         assert!(store.get("").is_none());
+    }
+
+    #[test]
+    fn store_with_embedded_falls_back_when_no_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = SpecStore::with_embedded(tmp.path().to_path_buf());
+        let spec = store.get("git").expect("embedded git spec");
+        assert!(spec.subcommands.iter().any(|s| s.name == "log"));
+    }
+
+    #[test]
+    fn store_disk_file_overrides_embedded() {
+        let (_tmp, dir) = {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let dir = tmp.path().to_path_buf();
+            std::fs::write(dir.join("git.toml"), "[[subcommands]]\nname = \"only-mine\"\n")
+                .unwrap();
+            (tmp, dir)
+        };
+        let mut store = SpecStore::with_embedded(dir);
+        let spec = store.get("git").unwrap();
+        assert_eq!(spec.subcommands.len(), 1);
+        assert_eq!(spec.subcommands[0].name, "only-mine");
+    }
+
+    #[test]
+    fn store_broken_disk_file_does_not_fall_back() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("git.toml"), "not [ valid toml").unwrap();
+        let mut store = SpecStore::with_embedded(tmp.path().to_path_buf());
+        assert!(store.get("git").is_none());
+    }
+
+    #[test]
+    fn store_plain_new_has_no_embedded_fallback() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = SpecStore::new(tmp.path().to_path_buf());
+        assert!(store.get("git").is_none());
     }
 
     // ── command_words ────────────────────────────────────────────────
