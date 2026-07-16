@@ -83,3 +83,28 @@ fn unknown_subcommand_is_usage_error() {
     let output = bin().arg("frobnicate").output().unwrap();
     assert_eq!(output.status.code(), Some(2));
 }
+
+#[test]
+fn export_unknown_flag_is_usage_error() {
+    let home = tempfile::TempDir::new().unwrap();
+    let output = bin()
+        .env("HOME", home.path())
+        .args(["export", "-f", "git"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown option"), "stderr: {stderr}");
+}
+
+#[test]
+fn export_without_home_exits_one() {
+    let output = bin()
+        .env_remove("HOME")
+        .args(["export", "git"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("HOME"), "stderr: {stderr}");
+}

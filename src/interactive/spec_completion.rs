@@ -175,9 +175,12 @@ fn validate_level(level: Level<'_>) -> Result<(), String> {
 /// Lazy loader and per-session cache for completion specs.
 ///
 /// Specs live at `<dir>/<command>.toml`. Each command name is looked up
-/// on disk at most once per session: both missing files and parse
-/// failures are cached as `None`, which also makes the parse-error
-/// warning naturally print only once.
+/// on disk at most once per session. For a plain store (`new`), a
+/// missing file and a parse failure both cache as `None`; for an
+/// embedded-fallback store (`with_embedded`/`from_home`), a missing file
+/// resolves to the embedded spec (if any) while a parse failure still
+/// caches as `None` without falling back. Caching failures as `None`
+/// also makes the parse-error warning naturally print only once.
 pub struct SpecStore {
     dir: std::path::PathBuf,
     cache: std::collections::HashMap<String, Option<CompletionSpec>>,
@@ -244,7 +247,11 @@ impl SpecStore {
                     None
                 }
             },
-            Err(_) => self.load_embedded(name),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => self.load_embedded(name),
+            Err(err) => {
+                eprintln!("yosh: completion: {name}.toml: {err}");
+                None
+            }
         }
     }
 
@@ -1019,6 +1026,27 @@ name = \"add\"
         std::fs::write(tmp.path().join("git.toml"), "not [ valid toml").unwrap();
         let mut store = SpecStore::with_embedded(tmp.path().to_path_buf());
         assert!(store.get("git").is_none());
+    }
+
+    #[test]
+    fn store_unreadable_disk_file_does_not_fall_back() {
+        // A non-UTF-8 file makes read_to_string fail with InvalidData:
+        // the user's file exists, so the embedded spec must not be served.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("git.toml"), [0xFF, 0xFE, 0xFD]).unwrap();
+        let mut store = SpecStore::with_embedded(tmp.path().to_path_buf());
+        assert!(store.get("git").is_none());
+    }
+
+    #[test]
+    fn store_empty_disk_file_overrides_embedded() {
+        // README documents an empty file as the way to disable a
+        // bundled spec: it must win over the embedded git spec.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("git.toml"), "").unwrap();
+        let mut store = SpecStore::with_embedded(tmp.path().to_path_buf());
+        let spec = store.get("git").expect("empty file is a valid spec");
+        assert!(spec.subcommands.is_empty());
     }
 
     #[test]

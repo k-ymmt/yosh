@@ -43,7 +43,7 @@ fn export(args: &[String]) -> i32 {
     let mut names: Vec<&str> = Vec::new();
     for arg in args {
         match arg.as_str() {
-            "--force" | "-f" => force = true,
+            "--force" => force = true,
             other if other.starts_with('-') => {
                 eprintln!("yosh-completions: export: unknown option `{other}`");
                 return 2;
