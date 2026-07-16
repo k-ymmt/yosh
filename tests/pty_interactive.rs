@@ -812,3 +812,33 @@ fn tab_spec_completion_completes_flag_names() {
     );
     exit_shell(&mut session);
 }
+
+#[test]
+fn tab_spec_completion_offers_flags_on_empty_word() {
+    let (mut session, tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut session);
+
+    let dir = tmpdir.path().join(".config/yosh/completions");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("echo.toml"),
+        "[[flags]]\nnames = [\"--no-pager\"]\n",
+    )
+    .unwrap();
+
+    // Flags are offered without typing `-`: on the empty word after
+    // the command, the sole flag is the only candidate and one Tab
+    // inserts it.
+    session.send("echo ").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    session.send("\t").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    session.send("\r").unwrap();
+
+    expect_output(
+        &mut session,
+        "--no-pager",
+        "spec completion did not offer flag on empty word",
+    );
+    exit_shell(&mut session);
+}

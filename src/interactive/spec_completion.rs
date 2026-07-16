@@ -234,10 +234,14 @@ pub enum Resolution<'a> {
     FlagValue(&'a CandidateSource),
     /// The current word starts with `-`: complete flag spellings.
     FlagNames(Vec<String>),
-    /// Positional: subcommand names at the current level, plus the
-    /// candidate source for the current positional index (if any).
+    /// Positional: subcommand names and flag spellings at the current
+    /// level, plus the candidate source for the current positional
+    /// index (if any). Flags are offered here so that an empty word
+    /// lists them without requiring a leading `-`; a non-empty
+    /// non-dash word never prefix-matches them.
     Positional {
         subcommands: Vec<String>,
+        flags: Vec<String>,
         source: Option<&'a CandidateSource>,
     },
 }
@@ -308,6 +312,11 @@ pub fn resolve<'a>(
     }
 
     let subcommands: Vec<String> = level.subcommands.iter().map(|s| s.name.clone()).collect();
+    let flags: Vec<String> = level
+        .flags
+        .iter()
+        .flat_map(|f| f.names.iter().cloned())
+        .collect();
     let source = if level.args.is_empty() {
         None
     } else {
@@ -316,6 +325,7 @@ pub fn resolve<'a>(
     (
         Resolution::Positional {
             subcommands,
+            flags,
             source,
         },
         String::new(),
@@ -549,23 +559,35 @@ pub fn try_complete(
         ),
         Resolution::Positional {
             subcommands,
+            flags,
             source,
         } => {
-            let sub_matches: Vec<String> = subcommands
+            // Fixed candidate order: subcommand names, then flag
+            // spellings, then source candidates (appended by
+            // complete_source). Each group sorts alphabetically.
+            let mut sub_matches: Vec<String> = subcommands
                 .into_iter()
                 .filter(|s| s.starts_with(filter))
                 .collect();
+            sub_matches.sort();
+            let mut flag_matches: Vec<String> = flags
+                .into_iter()
+                .filter(|f| f.starts_with(filter))
+                .collect();
+            flag_matches.sort();
+            let mut static_matches = sub_matches;
+            static_matches.extend(flag_matches);
             match source {
                 Some(source) => complete_source(
                     source,
                     filter,
                     keep_prefix,
-                    &sub_matches,
+                    &static_matches,
                     ctx,
                     cmd_ctx,
                     exec_env.as_deref(),
                 ),
-                None => finish(sub_matches, keep_prefix),
+                None => finish(static_matches, keep_prefix),
             }
         }
     }
@@ -595,13 +617,15 @@ fn complete_path_word(word: &str, ctx: &CompletionContext) -> (Vec<String>, Stri
     (candidates, dir_prefix)
 }
 
-/// Generate candidates for one source, merge in already-filtered
-/// subcommand names, and apply the fallback rule.
+/// Generate candidates for one source, prepend the already-filtered
+/// static matches (subcommand names, then flag spellings), and apply
+/// the fallback rule. Source candidates sort alphabetically after the
+/// static group so the display order is subcommands → flags → rest.
 fn complete_source(
     source: &CandidateSource,
     filter: &str,
     keep_prefix: String,
-    sub_matches: &[String],
+    static_matches: &[String],
     ctx: &CompletionContext,
     cmd_ctx: &mut CommandCompletionContext<'_>,
     exec_env: Option<&[(String, String)]>,
@@ -609,16 +633,17 @@ fn complete_source(
     let (mut candidates, keep_prefix) = match source {
         CandidateSource::Builtin(BuiltinType::None) => {
             // Suppression covers source candidates and the path-completion
-            // fallback — statically declared sibling subcommands still
-            // complete. Empty sub_matches keeps this a final empty result.
+            // fallback — statically declared sibling subcommands and flags
+            // still complete. Empty static_matches keeps this a final
+            // empty result.
             return Some(SpecCompletion {
-                common_prefix: completion::longest_common_prefix(sub_matches),
-                candidates: sub_matches.to_vec(),
+                common_prefix: completion::longest_common_prefix(static_matches),
+                candidates: static_matches.to_vec(),
                 keep_prefix,
             });
         }
         CandidateSource::Builtin(BuiltinType::File) => {
-            if sub_matches.is_empty() && keep_prefix.is_empty() {
+            if static_matches.is_empty() && keep_prefix.is_empty() {
                 // Pure file completion: defer to the caller's existing
                 // path completion (identical behavior, fewer moving parts).
                 return None;
@@ -655,10 +680,12 @@ fn complete_source(
         }
     };
 
-    candidates.extend(sub_matches.iter().cloned());
     candidates.sort();
     candidates.dedup();
-    finish(candidates, keep_prefix)
+    candidates.retain(|c| !static_matches.contains(c));
+    let mut ordered = static_matches.to_vec();
+    ordered.extend(candidates);
+    finish(ordered, keep_prefix)
 }
 
 /// Apply the fallback rule (empty → None) and compute the common prefix.
@@ -962,9 +989,11 @@ name = \"add\"
         match res {
             Resolution::Positional {
                 subcommands,
+                flags,
                 source,
             } => {
                 assert_eq!(subcommands, vec!["checkout", "remote"]);
+                assert_eq!(flags, vec!["-C", "--no-pager"]);
                 assert_eq!(source, Some(&CandidateSource::Builtin(BuiltinType::File)));
             }
             other => panic!("unexpected: {other:?}"),
@@ -979,9 +1008,11 @@ name = \"add\"
         match res {
             Resolution::Positional {
                 subcommands,
+                flags,
                 source,
             } => {
                 assert!(subcommands.is_empty());
+                assert_eq!(flags, vec!["-b"]);
                 assert_eq!(
                     source,
                     Some(&CandidateSource::Exec(
@@ -1154,10 +1185,24 @@ values = [\"second\"]
         match res {
             Resolution::Positional {
                 subcommands,
+                flags,
                 source,
             } => {
                 assert_eq!(subcommands, vec!["sub"]);
+                assert!(flags.is_empty());
                 assert_eq!(source, None);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_positional_includes_level_flags() {
+        let spec = CompletionSpec::parse(GIT_SPEC).unwrap();
+        let (res, _) = resolve(&spec, &[], "");
+        match res {
+            Resolution::Positional { flags, .. } => {
+                assert_eq!(flags, vec!["-C", "--no-pager"]);
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -1311,7 +1356,43 @@ values = [\"deep\"]
 name = \"deploy\"
 ";
         let result = spec_complete("mytool", text, "mytool de", "/").unwrap();
-        assert_eq!(result.candidates, vec!["deep", "deploy"]);
+        // Subcommand names sort before source candidates.
+        assert_eq!(result.candidates, vec!["deploy", "deep"]);
+    }
+
+    #[test]
+    fn complete_empty_word_orders_subcommands_flags_then_source() {
+        let text = "\
+[[flags]]
+names = [\"--verbose\", \"-v\"]
+[[args]]
+values = [\"alpha\"]
+[[subcommands]]
+name = \"deploy\"
+";
+        let result = spec_complete("mytool", text, "mytool ", "/").unwrap();
+        assert_eq!(
+            result.candidates,
+            vec!["deploy", "--verbose", "-v", "alpha"]
+        );
+        assert_eq!(result.common_prefix, "");
+    }
+
+    #[test]
+    fn complete_none_source_still_offers_flags() {
+        let text = "[[flags]]\nnames = [\"--force\"]\n\n[[args]]\ntype = \"none\"\n";
+        let result = spec_complete("mytool", text, "mytool ", "/").unwrap();
+        assert_eq!(result.candidates, vec!["--force"]);
+    }
+
+    #[test]
+    fn complete_file_source_with_flags_lists_flags_before_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::File::create(tmp.path().join("afile.txt")).unwrap();
+        let text = "[[flags]]\nnames = [\"--all\"]\n\n[[args]]\ntype = \"file\"\n";
+        let result =
+            spec_complete("mytool", text, "mytool ", tmp.path().to_str().unwrap()).unwrap();
+        assert_eq!(result.candidates, vec!["--all", "afile.txt"]);
     }
 
     #[test]
