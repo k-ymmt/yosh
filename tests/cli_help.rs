@@ -22,6 +22,10 @@ fn help_flag_prints_usage_and_exits_zero() {
     assert!(stdout.contains("--version"), "should list --version option");
     assert!(stdout.contains("-c <command>"), "should list -c option");
     assert!(stdout.contains("plugin"), "should list plugin subcommand");
+    assert!(
+        stdout.contains("completions"),
+        "should list completions subcommand"
+    );
 }
 
 #[test]

@@ -4,14 +4,21 @@ Spec-based tab-completion definitions for yosh's POSIX builtin
 commands, plus a few common external commands (`git`), in the TOML
 format described in `completion.md` at the repository root.
 
-yosh loads specs from `~/.config/yosh/completions/<command>.toml`.
-These files are not read from the repository — copy them into place
-to use them:
+Every spec in this directory is embedded into the `yosh` binary at
+compile time (see `build.rs`) and works out of the box — no setup
+needed. Lookup is layered: a user file at
+`~/.config/yosh/completions/<command>.toml` always takes precedence
+over the embedded spec.
+
+To customize a bundled spec, export it as a starting point:
 
 ```sh
-mkdir -p ~/.config/yosh/completions
-cp completions/*.toml ~/.config/yosh/completions/
+yosh completions export git    # writes ~/.config/yosh/completions/git.toml
 ```
+
+To disable a bundled spec, place an empty `<command>.toml` in the
+config directory (an empty spec falls back to default path
+completion).
 
 ## Conventions used here
 

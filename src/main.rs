@@ -74,7 +74,13 @@ fn print_help() {
         },
         HelpSection {
             heading: "Subcommands",
-            items: &[("plugin", "Manage shell plugins (see 'yosh plugin --help')")],
+            items: &[
+                ("plugin", "Manage shell plugins (see 'yosh plugin --help')"),
+                (
+                    "completions",
+                    "Manage completion specs (see 'yosh completions --help')",
+                ),
+            ],
         },
     ];
 
