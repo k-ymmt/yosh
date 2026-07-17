@@ -519,10 +519,17 @@ impl Lexer {
 
     /// Handles `$'...'` with C-style escape sequences.
     /// Called after `$` is consumed; current byte is `'`.
+    ///
+    /// The body is assembled as BYTES: `\xHH` / `\NNN` denote raw byte
+    /// values (POSIX/bash semantics), so a sequence like `\xe6\x97\xa5`
+    /// must decode as the UTF-8 character 日, not as three Latin-1 chars.
+    /// The byte buffer is decoded as UTF-8 at the end; a byte run that is
+    /// not valid UTF-8 degrades to U+FFFD until the byte-semantics
+    /// migration (TODO.md "Future: POSIX Byte Semantics") lands.
     fn read_dollar_single_quote(&mut self) -> error::Result<WordPart> {
         let span = self.current_span();
         self.advance(); // consume opening '
-        let mut content = String::new();
+        let mut bytes: Vec<u8> = Vec::new();
         loop {
             if self.at_end() {
                 return Err(ShellError::parse(
@@ -540,59 +547,59 @@ impl Lexer {
             if ch == b'\\' {
                 self.advance(); // consume '\'
                 if self.at_end() {
-                    content.push('\\');
+                    bytes.push(b'\\');
                     break;
                 }
                 let esc = self.current_byte();
                 match esc {
                     b'a' => {
                         self.advance();
-                        content.push('\x07');
+                        bytes.push(0x07);
                     }
                     b'b' => {
                         self.advance();
-                        content.push('\x08');
+                        bytes.push(0x08);
                     }
                     b'e' | b'E' => {
                         self.advance();
-                        content.push('\x1B');
+                        bytes.push(0x1B);
                     }
                     b'f' => {
                         self.advance();
-                        content.push('\x0C');
+                        bytes.push(0x0C);
                     }
                     b'n' => {
                         self.advance();
-                        content.push('\n');
+                        bytes.push(b'\n');
                     }
                     b'r' => {
                         self.advance();
-                        content.push('\r');
+                        bytes.push(b'\r');
                     }
                     b't' => {
                         self.advance();
-                        content.push('\t');
+                        bytes.push(b'\t');
                     }
                     b'v' => {
                         self.advance();
-                        content.push('\x0B');
+                        bytes.push(0x0B);
                     }
                     b'\\' => {
                         self.advance();
-                        content.push('\\');
+                        bytes.push(b'\\');
                     }
                     b'\'' => {
                         self.advance();
-                        content.push('\'');
+                        bytes.push(b'\'');
                     }
                     b'"' => {
                         self.advance();
-                        content.push('"');
+                        bytes.push(b'"');
                     }
                     b'x' => {
                         self.advance();
                         let val = self.read_hex_digits(2);
-                        content.push(val as char);
+                        bytes.push(val);
                     }
                     b'c' => {
                         self.advance();
@@ -600,7 +607,7 @@ impl Lexer {
                         if !self.at_end() {
                             let ctrl = self.current_byte();
                             self.advance();
-                            content.push((ctrl & 0x1f) as char);
+                            bytes.push(ctrl & 0x1f);
                         }
                     }
                     b'0'..=b'7' => {
@@ -616,20 +623,30 @@ impl Lexer {
                                 break;
                             }
                         }
-                        let c = char::from_u32(val).unwrap_or('\u{FFFD}');
-                        content.push(c);
+                        // bash truncates octal escapes to 8 bits.
+                        bytes.push((val & 0xFF) as u8);
                     }
                     _ => {
                         // unknown escape: keep backslash and char
-                        content.push('\\');
-                        self.push_current_char(&mut content)?;
+                        bytes.push(b'\\');
+                        self.push_current_char_bytes(&mut bytes)?;
                     }
                 }
             } else {
-                self.push_current_char(&mut content)?;
+                self.push_current_char_bytes(&mut bytes)?;
             }
         }
-        Ok(WordPart::DollarSingleQuoted(content))
+        Ok(WordPart::DollarSingleQuoted(
+            String::from_utf8_lossy(&bytes).into_owned(),
+        ))
+    }
+
+    /// Append the current (possibly multi-byte) character's UTF-8 bytes.
+    fn push_current_char_bytes(&mut self, out: &mut Vec<u8>) -> error::Result<()> {
+        let ch = self.advance_char()?;
+        let mut buf = [0u8; 4];
+        out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        Ok(())
     }
 
     /// Helper for \xHH — reads up to `max` hex digits and returns the byte value.
