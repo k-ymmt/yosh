@@ -46,7 +46,7 @@ pub fn expand_tilde_user(user: &str) -> String {
         return format!("~{}", user);
     }
     let dir = unsafe { std::ffi::CStr::from_ptr((*pw).pw_dir) };
-    dir.to_string_lossy().into_owned()
+    crate::byteenc::encode_bytes(dir.to_bytes()).into_owned()
 }
 
 #[cfg(test)]

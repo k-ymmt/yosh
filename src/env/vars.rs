@@ -75,9 +75,16 @@ impl VarStore {
     }
 
     /// Initialize from the current process environment.
+    ///
+    /// Uses `vars_os` + the byteenc escape encoding so names and values
+    /// that are not valid UTF-8 are imported losslessly instead of being
+    /// dropped, and re-exported byte-identically to children.
     pub fn from_environ() -> Self {
+        use std::os::unix::ffi::OsStrExt;
         let mut vars = HashMap::new();
-        for (key, value) in std::env::vars() {
+        for (key, value) in std::env::vars_os() {
+            let key = crate::byteenc::encode_bytes(key.as_bytes()).into_owned();
+            let value = crate::byteenc::encode_bytes(value.as_bytes()).into_owned();
             vars.insert(key, Variable::new_exported(value));
         }
         VarStore {

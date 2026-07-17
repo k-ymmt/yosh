@@ -1,29 +1,22 @@
 # TODO
 
-## Future: POSIX Byte Semantics
+## POSIX Byte Semantics: residual notes (stage 2 closed 2026-07-17)
 
-- [ ] Complete full non-UTF-8 shell input, argv, paths, and environment value
-      support. Stage 1 established byte-oriented expansion-field APIs and
-      regression tests around byte-index split/glob protection, plus a
-      centralized UTF-8 `CString` boundary for external exec. Remaining work:
-      migrate shell source input away from `read_to_string`; move AST word
-      storage, variables, positional parameters, aliases, traps, and functions
-      toward byte buffers plus quote/protection metadata; carry `OsString` or
-      raw bytes through paths and process boundaries; and decide plugin API byte
-      semantics. Keep this open until invalid UTF-8 data is preserved end to end.
-- [ ] Residual invalid-UTF-8 instances from the 2026-07-02 audit (closed
-      2026-07-17): the UTF-8-corruption halves were fixed, but the
-      invalid-byte halves are blocked on the byte migration above and
-      currently degrade instead of preserving raw bytes:
-      - `$'\xe9'` (a byte that is not valid UTF-8 on its own) yields U+FFFD
-        instead of the raw byte `0xe9`; valid multi-byte sequences like
-        `$'\xe6\x97\xa5'` now decode correctly (`src/lexer/word.rs`).
-      - `read` and command substitution decode captured bytes with
-        `from_utf8_lossy`, so invalid bytes become U+FFFD rather than being
-        preserved (`src/builtin/read.rs`, `src/expand/command_sub.rs`).
-      - Pathname expansion skips directory entries whose names are not valid
-        UTF-8 (previously returned corrupted non-existent paths); matching
-        them needs byte-based fields (`src/expand/pathname.rs`).
+Invalid UTF-8 is now preserved end to end via the byteenc escaped-byte
+encoding (`src/byteenc.rs`; design:
+`docs/superpowers/specs/2026-07-17-posix-byte-semantics-stage2-design.md`).
+Known accepted divergences, revisit only if user reports surface:
+
+- [ ] Interactive prompt/highlighting renders escape codepoints as
+      replacement glyphs instead of writing raw bytes to the terminal
+      (`src/interactive/`). Cosmetic; scripts are unaffected.
+- [ ] An invalid byte cannot act as a non-whitespace IFS delimiter
+      (`src/expand/field_split.rs` keeps its ASCII restriction).
+- [ ] `test`/`[` string collation compares encoded forms; ordering between
+      an invalid byte and a multi-byte UTF-8 char can differ from raw-byte
+      order in corners (ASCII/C-locale behavior unaffected).
+- [ ] History files persist the encoded (valid UTF-8) form rather than raw
+      bytes (`src/interactive/history.rs`).
 
 ## E2E XFAIL Roadmap Follow-ups
 

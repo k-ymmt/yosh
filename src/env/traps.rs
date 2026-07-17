@@ -182,7 +182,10 @@ impl TrapStore {
         // Exit trap first
         if let Some(action) = exit_trap {
             match action {
-                TrapAction::Command(cmd) => println!("trap -- '{}' EXIT", cmd),
+                TrapAction::Command(cmd) => crate::builtin::regular::write_stdout_decoded(
+                    &format!("trap -- '{}' EXIT", cmd),
+                    true,
+                ),
                 TrapAction::Ignore => println!("trap -- '' EXIT"),
                 TrapAction::Default => {}
             }
@@ -200,7 +203,10 @@ impl TrapStore {
         for num in keys {
             let name = Self::signal_number_to_name(num);
             match signal_traps.get(&num) {
-                Some(TrapAction::Command(cmd)) => println!("trap -- '{}' SIG{}", cmd, name),
+                Some(TrapAction::Command(cmd)) => crate::builtin::regular::write_stdout_decoded(
+                    &format!("trap -- '{}' SIG{}", cmd, name),
+                    true,
+                ),
                 Some(TrapAction::Ignore) => println!("trap -- '' SIG{}", name),
                 Some(TrapAction::Default) => {}
                 None => {
@@ -228,7 +234,10 @@ impl TrapStore {
             };
             if num == 0 {
                 match exit_trap {
-                    Some(TrapAction::Command(cmd)) => println!("trap -- '{}' EXIT", cmd),
+                    Some(TrapAction::Command(cmd)) => crate::builtin::regular::write_stdout_decoded(
+                        &format!("trap -- '{}' EXIT", cmd),
+                        true,
+                    ),
                     Some(TrapAction::Ignore) => println!("trap -- '' EXIT"),
                     _ => {}
                 }
@@ -236,7 +245,10 @@ impl TrapStore {
             }
             let name = Self::signal_number_to_name(num);
             match signal_traps.get(&num) {
-                Some(TrapAction::Command(cmd)) => println!("trap -- '{}' SIG{}", cmd, name),
+                Some(TrapAction::Command(cmd)) => crate::builtin::regular::write_stdout_decoded(
+                    &format!("trap -- '{}' SIG{}", cmd, name),
+                    true,
+                ),
                 Some(TrapAction::Ignore) => println!("trap -- '' SIG{}", name),
                 Some(TrapAction::Default) => {}
                 None => {

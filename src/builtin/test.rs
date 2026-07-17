@@ -93,35 +93,45 @@ fn evaluate(args: &[&str]) -> Result<bool, TestError> {
 fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
     use std::os::unix::fs::FileTypeExt;
 
+    // File operands are byteenc-encoded shell strings; decode so
+    // non-UTF-8 path names reach the OS as their original raw bytes.
+    let path = {
+        use std::os::unix::ffi::OsStrExt;
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+            &crate::byteenc::decode_bytes(arg),
+        ))
+    };
+    let path = path.as_path();
+
     match op {
         "-n" => Ok(!arg.is_empty()),
         "-z" => Ok(arg.is_empty()),
 
         // -e follows symlinks (bash/dash semantics): dangling links → false.
-        "-e" => Ok(std::fs::metadata(arg).is_ok()),
-        "-f" => Ok(std::fs::metadata(arg).map(|m| m.is_file()).unwrap_or(false)),
-        "-d" => Ok(std::fs::metadata(arg).map(|m| m.is_dir()).unwrap_or(false)),
+        "-e" => Ok(std::fs::metadata(path).is_ok()),
+        "-f" => Ok(std::fs::metadata(path).map(|m| m.is_file()).unwrap_or(false)),
+        "-d" => Ok(std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)),
         // -h / -L do NOT follow symlinks.
-        "-h" | "-L" => Ok(std::fs::symlink_metadata(arg)
+        "-h" | "-L" => Ok(std::fs::symlink_metadata(path)
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false)),
-        "-s" => Ok(std::fs::metadata(arg).map(|m| m.len() > 0).unwrap_or(false)),
-        "-p" => Ok(std::fs::metadata(arg)
+        "-s" => Ok(std::fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false)),
+        "-p" => Ok(std::fs::metadata(path)
             .map(|m| m.file_type().is_fifo())
             .unwrap_or(false)),
-        "-S" => Ok(std::fs::metadata(arg)
+        "-S" => Ok(std::fs::metadata(path)
             .map(|m| m.file_type().is_socket())
             .unwrap_or(false)),
-        "-b" => Ok(std::fs::metadata(arg)
+        "-b" => Ok(std::fs::metadata(path)
             .map(|m| m.file_type().is_block_device())
             .unwrap_or(false)),
-        "-c" => Ok(std::fs::metadata(arg)
+        "-c" => Ok(std::fs::metadata(path)
             .map(|m| m.file_type().is_char_device())
             .unwrap_or(false)),
 
-        "-r" => Ok(nix::unistd::access(arg, nix::unistd::AccessFlags::R_OK).is_ok()),
-        "-w" => Ok(nix::unistd::access(arg, nix::unistd::AccessFlags::W_OK).is_ok()),
-        "-x" => Ok(nix::unistd::access(arg, nix::unistd::AccessFlags::X_OK).is_ok()),
+        "-r" => Ok(nix::unistd::access(path, nix::unistd::AccessFlags::R_OK).is_ok()),
+        "-w" => Ok(nix::unistd::access(path, nix::unistd::AccessFlags::W_OK).is_ok()),
+        "-x" => Ok(nix::unistd::access(path, nix::unistd::AccessFlags::X_OK).is_ok()),
         "-t" => {
             let fd: i32 = arg
                 .trim()
@@ -136,13 +146,13 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
             Ok(nix::unistd::isatty(borrowed_fd).unwrap_or(false))
         }
 
-        "-u" => Ok(std::fs::metadata(arg)
+        "-u" => Ok(std::fs::metadata(path)
             .map(|m| {
                 use std::os::unix::fs::PermissionsExt;
                 m.permissions().mode() & 0o4000 != 0
             })
             .unwrap_or(false)),
-        "-g" => Ok(std::fs::metadata(arg)
+        "-g" => Ok(std::fs::metadata(path)
             .map(|m| {
                 use std::os::unix::fs::PermissionsExt;
                 m.permissions().mode() & 0o2000 != 0

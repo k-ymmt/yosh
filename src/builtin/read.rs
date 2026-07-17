@@ -220,12 +220,11 @@ fn read_logical_line<R: ByteReader>(raw: bool, reader: &mut R) -> std::io::Resul
 }
 
 /// Assemble a field's bytes into a `String`, decoding as UTF-8 so
-/// multi-byte input (e.g. `café`) is preserved. Invalid sequences become
-/// U+FFFD until the byte-semantics migration lands (`TODO.md` "Future:
-/// POSIX Byte Semantics").
+/// multi-byte input (e.g. `café`) is preserved. Invalid sequences are
+/// preserved losslessly via the byteenc escape encoding.
 fn field_to_string(slice: &[LineByte]) -> String {
     let bytes: Vec<u8> = slice.iter().map(|b| b.value).collect();
-    String::from_utf8_lossy(&bytes).into_owned()
+    crate::byteenc::encode_bytes(&bytes).into_owned()
 }
 
 /// POSIX §2.6.5 field splitting for `read`. Returns exactly `n_vars`

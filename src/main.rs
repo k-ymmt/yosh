@@ -1,4 +1,5 @@
 mod builtin;
+mod byteenc;
 mod env;
 mod error;
 mod exec;
@@ -111,7 +112,15 @@ fn print_version() {
 }
 
 fn main() {
-    let args: Vec<String> = std_env::args().collect();
+    // args_os + byteenc: non-UTF-8 argv values (script paths, -c operands,
+    // positional parameters) are preserved losslessly instead of panicking
+    // or being dropped by `args()`.
+    let args: Vec<String> = {
+        use std::os::unix::ffi::OsStrExt;
+        std_env::args_os()
+            .map(|a| byteenc::encode_bytes(a.as_bytes()).into_owned())
+            .collect()
+    };
     let shell_name = args.first().map_or("yosh".to_string(), |a| a.clone());
 
     match args.len() {
@@ -120,12 +129,14 @@ fn main() {
                 let mut repl = interactive::Repl::new(shell_name);
                 process::exit(repl.run());
             } else {
-                // stdin is a pipe — read as script
-                let mut input = String::new();
-                io::stdin().read_to_string(&mut input).unwrap_or_else(|e| {
+                // stdin is a pipe — read as script (bytes, so non-UTF-8
+                // input is preserved via the byteenc escape encoding)
+                let mut raw = Vec::new();
+                io::stdin().read_to_end(&mut raw).unwrap_or_else(|e| {
                     eprintln!("yosh: {}", e);
                     process::exit(1);
                 });
+                let input = byteenc::encode_bytes(&raw).into_owned();
                 let status = run_string(&input, shell_name, vec![], false);
                 process::exit(status);
             }
@@ -168,9 +179,9 @@ fn main() {
                     process::exit(2);
                 }
                 let input = if args[2] == "-" {
-                    let mut buf = String::new();
-                    io::stdin().read_to_string(&mut buf).unwrap();
-                    buf
+                    let mut raw = Vec::new();
+                    io::stdin().read_to_end(&mut raw).unwrap();
+                    byteenc::encode_bytes(&raw).into_owned()
                 } else {
                     args[2].clone()
                 };
@@ -298,12 +309,18 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_stri
 }
 
 fn run_file(path: &str, shell_name: String, positional: Vec<String>) -> i32 {
-    let content = match fs::read_to_string(path) {
+    use std::os::unix::ffi::OsStrExt;
+    // `path` is byteenc-encoded (it came from args_os); decode it back to
+    // raw bytes for the OS call, and read the script as bytes so non-UTF-8
+    // source is preserved.
+    let os_path = byteenc::decode_bytes(path);
+    let content = match fs::read(std::ffi::OsStr::from_bytes(&os_path)) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("yosh: {}: {}", path, e);
             return 127;
         }
     };
+    let content = byteenc::encode_bytes(&content).into_owned();
     run_string(&content, shell_name, positional, false)
 }

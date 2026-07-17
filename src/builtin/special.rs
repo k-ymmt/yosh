@@ -106,7 +106,10 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
         let mut exported: Vec<(String, String)> = env.vars.environ().to_vec();
         exported.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in exported {
-            println!("export {}=\"{}\"", name, value);
+            crate::builtin::regular::write_stdout_decoded(
+                &format!("export {}=\"{}\"", name, value),
+                true,
+            );
         }
         return Ok(0);
     }
@@ -205,7 +208,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         let mut sorted = readonly_vars;
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in sorted {
-            println!("readonly {}={}", name, value);
+            crate::builtin::regular::write_stdout_decoded(&format!("readonly {}={}", name, value), true);
         }
         return Ok(0);
     }
@@ -338,7 +341,7 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
             .collect();
         vars.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in vars {
-            println!("{}={}", name, value);
+            crate::builtin::regular::write_stdout_decoded(&format!("{}={}", name, value), true);
         }
         return Ok(0);
     }
@@ -530,13 +533,21 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> Result<i32, Shell
         ));
     }
     let filename = &args[0];
+    // Decode byteenc-escaped bytes so non-UTF-8 script paths resolve to
+    // the real on-disk names.
+    let decode_path = |s: &str| {
+        use std::os::unix::ffi::OsStrExt;
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+            &crate::byteenc::decode_bytes(s),
+        ))
+    };
     let path = if filename.contains('/') {
-        std::path::PathBuf::from(filename)
+        decode_path(filename)
     } else {
         if let Some(path_var) = executor.env.vars.get("PATH") {
             let mut found = None;
             for dir in path_var.split(':') {
-                let candidate = std::path::PathBuf::from(dir).join(filename);
+                let candidate = decode_path(dir).join(decode_path(filename));
                 if candidate.is_file() {
                     found = Some(candidate);
                     break;
@@ -552,7 +563,7 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> Result<i32, Shell
                 }
             }
         } else {
-            std::path::PathBuf::from(filename)
+            decode_path(filename)
         }
     };
     match executor.source_file(&path) {
@@ -821,8 +832,8 @@ fn fc_edit(
         }
     }
 
-    let content = match std::fs::read_to_string(&tmp_path) {
-        Ok(c) => c,
+    let content = match std::fs::read(&tmp_path) {
+        Ok(c) => crate::byteenc::encode_bytes(&c).into_owned(),
         Err(e) => {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(ShellError::runtime(

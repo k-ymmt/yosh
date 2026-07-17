@@ -102,14 +102,18 @@ fn build_exec_cstrings_for_path(
     display_name: &str,
     args: &[String],
 ) -> Result<(CString, Vec<CString>), ExecCStringError> {
+    // display_name and args are byteenc-encoded shell strings; decode them
+    // so the child receives the original raw bytes (invalid UTF-8 included).
+    // Interior NUL is still rejected — it cannot cross the execv boundary.
     let c_path = CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|_| ExecCStringError::CommandName)?;
-    let c_argv0 = CString::new(display_name).map_err(|_| ExecCStringError::CommandName)?;
+    let c_argv0 = CString::new(crate::byteenc::decode_bytes(display_name).into_owned())
+        .map_err(|_| ExecCStringError::CommandName)?;
     let mut c_args = Vec::with_capacity(args.len() + 1);
     c_args.push(c_argv0);
     for arg in args {
-        let c_arg =
-            CString::new(arg.as_str()).map_err(|_| ExecCStringError::Argument(arg.clone()))?;
+        let c_arg = CString::new(crate::byteenc::decode_bytes(arg).into_owned())
+            .map_err(|_| ExecCStringError::Argument(arg.clone()))?;
         c_args.push(c_arg);
     }
     Ok((c_path, c_args))
@@ -147,7 +151,11 @@ fn resolve_exec_path(
     use super::command::is_executable_file;
 
     if cmd.contains('/') {
-        let path = std::path::Path::new(cmd);
+        // Decode byteenc-escaped bytes so a non-UTF-8 path resolves to the
+        // real on-disk name.
+        use std::os::unix::ffi::OsStrExt;
+        let cmd_bytes = crate::byteenc::decode_bytes(cmd);
+        let path = std::path::Path::new(std::ffi::OsStr::from_bytes(&cmd_bytes));
         return if is_executable_file(path) {
             ResolvedExec::Executable(path.to_path_buf())
         } else if path.is_file() || path.is_dir() {
@@ -312,7 +320,10 @@ impl Executor {
                 // traces inside `value` have already fired during expansion.
                 if self.env.mode.options.xtrace {
                     let prefix = xtrace_prefix(&mut self.env);
-                    eprintln!("{}{}={}", prefix, assignment.name, value);
+                    crate::byteenc::write_stderr_decoded_line(&format!(
+                        "{}{}={}",
+                        prefix, assignment.name, value
+                    ));
                 }
                 // If the value expansion contained a command substitution, $?
                 // now reflects its exit status. Record it regardless of whether
@@ -343,7 +354,11 @@ impl Executor {
 
         if self.env.mode.options.xtrace && !expanded.is_empty() {
             let prefix = xtrace_prefix(&mut self.env);
-            eprintln!("{}{}", prefix, expanded.join(" "));
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "{}{}",
+                prefix,
+                expanded.join(" ")
+            ));
         }
 
         let mut expanded_iter = expanded.into_iter();
@@ -673,11 +688,17 @@ impl Executor {
                 // No executable file candidate exists anywhere in the
                 // search — nothing to fork/exec. Matches the exit code
                 // `execvp`'s ENOENT branch previously produced.
-                eprintln!("yosh: {}: command not found", cmd);
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: {}: command not found",
+                    cmd
+                ));
                 return 127;
             }
             ResolvedExec::NotExecutable => {
-                eprintln!("yosh: {}: permission denied", cmd);
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: {}: permission denied",
+                    cmd
+                ));
                 return 126;
             }
             ResolvedExec::Executable(path) => match build_exec_cstrings_for_path(path, cmd, args) {
@@ -731,17 +752,21 @@ impl Executor {
                 // The exported environ is applied first, then `env_overrides`
                 // (command prefix assignments) on top, so overrides win —
                 // matching the previous merged-Vec's replace-or-push order.
+                // Names/values are byteenc-encoded; decode so children see
+                // the original raw bytes for non-UTF-8 environment data.
                 for (k, v) in self.env.vars.environ() {
-                    if let (Ok(c_key), Ok(c_val)) =
-                        (CString::new(k.as_str()), CString::new(v.as_str()))
-                    {
+                    if let (Ok(c_key), Ok(c_val)) = (
+                        CString::new(crate::byteenc::decode_bytes(k).into_owned()),
+                        CString::new(crate::byteenc::decode_bytes(v).into_owned()),
+                    ) {
                         unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
                     }
                 }
                 for (k, v) in env_overrides {
-                    if let (Ok(c_key), Ok(c_val)) =
-                        (CString::new(k.as_str()), CString::new(v.as_str()))
-                    {
+                    if let (Ok(c_key), Ok(c_val)) = (
+                        CString::new(crate::byteenc::decode_bytes(k).into_owned()),
+                        CString::new(crate::byteenc::decode_bytes(v).into_owned()),
+                    ) {
                         unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
                     }
                 }
@@ -1012,14 +1037,24 @@ fn exec_external_absolute(
     args: &[String],
     env: &mut crate::env::ShellEnv,
 ) -> i32 {
+    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::process::CommandExt;
     use std::os::unix::process::ExitStatusExt;
 
-    let env_pairs: Vec<(String, String)> = env.vars.environ().to_vec();
+    // Decode byteenc-escaped shell strings so argv and environment reach
+    // the child as the original raw bytes.
+    let decode_os =
+        |s: &str| std::ffi::OsString::from_vec(crate::byteenc::decode_bytes(s).into_owned());
+    let env_pairs: Vec<(std::ffi::OsString, std::ffi::OsString)> = env
+        .vars
+        .environ()
+        .iter()
+        .map(|(k, v)| (decode_os(k), decode_os(v)))
+        .collect();
 
     let result = std::process::Command::new(resolved)
-        .arg0(display_name)
-        .args(args)
+        .arg0(decode_os(display_name))
+        .args(args.iter().map(|a| decode_os(a)))
         .env_clear()
         .envs(env_pairs)
         .status();

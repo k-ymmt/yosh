@@ -117,7 +117,7 @@ fn expand_components(dir: String, components: &[&str]) -> Vec<String> {
                 result.push(full);
             } else {
                 // Only recurse into directories.
-                if std::fs::metadata(&full)
+                if std::fs::metadata(fs_path(&full))
                     .map(|m| m.is_dir())
                     .unwrap_or(false)
                 {
@@ -131,7 +131,7 @@ fn expand_components(dir: String, components: &[&str]) -> Vec<String> {
         let full = join_path(&dir, component);
         if rest.is_empty() {
             // Verify the path exists.
-            if std::path::Path::new(&full).exists() {
+            if fs_path(&full).exists() {
                 vec![full]
             } else {
                 vec![]
@@ -140,6 +140,15 @@ fn expand_components(dir: String, components: &[&str]) -> Vec<String> {
             expand_components(full, rest)
         }
     }
+}
+
+/// Convert a byteenc-encoded shell path into a `PathBuf` carrying the
+/// original raw bytes, for filesystem checks during glob walking.
+fn fs_path(s: &str) -> std::path::PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+        &crate::byteenc::decode_bytes(s),
+    ))
 }
 
 /// Join a directory and a filename into a path string.
@@ -160,7 +169,11 @@ fn join_path(dir: &str, name: &str) -> String {
 /// - `*` and `?` do not match `/` (enforced by pattern::matches since we only
 ///   test against entry names, never full paths).
 fn glob_in_dir(dir: &str, pattern: &str) -> Vec<String> {
-    let read_dir = match std::fs::read_dir(dir) {
+    use std::os::unix::ffi::OsStrExt;
+    // `dir` is a byteenc-encoded shell string; decode it so non-UTF-8
+    // directory components resolve to the real on-disk path.
+    let dir_bytes = crate::byteenc::decode_bytes(dir);
+    let read_dir = match std::fs::read_dir(std::ffi::OsStr::from_bytes(&dir_bytes)) {
         Ok(rd) => rd,
         Err(_) => return Vec::new(),
     };
@@ -170,22 +183,19 @@ fn glob_in_dir(dir: &str, pattern: &str) -> Vec<String> {
     let mut matches = Vec::new();
     for entry in read_dir.flatten() {
         let name = entry.file_name();
-        // Skip names that are not valid UTF-8: a lossy conversion would
-        // return a path that does not name the actual file. Matching such
-        // names needs byte-based fields (TODO.md "Future: POSIX Byte
-        // Semantics"). macOS APFS enforces UTF-8 names, so this only
-        // arises on other filesystems/platforms.
-        let Some(name_str) = name.to_str() else {
-            continue;
-        };
+        // Encode the raw entry bytes so names that are not valid UTF-8
+        // become matchable fields and round-trip losslessly back to the
+        // on-disk bytes at exec/open boundaries. An escaped byte is one
+        // `char`, so `?` matches a single invalid byte.
+        let name_str = crate::byteenc::encode_bytes(name.as_bytes());
 
         // POSIX: `*` and `?` do not match a leading dot.
         if skip_hidden && name_str.starts_with('.') {
             continue;
         }
 
-        if pattern::matches(pattern, name_str) {
-            matches.push(name_str.to_owned());
+        if pattern::matches(pattern, &name_str) {
+            matches.push(name_str.into_owned());
         }
     }
 
@@ -198,6 +208,24 @@ fn glob_in_dir(dir: &str, pattern: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::env::ShellEnv;
+
+    /// Directory entries whose names are not valid UTF-8 are byteenc-encoded
+    /// by `glob_in_dir`; each escaped byte is one `char`, so `?`/`*`/literal
+    /// patterns match them the way byte-oriented shells do. Real files with
+    /// such names cannot be created on macOS APFS (EILSEQ), so the matching
+    /// semantics are locked in here against the encoded form directly.
+    #[test]
+    fn encoded_invalid_byte_name_matches_patterns() {
+        let name = crate::byteenc::encode_bytes(b"f\xe9g").into_owned();
+        assert!(pattern::matches("f?g", &name));
+        assert!(pattern::matches("f*g", &name));
+        assert!(pattern::matches("*", &name));
+        assert!(!pattern::matches("f?", &name));
+        // A pattern containing the same escaped byte matches literally.
+        assert!(pattern::matches(&name, &name));
+        // Round trip back to the on-disk bytes is lossless.
+        assert_eq!(crate::byteenc::decode_bytes(&name).as_ref(), b"f\xe9g");
+    }
 
     fn make_env() -> ShellEnv {
         ShellEnv::new("yosh", vec![])

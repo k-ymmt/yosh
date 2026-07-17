@@ -80,17 +80,15 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
             // Close the write end in the parent
             unsafe { libc::close(pipe_write) };
 
-            // Read all output from the pipe as bytes: an invalid-UTF-8 byte
-            // must not discard the entire capture. Invalid sequences degrade
-            // to U+FFFD until the byte-semantics migration (TODO.md "Future:
-            // POSIX Byte Semantics") lands.
+            // Read all output from the pipe as bytes; invalid UTF-8 is
+            // preserved losslessly via the byteenc escape encoding.
             let mut raw = Vec::new();
             // SAFETY: pipe_read is a valid file descriptor opened by pipe()
             let mut file = unsafe { std::fs::File::from_raw_fd(pipe_read) };
             if let Err(e) = file.read_to_end(&mut raw) {
                 eprintln!("yosh: command substitution: read error: {}", e);
             }
-            let mut output = String::from_utf8_lossy(&raw).into_owned();
+            let mut output = crate::byteenc::encode_bytes(&raw).into_owned();
 
             // Wait for the child to finish
             match waitpid(child, None) {

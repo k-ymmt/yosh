@@ -54,9 +54,15 @@ pub enum PathLookup {
 /// Walk each directory in `path_var`, without touching any cache, and
 /// report whether `cmd` exists and is executable.
 fn walk_path_lookup(cmd: &str, path_var: &str) -> PathLookup {
+    use std::os::unix::ffi::OsStrExt;
     let mut seen_non_exec: Option<PathBuf> = None;
+    // Decode byteenc-escaped bytes so non-UTF-8 PATH entries / command
+    // names resolve against the real on-disk names.
+    let cmd_bytes = crate::byteenc::decode_bytes(cmd);
+    let cmd_os = std::ffi::OsStr::from_bytes(&cmd_bytes);
     for dir in path_var.split(':') {
-        let candidate = PathBuf::from(path_component_dir(dir)).join(cmd);
+        let dir_bytes = crate::byteenc::decode_bytes(path_component_dir(dir));
+        let candidate = PathBuf::from(std::ffi::OsStr::from_bytes(&dir_bytes)).join(cmd_os);
         if !candidate.is_file() {
             continue;
         }

@@ -8,7 +8,13 @@ use super::HostContext;
 
 pub fn host_variables_get(ctx: &HostContext, name: &str) -> Result<Option<String>, ErrorCode> {
     let env = ctx.bound_env_ref()?;
-    Ok(env.vars.get(name).map(|s| s.to_string()))
+    // Plugin API byte-semantics decision (see the 2026-07-17 stage-2
+    // design doc): the WIT surface stays UTF-8, so byteenc-escaped raw
+    // bytes are shown to plugins as U+FFFD, never as escape codepoints.
+    Ok(env
+        .vars
+        .get(name)
+        .map(|s| crate::byteenc::decode_lossy(s).into_owned()))
 }
 
 pub fn deny_variables_get(_ctx: &HostContext, _name: &str) -> Result<Option<String>, ErrorCode> {

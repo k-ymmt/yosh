@@ -1,6 +1,20 @@
 use crate::env::ShellEnv;
 use crate::error::{RuntimeErrorKind, ShellError};
 use nix::unistd::Pid;
+use std::os::unix::ffi::OsStrExt;
+
+/// Convert a byteenc-encoded shell path string into an `OsStr`-backed path
+/// carrying the original raw bytes for OS calls.
+fn os_path(s: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+        &crate::byteenc::decode_bytes(s),
+    ))
+}
+
+/// Encode an OS path back into the shell's internal (byteenc) string form.
+fn encode_path(p: &std::path::Path) -> String {
+    crate::byteenc::encode_bytes(p.as_os_str().as_bytes()).into_owned()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CdMode {
@@ -20,18 +34,14 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
         .vars
         .get("PWD")
         .map(|s| s.to_string())
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().into_owned())
-        })
+        .or_else(|| std::env::current_dir().ok().map(|p| encode_path(&p)))
         .unwrap_or_else(|| "/".to_string());
 
     // 4. Compute and apply the chdir per mode
     let new_pwd = match mode {
         CdMode::Logical => {
             let candidate = lexical_canonicalize(&target, &old_pwd);
-            if let Err(e) = std::env::set_current_dir(&candidate) {
+            if let Err(e) = std::env::set_current_dir(os_path(&candidate)) {
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::IoError,
                     format!("cd: {}: {}", target, e),
@@ -40,14 +50,14 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
             candidate
         }
         CdMode::Physical => {
-            if let Err(e) = std::env::set_current_dir(&target) {
+            if let Err(e) = std::env::set_current_dir(os_path(&target)) {
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::IoError,
                     format!("cd: {}: {}", target, e),
                 ));
             }
             match std::env::current_dir() {
-                Ok(p) => p.to_string_lossy().into_owned(),
+                Ok(p) => encode_path(&p),
                 Err(e) => {
                     return Err(ShellError::runtime(
                         RuntimeErrorKind::IoError,
@@ -64,17 +74,30 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
 
     // 6. Print new PWD if the operand came from CDPATH or was "-"
     if from_cdpath {
-        println!("{}", new_pwd);
+        write_stdout_decoded(&new_pwd, true);
     }
 
     Ok(0)
 }
 
+/// Write a byteenc-encoded string to stdout as raw bytes (escape
+/// codepoints become their original bytes), optionally newline-terminated.
+pub(crate) fn write_stdout_decoded(s: &str, newline: bool) {
+    use std::io::Write;
+    let stdout = std::io::stdout();
+    let mut h = stdout.lock();
+    let _ = h.write_all(&crate::byteenc::decode_bytes(s));
+    if newline {
+        let _ = h.write_all(b"\n");
+    }
+    let _ = h.flush();
+}
+
 pub fn builtin_echo(args: &[String]) -> Result<i32, ShellError> {
     if args.first().map(|a| a.as_str()) == Some("-n") {
-        print!("{}", args[1..].join(" "));
+        write_stdout_decoded(&args[1..].join(" "), false);
     } else {
-        println!("{}", args.join(" "));
+        write_stdout_decoded(&args.join(" "), true);
     }
     Ok(0)
 }
@@ -82,7 +105,7 @@ pub fn builtin_echo(args: &[String]) -> Result<i32, ShellError> {
 pub fn builtin_alias(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() {
         for (name, value) in env.aliases.sorted_iter() {
-            println!("alias {}='{}'", name, value);
+            write_stdout_decoded(&format!("alias {}='{}'", name, value), true);
         }
         return Ok(0);
     }
@@ -94,7 +117,7 @@ pub fn builtin_alias(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellEr
             env.aliases.set(name, value);
         } else {
             match env.aliases.get(arg) {
-                Some(value) => println!("alias {}='{}'", arg, value),
+                Some(value) => write_stdout_decoded(&format!("alias {}='{}'", arg, value), true),
                 None => {
                     eprintln!("yosh: alias: {}: not found", arg);
                     status = 1;

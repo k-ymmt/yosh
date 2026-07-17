@@ -251,8 +251,10 @@ impl Repl {
                 continue;
             }
 
-            // Accumulate input
-            input_buffer.push_str(&line);
+            // Accumulate input, normalizing through the byteenc encoding so
+            // a literal escape-range codepoint typed/pasted at the prompt is
+            // re-escaped (keeps encode/decode injective; no-op otherwise).
+            input_buffer.push_str(&crate::byteenc::encode_bytes(line.as_bytes()));
             input_buffer.push('\n');
 
             // Verbose mode: print the input

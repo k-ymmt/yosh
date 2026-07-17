@@ -523,9 +523,8 @@ impl Lexer {
     /// The body is assembled as BYTES: `\xHH` / `\NNN` denote raw byte
     /// values (POSIX/bash semantics), so a sequence like `\xe6\x97\xa5`
     /// must decode as the UTF-8 character 日, not as three Latin-1 chars.
-    /// The byte buffer is decoded as UTF-8 at the end; a byte run that is
-    /// not valid UTF-8 degrades to U+FFFD until the byte-semantics
-    /// migration (TODO.md "Future: POSIX Byte Semantics") lands.
+    /// The byte buffer is encoded via `byteenc` at the end, so byte runs
+    /// that are not valid UTF-8 are preserved losslessly end to end.
     fn read_dollar_single_quote(&mut self) -> error::Result<WordPart> {
         let span = self.current_span();
         self.advance(); // consume opening '
@@ -637,7 +636,7 @@ impl Lexer {
             }
         }
         Ok(WordPart::DollarSingleQuoted(
-            String::from_utf8_lossy(&bytes).into_owned(),
+            crate::byteenc::encode_bytes(&bytes).into_owned(),
         ))
     }
 

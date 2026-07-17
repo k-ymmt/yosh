@@ -7,6 +7,18 @@ use crate::env::ShellEnv;
 use crate::expand::expand_word_to_string;
 use crate::parser::ast::{Redirect, RedirectKind};
 
+/// Open a byteenc-encoded redirect target, decoding escape codepoints so
+/// non-UTF-8 paths reach the OS as their original raw bytes.
+fn open_decoded(
+    path: &str,
+    flags: OFlag,
+    mode: Mode,
+) -> nix::Result<std::os::fd::OwnedFd> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = crate::byteenc::decode_bytes(path);
+    open(std::ffi::OsStr::from_bytes(&bytes), flags, mode)
+}
+
 /// Open `path` for `>` output under `set -C` (noclobber) without the
 /// TOCTOU race of a separate exists() check: O_CREAT|O_EXCL atomically
 /// fails with EEXIST if anything (including a symlink) already occupies
@@ -15,13 +27,18 @@ use crate::parser::ast::{Redirect, RedirectKind};
 /// protects regular files.
 fn open_noclobber(path: &str) -> Result<RawFd, String> {
     let create_flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL;
-    match open(path, create_flags, Mode::from_bits_truncate(0o644)) {
+    match open_decoded(path, create_flags, Mode::from_bits_truncate(0o644)) {
         Ok(fd) => Ok(fd.into_raw_fd()),
         Err(nix::errno::Errno::EEXIST) => {
             // stat() follows symlinks: a dangling link errors here, and a
             // link to a regular file is treated as that regular file.
-            match std::fs::metadata(path) {
-                Ok(md) if !md.is_file() => open(path, OFlag::O_WRONLY, Mode::empty())
+            match std::fs::metadata({
+                use std::os::unix::ffi::OsStrExt;
+                std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+                    &crate::byteenc::decode_bytes(path),
+                ))
+            }) {
+                Ok(md) if !md.is_file() => open_decoded(path, OFlag::O_WRONLY, Mode::empty())
                     .map(|fd| fd.into_raw_fd())
                     .map_err(|e| format!("{}: {}", path, e)),
                 _ => Err(format!("{}: cannot overwrite existing file", path)),
@@ -140,7 +157,7 @@ impl RedirectState {
             RedirectKind::Input(word) => {
                 let target_fd = redirect.fd.unwrap_or(0);
                 let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
-                let fd = open(path.as_str(), OFlag::O_RDONLY, Mode::empty())
+                let fd = open_decoded(&path, OFlag::O_RDONLY, Mode::empty())
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
                 if save {
@@ -158,7 +175,7 @@ impl RedirectState {
                     open_noclobber(&path)?
                 } else {
                     let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
-                    open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
+                    open_decoded(&path, flags, Mode::from_bits_truncate(0o644))
                         .map_err(|e| format!("{}: {}", path, e))?
                         .into_raw_fd()
                 };
@@ -174,7 +191,7 @@ impl RedirectState {
                 let target_fd = redirect.fd.unwrap_or(1);
                 let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
                 let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
-                let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
+                let fd = open_decoded(&path, flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
                 if save {
@@ -189,7 +206,7 @@ impl RedirectState {
                 let target_fd = redirect.fd.unwrap_or(1);
                 let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
                 let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_APPEND;
-                let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
+                let fd = open_decoded(&path, flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
                 if save {
@@ -244,7 +261,7 @@ impl RedirectState {
                 let target_fd = redirect.fd.unwrap_or(0);
                 let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
                 let flags = OFlag::O_RDWR | OFlag::O_CREAT;
-                let fd = open(path.as_str(), flags, Mode::from_bits_truncate(0o644))
+                let fd = open_decoded(&path, flags, Mode::from_bits_truncate(0o644))
                     .map_err(|e| format!("{}: {}", path, e))?
                     .into_raw_fd();
                 if save {
@@ -261,7 +278,7 @@ impl RedirectState {
                 // Expand the body
                 let body = crate::expand::expand_heredoc_body(env, &heredoc.body, heredoc.quoted);
 
-                let read_fd = heredoc_source_fd(body.as_bytes())?;
+                let read_fd = heredoc_source_fd(&crate::byteenc::decode_bytes(&body))?;
 
                 // Connect read end to target fd (stdin by default)
                 if save {

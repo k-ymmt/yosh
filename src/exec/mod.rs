@@ -104,7 +104,10 @@ impl Executor {
     /// Source a file in the current shell context.
     /// Returns `None` if the file doesn't exist, `Some(status)` otherwise.
     pub fn source_file(&mut self, path: &std::path::Path) -> Option<i32> {
-        let content = std::fs::read_to_string(path).ok()?;
+        // Read as bytes so non-UTF-8 script content is preserved via the
+        // byteenc escape encoding instead of failing with InvalidData.
+        let raw = std::fs::read(path).ok()?;
+        let content = crate::byteenc::encode_bytes(&raw).into_owned();
         let prev_dot_script = self.env.mode.in_dot_script;
         self.env.mode.in_dot_script = true;
         self.env.exec.indirection_level += 1;

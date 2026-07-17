@@ -1,5 +1,6 @@
 // Library crate entry point — re-exports modules needed by integration tests.
 pub mod builtin;
+pub mod byteenc;
 pub mod completions_cli;
 pub mod env;
 pub mod error;
