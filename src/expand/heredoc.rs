@@ -55,12 +55,16 @@ fn expand_string(env: &mut ShellEnv, s: &str) -> String {
                     i += 1;
                     let start = i;
                     i = skip_balanced_braces(bytes, i);
-                    let name = &s[start..i];
+                    let inner = &s[start..i];
                     if i < bytes.len() {
                         i += 1;
                     } // skip }
-                    // Simple lookup (conditional forms not supported in heredoc string expansion)
-                    result.push_str(env.vars.get(name).unwrap_or(""));
+                    // Re-lex the full `${...}` so conditional (`${x:-w}`),
+                    // length (`${#x}`), and strip forms all apply. Quoting
+                    // inside the braces follows normal word rules per POSIX
+                    // §2.7.4. Fall back to a plain lookup if the lexer
+                    // rejects the expression.
+                    result.push_str(&expand_braced_param(env, inner));
                 }
                 b'(' => {
                     if i + 1 < bytes.len() && bytes[i + 1] == b'(' {
@@ -125,7 +129,12 @@ fn expand_string(env: &mut ShellEnv, s: &str) -> String {
                         i += 1;
                     }
                     let name = &s[start..i];
-                    result.push_str(env.vars.get(name).unwrap_or(""));
+                    // Route through param::expand so set -u (nounset)
+                    // applies to heredoc bodies too.
+                    result.push_str(
+                        &param::expand(env, &ParamExpr::Simple(name.to_string()))
+                            .unwrap_or_default(),
+                    );
                 }
                 _ => {
                     result.push('$');
@@ -167,11 +176,29 @@ fn expand_string(env: &mut ShellEnv, s: &str) -> String {
                 result.push_str(&command_sub::execute(env, &program));
             }
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            // Copy the full (possibly multi-byte) character — indexing by
+            // byte and casting through `as char` would decode UTF-8 bytes
+            // as Latin-1 and corrupt non-ASCII text.
+            let ch = s[i..].chars().next().expect("i is on a char boundary");
+            result.push(ch);
+            i += ch.len_utf8();
         }
     }
     result
+}
+
+/// Expand the inside of a heredoc `${...}` by re-lexing it as a full
+/// parameter expansion. `inner` is the text between the braces.
+fn expand_braced_param(env: &mut ShellEnv, inner: &str) -> String {
+    let input = format!("${{{}}}", inner);
+    let mut lexer = crate::lexer::Lexer::new(&input);
+    if let Ok(tok) = lexer.next_token()
+        && let crate::lexer::token::Token::Word(word) = tok.token
+        && let [WordPart::Parameter(p)] = word.parts.as_slice()
+    {
+        return param::expand(env, p).unwrap_or_default();
+    }
+    env.vars.get(inner).unwrap_or("").to_string()
 }
 
 fn expand_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
