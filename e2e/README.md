@@ -78,6 +78,10 @@ Tests are organized by functional category:
 - `subshell/` — Subshell environment isolation
 - `quoting/` — Quoting rules
 - `field_splitting/` — Field splitting, pathname expansion
+- `use_cases/` — Realistic everyday shell scenarios (option parsing,
+  log filtering, batch renaming, retry loops, config parsing, ...) that
+  exercise several features together rather than one POSIX clause in
+  isolation; `POSIX_REF` points at the dominant feature of the scenario
 
 ## Result Classification
 
