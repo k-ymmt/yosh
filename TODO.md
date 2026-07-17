@@ -7,14 +7,7 @@ retained below for tracking.
 
 ### SP1 follow-ups (non-blocking)
 
-- [ ] `tests/cli_help.rs` CLICOLOR_FORCE tests fail standalone:
-      `help_color_forced_with_clicolor_force` and
-      `help_clicolor_force_overrides_clicolor_zero` do not observe ANSI
-      escapes even with `CLICOLOR_FORCE=1`. Discovered during 2026-06-03
-      POSIX byte semantics stage-1 verification; unrelated to the byte
-      semantics change set.
 - [ ] `exit_child` doc comment (`src/exec/mod.rs:24`) says "Use ONLY after fork() in the child branch, never in the shell parent", but SP1 G5b added a top-level non-interactive call site in `src/exec/simple.rs` (BuiltinKind::Special redirect-error). Either update the doc to permit non-interactive shell exit, or introduce a dedicated `exit_shell(status)` helper.
-- [ ] `builtin_exec` absolute-path branch (`cmd.contains('/')`) has no dedicated unit/e2e test. `exec_keeps_env.sh` covers the PATH-walk branch only. Add a focused test like `export m=v; exec /bin/sh -c 'echo $m'` (`src/builtin/special.rs::builtin_exec`).
 - [ ] `export -p foo=v` silently drops `foo=v` operand (the `-p` branch prints and returns). Pre-existing, made more visible by SP1 G2's stricter validation. Either accept operands after `-p` or document the limitation (`src/builtin/special.rs::builtin_export`).
 - [ ] `e2e/posix_spec/8_env_vars/PATH_search.sh` and `e2e/builtin/job_spec_prefix.sh` intermittently TIMEOUT under full-suite load (pass standalone). Observed twice during SP1 closure runs. Likely fork/wait timing under contention; investigate or bump per-test timeout (`e2e/run_tests.sh`).
 
@@ -22,17 +15,17 @@ retained below for tracking.
 
 - [ ] Migrate remaining variable-setting call sites to `env.assign_var` so
       PATH cache invalidation is total. Pending paths:
-      `${var:=value}` in `src/expand/param.rs:75`; arithmetic assignment in
-      `src/expand/arith.rs:591,603`; `for` loop variable in
-      `src/exec/compound.rs:229`; plugin-set variables in
-      `src/plugin/host/variables.rs:19,35`. Each path could in principle
+      `${var:=value}` in `src/expand/param.rs:112`; arithmetic assignment in
+      `src/expand/arith.rs:612,626`; `for` loop variable in
+      `src/exec/compound.rs:258`; plugin-set variables in
+      `src/plugin/host/variables.rs:25,41`. Each path could in principle
       set `PATH` but no current XFAIL test exercises it.
 - [ ] `hash` listing format omits `hits=N` count. POSIX leaves the
       format implementation-defined; bash includes hit counts. Track
       hit counts on the cache entries if a tooling consumer asks
       (`src/builtin/hash.rs`).
 - [ ] `command -p` shares `utility_hash` while searching the *default*
-      PATH (`src/exec/simple.rs:932`), so a `command -p foo` hit can be
+      PATH (`src/exec/simple.rs:965`), so a `command -p foo` hit can be
       reused by a later plain `foo` lookup under a different `$PATH` —
       the same cache-key mismatch fixed for `PATH=dir cmd` prefix
       overrides in edb5254 (which resolves uncached). Route `command -p`
@@ -70,14 +63,6 @@ retained below for tracking.
 
 ### SP4 follow-ups (non-blocking)
 
-- [ ] `getopts` OPTIND reset implementation verification is pending:
-      `cargo test` / `cargo check` repeatedly hung while compiling
-      `yosh-plugin-manager` (`rustc` sleeping at 0% CPU) during the
-      2026-05-30 implementation session. No stuck cargo/rustc process
-      was left running. Re-run `cargo test -p yosh --lib env::vars::tests`,
-      `cargo test -p yosh --lib builtin::getopts::tests`, `cargo build`,
-      and `./e2e/run_tests.sh --filter=getopts_optind_reset_stacked`
-      once the build hang is resolved.
 - [ ] Edge-case test coverage: nested function-call OPTIND save/restore
       (push → push → set OPTIND → pop sees inner saved → pop sees outer
       saved), and readonly-OPTIND push/pop round-trip. Both are real
@@ -93,7 +78,7 @@ retained below for tracking.
       which is friendlier for scripts that inspect OPTARG after the
       loop. Guard the OPTARG write on `step.optarg.is_some()` (or split
       the end-of-options branch to skip the write entirely)
-      (`src/builtin/getopts.rs:74-75`). Final-review follow-up from
+      (`src/builtin/getopts.rs:98-100`). Final-review follow-up from
       SP4 Task 6.
 - [ ] `step_getopts` casts a stack byte to `char` via `bytes[cursor]
       as char`, which silently misinterprets non-ASCII UTF-8 bytes
@@ -102,7 +87,7 @@ retained below for tracking.
       option branch and exit safely, but the cast obscures the
       intent. Switch to `char::from_u32(bytes[cursor] as u32)` (with
       a fallback) or add a `// ASCII spec only` doc-comment at the
-      cast site (`src/builtin/getopts.rs:139-140`). Final-review
+      cast site (`src/builtin/getopts.rs:167`). Final-review
       follow-up from SP4 Task 6.
 
 ### SP5 follow-ups (non-blocking)
@@ -115,7 +100,7 @@ retained below for tracking.
       "0 on entry to arithmetic-only". POSIX leaves it implementation-
       defined; bash returns 0 in this case. Either split
       `word_has_command_sub` into a CmdSub-only predicate, or document
-      the divergence (`src/exec/simple.rs:819`). Code-review follow-up
+      the divergence (`src/exec/simple.rs:1092`). Code-review follow-up
       from SP5 T3.
 - [ ] Pipeline-child EXIT trap firing — `exec_subshell`'s child branch
       now fires `execute_exit_trap` (SP5 T6) but `exec/pipeline.rs`'s
@@ -124,15 +109,13 @@ retained below for tracking.
       bash fires the trap on every pipeline member's exit while dash
       fires only on the rightmost. Pick a stance and apply uniformly,
       or document the asymmetry. Final-review follow-up from SP5 T6.
-- [ ] `process_pending_signals` is now called at the tail of
-      `exec_complete_command` (top level) but NOT inside `exec_body`
-      iteration tails or `exec_function_call` returns. Async traps
-      installed inside a long-running function or loop body therefore
-      fire only after the function / loop completes (rather than
-      between iterations / between statements inside the body). Add
-      drain calls inside `exec_body`'s loop and `exec_function_call`'s
-      tail if a use case surfaces, weighing the per-iteration cost.
-      Code-review follow-up from SP5 T7.
+- [ ] `process_pending_signals` is called inside `exec_body`'s loop
+      (`src/exec/compound.rs:83`) and at the tail of
+      `exec_complete_command`, but NOT at `exec_function_call` returns.
+      Async traps installed inside a long-running function therefore
+      fire only after the function completes. Add a drain call at
+      `exec_function_call`'s tail if a use case surfaces, weighing the
+      per-call cost. Code-review follow-up from SP5 T7.
 - [ ] `x=1 myfunc() { :; }` (assignment prefix before function
       definition) silently drops the assignment instead of emitting
       `ParseErrorKind::UnexpectedToken`. yosh still errors via a
