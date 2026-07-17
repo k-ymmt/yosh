@@ -79,6 +79,12 @@ pub struct LineEditor {
     last_action: EditAction,
     last_was_insert: bool,
     prev_total_rows: usize,
+    /// Physical row (0-based, relative to the first content row) the cursor
+    /// was left on by the previous `redraw`. Both repaint strategies move
+    /// relative to this row, so it must be reset together with
+    /// `prev_total_rows` whenever the screen is repainted outside `redraw`
+    /// (see `invalidate_render_state`).
+    prev_cursor_row: usize,
     /// Cached total display width of `buf`, invalidated (`None`) on every
     /// buffer mutation and lazily recomputed the next time it's needed.
     /// Avoids re-summing `UnicodeWidthChar::width` over the whole buffer on
@@ -131,6 +137,7 @@ impl LineEditor {
             last_action: EditAction::Noop,
             last_was_insert: false,
             prev_total_rows: 0,
+            prev_cursor_row: 0,
             cached_total_width: None,
             buf_generation: 0,
             suggestion_cache: None,
@@ -164,9 +171,19 @@ impl LineEditor {
         self.last_action = EditAction::Noop;
         self.last_was_insert = false;
         self.undo.clear();
-        self.prev_total_rows = 0;
         self.invalidate_width_cache();
+        self.invalidate_render_state();
+    }
+
+    /// Forget everything `redraw` knows about the on-screen state. Must be
+    /// called whenever the screen is repainted outside `redraw`'s own
+    /// bookkeeping (clear-screen, selector UIs, prompt reprints): those
+    /// paths leave the cursor on the freshly printed prompt row, so the
+    /// row counters reset to zero along with the render cache.
+    fn invalidate_render_state(&mut self) {
         self.prev_render = None;
+        self.prev_total_rows = 0;
+        self.prev_cursor_row = 0;
     }
 
     /// Insert a character at the current cursor position and advance
@@ -614,20 +631,9 @@ impl LineEditor {
     /// Move the cursor down past the last rendered row so subsequent
     /// terminal output starts below the full (possibly wrapped) input.
     /// No-op when nothing has been rendered yet.
-    fn move_below_render<T: Terminal>(&self, term: &mut T, prompt_width: usize) -> io::Result<()> {
-        if self.prev_total_rows == 0 {
-            return Ok(());
-        }
-        let buf_pos_width: usize = self.buf[..self.pos]
-            .iter()
-            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-            .sum();
-        let (tw, _) = term.size().unwrap_or((80, 24));
-        let cursor_row = (prompt_width + buf_pos_width)
-            .checked_div(tw as usize)
-            .unwrap_or(0);
-        if self.prev_total_rows > cursor_row {
-            term.move_down((self.prev_total_rows - cursor_row) as u16)?;
+    fn move_below_render<T: Terminal>(&self, term: &mut T, _prompt_width: usize) -> io::Result<()> {
+        if self.prev_total_rows > self.prev_cursor_row {
+            term.move_down((self.prev_total_rows - self.prev_cursor_row) as u16)?;
         }
         Ok(())
     }
@@ -685,7 +691,7 @@ impl LineEditor {
                             // bookkeeping; force a full repaint next time so
                             // the diff-based partial repaint doesn't assume a
                             // stale on-screen state.
-                            self.prev_render = None;
+                            self.invalidate_render_state();
                         }
                         KeyAction::ClearScreen => {
                             term.clear_all()?;
@@ -694,7 +700,7 @@ impl LineEditor {
                                 term.write_str("\r\n")?;
                             }
                             term.write_str(prompt)?;
-                            self.prev_render = None;
+                            self.invalidate_render_state();
                         }
                         KeyAction::TabComplete | KeyAction::Continue => {}
                     }
@@ -706,7 +712,7 @@ impl LineEditor {
                     // Terminal dimensions changed, invalidating all cached
                     // row/column math from the previous render; force a full
                     // repaint.
-                    self.prev_render = None;
+                    self.invalidate_render_state();
                     let (tw, _) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
                     self.redraw(term, prompt, prompt_width, &[], tw)?;
@@ -750,30 +756,29 @@ impl LineEditor {
             0
         };
 
-        // Decide whether a partial repaint (from the first changed column)
+        // Decide whether a partial repaint (from the first changed cell)
         // is safe, or whether to fall back to the full clear+repaint.
         //
-        // Partial repaint is restricted to the single-row, no-wrap case:
-        // both the previous and the new render must fit on one row. This
-        // sidesteps the multi-row cursor-positioning math (move_up/move_down
-        // per wrapped row) entirely, which is where a partial-repaint bug
-        // would be both easiest to introduce and hardest to notice. Content
-        // that wraps keeps the previous (correctness-proven) full-repaint
-        // behavior.
-        //
-        // The repaint start column is also capped by the first position
-        // where the *style* differs from the previous render, not just
-        // where the *character* differs: highlighting can retroactively
-        // recolor already-typed, unchanged characters (e.g. typing the
-        // closing quote of `echo 'hello` flips the whole `'hello` run from
-        // an unclosed-quote Error span to a normal String span even though
+        // The repaint start column is capped by the first position where
+        // the *style* differs from the previous render, not just where the
+        // *character* differs: highlighting can retroactively recolor
+        // already-typed, unchanged characters (e.g. typing the closing
+        // quote of `echo 'hello` flips the whole `'hello` run from an
+        // unclosed-quote Error span to a normal String span even though
         // none of those characters changed). Using only a character-level
         // diff would miss that recoloring.
-        let partial_repaint_start = self
+        //
+        // The multi-row (wrapped) case positions by physical rows: the
+        // cursor sits on `prev_cursor_row`, the first changed cell is at
+        // `prefix_width / tw` (always within the previously rendered rows
+        // because the unchanged prefix has identical layout in both
+        // renders), and writing relies on terminal auto-wrap exactly like
+        // the full-repaint path.
+        let mut partial_repaint_start = self
             .prev_render
             .as_ref()
             .and_then(|(prev_buf, prev_spans)| {
-                if self.prev_total_rows != 0 || total_rows != 0 {
+                if tw == 0 {
                     return None;
                 }
                 let char_diff = prev_buf
@@ -785,14 +790,50 @@ impl LineEditor {
                 Some(style_diff)
             });
 
+        // A diff that starts exactly on a wrap boundary would have to write
+        // into the terminal's deferred-wrap cell (or onto a physical row
+        // that has not been created yet); fall back to the full repaint for
+        // that column rather than modeling deferred-wrap state.
+        if let Some(start) = partial_repaint_start {
+            let w = prompt_width
+                + self.buf[..start]
+                    .iter()
+                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                    .sum::<usize>();
+            if tw > 0 && w > 0 && w % tw == 0 {
+                partial_repaint_start = None;
+            }
+        }
+
         if let Some(start) = partial_repaint_start {
             // ---- Partial repaint: rewrite only from `start` onward ----
-            let prefix_width: usize = self.buf[..start]
-                .iter()
-                .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                .sum();
-            term.move_to_column(col(prompt_width + prefix_width))?;
+            let prefix_width: usize = prompt_width
+                + self.buf[..start]
+                    .iter()
+                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                    .sum::<usize>();
+            let diff_row = prefix_width / tw;
+            let diff_col = prefix_width % tw;
+
+            // Move from the cursor's row to the first changed row.
+            if self.prev_cursor_row > diff_row {
+                term.move_up((self.prev_cursor_row - diff_row) as u16)?;
+            } else if diff_row > self.prev_cursor_row {
+                term.move_down((diff_row - self.prev_cursor_row) as u16)?;
+            }
+            term.move_to_column(col(diff_col))?;
             term.clear_until_newline()?;
+
+            // Clear any previously rendered rows below the changed row, so
+            // shrinking content doesn't leave stale wrapped tails behind.
+            if self.prev_total_rows > diff_row {
+                for _ in diff_row..self.prev_total_rows {
+                    term.move_down(1)?;
+                    term.clear_current_line()?;
+                }
+                term.move_up((self.prev_total_rows - diff_row) as u16)?;
+                term.move_to_column(col(diff_col))?;
+            }
 
             let mut span_idx = 0;
             let mut current_style = HighlightStyle::Default;
@@ -830,9 +871,11 @@ impl LineEditor {
             }
         } else {
             // ---- Full clear + repaint (original behavior) ----
-            // Move cursor up to the prompt's last_line row (start of content)
-            if self.prev_total_rows > 0 {
-                term.move_up(self.prev_total_rows as u16)?;
+            // Move cursor up to the first content row. The cursor sits on
+            // `prev_cursor_row` (not necessarily the last rendered row —
+            // e.g. after moving left across a wrap boundary).
+            if self.prev_cursor_row > 0 {
+                term.move_up(self.prev_cursor_row as u16)?;
             }
             term.move_to_column(0)?;
 
@@ -902,6 +945,11 @@ impl LineEditor {
             term.move_up((end_row - cursor_row) as u16)?;
         }
         term.move_to_column(col(cursor_col))?;
+        // The physical row we just left the cursor on: `cursor_row`, except
+        // when the cursor logically sits one past a content-final wrap
+        // boundary — we never move down past the last rendered row, so the
+        // physical row is clamped to it.
+        self.prev_cursor_row = cursor_row.min(total_rows);
         term.flush()?;
         Ok(())
     }
@@ -1255,7 +1303,7 @@ impl LineEditor {
                                 term.write_str("\r\n")?;
                             }
                             term.write_str(prompt)?;
-                            self.prev_render = None;
+                            self.invalidate_render_state();
                         }
                         KeyAction::TabComplete => {
                             term.reset_style()?;
@@ -1275,7 +1323,7 @@ impl LineEditor {
                                 term.write_str("\r\n")?;
                             }
                             term.write_str(prompt)?;
-                            self.prev_render = None;
+                            self.invalidate_render_state();
                         }
                         KeyAction::Continue => {}
                     }
@@ -1285,7 +1333,7 @@ impl LineEditor {
                     self.redraw(term, prompt, prompt_width, &spans, tw)?;
                 }
                 Event::Resize(_cols, _rows) => {
-                    self.prev_render = None;
+                    self.invalidate_render_state();
                     let (tw, _) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
@@ -1378,7 +1426,7 @@ impl LineEditor {
                 term.write_str("\r\n")?;
             }
             term.write_str(prompt)?;
-            self.prev_render = None;
+            self.invalidate_render_state();
         }
 
         Ok(())
