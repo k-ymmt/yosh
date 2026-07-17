@@ -170,15 +170,22 @@ fn glob_in_dir(dir: &str, pattern: &str) -> Vec<String> {
     let mut matches = Vec::new();
     for entry in read_dir.flatten() {
         let name = entry.file_name();
-        let name_str = name.to_string_lossy();
+        // Skip names that are not valid UTF-8: a lossy conversion would
+        // return a path that does not name the actual file. Matching such
+        // names needs byte-based fields (TODO.md "Future: POSIX Byte
+        // Semantics"). macOS APFS enforces UTF-8 names, so this only
+        // arises on other filesystems/platforms.
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
 
         // POSIX: `*` and `?` do not match a leading dot.
         if skip_hidden && name_str.starts_with('.') {
             continue;
         }
 
-        if pattern::matches(pattern, &name_str) {
-            matches.push(name_str.into_owned());
+        if pattern::matches(pattern, name_str) {
+            matches.push(name_str.to_owned());
         }
     }
 
