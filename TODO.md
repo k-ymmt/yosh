@@ -1,94 +1,5 @@
 # TODO
 
-## Audit 2026-07-02: Security / Correctness / Performance
-
-Findings from a three-lens codebase audit (security, POSIX correctness,
-performance). Behavioral items were verified against the debug binary on
-2026-07-02; code-pinned items cite the exact offending line. Items already
-tracked elsewhere (break/continue `loop_depth` across functions — see the
-SP1 follow-up above; plugin `is_symlink` — see the plugin follow-up below)
-are intentionally omitted here. The Security / Robustness findings from
-this audit were all resolved on 2026-07-03.
-
-### Correctness (POSIX deviations)
-
-- [ ] Unquoted `$*` joins positional parameters with a hardcoded space instead
-      of the first char of IFS, so `IFS=:; set a b c; for x in $*` yields the
-      single field `a b c` instead of three fields (verified) (`src/expand/param.rs:171`).
-- [ ] The word argument of `${x:-w}` / `${x:=w}` / `${x:?w}` / `${x:+w}` is
-      expanded via `expand_word_to_string`, discarding quote metadata; an
-      unquoted `${x:-"a b"}` then field-splits into `a`,`b` instead of the
-      single field POSIX requires (verified: `set -- ${x:-"a b"}` gives `$#`=2)
-      (`src/expand/param.rs:54`).
-- [ ] `set -u` (nounset) is only enforced for `ParamExpr::Simple`; expanding an
-      unset positional (`$1`) or special parameter yields empty with no
-      error/exit (verified: `set -u; echo "[$1]"` → `[]` exit 0), whereas POSIX
-      treats it as an expansion error (`src/expand/param.rs:22`).
-- [ ] Unquoted here-document bodies only do a plain `${name}` lookup;
-      conditional (`${x:-def}`), length (`${#x}`), and strip forms are not
-      applied, so `${x:-default}` in a heredoc expands to empty
-      (`src/expand/heredoc.rs:62`).
-- [ ] Under `set -e`, a `!`-negated pipeline still triggers errexit exit
-      (verified: `set -e; ! true` terminates before the next command), but POSIX
-      exempts pipelines beginning with `!` (`src/exec/control.rs:183`).
-- [ ] Under `set -e`, a nonzero result from a non-final component of an AND-OR
-      list triggers errexit exit (verified: `set -e; false && true` terminates),
-      but only the last command of the list is subject to `-e`
-      (`src/exec/control.rs:183`).
-- [ ] In monitor mode (`set -m`) a multi-command pipeline's exit status comes
-      from the last process *reaped* (completion order) rather than the last
-      command in the pipeline, so `set -m; sleep 0.3 | false` reports `$?`=0
-      instead of 1 (verified) (`src/exec/pipeline.rs:151`).
-- [ ] `test`/`[` 3-argument parsing checks `!` negation (and `( )` grouping)
-      before checking whether `$2` is a binary primary, so `[ ! = x ]` errors
-      with "unknown operator" (exit 2) instead of comparing the strings `!` and
-      `x` (exit 1) per POSIX §2.14 (verified) (`src/builtin/test.rs:63`).
-- [ ] `exit`/`return` with a non-numeric argument returns an error without
-      terminating, so `exit foo; echo after` prints the diagnostic and then runs
-      `after` (verified); POSIX requires termination with status 2
-      (`src/builtin/special.rs:67`).
-- [ ] Reserved words (`fi`, `done`, `then`, `else`, `elif`, `do`, `esac`, `}`)
-      are accepted as ordinary command names in command position, so bare `done`
-      runs "command not found" instead of the syntax error POSIX §2.4 requires
-      (verified) (`src/parser/simple.rs:22`).
-- [ ] A trailing pipe or logical operator with no following command (`echo hi |`,
-      `true &&`) is accepted and builds a pipeline with a phantom empty command
-      instead of a syntax error (verified: `echo hi |` exits 0)
-      (`src/parser/simple.rs:63`).
-- [ ] The `for … in` word list is terminated on `do` even without a preceding
-      `;`/newline, so `for i in a b do echo x; done` is misparsed (loops over
-      `a b`, verified prints `x x`) instead of raising a syntax error
-      (`src/parser/compound.rs:167`).
-
-#### Byte-semantics instances (concrete cases for the POSIX Byte Semantics work below)
-
-- [ ] Here-document body expansion emits ordinary bytes via `bytes[i] as char`,
-      decoding each UTF-8 byte as Latin-1; a heredoc containing `日本語` is
-      corrupted to mojibake (`src/expand/heredoc.rs:170`).
-- [ ] `read` builds field/remainder strings with `b.value as char`, decoding raw
-      input bytes as Latin-1; non-ASCII input like `café` is stored corrupted
-      (`src/builtin/read.rs:265` and lines 247, 282, 308).
-- [ ] `$'\xHH'` / `$'\NNN'` octal build a `char` from the numeric value, so
-      `$'\xe9'` produces the two UTF-8 bytes of U+00E9 rather than the single
-      byte `0xe9` that POSIX/other shells emit (`src/lexer/word.rs:582`).
-- [ ] Command substitution reads child output with `read_to_string`, so output
-      containing an invalid-UTF-8 byte is discarded entirely with a
-      "stream did not contain valid UTF-8" error instead of captured as bytes
-      (`src/expand/command_sub.rs:85`).
-- [ ] Pathname expansion lists directory entries via `to_string_lossy`, so files
-      with non-UTF-8 names cannot be matched or are returned corrupted
-      (`src/expand/pathname.rs:173`).
-
-### Performance
-
-- [ ] PERF: `redraw`'s diff-based partial repaint (added to replace the
-      always-full clear+repaint) only engages when both the previous and
-      the new render fit on a single terminal row; any input that wraps to
-      multiple rows still falls back to a full clear+repaint every
-      keystroke. Extending the partial-repaint path to the multi-row case
-      would need wrapped-row-aware cursor positioning
-      (`src/interactive/line_editor.rs` `redraw`).
-
 ## Future: POSIX Byte Semantics
 
 - [ ] Complete full non-UTF-8 shell input, argv, paths, and environment value
@@ -100,6 +11,19 @@ this audit were all resolved on 2026-07-03.
       toward byte buffers plus quote/protection metadata; carry `OsString` or
       raw bytes through paths and process boundaries; and decide plugin API byte
       semantics. Keep this open until invalid UTF-8 data is preserved end to end.
+- [ ] Residual invalid-UTF-8 instances from the 2026-07-02 audit (closed
+      2026-07-17): the UTF-8-corruption halves were fixed, but the
+      invalid-byte halves are blocked on the byte migration above and
+      currently degrade instead of preserving raw bytes:
+      - `$'\xe9'` (a byte that is not valid UTF-8 on its own) yields U+FFFD
+        instead of the raw byte `0xe9`; valid multi-byte sequences like
+        `$'\xe6\x97\xa5'` now decode correctly (`src/lexer/word.rs`).
+      - `read` and command substitution decode captured bytes with
+        `from_utf8_lossy`, so invalid bytes become U+FFFD rather than being
+        preserved (`src/builtin/read.rs`, `src/expand/command_sub.rs`).
+      - Pathname expansion skips directory entries whose names are not valid
+        UTF-8 (previously returned corrupted non-existent paths); matching
+        them needs byte-based fields (`src/expand/pathname.rs`).
 
 ## E2E XFAIL Roadmap Follow-ups
 
