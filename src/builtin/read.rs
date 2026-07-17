@@ -219,6 +219,15 @@ fn read_logical_line<R: ByteReader>(raw: bool, reader: &mut R) -> std::io::Resul
     }
 }
 
+/// Assemble a field's bytes into a `String`, decoding as UTF-8 so
+/// multi-byte input (e.g. `café`) is preserved. Invalid sequences become
+/// U+FFFD until the byte-semantics migration lands (`TODO.md` "Future:
+/// POSIX Byte Semantics").
+fn field_to_string(slice: &[LineByte]) -> String {
+    let bytes: Vec<u8> = slice.iter().map(|b| b.value).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 /// POSIX §2.6.5 field splitting for `read`. Returns exactly `n_vars`
 /// strings: var[0..n-1] are split fields, var[n-1] is the trailing
 /// remainder (with only trailing whitespace-IFS trimmed). When IFS is
@@ -246,7 +255,7 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
 
     // Empty IFS → no splitting at all.
     if ws_ifs.is_empty() && sep_ifs.is_empty() {
-        let whole: String = line.iter().map(|b| b.value as char).collect();
+        let whole = field_to_string(line);
         let mut out = vec![whole];
         out.extend((1..n_vars).map(|_| String::new()));
         return out;
@@ -264,7 +273,7 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
         while j > i && is_ws(&line[j - 1]) {
             j -= 1;
         }
-        let s: String = line[i..j].iter().map(|b| b.value as char).collect();
+        let s = field_to_string(&line[i..j]);
         return vec![s];
     }
 
@@ -281,7 +290,7 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
         while i < line.len() && !is_any_ifs(&line[i]) {
             i += 1;
         }
-        let field: String = line[start..i].iter().map(|b| b.value as char).collect();
+        let field = field_to_string(&line[start..i]);
         result.push(field);
 
         // Consume one terminator: at most one sep_ifs byte, then any
@@ -301,7 +310,7 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
     while j > i && is_ws(&line[j - 1]) {
         j -= 1;
     }
-    let remainder: String = line[i..j].iter().map(|b| b.value as char).collect();
+    let remainder = field_to_string(&line[i..j]);
     result.push(remainder);
 
     debug_assert_eq!(result.len(), n_vars);
