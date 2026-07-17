@@ -98,6 +98,23 @@ impl ExpandedField {
         self.value.push_str(s);
     }
 
+    /// Append another field's bytes, carrying over each byte's protection
+    /// bits and the `was_quoted` flag (used when a nested expansion produced
+    /// its own fields that must merge into the current word).
+    pub fn append_field(&mut self, other: &ExpandedField) {
+        let start = self.value.len();
+        self.value.push_str(&other.value);
+        for i in 0..other.byte_len() {
+            if other.is_split_protected(i) {
+                set_mask_range(&mut self.split_protected_mask, start + i, 1);
+            }
+            if other.is_glob_protected(i) {
+                set_mask_range(&mut self.glob_protected_mask, start + i, 1);
+            }
+        }
+        self.was_quoted |= other.was_quoted;
+    }
+
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
     }

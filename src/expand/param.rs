@@ -21,19 +21,40 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
         // ── Positional parameters ────────────────────────────────────────
         ParamExpr::Positional(n) => {
             if *n > 0 {
-                Ok(env
-                    .vars
-                    .positional_params()
-                    .get(n - 1)
-                    .cloned()
-                    .unwrap_or_default())
+                match env.vars.positional_params().get(n - 1).cloned() {
+                    Some(val) => Ok(val),
+                    None => {
+                        // POSIX set -u: an unset positional parameter is an
+                        // expansion error, same as an unset variable.
+                        if env.mode.options.nounset {
+                            eprintln!("yosh: {}: parameter not set", n);
+                            env.exec.last_exit_status = 1;
+                            env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
+                        }
+                        Ok(String::new())
+                    }
+                }
             } else {
                 Ok(String::new())
             }
         }
 
         // ── Special parameters ───────────────────────────────────────────
-        ParamExpr::Special(sp) => Ok(expand_special(env, sp)),
+        ParamExpr::Special(sp) => {
+            // POSIX set -u: `$!` is the only special parameter that can be
+            // unset (no asynchronous list has run yet). `@`/`*` are exempt
+            // by §2.5.2; the rest are always set.
+            if env.mode.options.nounset
+                && matches!(sp, SpecialParam::Bang)
+                && env.process.jobs.last_bg_pid().is_none()
+            {
+                eprintln!("yosh: !: parameter not set");
+                env.exec.last_exit_status = 1;
+                env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
+                return Ok(String::new());
+            }
+            Ok(expand_special(env, sp))
+        }
 
         // ── ${#name} — character count ───────────────────────────────────
         ParamExpr::Length(name) => {
@@ -177,7 +198,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
 /// Digit-string names are positional parameters (POSIX §2.5.1 — leading
 /// zeros are decimal, so `01` ≡ `1`); an index past `$#` is unset (`None`).
 /// All other names delegate to `VarStore::get`.
-fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
+pub(super) fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
     if name == "LINENO" {
         return Some(env.exec.lineno.to_string());
     }
@@ -193,7 +214,7 @@ fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
 
 /// True when `name` denotes a positional or special parameter, which
 /// `${name=word}` may not assign to (POSIX §2.6.2).
-fn is_unassignable_param(name: &str) -> bool {
+pub(super) fn is_unassignable_param(name: &str) -> bool {
     !name.is_empty()
         && !name
             .bytes()
@@ -201,7 +222,7 @@ fn is_unassignable_param(name: &str) -> bool {
             .is_some_and(|b| b == b'_' || b.is_ascii_alphabetic())
 }
 
-fn is_unset_or_null_inner(val: &Option<String>, null_check: bool) -> bool {
+pub(super) fn is_unset_or_null_inner(val: &Option<String>, null_check: bool) -> bool {
     match val {
         None => true,
         Some(v) if null_check && v.is_empty() => true,

@@ -168,9 +168,12 @@ fn expand_param_to_fields(
             fields.last_mut().unwrap().push_quoted(&joined);
         }
 
-        // Unquoted $@: each positional parameter becomes its own field,
-        // with content unquoted (subject to IFS splitting and glob).
-        ParamExpr::Special(SpecialParam::At) if !in_double_quote => {
+        // Unquoted $@ / $*: each positional parameter becomes its own field,
+        // with content unquoted (subject to IFS splitting and glob). POSIX
+        // §2.5.2 gives `*` the same initial one-field-per-parameter shape as
+        // `@` outside double quotes; joining with IFS[0] applies only to the
+        // quoted "$*" form (verified against bash and dash).
+        ParamExpr::Special(SpecialParam::At | SpecialParam::Star) if !in_double_quote => {
             let params = env.vars.positional_params().to_vec();
             if params.is_empty() {
                 return Ok(());
@@ -185,17 +188,105 @@ fn expand_param_to_fields(
             }
         }
 
+        // ${name:-word} / ${name-word}: substituting `word` must preserve its
+        // quote structure — an unquoted ${x:-"a b"} yields the single field
+        // `a b` (POSIX §2.6.2), so the word's parts are expanded through the
+        // normal part pipeline instead of being flattened to a string.
+        ParamExpr::Default {
+            name,
+            word,
+            null_check,
+        } => {
+            let val = param::lookup_var(env, name);
+            if param::is_unset_or_null_inner(&val, *null_check) {
+                if let Some(w) = word.as_ref() {
+                    for part in &w.parts {
+                        expand_part_to_fields(env, part, fields, in_double_quote)?;
+                    }
+                }
+            } else {
+                push_param_value(fields, &val.unwrap_or_default(), in_double_quote);
+            }
+        }
+
+        // ${name:+word} / ${name+word}: same quote-preserving substitution.
+        ParamExpr::Alt {
+            name,
+            word,
+            null_check,
+        } => {
+            let val = param::lookup_var(env, name);
+            if !param::is_unset_or_null_inner(&val, *null_check) {
+                if let Some(w) = word.as_ref() {
+                    for part in &w.parts {
+                        expand_part_to_fields(env, part, fields, in_double_quote)?;
+                    }
+                }
+            }
+        }
+
+        // ${name:=word} / ${name=word}: assign the quote-removed expansion of
+        // `word`, but substitute with the word's quote structure preserved
+        // (matches bash; dash re-splits the assigned value here).
+        ParamExpr::Assign {
+            name,
+            word,
+            null_check,
+        } => {
+            let val = param::lookup_var(env, name);
+            if param::is_unset_or_null_inner(&val, *null_check) {
+                // POSIX §2.6.2: attempting to assign a positional or special
+                // parameter with ${name=word} is an error.
+                if param::is_unassignable_param(name) {
+                    eprintln!("yosh: {}: cannot assign in this way", name);
+                    env.exec.last_exit_status = 1;
+                    env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
+                    return Ok(());
+                }
+                let mut sub = vec![ExpandedField::new()];
+                if let Some(w) = word.as_ref() {
+                    for part in &w.parts {
+                        expand_part_to_fields(env, part, &mut sub, in_double_quote)?;
+                    }
+                }
+                let new_val = sub
+                    .iter()
+                    .map(|f| f.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                // LINENO is a computed pseudo-variable (see `param::lookup_var`);
+                // assigning it would resurrect a real `VarStore` entry.
+                if name != "LINENO" {
+                    let _ = env.vars.set(name, &new_val);
+                }
+                let mut sub = sub.into_iter();
+                if let Some(first) = sub.next() {
+                    fields.last_mut().unwrap().append_field(&first);
+                }
+                fields.extend(sub);
+            } else {
+                push_param_value(fields, &val.unwrap_or_default(), in_double_quote);
+            }
+        }
+
         // Everything else: expand to a string, then push.
         _ => {
             let value = param::expand(env, param)?;
-            if in_double_quote {
-                fields.last_mut().unwrap().push_quoted(&value);
-            } else {
-                fields.last_mut().unwrap().push_expanded(&value);
-            }
+            push_param_value(fields, &value, in_double_quote);
         }
     }
     Ok(())
+}
+
+/// Push a parameter's value into the current field: quoted context protects
+/// it, unquoted context leaves it split- and glob-subject.
+fn push_param_value(fields: &mut [ExpandedField], value: &str, in_double_quote: bool) {
+    let f = fields.last_mut().unwrap();
+    if in_double_quote {
+        f.push_quoted(value);
+    } else {
+        f.push_expanded(value);
+    }
 }
 
 /// Return the `"$*"` join separator: the first character of IFS.
@@ -231,6 +322,105 @@ mod tests {
         assert!((0..fields[0].value.len()).all(|i| !fields[0].is_split_protected(i)));
         assert!((0..fields[1].value.len()).all(|i| !fields[1].is_split_protected(i)));
         assert!((0..fields[2].value.len()).all(|i| !fields[2].is_split_protected(i)));
+    }
+
+    #[test]
+    fn test_unquoted_dollar_star_splits_per_param() {
+        let mut env = ShellEnv::new(
+            "yosh",
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        );
+        let word = Word {
+            parts: vec![WordPart::Parameter(ParamExpr::Special(SpecialParam::Star))],
+        };
+        let fields = expand_word_to_fields(&mut env, &word).unwrap();
+        assert_eq!(fields.len(), 3, "expected 3 fields, got {:?}", fields);
+        assert_eq!(fields[0].value, "a");
+        assert_eq!(fields[1].value, "b");
+        assert_eq!(fields[2].value, "c");
+    }
+
+    #[test]
+    fn test_default_word_quoted_part_is_protected() {
+        // ${x:-"a b"} with x unset: the quoted word must be split-protected.
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let word = Word {
+            parts: vec![WordPart::Parameter(ParamExpr::Default {
+                name: "UNSET_XYZ".to_string(),
+                word: Some(Word {
+                    parts: vec![WordPart::DoubleQuoted(vec![WordPart::Literal(
+                        "a b".to_string(),
+                    )])],
+                }),
+                null_check: true,
+            })],
+        };
+        let fields = expand_word_to_fields(&mut env, &word).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].value, "a b");
+        assert!((0..fields[0].value.len()).all(|i| fields[0].is_split_protected(i)));
+    }
+
+    #[test]
+    fn test_default_unquoted_var_word_still_splits() {
+        // ${x:-$y} with y="p q": the substituted value stays split-subject.
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars.set("y", "p q").unwrap();
+        let word = Word {
+            parts: vec![WordPart::Parameter(ParamExpr::Default {
+                name: "UNSET_XYZ".to_string(),
+                word: Some(Word {
+                    parts: vec![WordPart::Parameter(ParamExpr::Simple("y".to_string()))],
+                }),
+                null_check: true,
+            })],
+        };
+        let fields = expand_word_to_fields(&mut env, &word).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].value, "p q");
+        assert!((0..fields[0].value.len()).all(|i| !fields[0].is_split_protected(i)));
+    }
+
+    #[test]
+    fn test_assign_quoted_word_assigns_and_protects() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let word = Word {
+            parts: vec![WordPart::Parameter(ParamExpr::Assign {
+                name: "NEWVAR".to_string(),
+                word: Some(Word {
+                    parts: vec![WordPart::DoubleQuoted(vec![WordPart::Literal(
+                        "a b".to_string(),
+                    )])],
+                }),
+                null_check: true,
+            })],
+        };
+        let fields = expand_word_to_fields(&mut env, &word).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].value, "a b");
+        assert!((0..fields[0].value.len()).all(|i| fields[0].is_split_protected(i)));
+        assert_eq!(env.vars.get("NEWVAR"), Some("a b"));
+    }
+
+    #[test]
+    fn test_alt_quoted_word_is_protected() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars.set("SETVAR", "1").unwrap();
+        let word = Word {
+            parts: vec![WordPart::Parameter(ParamExpr::Alt {
+                name: "SETVAR".to_string(),
+                word: Some(Word {
+                    parts: vec![WordPart::DoubleQuoted(vec![WordPart::Literal(
+                        "a b".to_string(),
+                    )])],
+                }),
+                null_check: true,
+            })],
+        };
+        let fields = expand_word_to_fields(&mut env, &word).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].value, "a b");
+        assert!((0..fields[0].value.len()).all(|i| fields[0].is_split_protected(i)));
     }
 
     #[test]
