@@ -216,6 +216,26 @@ mod tests {
         builtin_test("[", &owned)
     }
 
+    /// The byteenc encoding is injective, so `=`/`!=` on encoded operands
+    /// is exactly raw-byte equality — invalid UTF-8 bytes compare
+    /// byte-faithfully with no decode step needed. (POSIX `test` has no
+    /// string ordering primaries, so equality is the whole story.)
+    #[test]
+    fn string_equality_is_byte_exact_for_invalid_utf8() {
+        let e9 = crate::byteenc::encode_bytes(b"a\xe9b").into_owned();
+        let e9_again = crate::byteenc::encode_bytes(b"a\xe9b").into_owned();
+        let ff = crate::byteenc::encode_bytes(b"a\xffb").into_owned();
+        assert_eq!(t(&[&e9, "=", &e9_again]), 0);
+        assert_eq!(t(&[&e9, "!=", &ff]), 0);
+        assert_eq!(t(&[&e9, "=", &ff]), 1);
+        // A raw 0xe9 is distinct from both U+00E9 (é) and U+FFFD.
+        assert_eq!(t(&[&crate::byteenc::encode_bytes(b"\xe9"), "=", "é"]), 1);
+        assert_eq!(
+            t(&[&crate::byteenc::encode_bytes(b"\xe9"), "=", "\u{FFFD}"]),
+            1
+        );
+    }
+
     #[test]
     fn zero_operands_is_false() {
         assert_eq!(t(&[]), 1);

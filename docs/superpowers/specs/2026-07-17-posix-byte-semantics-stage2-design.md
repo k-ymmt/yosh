@@ -100,9 +100,15 @@ in TODO removal; no WIT change.
 
 ## Known, accepted divergences
 
-- Collation: `test`/`sort`-style bytewise comparisons compare encoded forms;
-  ordering between an invalid byte and a multi-byte UTF-8 char can differ
-  from raw-byte order in corners (C-locale ASCII behavior is unaffected).
+- Collation: `test`/`[` supports only `=`/`!=` (POSIX), and the encoding is
+  injective, so string equality is byte-exact — no divergence there (locked
+  in by `string_equality_is_byte_exact_for_invalid_utf8`). Ordering of
+  encoded forms surfaces only in pattern bracket ranges: escaped-byte
+  endpoints are monotonic in the raw byte value (byte-order faithful; see
+  `test_bracket_range_over_escaped_bytes_follows_byte_order`), while a
+  *mixed* range between an invalid byte and a multi-byte UTF-8 char
+  compares codepoints — a corner that is locale-dependent/undefined in
+  other shells too.
 - An invalid byte cannot serve as an IFS delimiter (non-whitespace IFS
   remains ASCII-restricted).
 - History files store the encoded (valid UTF-8) form.

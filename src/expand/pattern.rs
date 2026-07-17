@@ -417,6 +417,21 @@ mod tests {
     }
 
     // ── Bracket ──
+
+    /// Escape codepoints (byteenc-encoded invalid bytes) are `ESCAPE_BASE +
+    /// byte`, a monotonic mapping — so a bracket range whose endpoints are
+    /// escaped bytes matches candidate escaped bytes in raw-byte order.
+    #[test]
+    fn test_bracket_range_over_escaped_bytes_follows_byte_order() {
+        let enc = |b: &[u8]| crate::byteenc::encode_bytes(b).into_owned();
+        let pat = format!("[{}-{}]", enc(b"\x80"), enc(b"\xef"));
+        assert!(matches(&pat, &enc(b"\x80")));
+        assert!(matches(&pat, &enc(b"\xe9")));
+        assert!(matches(&pat, &enc(b"\xef")));
+        assert!(!matches(&pat, &enc(b"\xf0")));
+        assert!(!matches(&pat, "a"));
+    }
+
     #[test]
     fn test_bracket_set() {
         assert!(matches("[abc]", "a"));

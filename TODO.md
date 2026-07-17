@@ -1,23 +1,5 @@
 # TODO
 
-## POSIX Byte Semantics: residual notes (stage 2 closed 2026-07-17)
-
-Invalid UTF-8 is now preserved end to end via the byteenc escaped-byte
-encoding (`src/byteenc.rs`; design:
-`docs/superpowers/specs/2026-07-17-posix-byte-semantics-stage2-design.md`).
-Known accepted divergences, revisit only if user reports surface:
-
-- [ ] Interactive prompt/highlighting renders escape codepoints as
-      replacement glyphs instead of writing raw bytes to the terminal
-      (`src/interactive/`). Cosmetic; scripts are unaffected.
-- [ ] An invalid byte cannot act as a non-whitespace IFS delimiter
-      (`src/expand/field_split.rs` keeps its ASCII restriction).
-- [ ] `test`/`[` string collation compares encoded forms; ordering between
-      an invalid byte and a multi-byte UTF-8 char can differ from raw-byte
-      order in corners (ASCII/C-locale behavior unaffected).
-- [ ] History files persist the encoded (valid UTF-8) form rather than raw
-      bytes (`src/interactive/history.rs`).
-
 ## E2E XFAIL Roadmap Follow-ups
 
 Roadmap closed 2026-05-17. Non-blocking follow-ups from SP1–SP6
