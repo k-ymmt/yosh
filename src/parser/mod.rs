@@ -212,6 +212,10 @@ impl Parser {
             };
             self.advance()?;
             self.skip_newlines()?;
+            self.require_command_after(match op {
+                AndOrOp::And => "&&",
+                AndOrOp::Or => "||",
+            })?;
             let pipeline = self.parse_pipeline()?;
             rest.push((op, pipeline));
         }
@@ -233,6 +237,7 @@ impl Parser {
         while self.current.token == Token::Pipe {
             self.advance()?;
             self.skip_newlines()?;
+            self.require_command_after("|")?;
             commands.push(self.parse_command()?);
         }
 
@@ -317,6 +322,22 @@ impl Parser {
     }
 
     /// Returns true when we've reached a token that ends a complete command.
+    /// Error when input ends right after a `|`, `&&`, or `||` operator:
+    /// POSIX requires a following command, not a phantom empty one.
+    /// `UnexpectedEof` so interactive parsing classifies it as incomplete.
+    fn require_command_after(&self, op: &str) -> error::Result<()> {
+        if self.current.token == Token::Eof {
+            let span = self.current_span();
+            return Err(ShellError::parse(
+                ParseErrorKind::UnexpectedEof,
+                span.line,
+                span.column,
+                format!("syntax error: expected a command after '{op}'"),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn is_complete_command_end(&self) -> bool {
         match &self.current.token {
             Token::Eof => true,

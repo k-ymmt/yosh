@@ -20,6 +20,30 @@ impl Parser {
 
             // Check for word token
             if let Token::Word(_) = &self.current.token {
+                // POSIX §2.4: a reserved word that cannot begin a command is
+                // a syntax error when it appears unquoted in command position
+                // (no assignment, redirect, or command word before it).
+                // Compound-list terminators are normally consumed by the
+                // compound parsers before we get here; reaching this point
+                // with one means it is dangling (e.g. a bare `done`).
+                if assignments.is_empty()
+                    && words.is_empty()
+                    && redirects.is_empty()
+                    && let Token::Word(word) = &self.current.token
+                    && let Some(
+                        kw @ ("}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do"
+                        | "in"),
+                    ) = word.as_literal()
+                {
+                    let span = self.current_span();
+                    return Err(ShellError::parse(
+                        ParseErrorKind::UnexpectedToken,
+                        span.line,
+                        span.column,
+                        format!("syntax error: unexpected reserved word '{kw}'"),
+                    ));
+                }
+
                 // Move the word out of `current`, leaving a placeholder that is
                 // never observed: every branch below calls `advance()?` right
                 // after, which overwrites `current` with the next token before

@@ -158,13 +158,15 @@ impl Parser {
 
         let words = if self.is_reserved("in") {
             self.advance()?;
-            // Read words until ; or newline or "do"
+            // Read words until ; or newline. POSIX requires a sequential
+            // separator before `do`, so `do` here is an ordinary list word
+            // (`for i in a b do` without a separator then fails in
+            // parse_do_group, matching bash/dash).
             let mut word_list = Vec::new();
             loop {
                 if self.is_at_end()
                     || self.current.token == Token::Semi
                     || self.current.token == Token::Newline
-                    || self.is_reserved("do")
                 {
                     break;
                 }
