@@ -36,6 +36,10 @@ pub(crate) struct CursorState {
 }
 
 pub struct PendingHereDoc {
+    /// Parse-time identity linking this pending entry to the AST `HereDoc`
+    /// node that registered it, so bodies read later (possibly several
+    /// commands after registration) are attached to the right redirect.
+    pub id: u64,
     pub delimiter: String,
     #[allow(dead_code)]
     pub quoted: bool,
@@ -48,7 +52,8 @@ pub struct Lexer {
     line: usize,
     column: usize,
     pending_heredocs: Vec<PendingHereDoc>,
-    heredoc_bodies: Vec<Vec<WordPart>>,
+    heredoc_bodies: Vec<(u64, Vec<WordPart>)>,
+    next_heredoc_id: u64,
     aliases: HashMap<String, String>,
     expanding_aliases: HashSet<String>,
     check_alias: bool,
@@ -73,6 +78,7 @@ impl Lexer {
             column: 1,
             pending_heredocs: Vec::new(),
             heredoc_bodies: Vec::new(),
+            next_heredoc_id: 0,
             aliases: HashMap::new(),
             expanding_aliases: HashSet::new(),
             check_alias: true,

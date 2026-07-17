@@ -116,10 +116,13 @@ impl Parser {
     /// Consume all consecutive Newline tokens.
     pub(super) fn skip_newlines(&mut self) -> error::Result<()> {
         while self.current.token == Token::Newline {
-            self.advance()?;
+            // Pending heredoc bodies start right after this newline, so they
+            // must be read BEFORE advancing — advancing first would lex the
+            // first body line as an ordinary token.
             if self.lexer.has_pending_heredocs() {
                 self.lexer.process_pending_heredocs()?;
             }
+            self.advance()?;
         }
         Ok(())
     }
@@ -161,6 +164,13 @@ impl Parser {
                     break;
                 }
                 if self.current.token == Token::Newline {
+                    // A terminator newline after `;` or `&`. If heredoc bodies
+                    // are pending they start here — read them and consume the
+                    // newline so the bodies count as parsed input.
+                    if self.lexer.has_pending_heredocs() {
+                        self.lexer.process_pending_heredocs()?;
+                        self.advance()?;
+                    }
                     break;
                 }
                 let aol = self.parse_and_or()?;
@@ -174,7 +184,13 @@ impl Parser {
             }
         }
 
-        Ok(CompleteCommand { items })
+        let mut cc = CompleteCommand { items };
+        // Attach heredoc bodies that were read after their command's AST node
+        // was built (e.g. `done <<EOF`, `cat <<A; cat <<B`).
+        if self.lexer.has_heredoc_bodies() {
+            self.fill_heredoc_bodies_deep(&mut cc);
+        }
+        Ok(cc)
     }
 
     /// Parse separator: ; → Semi, & → Amp, Newline → Semi (as terminator)
@@ -190,10 +206,11 @@ impl Parser {
                 Ok(Some(SeparatorOp::Amp))
             }
             Token::Newline => {
-                self.advance()?;
+                // Read pending heredoc bodies before advancing (see skip_newlines).
                 if self.lexer.has_pending_heredocs() {
                     self.lexer.process_pending_heredocs()?;
                 }
+                self.advance()?;
                 Ok(Some(SeparatorOp::Semi))
             }
             _ => Ok(None),

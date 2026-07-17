@@ -3,33 +3,38 @@ use crate::error::{self, ParseErrorKind, ShellError};
 use crate::parser::ast::WordPart;
 
 impl Lexer {
-    pub fn register_heredoc(&mut self, delimiter: String, quoted: bool, strip_tabs: bool) {
+    pub fn register_heredoc(&mut self, delimiter: String, quoted: bool, strip_tabs: bool) -> u64 {
+        let id = self.next_heredoc_id;
+        self.next_heredoc_id += 1;
         self.pending_heredocs.push(PendingHereDoc {
+            id,
             delimiter,
             quoted,
             strip_tabs,
         });
+        id
     }
 
-    pub fn take_heredoc_body(&mut self) -> Option<Vec<WordPart>> {
-        if self.heredoc_bodies.is_empty() {
-            None
-        } else {
-            Some(self.heredoc_bodies.remove(0))
-        }
+    pub fn take_heredoc_body(&mut self, id: u64) -> Option<Vec<WordPart>> {
+        let idx = self.heredoc_bodies.iter().position(|(bid, _)| *bid == id)?;
+        Some(self.heredoc_bodies.remove(idx).1)
     }
 
     pub fn process_pending_heredocs(&mut self) -> error::Result<()> {
         let pending: Vec<PendingHereDoc> = self.pending_heredocs.drain(..).collect();
         for hd in pending {
             let body = self.read_heredoc_body(&hd)?;
-            self.heredoc_bodies.push(body);
+            self.heredoc_bodies.push((hd.id, body));
         }
         Ok(())
     }
 
     pub fn has_pending_heredocs(&self) -> bool {
         !self.pending_heredocs.is_empty()
+    }
+
+    pub fn has_heredoc_bodies(&self) -> bool {
+        !self.heredoc_bodies.is_empty()
     }
 
     pub(crate) fn read_heredoc_body(

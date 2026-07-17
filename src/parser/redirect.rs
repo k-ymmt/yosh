@@ -1,4 +1,5 @@
 use super::Parser;
+use super::ast;
 use super::ast::{HereDoc, Redirect, RedirectKind, Word, WordPart};
 use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::token::Token;
@@ -56,8 +57,9 @@ impl Parser {
                 self.advance()?;
                 let delimiter_word = self.expect_word("here-document delimiter")?;
                 let (delimiter, quoted) = self.extract_heredoc_delimiter(&delimiter_word);
-                self.lexer.register_heredoc(delimiter, quoted, false);
+                let id = self.lexer.register_heredoc(delimiter, quoted, false);
                 RedirectKind::HereDoc(HereDoc {
+                    id,
                     body: vec![],
                     strip_tabs: false,
                     quoted,
@@ -67,8 +69,9 @@ impl Parser {
                 self.advance()?;
                 let delimiter_word = self.expect_word("here-document delimiter")?;
                 let (delimiter, quoted) = self.extract_heredoc_delimiter(&delimiter_word);
-                self.lexer.register_heredoc(delimiter, quoted, true);
+                let id = self.lexer.register_heredoc(delimiter, quoted, true);
                 RedirectKind::HereDoc(HereDoc {
+                    id,
                     body: vec![],
                     strip_tabs: true,
                     quoted,
@@ -140,10 +143,94 @@ impl Parser {
         for redir in redirects {
             if let RedirectKind::HereDoc(ref mut hd) = redir.kind
                 && hd.body.is_empty()
-                && let Some(body) = self.lexer.take_heredoc_body()
+                && let Some(body) = self.lexer.take_heredoc_body(hd.id)
             {
                 hd.body = body;
             }
+        }
+    }
+
+    // ---- Deep heredoc-body fill ----
+    //
+    // A heredoc body starts after the NEXT newline token, which can arrive
+    // after the registering command's AST node has already been built and
+    // returned (e.g. `done <<EOF`, `cat <<A; cat <<B`, `{ ...; } <<EOF &`).
+    // Once the terminating newline of a complete_command has been consumed,
+    // every body for heredocs registered within it has been read, so a
+    // recursive walk attaches any still-empty bodies by id.
+
+    pub(super) fn fill_heredoc_bodies_deep(&mut self, cc: &mut ast::CompleteCommand) {
+        for (aol, _) in &mut cc.items {
+            self.fill_and_or(aol);
+        }
+    }
+
+    fn fill_and_or(&mut self, aol: &mut ast::AndOrList) {
+        self.fill_pipeline(&mut aol.first);
+        for (_, p) in &mut aol.rest {
+            self.fill_pipeline(p);
+        }
+    }
+
+    fn fill_pipeline(&mut self, p: &mut ast::Pipeline) {
+        for cmd in &mut p.commands {
+            self.fill_command(cmd);
+        }
+    }
+
+    fn fill_command(&mut self, cmd: &mut ast::Command) {
+        match cmd {
+            ast::Command::Simple(simple) => self.fill_heredoc_bodies(&mut simple.redirects),
+            ast::Command::Compound(compound, redirects) => {
+                self.fill_compound(compound);
+                self.fill_heredoc_bodies(redirects);
+            }
+            ast::Command::FunctionDef(fd) => {
+                // Fresh at parse time, so the Rc is unshared; get_mut cannot
+                // fail here, but degrade to skipping rather than panicking.
+                if let Some(body) = std::rc::Rc::get_mut(&mut fd.body) {
+                    self.fill_compound(body);
+                }
+                self.fill_heredoc_bodies(&mut fd.redirects);
+            }
+        }
+    }
+
+    fn fill_compound(&mut self, compound: &mut ast::CompoundCommand) {
+        use ast::CompoundCommandKind::*;
+        match &mut compound.kind {
+            BraceGroup { body } | Subshell { body } | For { body, .. } => self.fill_list(body),
+            If {
+                condition,
+                then_part,
+                elif_parts,
+                else_part,
+            } => {
+                self.fill_list(condition);
+                self.fill_list(then_part);
+                for (cond, body) in elif_parts {
+                    self.fill_list(cond);
+                    self.fill_list(body);
+                }
+                if let Some(body) = else_part {
+                    self.fill_list(body);
+                }
+            }
+            While { condition, body } | Until { condition, body } => {
+                self.fill_list(condition);
+                self.fill_list(body);
+            }
+            Case { items, .. } => {
+                for item in items {
+                    self.fill_list(&mut item.body);
+                }
+            }
+        }
+    }
+
+    fn fill_list(&mut self, list: &mut ast::CommandList) {
+        for cc in list {
+            self.fill_heredoc_bodies_deep(cc);
         }
     }
 }

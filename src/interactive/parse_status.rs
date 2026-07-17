@@ -129,5 +129,7 @@ fn is_incomplete_error(kind: &ShellErrorKind) -> bool {
             | ShellErrorKind::Parse(ParseErrorKind::UnterminatedBacktick)
             | ShellErrorKind::Parse(ParseErrorKind::UnterminatedDollarSingleQuote)
             | ShellErrorKind::Parse(ParseErrorKind::UnexpectedEof)
+            // An unclosed heredoc body means the user is still typing it.
+            | ShellErrorKind::Parse(ParseErrorKind::InvalidHereDoc)
     )
 }

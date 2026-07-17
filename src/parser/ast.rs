@@ -228,6 +228,10 @@ pub enum RedirectKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HereDoc {
+    /// Parse-time identity matching the lexer's pending-heredoc registration;
+    /// bodies are read at the next newline (possibly after this node's command
+    /// has been fully parsed) and attached back by this id.
+    pub id: u64,
     pub body: Vec<WordPart>,
     pub strip_tabs: bool,
     pub quoted: bool, // true if delimiter was quoted (no expansion needed)
