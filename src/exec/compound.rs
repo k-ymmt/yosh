@@ -255,7 +255,9 @@ impl Executor {
             if self.exit_requested.is_some() {
                 break;
             }
-            if let Err(e) = self.env.vars.set(var, item.as_str()) {
+            // assign_var (not vars.set): a `for PATH in ...` loop must
+            // invalidate the utility hash on each iteration.
+            if let Err(e) = self.env.assign_var(var, item.as_str()) {
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::ReadonlyVariable,
                     e.to_string(),
@@ -358,5 +360,23 @@ mod tests {
         );
         // The earlier permanent assignment must remain.
         assert_eq!(exec.env.vars.get("y"), Some("initial"));
+    }
+
+    #[test]
+    fn for_loop_variable_named_path_clears_utility_hash() {
+        let prog = Parser::new("for PATH in /only_entry; do :; done")
+            .parse_program()
+            .unwrap();
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.env.utility_hash.insert(
+            "foo".to_string(),
+            crate::env::HashEntry::new(std::path::PathBuf::from("/bin/foo")),
+        );
+        exec.exec_program(&prog);
+        assert!(
+            exec.env.utility_hash.is_empty(),
+            "`for PATH in ...` must invalidate the utility hash"
+        );
+        assert_eq!(exec.env.vars.get("PATH"), Some("/only_entry"));
     }
 }

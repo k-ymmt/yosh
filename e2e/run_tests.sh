@@ -46,7 +46,11 @@ VERBOSE=0
 # Per-test wall-clock budget. Override with YOSH_E2E_TIMEOUT — release.sh sets
 # a higher value because its parallel-load run can stall any single test under
 # CPU contention well past the standalone budget.
-TIMEOUT="${YOSH_E2E_TIMEOUT:-15}"
+# Default bumped 15s -> 30s: fork/wait-heavy tests (e.g. posix_spec/8_env_vars/
+# PATH_search.sh, builtin/job_spec_prefix.sh) intermittently exceeded 15s under
+# full-suite load while passing standalone — likely fork/wait scheduling delay
+# under CPU contention rather than a genuine hang.
+TIMEOUT="${YOSH_E2E_TIMEOUT:-30}"
 
 # ── Auto failure log ─────────────────────────────────────────────────
 # When any test FAILS or TIMES OUT, append details (path, kind, captured
@@ -118,7 +122,7 @@ usage() {
     printf "\nEnvironment:\n"
     printf "  YOSH_E2E_NO_TIMEOUT=1  Skip per-test timeout; never set in CI or\n"
     printf "                         release.sh (individual runaway tests will hang forever)\n"
-    printf "  YOSH_E2E_TIMEOUT=N     Override per-test timeout (default: 15s)\n"
+    printf "  YOSH_E2E_TIMEOUT=N     Override per-test timeout (default: 30s)\n"
     exit 0
 }
 
@@ -136,6 +140,16 @@ done
 # ── Verify shell exists ──────────────────────────────────────────────
 if [ ! -x "$SHELL_UNDER_TEST" ]; then
     printf "Error: shell not found or not executable: %s\n" "$SHELL_UNDER_TEST" >&2
+    exit 1
+fi
+
+# ── Verify perl is available ─────────────────────────────────────────
+# The per-test timeout wrapper relies on a perl one-liner to reset
+# SIGINT/SIGQUIT to SIG_DFL before exec'ing the shell under test (see
+# run_single_test). Fail fast with a clear message rather than letting
+# every test die inside the wrapper.
+if ! command -v perl >/dev/null 2>&1; then
+    printf "Error: e2e runner requires perl (used for per-test timeouts / signal reset)\n" >&2
     exit 1
 fi
 

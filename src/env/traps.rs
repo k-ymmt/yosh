@@ -234,10 +234,12 @@ impl TrapStore {
             };
             if num == 0 {
                 match exit_trap {
-                    Some(TrapAction::Command(cmd)) => crate::builtin::regular::write_stdout_decoded(
-                        &format!("trap -- '{}' EXIT", cmd),
-                        true,
-                    ),
+                    Some(TrapAction::Command(cmd)) => {
+                        crate::builtin::regular::write_stdout_decoded(
+                            &format!("trap -- '{}' EXIT", cmd),
+                            true,
+                        )
+                    }
                     Some(TrapAction::Ignore) => println!("trap -- '' EXIT"),
                     _ => {}
                 }

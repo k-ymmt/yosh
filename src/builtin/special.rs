@@ -101,7 +101,18 @@ fn consume_end_of_options(args: &[String], idx: usize) -> usize {
 }
 
 fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
-    if args.is_empty() || args[0] == "-p" {
+    // POSIX §2.14: `export -p` writes exported variables in re-input
+    // format. Operands after `-p` are NOT dropped (POSIX Issue 8 /
+    // bash behavior; dash ignores them, bash processes them):
+    //   - `export -p name=value` performs the assignment + export
+    //     exactly like `export name=value` (matches bash).
+    //   - `export -p name` prints just that variable, if exported.
+    let print_mode = args.first().map(String::as_str) == Some("-p");
+    let opts_end = if print_mode { 1 } else { 0 };
+    let start = consume_end_of_options(args, opts_end);
+    let operands = &args[start..];
+
+    if args.is_empty() || (print_mode && operands.is_empty()) {
         // Print all exported variables in POSIX re-input format
         let mut exported: Vec<(String, String)> = env.vars.environ().to_vec();
         exported.sort_by(|a, b| a.0.cmp(&b.0));
@@ -114,9 +125,8 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
         return Ok(0);
     }
 
-    let start = consume_end_of_options(args, 0);
     let mut status = 0;
-    for arg in &args[start..] {
+    for arg in operands {
         let name = match arg.find('=') {
             Some(pos) => &arg[..pos],
             None => arg.as_str(),
@@ -134,6 +144,20 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
                 continue;
             }
             env.vars.export(name);
+        } else if print_mode {
+            // `export -p name`: print only this variable (if exported).
+            if let Some((n, value)) = env
+                .vars
+                .environ()
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(n, v)| (n.clone(), v.clone()))
+            {
+                crate::builtin::regular::write_stdout_decoded(
+                    &format!("export {}=\"{}\"", n, value),
+                    true,
+                );
+            }
         } else {
             env.vars.export(name);
         }
@@ -197,8 +221,16 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     // option, readonly shall write...". Only `-p` in the first position
     // triggers listing; `-p` after operands or after `--` (end of
     // options, XBD §12.2 Guideline 10) is validated as a bad identifier.
+    // Operands after `-p` are NOT dropped (POSIX Issue 8 / bash
+    // behavior; dash ignores them): assignments are performed + marked
+    // readonly, name-only operands print just that variable.
     // Mirrors builtin_export.
-    if args.is_empty() || args[0] == "-p" {
+    let print_mode = args.first().map(String::as_str) == Some("-p");
+    let opts_end = if print_mode { 1 } else { 0 };
+    let start = consume_end_of_options(args, opts_end);
+    let operands = &args[start..];
+
+    if args.is_empty() || (print_mode && operands.is_empty()) {
         let readonly_vars: Vec<(String, String)> = env
             .vars
             .vars_iter()
@@ -213,9 +245,8 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         return Ok(0);
     }
 
-    let start = consume_end_of_options(args, 0);
     let mut status = 0;
-    for arg in &args[start..] {
+    for arg in operands {
         let name = match arg.find('=') {
             Some(pos) => &arg[..pos],
             None => arg.as_str(),
@@ -233,6 +264,12 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
                 continue;
             }
             env.vars.set_readonly(name);
+        } else if print_mode {
+            // `readonly -p name`: print only this variable (if readonly).
+            if let Some(v) = env.vars.get_var(name).filter(|v| v.readonly) {
+                let line = format!("readonly {}={}", name, v.value);
+                crate::builtin::regular::write_stdout_decoded(&line, true);
+            }
         } else {
             env.vars.set_readonly(name);
         }
@@ -1038,6 +1075,84 @@ mod tests {
         assert_eq!(status, 0);
         // The actual listing is on stdout (println!) which we don't capture here;
         // smoke-test via the e2e suite for output content.
+    }
+
+    #[test]
+    fn export_p_with_assignment_assigns_and_exports() {
+        // `export -p foo=v` must not silently drop the operand: the
+        // assignment is performed and the variable exported (bash
+        // behavior; POSIX Issue 8 permits operands with -p).
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "export",
+            &["-p".to_string(), "expvar=val1".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 0);
+        let var = executor.env.vars.get_var("expvar").expect("must be set");
+        assert_eq!(var.value, "val1");
+        assert!(var.exported, "export -p name=value must export the var");
+    }
+
+    #[test]
+    fn export_p_with_name_only_prints_without_exporting() {
+        // `export -p name` prints that variable (stdout not captured
+        // here) but must NOT export it — unlike plain `export name`.
+        let mut executor = Executor::new("yosh", vec![]);
+        executor.env.vars.set("plainvar", "v").unwrap();
+        let status = exec_special_builtin(
+            "export",
+            &["-p".to_string(), "plainvar".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 0);
+        let var = executor.env.vars.get_var("plainvar").expect("must be set");
+        assert!(
+            !var.exported,
+            "export -p name is print-only; it must not export"
+        );
+    }
+
+    #[test]
+    fn export_p_rejects_invalid_identifier_operand() {
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "export",
+            &["-p".to_string(), "1bad=v".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 1);
+    }
+
+    #[test]
+    fn readonly_p_with_assignment_assigns_and_marks_readonly() {
+        // Same fix as export: `readonly -p foo=v` performs the
+        // assignment and marks it readonly instead of dropping it.
+        let mut executor = Executor::new("yosh", vec![]);
+        let status = exec_special_builtin(
+            "readonly",
+            &["-p".to_string(), "rovar=rv".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 0);
+        assert_eq!(executor.env.vars.get("rovar"), Some("rv"));
+        assert!(executor.env.vars.is_readonly("rovar"));
+    }
+
+    #[test]
+    fn readonly_p_with_name_only_prints_without_marking_readonly() {
+        let mut executor = Executor::new("yosh", vec![]);
+        executor.env.vars.set("notro", "v").unwrap();
+        let status = exec_special_builtin(
+            "readonly",
+            &["-p".to_string(), "notro".to_string()],
+            &mut executor,
+        );
+        assert_eq!(status, 0);
+        assert!(
+            !executor.env.vars.is_readonly("notro"),
+            "readonly -p name is print-only; it must not set the readonly flag"
+        );
     }
 
     #[test]

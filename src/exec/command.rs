@@ -32,7 +32,7 @@ fn path_component_dir(dir: &str) -> &str {
 pub fn find_in_path(
     cmd: &str,
     path_var: &str,
-    cache: &mut std::collections::HashMap<String, std::path::PathBuf>,
+    cache: &mut std::collections::HashMap<String, crate::env::HashEntry>,
 ) -> Option<PathBuf> {
     match lookup_in_path(cmd, path_var, cache) {
         PathLookup::Executable(p) => Some(p),
@@ -93,20 +93,21 @@ fn walk_path_lookup(cmd: &str, path_var: &str) -> PathLookup {
 pub fn lookup_in_path(
     cmd: &str,
     path_var: &str,
-    cache: &mut std::collections::HashMap<String, std::path::PathBuf>,
+    cache: &mut std::collections::HashMap<String, crate::env::HashEntry>,
 ) -> PathLookup {
     // POSIX: pathnames containing '/' are not subject to PATH search, so
     // they bypass the cache entirely (never read, never inserted).
     let use_cache = !cmd.contains('/');
     if use_cache
-        && let Some(cached) = cache.get(cmd)
-        && is_executable_file(cached)
+        && let Some(cached) = cache.get_mut(cmd)
+        && is_executable_file(&cached.path)
     {
-        return PathLookup::Executable(cached.clone());
+        cached.hits += 1;
+        return PathLookup::Executable(cached.path.clone());
     }
     let result = walk_path_lookup(cmd, path_var);
     if use_cache && let PathLookup::Executable(p) = &result {
-        cache.insert(cmd.to_string(), p.clone());
+        cache.insert(cmd.to_string(), crate::env::HashEntry::new(p.clone()));
     }
     result
 }
@@ -239,12 +240,14 @@ mod tests {
         let path_var = env::var("PATH").unwrap_or_else(|_| "/bin:/usr/bin".to_string());
         let mut cache = HashMap::new();
         let canonical_sh = find_in_path("sh", &path_var, &mut cache).unwrap();
-        // Cache should now contain "sh".
-        assert_eq!(cache.get("sh"), Some(&canonical_sh));
+        // Cache should now contain "sh", with no hits recorded yet.
+        assert_eq!(cache.get("sh").map(|e| &e.path), Some(&canonical_sh));
+        assert_eq!(cache.get("sh").map(|e| e.hits), Some(0));
 
-        // Subsequent call must return the same path.
+        // Subsequent call must return the same path and count the hit.
         let again = find_in_path("sh", &path_var, &mut cache).unwrap();
         assert_eq!(again, canonical_sh);
+        assert_eq!(cache.get("sh").map(|e| e.hits), Some(1));
     }
 
     #[test]
@@ -261,7 +264,7 @@ mod tests {
         let mut cache = HashMap::new();
         cache.insert(
             "sh".to_string(),
-            PathBuf::from("/nonexistent/fake_sh_12345"),
+            crate::env::HashEntry::new(PathBuf::from("/nonexistent/fake_sh_12345")),
         );
         let path_var = env::var("PATH").unwrap_or_else(|_| "/bin:/usr/bin".to_string());
         let result = find_in_path("sh", &path_var, &mut cache);
@@ -270,6 +273,6 @@ mod tests {
         let p = result.unwrap();
         assert!(p.exists());
         // Cache should be refreshed to the real path.
-        assert_eq!(cache.get("sh"), Some(&p));
+        assert_eq!(cache.get("sh").map(|e| &e.path), Some(&p));
     }
 }

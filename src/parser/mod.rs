@@ -308,6 +308,33 @@ impl Parser {
                 return Ok(Command::Compound(compound, redirects));
             }
 
+            // `x=1 f() ...`: the POSIX grammar has no assignment prefix
+            // before a function definition (function_definition derives
+            // from `fname '(' ')'` with no cmd_prefix). Without this check
+            // the words would fall through to parse_simple_command, which
+            // stops at `(` and later produces a misleading downstream
+            // error ("empty compound list in subshell") after executing
+            // `x=1 f` as a command. Detect the pattern while still inside
+            // the look-ahead (state is restored / abandoned either way)
+            // and emit an accurate diagnostic. bash/dash both report a
+            // syntax error near the `(` here.
+            if !prefix_assignments.is_empty() {
+                let name_candidate = match &self.current.token {
+                    Token::Word(w) => w.as_literal().is_some_and(word::is_valid_name),
+                    _ => false,
+                };
+                if name_candidate && self.advance().is_ok() && self.current.token == Token::LParen {
+                    let span = self.current_span();
+                    return Err(ShellError::parse(
+                        ParseErrorKind::UnexpectedToken,
+                        span.line,
+                        span.column,
+                        "syntax error near unexpected token '(': \
+                         assignments may not precede a function definition",
+                    ));
+                }
+            }
+
             // Not a compound-after-assignments case: restore and fall through.
             self.lexer.restore_state(saved_state);
             self.current = saved_current;
@@ -387,6 +414,40 @@ mod tests {
     fn test_empty_program() {
         let prog = parse("");
         assert!(prog.commands.is_empty());
+    }
+
+    // ── assignment prefix before a function definition (SP5) ──
+
+    #[test]
+    fn assignment_prefix_before_function_def_is_explicit_syntax_error() {
+        let err = Parser::new("x=1 f() { :; }")
+            .parse_program()
+            .expect_err("must be a syntax error");
+        assert_eq!(err.exit_code(), 2);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("syntax error near unexpected token '('"),
+            "unexpected message: {msg}"
+        );
+        assert!(
+            msg.contains("function definition"),
+            "message must explain the cause: {msg}"
+        );
+    }
+
+    #[test]
+    fn multiple_assignment_prefixes_before_function_def_also_error() {
+        let err = Parser::new("a=1 b=2 f ( ) { :; }")
+            .parse_program()
+            .expect_err("must be a syntax error");
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn assignment_prefix_before_function_call_still_parses() {
+        let sc = parse_first_simple("x=1 f arg");
+        assert_eq!(sc.assignments.len(), 1);
+        assert_eq!(sc.words.len(), 2);
     }
 
     #[test]

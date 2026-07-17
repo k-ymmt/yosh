@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use expectrl::{Eof, Expect, Regex, session::OsSession};
 
-use helpers::pty::{TIMEOUT, spawn_yosh, wait_for_prompt, wait_for_ps2, wait_for_raw_mode};
+use helpers::pty::{
+    TIMEOUT, read_until_prompt, spawn_yosh, wait_for_prompt, wait_for_ps2, wait_for_raw_mode,
+};
 
 /// Wait for command output (a line following a newline, not the input echo).
 /// Uses a regex that matches the pattern preceded by a newline. The \r before
@@ -156,6 +158,78 @@ fn test_pty_history_up_re_executes() {
     s.send("\x1b[A").unwrap(); // Up arrow (ANSI escape)
     s.send("\r").unwrap();
     expect_output(&mut s, "first_cmd", "history re-execution failed");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_fc_not_added_to_history() {
+    // POSIX-strict fc rationale: "the fc command shall not be entered
+    // into the history list". After running an fc invocation, up-arrow
+    // must recall the command *before* fc, not the fc invocation.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("echo fc_probe\r").unwrap();
+    expect_output(&mut s, "fc_probe", "seed command output not found");
+    wait_for_prompt(&mut s);
+
+    // Run an fc invocation with its listing muted; the trailing marker
+    // gives us a reliable output anchor. The whole line's first word is
+    // `fc`, so it is skipped from history as a unit.
+    s.send("fc -l >/dev/null 2>&1; echo fc_done\r").unwrap();
+    expect_output(&mut s, "fc_done", "fc marker output not found");
+    wait_for_prompt(&mut s);
+
+    // Up then Enter: must re-execute `echo fc_probe`, not the fc line.
+    // If fc had been recorded, the recall would print fc_done instead
+    // and the fc_probe expect below would time out.
+    s.send("\x1b[A").unwrap(); // Up arrow (ANSI escape)
+    s.send("\r").unwrap();
+    expect_output(
+        &mut s,
+        "fc_probe",
+        "up-arrow should recall the pre-fc command",
+    );
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_read_until_prompt_ignores_transient_repaints() {
+    // read_until_prompt historically bound to the transient `$ <partial>`
+    // repaint the line editor emits after every keystroke. The idle-prompt
+    // implementation must ride out those repaints: type the command
+    // byte-by-byte (forcing a repaint per keystroke), then confirm the
+    // helper captures the real command output and leaves the session
+    // synchronized at the true post-command prompt.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    let cmd = "echo repaint_probe";
+    for i in 0..cmd.len() {
+        s.send(&cmd[i..i + 1]).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    s.send("\r").unwrap();
+
+    let out = read_until_prompt(&mut s);
+    assert!(
+        out.contains("\nrepaint_probe") || out.contains("\r\nrepaint_probe"),
+        "read_until_prompt returned before the command output: {:?}",
+        out
+    );
+
+    // The session must be usable immediately after — proves we stopped
+    // at the idle prompt, not mid-repaint.
+    s.send("echo after_probe\r").unwrap();
+    expect_output(
+        &mut s,
+        "after_probe",
+        "session out of sync after read_until_prompt",
+    );
     wait_for_prompt(&mut s);
 
     exit_shell(&mut s);

@@ -609,7 +609,10 @@ impl<'a> ArithParser<'a> {
             // an assignment reads back the current line but does not
             // persist (matches bash: `$((LINENO+=1))` does not "stick").
             if name != "LINENO" {
-                let _ = self.env.vars.set(&name, val.to_string());
+                // assign_var (not vars.set): invalidates the utility hash
+                // when PATH is assigned inside arithmetic. Errors
+                // (readonly) stay ignored, as before.
+                let _ = self.env.assign_var(&name, val.to_string());
             }
             return Ok(val);
         }
@@ -621,9 +624,10 @@ impl<'a> ArithParser<'a> {
         {
             self.pos += 1; // consume '='
             let val = self.ternary()?;
-            // Assign into env (LINENO: see comment above)
+            // Assign into env (LINENO: see comment above; assign_var for
+            // PATH-cache invalidation, errors stay ignored)
             if name != "LINENO" {
-                let _ = self.env.vars.set(&name, val.to_string());
+                let _ = self.env.assign_var(&name, val.to_string());
             }
             return Ok(val);
         }
@@ -701,6 +705,32 @@ mod tests {
     #[test]
     fn test_simple_number() {
         assert_eq!(evaluate(&mut env(), "42"), Ok("42".to_string()));
+    }
+
+    // ── PATH cache invalidation through arithmetic assignment (SP2) ──
+
+    #[test]
+    fn arith_simple_assignment_to_path_clears_utility_hash() {
+        let mut e = env();
+        e.utility_hash.insert(
+            "foo".to_string(),
+            crate::env::HashEntry::new(std::path::PathBuf::from("/bin/foo")),
+        );
+        assert_eq!(evaluate(&mut e, "PATH = 5"), Ok("5".to_string()));
+        assert!(e.utility_hash.is_empty());
+        assert_eq!(e.vars.get("PATH"), Some("5"));
+    }
+
+    #[test]
+    fn arith_compound_assignment_to_path_clears_utility_hash() {
+        let mut e = env();
+        e.vars.set("PATH", "1").unwrap();
+        e.utility_hash.insert(
+            "foo".to_string(),
+            crate::env::HashEntry::new(std::path::PathBuf::from("/bin/foo")),
+        );
+        assert_eq!(evaluate(&mut e, "PATH += 2"), Ok("3".to_string()));
+        assert!(e.utility_hash.is_empty());
     }
 
     #[test]

@@ -49,7 +49,23 @@ pub struct ShellEnv {
     /// Auto-populated by `find_in_path` / `lookup_in_path` cache misses
     /// and by explicit `hash utility...` invocations. Cleared by
     /// `hash -r` and on `PATH` reassignment (POSIX §2.5.3).
-    pub(crate) utility_hash: HashMap<String, PathBuf>,
+    pub(crate) utility_hash: HashMap<String, HashEntry>,
+}
+
+/// One remembered `$PATH` lookup in the utility hash table.
+#[derive(Debug, Clone)]
+pub struct HashEntry {
+    pub path: PathBuf,
+    /// Number of times this cached entry satisfied a lookup without a
+    /// fresh PATH walk. Shown by the `hash` builtin listing (format is
+    /// implementation-defined per POSIX; bash also reports hit counts).
+    pub hits: u64,
+}
+
+impl HashEntry {
+    pub fn new(path: PathBuf) -> Self {
+        HashEntry { path, hits: 0 }
+    }
 }
 
 impl ShellEnv {
@@ -148,8 +164,10 @@ mod tests {
     #[test]
     fn assign_var_clears_utility_hash_on_path_change() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        env.utility_hash
-            .insert("foo".to_string(), std::path::PathBuf::from("/bin/foo"));
+        env.utility_hash.insert(
+            "foo".to_string(),
+            HashEntry::new(std::path::PathBuf::from("/bin/foo")),
+        );
         env.assign_var("PATH", "/new").unwrap();
         assert!(env.utility_hash.is_empty());
     }
@@ -157,8 +175,10 @@ mod tests {
     #[test]
     fn assign_var_leaves_utility_hash_for_non_path_var() {
         let mut env = ShellEnv::new("yosh", vec![]);
-        env.utility_hash
-            .insert("foo".to_string(), std::path::PathBuf::from("/bin/foo"));
+        env.utility_hash.insert(
+            "foo".to_string(),
+            HashEntry::new(std::path::PathBuf::from("/bin/foo")),
+        );
         env.assign_var("OTHER", "x").unwrap();
         assert_eq!(env.utility_hash.len(), 1);
     }
@@ -167,8 +187,10 @@ mod tests {
     fn unset_var_clears_utility_hash_on_path_unset() {
         let mut env = ShellEnv::new("yosh", vec![]);
         env.assign_var("PATH", "/x").unwrap();
-        env.utility_hash
-            .insert("foo".to_string(), std::path::PathBuf::from("/bin/foo"));
+        env.utility_hash.insert(
+            "foo".to_string(),
+            HashEntry::new(std::path::PathBuf::from("/bin/foo")),
+        );
         env.unset_var("PATH").unwrap();
         assert!(env.utility_hash.is_empty());
     }
@@ -177,6 +199,69 @@ mod tests {
     fn shell_env_new_seeds_optind_to_one() {
         let env = ShellEnv::new("yosh", vec![]);
         assert_eq!(env.vars.get("OPTIND"), Some("1"));
+    }
+
+    #[test]
+    fn nested_function_scopes_save_and_restore_optind_per_level() {
+        // push → push → set OPTIND → inner pop restores the inner
+        // caller's value → outer pop restores the outer caller's value.
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars.set("OPTIND", "7").unwrap(); // outer caller's value
+
+        env.vars.push_scope(vec![]); // saves "7", resets visible to "1"
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
+        env.vars.set("OPTIND", "3").unwrap(); // inner caller's value
+
+        env.vars.push_scope(vec![]); // saves "3", resets visible to "1"
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
+        env.vars.set("OPTIND", "9").unwrap(); // innermost body's value
+        assert_eq!(env.vars.get("OPTIND"), Some("9"));
+
+        env.vars.pop_scope(); // must see the inner saved value
+        assert_eq!(env.vars.get("OPTIND"), Some("3"));
+
+        env.vars.pop_scope(); // must see the outer saved value
+        assert_eq!(env.vars.get("OPTIND"), Some("7"));
+    }
+
+    #[test]
+    fn readonly_optind_survives_scope_push_pop_round_trip() {
+        // A readonly global OPTIND: push_scope still gives the function
+        // body a fresh writable OPTIND=1 in the new scope, and pop_scope
+        // skips the (failing) restore write, leaving the readonly global
+        // value intact — no panic, no partial state.
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars.set("OPTIND", "5").unwrap();
+        env.vars.set_readonly("OPTIND");
+
+        env.vars.push_scope(vec![]);
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
+        // The scope-local OPTIND is a fresh variable, not the readonly one.
+        env.vars.set("OPTIND", "2").unwrap();
+        assert_eq!(env.vars.get("OPTIND"), Some("2"));
+
+        env.vars.pop_scope();
+        assert_eq!(env.vars.get("OPTIND"), Some("5"));
+        assert!(env.vars.is_readonly("OPTIND"));
+    }
+
+    #[test]
+    fn shell_env_new_overrides_inherited_optind_to_one() {
+        // POSIX: "OPTIND shall be initialized to 1 when the shell is
+        // invoked" — even when the parent process exported OPTIND=5.
+        //
+        // SAFETY: std::env::set_var/remove_var are serialized against
+        // std::env::vars_os (used by VarStore::from_environ) by std's
+        // internal environment lock; no test in this crate reads the
+        // environment through raw libc while this runs.
+        unsafe { std::env::set_var("OPTIND", "5") };
+        let env = ShellEnv::new("yosh", vec![]);
+        unsafe { std::env::remove_var("OPTIND") };
+        assert_eq!(env.vars.get("OPTIND"), Some("1"));
+        // The inherited variable came from the environment, so the
+        // overwritten OPTIND must still be exported.
+        let var = env.vars.get_var("OPTIND").expect("OPTIND must be set");
+        assert!(var.exported, "inherited OPTIND stays exported after reset");
     }
 
     #[test]

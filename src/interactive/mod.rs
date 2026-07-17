@@ -291,10 +291,17 @@ impl Repl {
                     // command" sees the user's prior input, not the fc
                     // command itself. `exit` is still captured: the
                     // break above falls through to this add call.
-                    self.executor
-                        .env
-                        .history
-                        .add(&cmd_text, histsize, &histcontrol);
+                    //
+                    // POSIX rationale: "the fc command shall not be
+                    // entered into the history list" — skip the add when
+                    // the input is an fc invocation (see
+                    // should_skip_history for the light-parse contract).
+                    if !should_skip_history(&cmd_text) {
+                        self.executor
+                            .env
+                            .history
+                            .add(&cmd_text, histsize, &histcontrol);
+                    }
 
                     input_buffer.clear();
                 }
@@ -350,5 +357,56 @@ impl Repl {
         }
 
         self.executor.env.exec.last_exit_status
+    }
+}
+
+/// POSIX-strict `fc` history exclusion: the fc rationale says the fc
+/// command "shall not be entered into the history list", so `Repl::run`
+/// skips `history.add` for fc invocations.
+///
+/// Light-parse contract: only the first whitespace-delimited word of the
+/// typed text is inspected. A leading `fc` (bare `fc`, `fc -l`, ...,
+/// including whitespace-led input) is skipped; `fc` behind pipes,
+/// semicolons, `&&`, subshells, or as an argument is deliberately NOT
+/// detected and is still recorded. Trade-off: up-arrow can no longer
+/// recall the fc invocation itself.
+fn should_skip_history(cmd_text: &str) -> bool {
+    cmd_text.split_whitespace().next() == Some("fc")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_skip_history;
+
+    #[test]
+    fn skips_bare_fc() {
+        assert!(should_skip_history("fc"));
+    }
+
+    #[test]
+    fn skips_fc_with_args() {
+        assert!(should_skip_history("fc -l"));
+        assert!(should_skip_history("fc -s one=two echo"));
+    }
+
+    #[test]
+    fn skips_whitespace_led_fc() {
+        assert!(should_skip_history("  fc -l"));
+        assert!(should_skip_history("\tfc"));
+    }
+
+    #[test]
+    fn keeps_non_fc_commands() {
+        assert!(!should_skip_history("echo fc"));
+        assert!(!should_skip_history("fcc -l"));
+        assert!(!should_skip_history(""));
+        assert!(!should_skip_history("   "));
+    }
+
+    #[test]
+    fn light_parse_does_not_look_past_first_word() {
+        // Deliberate limitation: fc behind separators is still recorded.
+        assert!(!should_skip_history("true; fc -l"));
+        assert!(!should_skip_history("echo x | fc -l"));
     }
 }

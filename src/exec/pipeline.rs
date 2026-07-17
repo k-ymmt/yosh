@@ -114,6 +114,15 @@ impl Executor {
                     close_all_pipes(&pipes);
 
                     let status = self.exec_command(cmd);
+                    // POSIX §2.11: the EXIT trap runs on shell exit,
+                    // including subshell exit — and each pipeline member is
+                    // a subshell environment. Traps inherited from the
+                    // parent were reset above (reset_for_subshell), so this
+                    // only fires an EXIT trap set INSIDE this member, e.g.
+                    // `{ trap 'echo t' EXIT; :; } | cat`. Bash (5.x) fires
+                    // on every member; dash only on the rightmost. We adopt
+                    // the bash stance, mirroring exec_subshell's sequence.
+                    self.execute_exit_trap();
                     super::exit_child(status);
                 }
                 Ok(ForkResult::Parent { child }) => {

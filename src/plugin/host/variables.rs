@@ -22,7 +22,9 @@ pub fn deny_variables_get(_ctx: &HostContext, _name: &str) -> Result<Option<Stri
 }
 
 pub fn host_variables_set(ctx: &HostContext, name: &str, value: &str) -> Result<(), ErrorCode> {
-    ctx.bound_env_with(|env| env.vars.set(name, value).map_err(|_| ErrorCode::IoFailed))?
+    // assign_var (not vars.set): a plugin assigning PATH must invalidate
+    // the shell's utility hash like any other assignment path.
+    ctx.bound_env_with(|env| env.assign_var(name, value).map_err(|_| ErrorCode::IoFailed))?
 }
 
 pub fn deny_variables_set(_ctx: &HostContext, _name: &str, _value: &str) -> Result<(), ErrorCode> {
@@ -38,7 +40,9 @@ pub fn host_variables_export_env(
     value: &str,
 ) -> Result<(), ErrorCode> {
     ctx.bound_env_with(|env| {
-        env.vars.set(name, value).map_err(|_| ErrorCode::IoFailed)?;
+        // assign_var: see host_variables_set (PATH cache invalidation).
+        env.assign_var(name, value)
+            .map_err(|_| ErrorCode::IoFailed)?;
         env.vars.export(name);
         Ok(())
     })?

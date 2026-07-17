@@ -184,6 +184,19 @@ impl Executor {
         self.env.exec.trap_context_status = prev;
     }
 
+    /// Exit the whole shell process from the shell parent (NOT a forked
+    /// child — post-fork children must use [`exit_child`]).
+    ///
+    /// Fires the EXIT trap first (POSIX §2.11: the EXIT trap runs on any
+    /// shell exit, including a fatal error such as a special-builtin
+    /// redirection failure in a non-interactive shell — dash agrees),
+    /// then exits via `std::process::exit`, matching the exit path used
+    /// by `check_errexit` and `handle_default_signal`.
+    pub(crate) fn exit_shell(&mut self, status: i32) -> ! {
+        self.execute_exit_trap();
+        std::process::exit(status);
+    }
+
     /// Execute the EXIT trap if set.
     pub fn execute_exit_trap(&mut self) {
         if let Some(crate::env::TrapAction::Command(cmd)) = self.env.traps.exit_trap.take() {

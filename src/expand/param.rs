@@ -109,7 +109,10 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                 // Matches bash: `${LINENO:=x}` reads the current line but
                 // does not make the assignment stick.
                 if name != "LINENO" {
-                    let _ = env.vars.set(name, &new_val);
+                    // assign_var (not vars.set): invalidates the utility
+                    // hash when PATH is assigned via `${PATH:=...}`.
+                    // Errors (readonly) stay ignored, as before.
+                    let _ = env.assign_var(name, new_val.as_str());
                 }
                 Ok(new_val)
             } else {
@@ -379,6 +382,29 @@ mod tests {
 
     fn make_env() -> ShellEnv {
         ShellEnv::new("yosh", vec![])
+    }
+
+    // ── PATH cache invalidation through ${PATH:=word} (SP2) ──
+
+    #[test]
+    fn assign_expansion_to_path_clears_utility_hash() {
+        let mut env = make_env();
+        env.vars.unset("PATH").unwrap();
+        env.utility_hash.insert(
+            "foo".to_string(),
+            crate::env::HashEntry::new(std::path::PathBuf::from("/bin/foo")),
+        );
+        let expr = ParamExpr::Assign {
+            name: "PATH".to_string(),
+            word: Some(Word::literal("/newpath")),
+            null_check: false,
+        };
+        assert_eq!(expand(&mut env, &expr).unwrap(), "/newpath");
+        assert_eq!(env.vars.get("PATH"), Some("/newpath"));
+        assert!(
+            env.utility_hash.is_empty(),
+            "${{PATH:=...}} must invalidate the utility hash"
+        );
     }
 
     // ── Simple ──

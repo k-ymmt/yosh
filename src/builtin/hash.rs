@@ -2,8 +2,9 @@
 //!
 //! `hash [-r] [name...]`
 //!
-//! - No args: print the utility-hash cache (one path per line, sorted
-//!   by name).
+//! - No args: print the utility-hash cache (bash-style `hits\tcommand`
+//!   table, sorted by name; nothing is printed when the cache is empty).
+//!   POSIX leaves the format implementation-defined.
 //! - `-r`: clear the cache.
 //! - `name...`: for each name, record its location. If `name` contains
 //!   `/`, the path is taken as-is and validated. Otherwise it is
@@ -50,12 +51,17 @@ pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         if clear {
             return Ok(0);
         }
-        // List the cache, sorted by name for determinism.
+        // List the cache, sorted by name for determinism. bash-style
+        // table: hit count = times the cached entry satisfied a lookup
+        // without a fresh PATH walk.
         let mut names: Vec<&String> = env.utility_hash.keys().collect();
         names.sort();
+        if !names.is_empty() {
+            println!("hits\tcommand");
+        }
         for name in names {
-            if let Some(path) = env.utility_hash.get(name) {
-                println!("{}", path.display());
+            if let Some(entry) = env.utility_hash.get(name) {
+                println!("{:4}\t{}", entry.hits, entry.path.display());
             }
         }
         return Ok(0);
@@ -75,7 +81,8 @@ pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| name.clone());
-            env.utility_hash.insert(basename, path);
+            env.utility_hash
+                .insert(basename, crate::env::HashEntry::new(path));
         } else {
             let path_var = env
                 .vars
@@ -109,8 +116,10 @@ mod tests {
     #[test]
     fn r_flag_clears_cache() {
         let mut env = env_with_path("/bin:/usr/bin");
-        env.utility_hash
-            .insert("foo".to_string(), PathBuf::from("/bin/foo"));
+        env.utility_hash.insert(
+            "foo".to_string(),
+            crate::env::HashEntry::new(PathBuf::from("/bin/foo")),
+        );
         let args = vec!["-r".to_string()];
         let r = builtin_hash(&args, &mut env).unwrap();
         assert_eq!(r, 0);
@@ -160,11 +169,27 @@ mod tests {
     }
 
     #[test]
+    fn cache_hit_increments_hits_count() {
+        use crate::exec::command::find_in_path;
+        let path_var = std::env::var("PATH").unwrap_or_else(|_| "/bin:/usr/bin".to_string());
+        let mut env = env_with_path(&path_var);
+        // `hash sh` inserts via find_in_path's PATH-walk (miss → 0 hits).
+        let r = builtin_hash(&[String::from("sh")], &mut env).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(env.utility_hash.get("sh").map(|e| e.hits), Some(0));
+        // A later lookup served from the cache counts as a hit.
+        let _ = find_in_path("sh", &path_var, &mut env.utility_hash);
+        assert_eq!(env.utility_hash.get("sh").map(|e| e.hits), Some(1));
+    }
+
+    #[test]
     fn r_with_operand_clears_then_lookups() {
         let path_var = std::env::var("PATH").unwrap_or_else(|_| "/bin:/usr/bin".to_string());
         let mut env = env_with_path(&path_var);
-        env.utility_hash
-            .insert("stale".to_string(), PathBuf::from("/old/stale"));
+        env.utility_hash.insert(
+            "stale".to_string(),
+            crate::env::HashEntry::new(PathBuf::from("/old/stale")),
+        );
         let args = vec!["-r".to_string(), "sh".to_string()];
         let r = builtin_hash(&args, &mut env).unwrap();
         assert_eq!(r, 0);

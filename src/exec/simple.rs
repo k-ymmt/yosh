@@ -146,7 +146,7 @@ fn resolve_exec_path(
     cmd: &str,
     vars: &crate::env::vars::VarStore,
     effective_path: Option<&str>,
-    utility_hash: &mut std::collections::HashMap<String, std::path::PathBuf>,
+    utility_hash: &mut std::collections::HashMap<String, crate::env::HashEntry>,
 ) -> ResolvedExec {
     use super::command::is_executable_file;
 
@@ -521,7 +521,7 @@ impl Executor {
                         self.env.exec.last_exit_status = 1;
                         if !self.env.mode.is_interactive {
                             eprintln!("yosh: {}", e);
-                            super::exit_child(1);
+                            self.exit_shell(1);
                         }
                         return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
                     }
@@ -534,7 +534,7 @@ impl Executor {
                     self.env.exec.last_exit_status = 1;
                     if !self.env.mode.is_interactive {
                         eprintln!("yosh: {}", e);
-                        super::exit_child(1);
+                        self.exit_shell(1);
                     }
                     return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
                 }
@@ -959,10 +959,16 @@ impl Executor {
             BuiltinKind::NotBuiltin => {}
         }
 
-        use crate::exec::command::{PathLookup, lookup_in_path};
+        use crate::exec::command::{PathLookup, lookup_in_path_uncached};
 
+        // Uncached lookup: `utility_hash` is keyed by name alone and is
+        // (conceptually) scoped to $PATH. A `command -p` hit found via the
+        // POSIX *default* PATH must not seed the cache, or a later plain
+        // `name` lookup under a different $PATH would reuse it — the same
+        // cache-key mismatch fixed for `PATH=dir cmd` prefix overrides in
+        // edb5254, which also resolves uncached.
         let dp = default_path(&self.env).to_string();
-        match lookup_in_path(name, &dp, &mut self.env.utility_hash) {
+        match lookup_in_path_uncached(name, &dp) {
             PathLookup::Executable(p) => exec_external_absolute(&p, name, args, &mut self.env),
             PathLookup::NotExecutable(p) => {
                 eprintln!("yosh: command: {}: permission denied", p.display());
@@ -1089,6 +1095,13 @@ fn exec_external_absolute(
 /// True if the word (or any nested word inside quoting/parameter expansion)
 /// contains a command substitution. Used by the assignment-only command path
 /// to decide whether `$?` must be updated to reflect the substitution.
+///
+/// Command substitutions ONLY: a pure arithmetic expansion does not run a
+/// command and must not count, so `false; x=$((1+1))` yields `$?` = 0
+/// (bash agrees; POSIX leaves it implementation-defined). An arithmetic
+/// expansion that itself embeds `$(cmd)` DOES count — the arithmetic
+/// evaluator (`expand::arith::expand_vars`) runs the substitution and
+/// updates `last_exit_status`, so mirror its trigger (`$` followed by `(`).
 fn word_has_command_sub(word: &Word) -> bool {
     word.parts.iter().any(part_has_command_sub)
 }
@@ -1100,7 +1113,10 @@ fn part_has_command_sub(part: &WordPart) -> bool {
         | WordPart::SingleQuoted(_)
         | WordPart::DollarSingleQuoted(_)
         | WordPart::Tilde(_) => false,
-        WordPart::CommandSub(_) | WordPart::ArithSub(_) => true,
+        WordPart::CommandSub(_) => true,
+        // ArithSub carries the raw expression text; `$(` is exactly what
+        // the arithmetic evaluator dispatches to command substitution.
+        WordPart::ArithSub(expr) => expr.contains("$("),
         WordPart::DoubleQuoted(parts) => parts.iter().any(part_has_command_sub),
         WordPart::Parameter(p) => param_has_command_sub(p),
     }
@@ -1126,6 +1142,47 @@ fn param_has_command_sub(p: &ParamExpr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── word_has_command_sub: CmdSub-only predicate (SP5) ──
+
+    #[test]
+    fn pure_arith_sub_does_not_count_as_command_sub() {
+        // `x=$((1+1))` after `false` must yield $?=0 (bash behavior).
+        assert!(!part_has_command_sub(&WordPart::ArithSub(
+            "1+1".to_string()
+        )));
+    }
+
+    #[test]
+    fn arith_sub_with_embedded_command_sub_counts() {
+        // `$(( $(cmd) + 1 ))` runs the substitution and updates $?.
+        assert!(part_has_command_sub(&WordPart::ArithSub(
+            " $(exit 5) + 1".to_string()
+        )));
+    }
+
+    #[test]
+    fn arith_sub_predicate_recurses_through_double_quotes() {
+        assert!(!part_has_command_sub(&WordPart::DoubleQuoted(vec![
+            WordPart::ArithSub("2*3".to_string())
+        ])));
+    }
+
+    // ── command -p must not seed the $PATH-scoped utility hash (SP2) ──
+
+    #[test]
+    fn command_p_lookup_does_not_seed_utility_hash() {
+        let mut exec = crate::exec::Executor::new("yosh", vec![]);
+        // `sh` is not a builtin, so this exercises the default-PATH
+        // external lookup path.
+        let status =
+            exec.exec_command_with_default_path("sh", &["-c".to_string(), ":".to_string()]);
+        assert_eq!(status, 0, "command -p sh -c : must succeed");
+        assert!(
+            !exec.env.utility_hash.contains_key("sh"),
+            "a default-PATH hit must not be reusable by later $PATH lookups"
+        );
+    }
 
     #[test]
     fn build_exec_cstrings_for_path_accepts_valid_utf8_args() {
@@ -1241,7 +1298,9 @@ mod tests {
         // normal (non-override) lookup had happened first.
         cache.insert(
             "sh".to_string(),
-            std::path::PathBuf::from("/nonexistent/fake_sh_override_test"),
+            crate::env::HashEntry::new(std::path::PathBuf::from(
+                "/nonexistent/fake_sh_override_test",
+            )),
         );
 
         // With an override PATH that does contain a real "sh", resolution
@@ -1254,7 +1313,7 @@ mod tests {
         // the override-path resolution), preserving normal-path cache
         // semantics for subsequent non-override lookups.
         assert_eq!(
-            cache.get("sh").map(|p| p.as_path()),
+            cache.get("sh").map(|e| e.path.as_path()),
             Some(std::path::Path::new("/nonexistent/fake_sh_override_test"))
         );
     }

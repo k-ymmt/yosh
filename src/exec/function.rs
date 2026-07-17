@@ -50,6 +50,14 @@ impl Executor {
             None => status,
         };
 
+        // Drain async signal traps at the call boundary so a trap installed
+        // inside a long-running function fires when the function returns,
+        // not only after the next top-level command completes. Runs BEFORE
+        // last_exit_status is finalized so the trap action cannot clobber
+        // the function's `$?`. Fast-path cost is one atomic store plus one
+        // non-blocking self-pipe read(2) (see signal::drain_pending_signals).
+        self.process_pending_signals();
+
         self.env.exec.last_exit_status = final_status;
         final_status
     }

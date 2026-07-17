@@ -95,9 +95,26 @@ pub fn builtin_getopts(args: &[String], env: &mut ShellEnv) -> Result<i32, Shell
 
     env.assign_var(parsed.var_name, step.var_value)
         .expect("var_name readonly was pre-checked");
-    let optarg_value = step.optarg.unwrap_or_default();
-    env.assign_var("OPTARG", optarg_value)
-        .expect("OPTARG readonly was pre-checked");
+    // OPTARG handling (POSIX getopts EXTENDED DESCRIPTION): when the
+    // option takes an option-argument it is placed in OPTARG, and in
+    // silent (leading-`:`) error mode OPTARG carries the offending
+    // option character — both arrive here as `Some`. In every other
+    // case ("no option was found, or ... does not have an
+    // option-argument", including loud error reporting) POSIX says
+    // OPTARG shall be unset; bash unsets it on all of these paths and
+    // dash on the loud-error paths, so unset rather than clobbering it
+    // with an empty string. At end-of-options POSIX leaves OPTARG
+    // unspecified; unsetting matches bash.
+    match step.optarg {
+        Some(optarg_value) => {
+            env.assign_var("OPTARG", optarg_value)
+                .expect("OPTARG readonly was pre-checked");
+        }
+        None => {
+            env.unset_var("OPTARG")
+                .expect("OPTARG readonly was pre-checked");
+        }
+    }
     env.assign_var("OPTIND", step.optind.to_string())
         .expect("OPTIND readonly was pre-checked");
     env.vars.set_getopts_subindex(step.subindex);
@@ -164,11 +181,22 @@ fn step_getopts(
     };
 
     let bytes = elt.as_bytes();
+    // Option characters are ASCII alphanumerics per POSIX (XBD §12.2
+    // Utility Syntax Guideline 3), so the parse is byte-at-a-time. A
+    // non-ASCII byte (e.g. the first byte of a multi-byte UTF-8 char in
+    // `-é`) is misdecoded by the `as char` cast, so it is deterministically
+    // routed to the unknown-option branch below and never matched against
+    // `spec` — even when `spec` happens to contain the same byte inside a
+    // multi-byte character of its own.
     let ch = bytes[cursor] as char;
     let next_cursor = cursor + 1;
     let rest_of_elt = next_cursor < bytes.len();
 
-    let pos = spec.bytes().position(|b| b == ch as u8);
+    let pos = if bytes[cursor].is_ascii() {
+        spec.bytes().position(|b| b == bytes[cursor])
+    } else {
+        None
+    };
 
     // Unknown option
     if pos.is_none() {
@@ -546,6 +574,91 @@ mod tests {
         let mut env = make_env();
         let rc = super::builtin_getopts(&s(&["a", "1foo"]), &mut env).unwrap();
         assert_eq!(rc, 2);
+    }
+
+    #[test]
+    fn step_non_ascii_option_byte_hits_unknown_branch_even_if_spec_shares_byte() {
+        // `-é` is the bytes [0x2D, 0xC3, 0xA9]. The parse is
+        // byte-at-a-time (option chars are ASCII per POSIX), so the
+        // 0xC3 byte must deterministically take the unknown-option
+        // path — even though spec "é" contains that very byte inside
+        // its own multi-byte character.
+        let step = step_getopts("é", &["-é"], 1, 0, false);
+        assert_eq!(step.var_value, "?");
+        assert_eq!(step.exit, 0);
+        assert!(step.stderr.is_some(), "loud mode must diagnose");
+        assert_eq!(step.optind, 1, "second byte of -é still pending");
+        assert_eq!(step.subindex, 2);
+
+        // Continuation byte 0xA9 is likewise unknown; element consumed.
+        let step2 = step_getopts("é", &["-é"], 1, 2, false);
+        assert_eq!(step2.var_value, "?");
+        assert_eq!(step2.exit, 0);
+        assert_eq!(step2.optind, 2);
+        assert_eq!(step2.subindex, 0);
+    }
+
+    #[test]
+    fn builtin_no_arg_option_unsets_optarg() {
+        // POSIX: "if the option that was found does not have an
+        // option-argument, OPTARG shall be unset" (bash agrees).
+        let mut env = make_env();
+        env.vars.set("OPTARG", "prev").unwrap();
+        env.vars.set_positional_params(vec!["-a".into()]);
+        let rc = super::builtin_getopts(&s(&["a", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 0);
+        assert_eq!(env.vars.get("opt"), Some("a"));
+        assert_eq!(env.vars.get("OPTARG"), None);
+    }
+
+    #[test]
+    fn builtin_end_of_options_unsets_optarg() {
+        // POSIX leaves OPTARG unspecified at end-of-options; bash
+        // unsets it (dash keeps the old value). We match bash.
+        let mut env = make_env();
+        env.vars.set("OPTARG", "prev").unwrap();
+        env.vars.set_positional_params(vec!["arg".into()]);
+        let rc = super::builtin_getopts(&s(&["a", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 1);
+        assert_eq!(env.vars.get("OPTARG"), None);
+    }
+
+    #[test]
+    fn builtin_loud_unknown_option_unsets_optarg() {
+        // POSIX (non-silent mode): name set to `?`, OPTARG unset,
+        // diagnostic written. bash and dash both unset here.
+        let mut env = make_env();
+        env.vars.set("OPTARG", "prev").unwrap();
+        env.vars.set_positional_params(vec!["-x".into()]);
+        let rc = super::builtin_getopts(&s(&["a", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 0);
+        assert_eq!(env.vars.get("opt"), Some("?"));
+        assert_eq!(env.vars.get("OPTARG"), None);
+    }
+
+    #[test]
+    fn builtin_silent_unknown_option_sets_optarg_to_option_char() {
+        // POSIX (silent mode): OPTARG carries the offending option
+        // character — this specified behavior must survive the
+        // unset-on-None change.
+        let mut env = make_env();
+        env.vars.set("OPTARG", "prev").unwrap();
+        env.vars.set_positional_params(vec!["-x".into()]);
+        let rc = super::builtin_getopts(&s(&[":a", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 0);
+        assert_eq!(env.vars.get("opt"), Some("?"));
+        assert_eq!(env.vars.get("OPTARG"), Some("x"));
+    }
+
+    #[test]
+    fn builtin_silent_missing_arg_sets_optarg_to_option_char() {
+        let mut env = make_env();
+        env.vars.set("OPTARG", "prev").unwrap();
+        env.vars.set_positional_params(vec!["-a".into()]);
+        let rc = super::builtin_getopts(&s(&[":a:", "opt"]), &mut env).unwrap();
+        assert_eq!(rc, 0);
+        assert_eq!(env.vars.get("opt"), Some(":"));
+        assert_eq!(env.vars.get("OPTARG"), Some("a"));
     }
 
     #[test]

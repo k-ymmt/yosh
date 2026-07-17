@@ -41,6 +41,10 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     };
     let values = split_fields(&ifs, &result.bytes, parsed.var_names.len());
 
+    // Assignments are applied in order and NOT rolled back on failure:
+    // if the Kth variable is readonly, variables 1..K-1 keep their new
+    // values when the error fires. POSIX leaves this implementation-
+    // defined; bash exhibits the same partial-assignment behavior.
     for (name, value) in parsed.var_names.iter().zip(values) {
         if env.assign_var(name, value).is_err() {
             eprintln!("yosh: read: `{}': readonly variable", name);
@@ -60,8 +64,12 @@ impl ByteReader for StdinByteReader {
         let mut buf = [0u8; 1];
         loop {
             // SAFETY: buf is a valid 1-byte stack allocation that lives for
-            // the duration of this call; STDIN_FILENO is always open at
-            // process start; the length matches the buffer size exactly.
+            // the duration of this call; the length matches the buffer size
+            // exactly. STDIN_FILENO is a plain fd number that is valid to
+            // pass at syscall time regardless of the fd's state: if the
+            // user has closed fd 0 (e.g. `exec 0>&-`), libc::read returns
+            // -1 with EBADF, which the error path below propagates as
+            // `Err` — fail-safe, never undefined behavior.
             let n =
                 unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, 1) };
             if n == 1 {
@@ -592,6 +600,34 @@ mod tests {
         // " " is also IFS and is consumed greedily as adjacent ws.
         let out = split_for(": \t", to_line("a: b"), 2);
         assert_eq!(out, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn split_n_eq_1_sep_only_ifs_leading_sep_not_trimmed() {
+        // IFS=":" has no whitespace-IFS bytes, so the N=1 path trims
+        // nothing: the leading ':' stays (bash/dash: `IFS=: read x`
+        // with input ":a" gives x=":a").
+        let out = split_for(":", to_line(":a"), 1);
+        assert_eq!(out, vec![":a".to_string()]);
+    }
+
+    #[test]
+    fn split_n_eq_3_collapses_multi_space_runs() {
+        // Runs of whitespace-IFS collapse into a single separator.
+        let out = split_for(" \t\n", to_line("a   b   c"), 3);
+        assert_eq!(out, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn split_escaped_leading_sep_ifs_byte_stays_in_field_one() {
+        // Non-raw input "\:a" with IFS=":": the ':' arrived escaped, so
+        // it is not an IFS separator and stays in field 1.
+        let line = vec![
+            lb(b':', true), // escaped ':'
+            lb(b'a', false),
+        ];
+        let out = split_fields(":", &line, 2);
+        assert_eq!(out, vec![":a".to_string(), "".to_string()]);
     }
 
     #[test]

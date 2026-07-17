@@ -118,31 +118,124 @@ pub fn wait_for_raw_mode(session: &OsSession) {
     }
 }
 
-/// **Caveat:** When yosh's interactive line editor is in syntax-highlight
-/// mode (the default), the line editor repaints `$ <partial>` after every
-/// keystroke. This function's `\$ ` regex can match one of those transient
-/// repaints instead of the actual post-command prompt, returning prematurely
-/// with only echoed input bytes. For interactive PTY tests that send
-/// arbitrary commands, prefer [`capture_until_sentinel`].
-///
+/// Strip ANSI escape sequences (CSI `ESC [ ... <final>`, OSC
+/// `ESC ] ... BEL/ST`, and two-byte `ESC <char>` sequences) from raw
+/// PTY output. Printable text and CR/LF are preserved.
+pub fn strip_ansi(raw: &[u8]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < raw.len() {
+        let b = raw[i];
+        if b == 0x1b {
+            i += 1;
+            match raw.get(i) {
+                // CSI: ESC [ <params/intermediates 0x20-0x3f> <final 0x40-0x7e>
+                Some(b'[') => {
+                    i += 1;
+                    while i < raw.len() && !(0x40..=0x7e).contains(&raw[i]) {
+                        i += 1;
+                    }
+                    i += 1; // consume final byte (or run off the end)
+                }
+                // OSC: ESC ] ... terminated by BEL or ST (ESC \)
+                Some(b']') => {
+                    i += 1;
+                    while i < raw.len() {
+                        if raw[i] == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if raw[i] == 0x1b && raw.get(i + 1) == Some(&b'\\') {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                // Two-byte escape (ESC 7, ESC 8, ESC =, ...)
+                Some(_) => i += 1,
+                None => {}
+            }
+        } else {
+            // Preserve CR/LF and printable bytes; drop other C0 controls
+            // (backspace-based repaints would otherwise corrupt matching).
+            if b == b'\r' || b == b'\n' || b == b'\t' || b >= 0x20 {
+                out.push(b as char);
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+/// How long the PTY must stay quiet after a trailing `$ ` before we
+/// accept it as the *idle* prompt rather than a transient repaint that
+/// is still being written.
+const PROMPT_IDLE_GRACE: Duration = Duration::from_millis(60);
+
 /// Read output that arrives between the previously-sent command and the
-/// next `$ ` prompt, returning the captured text with the trailing prompt
-/// stripped.
+/// next **idle** `$ ` prompt, returning the ANSI-stripped captured text
+/// with the trailing prompt removed.
+///
+/// yosh's line editor repaints `$ <partial>` after every keystroke under
+/// syntax highlighting, so a plain `\$ ` regex would bind to a transient
+/// repaint and return prematurely. This implementation instead
+/// accumulates raw PTY bytes, strips ANSI escape sequences, and only
+/// returns once the stripped buffer *ends with* `$ ` and the PTY has
+/// stayed quiet for a short grace window — a transient repaint ends with
+/// the partial input text (`$ echo fo`), not with the bare prompt, and
+/// mid-repaint prompt bytes are followed by more output within the grace
+/// window.
 ///
 /// Use this after `session.send_line("...")` to capture the command's
-/// stdout. Caller is responsible for asserting on the returned string —
-/// note that the captured output includes the command echo at the start
-/// (e.g. `"echo foo\r\nfoo\r\n"`), and assertions should typically be
-/// substring (`out.contains("foo")`) rather than equality.
-///
-/// When yosh's LineEditor is running in syntax-highlight mode, the echo
-/// portion may include ANSI escape sequences (`\x1b[...m`); strip them
-/// before substring-matching if your test cares about colored output.
+/// stdout. The captured text includes the command echo at the start, so
+/// assertions should typically be substring or `\nfoo`-anchored rather
+/// than equality. Unlike the historical implementation, the returned
+/// text is already ANSI-stripped. For step-wise scripted interaction,
+/// [`capture_until_sentinel`] remains the more precise primitive.
 pub fn read_until_prompt(session: &mut OsSession) -> String {
-    let captured = session
-        .expect(Regex(r"\$ "))
-        .expect("next prompt not found");
-    String::from_utf8_lossy(captured.before()).into_owned()
+    let deadline = Instant::now() + TIMEOUT;
+    let mut raw: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match session.try_read(&mut chunk) {
+            Ok(0) => panic!(
+                "EOF while waiting for idle prompt; captured so far: {:?}",
+                strip_ansi(&raw)
+            ),
+            Ok(n) => {
+                raw.extend_from_slice(&chunk[..n]);
+                // Keep draining while bytes are flowing.
+                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let stripped = strip_ansi(&raw);
+                if stripped.ends_with("$ ") {
+                    // Tentative idle prompt — confirm the PTY stays
+                    // quiet so we don't accept a mid-repaint `$ `.
+                    std::thread::sleep(PROMPT_IDLE_GRACE);
+                    match session.try_read(&mut chunk) {
+                        Ok(n) if n > 0 => {
+                            raw.extend_from_slice(&chunk[..n]);
+                            continue;
+                        }
+                        _ => {
+                            let end = stripped.len() - 2;
+                            return stripped[..end].to_string();
+                        }
+                    }
+                }
+                if Instant::now() >= deadline {
+                    panic!(
+                        "timed out waiting for idle prompt; captured so far: {:?}",
+                        stripped
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => panic!("read error while waiting for idle prompt: {}", e),
+        }
+    }
 }
 
 /// Send `cmd` followed by `; echo __YOSH_DONE__` and capture everything
@@ -172,6 +265,39 @@ pub fn capture_until_sentinel(session: &mut OsSession, cmd: &str) -> String {
         .expect("sentinel __YOSH_DONE__ not found");
     let out = String::from_utf8_lossy(captured.before()).into_owned();
     // Resync: consume up to and including the next prompt.
+    let _ = session.expect(Regex(r"\$ ")).expect("prompt not found");
+    out
+}
+
+/// Variant of [`capture_until_sentinel`] that routes the sentinel echo
+/// to fd 2 (`; echo __YOSH_DONE__ >&2`).
+///
+/// Use this for step-wise interaction across an `exec >file` boundary:
+/// once the shell's fd 1 is redirected to a file, a plain
+/// `echo __YOSH_DONE__` lands in the file and [`capture_until_sentinel`]
+/// hangs waiting for a sentinel that never reaches the PTY. The sentinel
+/// travelling on fd 2 still reaches the PTY (yosh writes its prompt on
+/// stderr too, so the post-sentinel prompt resync also works).
+///
+/// Note the portable POSIX form `echo ... >&2` (redirection after the
+/// command), not the bash-ism `>&2 echo ...`.
+///
+/// Anchoring differs from [`capture_until_sentinel`]: while fd 1 is
+/// redirected, the line editor's echo of the typed command goes to the
+/// redirect target instead of the PTY, so the sentinel may be the very
+/// first byte the PTY sees — a `\r?\n` prefix anchor would never match.
+/// Instead the *typed* sentinel is quote-split (`__YOSH_D"ONE__"`) so the
+/// contiguous marker string can only ever appear as real command output,
+/// never inside the echoed input, and no newline anchor is needed.
+pub fn capture_until_sentinel_via_stderr(session: &mut OsSession, cmd: &str) -> String {
+    let full = format!("{}; echo __YOSH_D\"ONE__\" >&2", cmd);
+    session.send_line(&full).unwrap();
+    let captured = session
+        .expect("__YOSH_DONE__")
+        .expect("sentinel __YOSH_DONE__ not found on stderr");
+    let out = String::from_utf8_lossy(captured.before()).into_owned();
+    // Resync: the prompt is printed on stderr, so it reaches the PTY
+    // even while fd 1 is redirected elsewhere.
     let _ = session.expect(Regex(r"\$ ")).expect("prompt not found");
     out
 }

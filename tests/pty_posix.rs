@@ -15,7 +15,8 @@ mod helpers;
 use expectrl::{Eof, Expect, session::OsSession};
 
 use helpers::pty::{
-    capture_until_sentinel, run_and_drain, spawn_yosh, spawn_yosh_with_env, wait_for_prompt,
+    capture_until_sentinel, capture_until_sentinel_via_stderr, run_and_drain, spawn_yosh,
+    spawn_yosh_with_env, wait_for_prompt,
 };
 
 mod fc {
@@ -291,6 +292,50 @@ mod exec_redirect {
         assert!(
             out.contains("persistent"),
             "missing 'persistent' in: {:?}",
+            out
+        );
+
+        session.send_line("exit").unwrap();
+        let _ = session.expect(Eof);
+    }
+
+    #[test]
+    fn stepwise_interaction_via_stderr_sentinel() {
+        // Step-wise interaction across an `exec >file` boundary. Once
+        // fd 1 is redirected to the file, a plain
+        // `echo __YOSH_DONE__` sentinel lands in the file and
+        // capture_until_sentinel hangs. capture_until_sentinel_via_stderr
+        // sends the sentinel with `>&2`, so it travels on fd 2 and still
+        // reaches the PTY; the prompt is printed on stderr too, so the
+        // helper's prompt resync also survives the redirect. This lets
+        // each step run as its own send/expect round-trip instead of
+        // fusing everything into one compound command (contrast
+        // no_cmd_redirects above).
+        let (mut session, tmpdir) = spawn_yosh();
+        wait_for_prompt(&mut session);
+
+        let tmp = tmpdir.path().to_string_lossy().to_string();
+        run_and_drain(&mut session, &format!("export TEST_TMPDIR={}", tmp));
+
+        // Step 1: redirect the shell's stdout to a file.
+        let _ = capture_until_sentinel_via_stderr(&mut session, r#"exec >"$TEST_TMPDIR/out""#);
+
+        // Step 2: fd 1 still points at the file — this output must not
+        // appear on the PTY, and the step must not hang.
+        let out = capture_until_sentinel_via_stderr(&mut session, "echo hidden_by_redirect");
+        assert!(
+            !(out.contains("\nhidden_by_redirect") || out.contains("\r\nhidden_by_redirect")),
+            "redirected stdout leaked back to the PTY: {:?}",
+            out
+        );
+
+        // Step 3: read the file back over fd 2 to prove the redirected
+        // output landed there (cat's stdout would go to the file too,
+        // since fd 1 is still redirected).
+        let out = capture_until_sentinel_via_stderr(&mut session, r#"cat "$TEST_TMPDIR/out" >&2"#);
+        assert!(
+            out.contains("\nhidden_by_redirect") || out.contains("\r\nhidden_by_redirect"),
+            "expected 'hidden_by_redirect' from the redirect target file in: {:?}",
             out
         );
 
