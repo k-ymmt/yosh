@@ -13,7 +13,7 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
         "export" => builtin_export(args, &mut executor.env),
         "unset" => builtin_unset(args, &mut executor.env),
         "readonly" => builtin_readonly(args, &mut executor.env),
-        "return" => builtin_return(args, &mut executor.env),
+        "return" => builtin_return(args, executor),
         "break" => builtin_break(args, &mut executor.env),
         "continue" => builtin_continue(args, &mut executor.env),
         "set" => {
@@ -72,10 +72,11 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
         match args[0].parse::<i32>() {
             Ok(n) => n & 0xFF,
             Err(_) => {
-                return Err(ShellError::runtime(
-                    RuntimeErrorKind::InvalidArgument,
-                    format!("exit: {}: numeric argument required", args[0]),
-                ));
+                // POSIX §2.8.1: a special-builtin error still terminates the
+                // shell — diagnose and fall through to the normal exit
+                // sequence with status 2 instead of returning to the caller.
+                eprintln!("yosh: exit: {}: numeric argument required", args[0]);
+                2
             }
         }
     };
@@ -236,7 +237,8 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     Ok(status)
 }
 
-fn builtin_return(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+fn builtin_return(args: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
+    let env = &mut executor.env;
     if env.vars.scope_depth() <= 1 && !env.mode.in_dot_script {
         return Err(ShellError::runtime(
             RuntimeErrorKind::IoError,
@@ -249,10 +251,14 @@ fn builtin_return(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
         match args[0].parse::<i32>() {
             Ok(n) => n & 0xFF,
             Err(_) => {
-                return Err(ShellError::runtime(
-                    RuntimeErrorKind::InvalidArgument,
-                    format!("return: {}: numeric argument required", args[0]),
-                ));
+                // POSIX §2.8.1: a special-builtin error terminates a
+                // non-interactive shell with status 2 (matches dash).
+                eprintln!("yosh: return: {}: numeric argument required", args[0]);
+                env.exec.last_exit_status = 2;
+                if !env.mode.is_interactive {
+                    executor.exit_requested = Some(2);
+                }
+                return Ok(2);
             }
         }
     };

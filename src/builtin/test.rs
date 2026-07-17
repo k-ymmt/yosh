@@ -60,6 +60,12 @@ fn evaluate(args: &[&str]) -> Result<bool, TestError> {
             eval_unary(args[0], args[1])
         }
         3 => {
+            // POSIX §2.14 test, 3-argument rules in order: a binary primary
+            // in $2 wins over `!` negation and `( )` grouping, so
+            // `[ ! = x ]` compares the strings `!` and `x`.
+            if is_binary_primary(args[1]) {
+                return eval_binary(args[0], args[1], args[2]);
+            }
             if args[0] == "!" {
                 return Ok(!evaluate(&args[1..])?);
             }
@@ -147,6 +153,14 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
     }
 }
 
+/// True when `op` is one of the POSIX §2.14 binary primaries.
+fn is_binary_primary(op: &str) -> bool {
+    matches!(
+        op,
+        "=" | "!=" | "-eq" | "-ne" | "-lt" | "-gt" | "-le" | "-ge"
+    )
+}
+
 fn eval_binary(lhs: &str, op: &str, rhs: &str) -> Result<bool, TestError> {
     match op {
         // String comparison uses bytewise ordering (LC_COLLATE=C
@@ -212,6 +226,20 @@ mod tests {
     fn bracket_requires_closing() {
         // No closing `]` — exit 2 regardless of which operands precede.
         assert_eq!(b(&["x"]), 2);
+    }
+
+    #[test]
+    fn three_arg_binary_primary_beats_negation() {
+        // POSIX §2.14: `[ ! = x ]` compares the strings `!` and `x`.
+        assert_eq!(t(&["!", "=", "x"]), 1);
+        assert_eq!(t(&["!", "=", "!"]), 0);
+        assert_eq!(t(&["!", "!=", "x"]), 0);
+    }
+
+    #[test]
+    fn three_arg_negation_still_applies_without_binary_primary() {
+        assert_eq!(t(&["!", "-n", ""]), 0);
+        assert_eq!(t(&["!", "-n", "x"]), 1);
     }
 
     #[test]
