@@ -65,6 +65,11 @@ pub struct Executor {
     pub env: ShellEnv,
     pub plugins: PluginManager,
     errexit_suppressed_depth: usize,
+    /// Set by `exec_and_or` when the status it returned is exempt from
+    /// `set -e` per POSIX §2.14.11: the pipeline that produced it began
+    /// with `!`, or it came from a non-final component of an AND-OR list
+    /// (short-circuit). Consumed by `check_errexit`.
+    errexit_exempt_status: bool,
     pub exit_requested: Option<i32>,
 }
 
@@ -74,6 +79,7 @@ impl Executor {
             env: ShellEnv::new(shell_name, args),
             plugins: PluginManager::new(),
             errexit_suppressed_depth: 0,
+            errexit_exempt_status: false,
             exit_requested: None,
         }
     }
@@ -84,6 +90,7 @@ impl Executor {
             env,
             plugins: PluginManager::new(),
             errexit_suppressed_depth: 0,
+            errexit_exempt_status: false,
             exit_requested: None,
         }
     }
@@ -140,9 +147,15 @@ impl Executor {
         self.env.mode.options.errexit && self.errexit_suppressed_depth == 0
     }
 
+    /// Drop any propagated errexit exemption (used at boundaries the
+    /// exemption must not cross, e.g. function-call return).
+    pub(crate) fn clear_errexit_exempt(&mut self) {
+        self.errexit_exempt_status = false;
+    }
+
     /// Errexit check after command execution.
     pub fn check_errexit(&mut self, status: i32) {
-        if status != 0 && self.should_errexit() {
+        if status != 0 && !self.errexit_exempt_status && self.should_errexit() {
             self.execute_exit_trap();
             if self.env.mode.is_interactive {
                 self.exit_requested = Some(status);

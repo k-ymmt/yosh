@@ -2,7 +2,9 @@ use nix::unistd::{ForkResult, fork};
 
 use super::{Executor, exit_child, preview_command};
 use crate::error::{RuntimeErrorKind, ShellError};
-use crate::parser::ast::{AndOrList, AndOrOp, Command, CompleteCommand, Program, SeparatorOp};
+use crate::parser::ast::{
+    AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, SeparatorOp,
+};
 use crate::signal;
 
 impl Executor {
@@ -68,11 +70,14 @@ impl Executor {
     pub fn exec_and_or(&mut self, and_or: &AndOrList) -> i32 {
         let has_rest = !and_or.rest.is_empty();
 
-        let mut status = if and_or.first.negated || has_rest {
-            self.with_errexit_suppressed(|e| e.exec_pipeline(&and_or.first))
-        } else {
-            self.exec_pipeline(&and_or.first)
-        };
+        // POSIX §2.14.11: the final status is exempt from `set -e` when the
+        // pipeline that produced it began with `!`, or when it came from a
+        // non-final component of the list (short-circuit). The flag is set
+        // AFTER each pipeline runs (nested lists inside the pipeline set it
+        // for themselves) so the value left when we return describes the
+        // status we return.
+        let first_exempt = and_or.first.negated || has_rest;
+        let mut status = self.exec_pipeline_errexit(&and_or.first, first_exempt);
 
         if self.env.exec.flow_control.is_some() || self.exit_requested.is_some() {
             return status;
@@ -88,11 +93,8 @@ impl Executor {
                 continue;
             }
 
-            status = if pipeline.negated || !is_last {
-                self.with_errexit_suppressed(|e| e.exec_pipeline(pipeline))
-            } else {
-                self.exec_pipeline(pipeline)
-            };
+            let exempt = pipeline.negated || !is_last;
+            status = self.exec_pipeline_errexit(pipeline, exempt);
 
             if self.env.exec.flow_control.is_some() || self.exit_requested.is_some() {
                 break;
@@ -100,6 +102,26 @@ impl Executor {
         }
 
         self.env.exec.last_exit_status = status;
+        status
+    }
+
+    /// Run one pipeline of an AND-OR list, maintaining
+    /// `errexit_exempt_status`: cleared before the run (so a stale value
+    /// from a previous list cannot leak in), forced on afterwards when this
+    /// pipeline is itself exempt, and otherwise left as the pipeline's body
+    /// set it — an in-process compound (brace group, loop, case) whose final
+    /// status came from an exempt pipeline propagates that exemption
+    /// (matches bash/dash; functions and subshells do not propagate).
+    fn exec_pipeline_errexit(&mut self, pipeline: &Pipeline, exempt: bool) -> i32 {
+        self.errexit_exempt_status = false;
+        let status = if exempt {
+            self.with_errexit_suppressed(|e| e.exec_pipeline(pipeline))
+        } else {
+            self.exec_pipeline(pipeline)
+        };
+        if exempt {
+            self.errexit_exempt_status = true;
+        }
         status
     }
 

@@ -20,6 +20,10 @@ impl Executor {
         self.env.exec.loop_depth = saved_loop_depth;
         self.env.exec.indirection_level -= 1;
         self.env.vars.pop_scope();
+        // A function's nonzero return is subject to `set -e` at the call
+        // site even when the body's final pipeline began with `!`
+        // (bash/dash: the exemption does not cross the call boundary).
+        self.clear_errexit_exempt();
 
         let compound_result = match result {
             Ok(s) => s,
