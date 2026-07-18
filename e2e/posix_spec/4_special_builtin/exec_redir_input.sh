@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.10 exec
+# POSIX_REF: 2.15 exec
 # DESCRIPTION: exec with no command applies input redirection to shell
 # EXPECT_OUTPUT: line1
 # EXPECT_EXIT: 0

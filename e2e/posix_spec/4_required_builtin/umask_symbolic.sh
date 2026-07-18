@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: umask utility
+# POSIX_REF: 4 Utilities - umask
 # DESCRIPTION: umask accepts a symbolic mode operand
 # EXPECT_OUTPUT: 0027
 # EXPECT_EXIT: 0

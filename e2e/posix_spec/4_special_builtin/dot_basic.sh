@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.14 dot
+# POSIX_REF: 2.15 dot
 # DESCRIPTION: dot reads commands from file and executes in current environment
 # EXPECT_OUTPUT: imported
 # EXPECT_EXIT: 0

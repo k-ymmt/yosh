@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: kill utility
+# POSIX_REF: 4 Utilities - kill
 # DESCRIPTION: kill accepts %jobspec operands
 # EXPECT_OUTPUT: kill-ok
 # EXPECT_EXIT: 0

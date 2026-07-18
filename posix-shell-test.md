@@ -234,9 +234,9 @@ Coverage is thorough. No required gaps identified beyond items already
 listed under other sections (e.g. quoted IO_NUMBER under §2.7,
 `&&`-newline under §2.9.3).
 
-## 2.11 Signals and Error Handling (`2_11_signals_and_error_handling/`)
+## 2.12 Signals and Error Handling (`2_12_signals_and_error_handling/`)
 
-(Directory numbering follows POSIX.1-2017; reference doc §12.)
+(Reference doc §12.)
 
 - [GAP] Commands in async lists ignore SIGINT/SIGQUIT when job control is
   disabled (`(kill -INT $$; echo alive) & wait`-style probe on the child).
@@ -251,7 +251,7 @@ listed under other sections (e.g. quoted IO_NUMBER under §2.7,
   (`$?` of the last command is visible inside the EXIT trap).
 - [GAP] `trap -p` and `trap -p CONDITION` output form (POSIX 2024).
 
-## 2.12 Shell Execution Environment (`2_12_shell_exec_env/`)
+## 2.13 Shell Execution Environment (`2_13_shell_exec_env/`)
 
 (Reference doc §13.)
 
@@ -260,7 +260,7 @@ listed under other sections (e.g. quoted IO_NUMBER under §2.7,
 - [LEGACY] cd-in-subshell isolation, shell-option isolation, alias/function
   isolation, ignored-signal inheritance (`e2e/subshell/`).
 
-## 2.13 Pattern Matching (`2_13_pattern_matching/`)
+## 2.14 Pattern Matching Notation (`2_14_pattern_matching/`)
 
 (Reference doc §14.)
 
@@ -270,7 +270,7 @@ listed under other sections (e.g. quoted IO_NUMBER under §2.7,
   and a leading `.` (contrast with pathname expansion rules).
 - [GAP] Concatenated single- and multi-character patterns: `a?c*d`.
 
-## 2.14/2.15 times (`2_14_13_times/`)
+## 2.15 times (`2_15_times/`)
 
 Covered adequately.
 

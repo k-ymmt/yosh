@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.10 exec
+# POSIX_REF: 2.15 exec
 # DESCRIPTION: exec with no command applies redirections to the current shell
 # MIGRATED_TO: tests/pty_posix.rs::exec_redirect::no_cmd_redirects
 # EXPECT_OUTPUT: persistent

@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.1 break
+# POSIX_REF: 2.15 break
 # DESCRIPTION: break outside any loop is treated as not-in-loop (exit nonzero, message on stderr)
 # EXPECT_OUTPUT:
 # EXPECT_EXIT: 1

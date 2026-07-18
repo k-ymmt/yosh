@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.12 Shell Execution Environment
+# POSIX_REF: 2.13 Shell Execution Environment
 # DESCRIPTION: Nested subshells maintain isolation at each level
 # EXPECT_OUTPUT<<END
 # inner

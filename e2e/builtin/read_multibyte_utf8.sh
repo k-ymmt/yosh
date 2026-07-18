@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14 read
+# POSIX_REF: 4 Utilities - read
 # DESCRIPTION: read preserves multi-byte UTF-8 input in assigned variables
 # EXPECT_OUTPUT: café 日本語
 # EXPECT_EXIT: 0

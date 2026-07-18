@@ -51,7 +51,7 @@ impl TrapStore {
     }
 
     /// Set a trap for the given condition, using `is_ignored` to decide whether
-    /// to silently no-op (POSIX §2.11: ignored-on-entry signals cannot be trapped
+    /// to silently no-op (POSIX §2.12: ignored-on-entry signals cannot be trapped
     /// or reset). Exposed for unit testing so tests can inject a synthetic
     /// predicate without mutating process signal state.
     pub(crate) fn set_trap_with(
@@ -68,7 +68,7 @@ impl TrapStore {
             return Ok(());
         }
         if is_ignored(num) {
-            // POSIX §2.11: silent no-op.
+            // POSIX §2.12: silent no-op.
             return Ok(());
         }
         self.signal_traps.insert(num, action);
@@ -93,7 +93,7 @@ impl TrapStore {
     }
 
     /// Remove/reset a trap with an injected ignored-on-entry predicate.
-    /// Silent no-op for ignored-on-entry signals per POSIX §2.11.
+    /// Silent no-op for ignored-on-entry signals per POSIX §2.12.
     pub(crate) fn remove_trap_with(&mut self, condition: &str, is_ignored: &dyn Fn(i32) -> bool) {
         let Some(num) = Self::signal_name_to_number(condition) else {
             return;
@@ -130,7 +130,7 @@ impl TrapStore {
     ///
     /// Distinct from [`Self::reset_for_command_sub`]: command substitution
     /// (`$(...)`) preserves parent traps in `saved_traps` for the POSIX
-    /// `traps=$(trap)` save/restore pattern (POSIX §2.14 RATIONALE), but
+    /// `traps=$(trap)` save/restore pattern (POSIX §2.15 trap RATIONALE), but
     /// non-command-sub subshells must show their own (reset) state.
     pub fn reset_for_subshell(&mut self) {
         self.reset_non_ignored();
@@ -191,7 +191,7 @@ impl TrapStore {
             }
         }
 
-        // Union signal_traps keys with ignored-on-entry signals (POSIX §2.11:
+        // Union signal_traps keys with ignored-on-entry signals (POSIX §2.12:
         // these must appear in `trap` output even though we didn't install a
         // TrapAction for them). BTreeSet gives deterministic sort-by-number.
         let mut keys: BTreeSet<i32> = signal_traps.keys().copied().collect();
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_reset_for_subshell_preserves_ignored() {
-        // POSIX §2.11: Ignore-action traps must survive subshell entry.
+        // POSIX §2.12: Ignore-action traps must survive subshell entry.
         let mut store = TrapStore::default();
         store
             .set_trap("HUP", TrapAction::Ignore)

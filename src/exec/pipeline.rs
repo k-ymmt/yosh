@@ -114,7 +114,7 @@ impl Executor {
                     close_all_pipes(&pipes);
 
                     let status = self.exec_command(cmd);
-                    // POSIX §2.11: the EXIT trap runs on shell exit,
+                    // POSIX §2.12: the EXIT trap runs on shell exit,
                     // including subshell exit — and each pipeline member is
                     // a subshell environment. Traps inherited from the
                     // parent were reset above (reset_for_subshell), so this

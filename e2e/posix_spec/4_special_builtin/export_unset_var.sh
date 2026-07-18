@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.9 export
+# POSIX_REF: 2.15 export
 # DESCRIPTION: export of an unset variable marks it; later assignment is exported
 # EXPECT_OUTPUT: later
 # EXPECT_EXIT: 0

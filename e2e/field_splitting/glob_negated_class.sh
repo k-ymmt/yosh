@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.13 Pattern Matching Notation
+# POSIX_REF: 2.14 Pattern Matching Notation
 # DESCRIPTION: Negated character class [!0-9] matches non-digits
 # EXPECT_EXIT: 0
 cd "$TEST_TMPDIR"

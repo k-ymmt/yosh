@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.14 trap
+# POSIX_REF: 2.15 trap
 # DESCRIPTION: Trap action can contain multiple commands
 # EXPECT_OUTPUT<<END
 # hello

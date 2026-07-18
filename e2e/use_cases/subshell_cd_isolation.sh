@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.12 Shell Execution Environment
+# POSIX_REF: 2.13 Shell Execution Environment
 # DESCRIPTION: Use case - cd inside a subshell without affecting the caller's directory
 # EXPECT_OUTPUT<<END
 # inside subshell

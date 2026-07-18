@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.5 continue
+# POSIX_REF: 2.15 continue
 # DESCRIPTION: continue 2 returns to the top of the second enclosing loop
 # EXPECT_OUTPUT<<END
 # 1-1

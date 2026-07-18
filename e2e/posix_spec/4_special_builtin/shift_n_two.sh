@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.13 shift
+# POSIX_REF: 2.15 shift
 # DESCRIPTION: shift 2 shifts two positional parameters
 # EXPECT_OUTPUT: c
 # EXPECT_EXIT: 0

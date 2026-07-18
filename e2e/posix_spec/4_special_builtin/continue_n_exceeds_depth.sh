@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.5 continue
+# POSIX_REF: 2.15 continue
 # DESCRIPTION: continue with n exceeding nesting acts as continue against outermost loop
 # EXPECT_OUTPUT<<END
 # a

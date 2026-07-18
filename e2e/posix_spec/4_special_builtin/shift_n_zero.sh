@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.13 shift
+# POSIX_REF: 2.15 shift
 # DESCRIPTION: shift 0 is a no-op
 # EXPECT_OUTPUT: a b c
 # EXPECT_EXIT: 0

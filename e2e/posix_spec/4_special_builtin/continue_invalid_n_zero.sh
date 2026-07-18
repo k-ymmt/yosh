@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.5 continue
+# POSIX_REF: 2.15 continue
 # DESCRIPTION: continue 0 is invalid
 # EXPECT_EXIT: 2
 # EXPECT_STDERR: continue

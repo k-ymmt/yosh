@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.13 shift
+# POSIX_REF: 2.15 shift
 # DESCRIPTION: Use case - hand-rolled option parsing with while/case/shift
 # EXPECT_OUTPUT: verbose=1 out=result.txt args=input.txt
 set -- -v -o result.txt input.txt

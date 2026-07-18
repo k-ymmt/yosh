@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.15 unset
+# POSIX_REF: 2.15 unset
 # DESCRIPTION: unset removes a variable
 # EXPECT_EXIT: 0
 x=hello

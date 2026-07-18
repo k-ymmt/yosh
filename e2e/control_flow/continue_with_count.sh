@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.3 continue
+# POSIX_REF: 2.15 continue
 # DESCRIPTION: continue N skips to Nth enclosing loop
 # EXPECT_OUTPUT<<END
 # 1-a

@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.18 unset
+# POSIX_REF: 2.15 unset
 # DESCRIPTION: unset accepts multiple names
 # EXPECT_OUTPUT: <><>
 # EXPECT_EXIT: 0

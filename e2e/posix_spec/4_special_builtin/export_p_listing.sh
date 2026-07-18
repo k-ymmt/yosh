@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.9 export
+# POSIX_REF: 2.15 export
 # DESCRIPTION: export -p lists exported variables in re-input form
 # EXPECT_EXIT: 0
 export myvar=value

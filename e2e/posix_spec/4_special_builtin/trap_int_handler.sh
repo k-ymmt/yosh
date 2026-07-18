@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.17 trap
+# POSIX_REF: 2.15 trap
 # DESCRIPTION: trap runs handler then resumes
 # EXPECT_OUTPUT<<END
 # caught

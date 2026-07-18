@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.12 shift
+# POSIX_REF: 2.15 shift
 # DESCRIPTION: shift removes first N positional parameters
 # EXPECT_OUTPUT<<END
 # b c

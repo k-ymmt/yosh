@@ -103,7 +103,7 @@ impl Executor {
                 self.env.traps.reset_for_subshell();
                 signal::reset_child_signals(&ignored);
                 let status = self.exec_body(body);
-                // POSIX §2.11: EXIT pseudo-signal handler runs on shell exit,
+                // POSIX §2.12: EXIT pseudo-signal handler runs on shell exit,
                 // including subshell exit. Fire BEFORE _exit so the action runs
                 // in the child's environment.
                 self.execute_exit_trap();

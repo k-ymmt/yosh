@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.9 export
+# POSIX_REF: 2.15 export
 # DESCRIPTION: export of an existing variable keeps its current value
 # EXPECT_OUTPUT: keep
 # EXPECT_EXIT: 0

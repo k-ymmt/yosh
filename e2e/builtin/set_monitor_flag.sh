@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.11 set
+# POSIX_REF: 2.15 set
 # DESCRIPTION: set -m / set +m toggles m flag in $-
 # EXPECT_OUTPUT<<END
 # has_m=no

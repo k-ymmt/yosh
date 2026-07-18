@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.10 exec
+# POSIX_REF: 2.15 exec
 # DESCRIPTION: exec preserves exported environment
 # EXPECT_OUTPUT: kept
 # EXPECT_EXIT: 0

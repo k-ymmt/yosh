@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: read utility
+# POSIX_REF: 4 Utilities - read
 # DESCRIPTION: read without -r joins backslash-newline continuations and unescapes backslashes
 # EXPECT_OUTPUT<<END
 # x=ab

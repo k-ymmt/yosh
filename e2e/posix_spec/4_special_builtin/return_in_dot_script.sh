@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.12 return
+# POSIX_REF: 2.15 return
 # DESCRIPTION: return inside a dot-sourced script returns from the dot, not the parent shell
 # EXPECT_OUTPUT<<END
 # inside

@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.15 times
+# POSIX_REF: 2.15 times
 # DESCRIPTION: times outputs four mm:ss.ff values on two lines (user/sys for shell, then children)
 # EXPECT_EXIT: 0
 out=$(times)

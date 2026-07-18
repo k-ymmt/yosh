@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.7 set
+# POSIX_REF: 2.15 set
 # DESCRIPTION: set -x traces an assignment whose value contains a command substitution
 # EXPECT_STDERR: + x=hi
 # EXPECT_EXIT: 0

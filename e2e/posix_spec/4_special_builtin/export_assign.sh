@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.9 export
+# POSIX_REF: 2.15 export
 # DESCRIPTION: export NAME=value assigns and exports atomically
 # EXPECT_OUTPUT: hello
 # EXPECT_EXIT: 0

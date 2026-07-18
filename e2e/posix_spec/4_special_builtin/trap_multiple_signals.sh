@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.17 trap
+# POSIX_REF: 2.15 trap
 # DESCRIPTION: trap can set the same action for multiple signals
 # EXPECT_OUTPUT: bye
 # EXPECT_EXIT: 0

@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.9 export
+# POSIX_REF: 2.15 export
 # DESCRIPTION: Use case - export a computed variable so a child shell inherits it
 # EXPECT_OUTPUT<<END
 # child sees mode=production

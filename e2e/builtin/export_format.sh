@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.8 export
+# POSIX_REF: 2.15 export
 # DESCRIPTION: export -p output is suitable for re-input
 # EXPECT_EXIT: 0
 export MY_TEST_EXPORT_VAR=hello

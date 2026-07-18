@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.7 set
+# POSIX_REF: 2.15 set
 # DESCRIPTION: set -e ignores the failure of a non-final AND-OR list component
 # EXPECT_OUTPUT: after
 # EXPECT_EXIT: 0

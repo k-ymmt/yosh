@@ -2,6 +2,13 @@
 
 Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html
 
+> **Note (2026-07-18):** Section numbers in this matrix follow POSIX.1-2017.
+> The `e2e/posix_spec/` directory names and `POSIX_REF` headers have since
+> migrated to POSIX.1-2024 (Issue 8) numbering, where "2.11 Job Control" was
+> inserted and Signals (2.12), Shell Execution Environment (2.13), Pattern
+> Matching Notation (2.14), and Special Built-In Utilities (2.15) shifted up
+> by one. Test paths below have been updated to the renamed directories.
+
 **Legend:**
 - `covered` — at least one focused test exists
 - `thin` — fewer than 3 tests AND missing major sub-behaviors
@@ -262,9 +269,9 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 ## 2.11 Signals and Error Handling
 - Status: covered
 - Tests:
-  - e2e/posix_spec/2_11_signals_and_error_handling/trap_exit_runs_on_exit.sh
-  - e2e/posix_spec/2_11_signals_and_error_handling/trap_dash_resets_default.sh
-  - e2e/posix_spec/2_11_signals_and_error_handling/trap_int_by_name.sh
+  - e2e/posix_spec/2_12_signals_and_error_handling/trap_exit_runs_on_exit.sh
+  - e2e/posix_spec/2_12_signals_and_error_handling/trap_dash_resets_default.sh
+  - e2e/posix_spec/2_12_signals_and_error_handling/trap_int_by_name.sh
   - e2e/signal_and_trap/trap_ignore_signal.sh
   - e2e/signal_and_trap/trap_in_subshell_reset.sh
 - Note: Additional trap-related tests exist under §2.14.14 trap. Tests labeled "2.11 Job Control" (jobs/bg/fg/set_monitor) are a separate POSIX topic (XCU §2.13 Job Control) and are not counted here; see Open Questions.
@@ -279,24 +286,24 @@ Source: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.htm
 - Tests:
   - e2e/field_splitting/glob_char_class.sh
   - e2e/field_splitting/glob_negated_class.sh
-  - e2e/posix_spec/2_13_pattern_matching/star_matches_any_string.sh
-  - e2e/posix_spec/2_13_pattern_matching/question_matches_single_char.sh
-  - e2e/posix_spec/2_13_pattern_matching/bracket_char_class.sh
-  - e2e/posix_spec/2_13_pattern_matching/bracket_negated_class.sh
-  - e2e/posix_spec/2_13_pattern_matching/quoted_glob_literal.sh
+  - e2e/posix_spec/2_14_pattern_matching/star_matches_any_string.sh
+  - e2e/posix_spec/2_14_pattern_matching/question_matches_single_char.sh
+  - e2e/posix_spec/2_14_pattern_matching/bracket_char_class.sh
+  - e2e/posix_spec/2_14_pattern_matching/bracket_negated_class.sh
+  - e2e/posix_spec/2_14_pattern_matching/quoted_glob_literal.sh
 
 ### 2.13.1 Patterns Matching a Single Character
 - Status: covered
 - Tests:
-  - e2e/posix_spec/2_13_pattern_matching/question_matches_single_char.sh
-  - e2e/posix_spec/2_13_pattern_matching/bracket_char_class.sh
-  - e2e/posix_spec/2_13_pattern_matching/bracket_negated_class.sh
+  - e2e/posix_spec/2_14_pattern_matching/question_matches_single_char.sh
+  - e2e/posix_spec/2_14_pattern_matching/bracket_char_class.sh
+  - e2e/posix_spec/2_14_pattern_matching/bracket_negated_class.sh
 
 ### 2.13.2 Patterns Matching Multiple Characters
 - Status: covered
 - Tests:
-  - e2e/posix_spec/2_13_pattern_matching/star_matches_any_string.sh
-  - e2e/posix_spec/2_13_pattern_matching/quoted_glob_literal.sh
+  - e2e/posix_spec/2_14_pattern_matching/star_matches_any_string.sh
+  - e2e/posix_spec/2_14_pattern_matching/quoted_glob_literal.sh
 
 ### 2.13.3 Patterns Used for Filename Expansion
 - Status: thin

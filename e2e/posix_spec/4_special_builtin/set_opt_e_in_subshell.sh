@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.7 set
+# POSIX_REF: 2.15 set
 # DESCRIPTION: set -e inside a subshell exits only the subshell
 # EXPECT_OUTPUT<<END
 # subshell-before

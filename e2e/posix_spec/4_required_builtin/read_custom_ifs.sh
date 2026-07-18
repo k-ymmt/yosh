@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: read utility
+# POSIX_REF: 4 Utilities - read
 # DESCRIPTION: read splits input using the current IFS
 # EXPECT_OUTPUT: a|b|c
 # EXPECT_EXIT: 0

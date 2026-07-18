@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.10 exec
+# POSIX_REF: 2.15 exec
 # DESCRIPTION: exec 3>file then echo >&3 writes to file via the shell fd
 # EXPECT_OUTPUT: hello
 # EXPECT_EXIT: 0

@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.18 unset
+# POSIX_REF: 2.15 unset
 # DESCRIPTION: unset of a read-only variable fails
 # EXPECT_STDERR: unset
 # EXPECT_EXIT: 1

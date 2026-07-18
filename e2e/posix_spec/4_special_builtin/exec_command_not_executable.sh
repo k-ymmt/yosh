@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.10 exec
+# POSIX_REF: 2.15 exec
 # DESCRIPTION: exec of a non-executable file exits 126
 # EXPECT_EXIT: 126
 : > "$TEST_TMPDIR/notexec"

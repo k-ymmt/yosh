@@ -6,6 +6,6 @@
 # parent-alive
 # END
 # EXPECT_EXIT: 0
-( echo "${x_unset_kish:?}" ) 2>/dev/null
+( echo "${x_unset_yosh:?}" ) 2>/dev/null
 [ $? -ne 0 ] && echo subshell-failed
 echo parent-alive

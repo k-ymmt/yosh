@@ -80,7 +80,7 @@ pub fn signal_number_to_name(num: i32) -> Option<&'static str> {
 static SELF_PIPE: OnceLock<(RawFd, RawFd)> = OnceLock::new();
 
 /// Signals inherited with SIG_IGN disposition at shell entry.
-/// Per POSIX §2.11, these signals cannot be trapped or reset by the shell.
+/// Per POSIX §2.12, these signals cannot be trapped or reset by the shell.
 /// Captured once at startup before any yosh handler is installed; never mutated
 /// afterward, so a stale `get()` from a fork/exec child reflects the correct
 /// entry state (because the global is inherited as a copy of the parent's set).
@@ -158,7 +158,7 @@ extern "C" fn signal_handler(sig: libc::c_int) {
 /// This function is idempotent — calling it more than once is a no-op.
 pub fn init_signal_handling() {
     SELF_PIPE.get_or_init(|| {
-        // POSIX §2.11: capture the set of signals inherited as SIG_IGN before we
+        // POSIX §2.12: capture the set of signals inherited as SIG_IGN before we
         // install any yosh handler. Skip registration for those signals so they
         // remain ignored for the shell's lifetime.
         let entry_ignored = IGNORED_ON_ENTRY.get_or_init(capture_ignored_on_entry);
@@ -207,7 +207,7 @@ pub fn init_signal_handling() {
         );
 
         for &(num, _) in HANDLED_SIGNALS {
-            // POSIX §2.11: leave inherited SIG_IGN in place.
+            // POSIX §2.12: leave inherited SIG_IGN in place.
             if entry_ignored.contains(&num) {
                 continue;
             }
@@ -288,7 +288,7 @@ pub fn default_signal(sig: i32) {
 
 /// Reset signals after fork for child processes.
 /// `ignored` signals retain SIG_IGN; all others reset to SIG_DFL.
-/// Signals inherited as SIG_IGN at shell entry (§2.11) are also kept ignored.
+/// Signals inherited as SIG_IGN at shell entry (§2.12) are also kept ignored.
 pub fn reset_child_signals(ignored: &[i32]) {
     let entry_set = IGNORED_ON_ENTRY.get();
     for &(num, _) in HANDLED_SIGNALS {

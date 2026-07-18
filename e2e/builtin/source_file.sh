@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.4 dot
+# POSIX_REF: 2.15 dot
 # DESCRIPTION: . (dot) sources a file in the current environment
 # EXPECT_OUTPUT: sourced
 echo 'MY_SRC_VAR=sourced' > "$TEST_TMPDIR/lib.sh"

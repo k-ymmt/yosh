@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.17 trap
+# POSIX_REF: 2.15 trap
 # DESCRIPTION: trap with no operands writes currently-set traps to stdout
 # EXPECT_EXIT: 0
 trap 'echo bye' EXIT

@@ -60,7 +60,7 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
 
 fn builtin_exit(args: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
     let code = if args.is_empty() {
-        // POSIX §2.11: inside a trap action, `exit` without an operand
+        // POSIX §2.12: inside a trap action, `exit` without an operand
         // uses the value $? had when the trap action started, not the
         // status of the last command in the trap action.
         executor
@@ -101,7 +101,7 @@ fn consume_end_of_options(args: &[String], idx: usize) -> usize {
 }
 
 fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
-    // POSIX §2.14: `export -p` writes exported variables in re-input
+    // POSIX §2.15: `export -p` writes exported variables in re-input
     // format. Operands after `-p` are NOT dropped (POSIX Issue 8 /
     // bash behavior; dash ignores them, bash processes them):
     //   - `export -p name=value` performs the assignment + export
@@ -166,7 +166,7 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
 }
 
 fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
-    // POSIX §2.14.18: unset [-fv] name...
+    // POSIX §2.15 unset: unset [-fv] name...
     // -f removes function definitions; -v (default) removes variables.
     // Combining -f and -v is rejected with status 2.
     let mut mode_f = false;
@@ -217,7 +217,7 @@ fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError>
 }
 
 fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
-    // POSIX §2.14.11: "When invoked with no arguments or with the -p
+    // POSIX §2.15 set: "When invoked with no arguments or with the -p
     // option, readonly shall write...". Only `-p` in the first position
     // triggers listing; `-p` after operands or after `--` (end of
     // options, XBD §12.2 Guideline 10) is validated as a bad identifier.

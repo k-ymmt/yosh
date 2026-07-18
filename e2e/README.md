@@ -93,7 +93,13 @@ Tests are organized by functional category:
 ## POSIX_REF Format Contract
 
 Test files declare which POSIX clause they pin via the `POSIX_REF`
-metadata line. The accepted shapes are:
+metadata line. Section numbers follow IEEE Std 1003.1-2024 (Issue 8),
+matching `docs/posix-shell-reference.md` — note Issue 8 inserted
+"2.11 Job Control", shifting Signals (2.12), Shell Execution
+Environment (2.13), Pattern Matching Notation (2.14), and Special
+Built-In Utilities (2.15) up by one relative to POSIX.1-2017.
+Special built-ins carry no subsection number (`2.15 set`, not
+`2.15.7 set`). The accepted shapes are:
 
 - `2.X.Y <Section Name>` — for ordinary section references.
   Example: `POSIX_REF: 2.6.1 Tilde Expansion`
@@ -108,6 +114,9 @@ metadata line. The accepted shapes are:
 - `8 Environment Variables - <var>` — for Chapter 8 environment-variable
   tests (XBD Chapter 8).
   Example: `POSIX_REF: 8 Environment Variables - IFS`
+- `9.X.Y <Section Name>` — for XBD Chapter 9 (Regular Expressions)
+  references used by pattern-matching tests.
+  Example: `POSIX_REF: 9.3.5 RE Bracket Expression - Character Classes`
 
 A naive grep for one shape misses the others. To enumerate all
 §2.10.2-related tests, use:

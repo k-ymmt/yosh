@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.10 exec
+# POSIX_REF: 2.15 exec
 # DESCRIPTION: exec with a command replaces the shell with the command
 # EXPECT_OUTPUT: replaced
 # EXPECT_EXIT: 0

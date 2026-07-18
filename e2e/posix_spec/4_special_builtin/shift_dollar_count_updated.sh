@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.13 shift
+# POSIX_REF: 2.15 shift
 # DESCRIPTION: $# decreases by n after shift
 # EXPECT_OUTPUT: 1
 # EXPECT_EXIT: 0

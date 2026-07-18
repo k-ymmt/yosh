@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.14 dot
+# POSIX_REF: 2.15 dot
 # DESCRIPTION: dot can introduce function definitions into the current shell
 # EXPECT_OUTPUT: callable
 # EXPECT_EXIT: 0

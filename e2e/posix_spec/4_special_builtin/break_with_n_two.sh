@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.1 break
+# POSIX_REF: 2.15 break
 # DESCRIPTION: break 2 exits two enclosing loops
 # EXPECT_OUTPUT: outer1-inner1
 # EXPECT_EXIT: 0

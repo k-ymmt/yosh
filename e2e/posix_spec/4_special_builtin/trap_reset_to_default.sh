@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.17 trap
+# POSIX_REF: 2.15 trap
 # DESCRIPTION: trap - SIGNAL resets the trap to default
 # EXPECT_OUTPUT: cleared
 # EXPECT_EXIT: 0

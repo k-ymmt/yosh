@@ -66,7 +66,7 @@ pub struct Executor {
     pub plugins: PluginManager,
     errexit_suppressed_depth: usize,
     /// Set by `exec_and_or` when the status it returned is exempt from
-    /// `set -e` per POSIX §2.14.11: the pipeline that produced it began
+    /// `set -e` per POSIX §2.15 set: the pipeline that produced it began
     /// with `!`, or it came from a non-final component of an AND-OR list
     /// (short-circuit). Consumed by `check_errexit`.
     errexit_exempt_status: bool,
@@ -169,7 +169,7 @@ impl Executor {
     }
 
     /// Execute a trap action string, exposing the pre-trap `$?` to the
-    /// `exit` special built-in via `trap_context_status` (POSIX §2.11:
+    /// `exit` special built-in via `trap_context_status` (POSIX §2.12:
     /// `exit` without an operand inside a trap action uses the value `$?`
     /// had when the trap action started).
     pub(crate) fn run_trap_action(&mut self, cmd: &str) {
@@ -187,7 +187,7 @@ impl Executor {
     /// Exit the whole shell process from the shell parent (NOT a forked
     /// child — post-fork children must use [`exit_child`]).
     ///
-    /// Fires the EXIT trap first (POSIX §2.11: the EXIT trap runs on any
+    /// Fires the EXIT trap first (POSIX §2.12: the EXIT trap runs on any
     /// shell exit, including a fatal error such as a special-builtin
     /// redirection failure in a non-interactive shell — dash agrees),
     /// then exits via `std::process::exit`, matching the exit path used

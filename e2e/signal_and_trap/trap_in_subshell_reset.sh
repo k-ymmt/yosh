@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.11 Signals and Error Handling
+# POSIX_REF: 2.12 Signals and Error Handling
 # DESCRIPTION: Traps (except ignore) are reset in subshells
 # EXPECT_EXIT: 0
 trap 'echo main_trap' USR1

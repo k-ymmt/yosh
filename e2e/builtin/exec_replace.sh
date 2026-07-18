@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.6 exec
+# POSIX_REF: 2.15 exec
 # DESCRIPTION: exec replaces the shell process
 # EXPECT_OUTPUT: replaced
 exec /bin/echo replaced

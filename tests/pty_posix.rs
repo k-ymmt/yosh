@@ -251,7 +251,7 @@ mod exec_redirect {
 
     #[test]
     fn no_cmd_redirects() {
-        // POSIX 2.14.10: bare `exec` with redirections applies them to
+        // POSIX 2.15 exec: bare `exec` with redirections applies them to
         // the current shell. After `exec >file`, subsequent stdout
         // lands in file. Restoring with `exec >/dev/tty` requires
         // /dev/tty to be available — i.e., the shell must run under
@@ -274,7 +274,7 @@ mod exec_redirect {
         let tmp = tmpdir.path().to_string_lossy().to_string();
         run_and_drain(&mut session, &format!("export TEST_TMPDIR={}", tmp));
 
-        // Fuse the whole POSIX 2.14.10 sequence into one command line
+        // Fuse the whole POSIX 2.15 exec sequence into one command line
         // followed by the sentinel. We don't reuse `capture_until_sentinel`
         // because it resyncs to the next `$ ` prompt afterward — and
         // depending on whether `exec >/dev/tty` resolves the controlling

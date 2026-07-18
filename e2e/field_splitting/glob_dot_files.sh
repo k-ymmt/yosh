@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.13.3 Patterns Used for Filename Expansion
+# POSIX_REF: 2.14.3 Patterns Used for Filename Expansion
 # DESCRIPTION: Glob * does not match dot files
 # EXPECT_EXIT: 0
 dir="$TEST_TMPDIR/globtest"

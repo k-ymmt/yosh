@@ -1,4 +1,4 @@
-//! POSIX `test` and `[` builtin implementation (§2.14).
+//! POSIX `test` and `[` builtin implementation (XCU `test`).
 //!
 //! Evaluation dispatches by operand count. Operators outside POSIX
 //! (e.g. `<`, `>`, `-a`, `-o`, deep `(` `)` nesting) are deliberately
@@ -7,7 +7,7 @@
 /// Error returned by `evaluate`. Always produces exit status 2 plus a
 /// message prefixed by `yosh: {name}: ` in the caller.
 ///
-/// POSIX §2.14 specifies exit status 2 for every syntax / operator
+/// The POSIX `test` utility spec specifies exit status 2 for every syntax / operator
 /// error in `test`, so no `exit_code` field is needed — the caller
 /// always returns 2.
 struct TestError {
@@ -60,7 +60,7 @@ fn evaluate(args: &[&str]) -> Result<bool, TestError> {
             eval_unary(args[0], args[1])
         }
         3 => {
-            // POSIX §2.14 test, 3-argument rules in order: a binary primary
+            // POSIX `test`, 3-argument rules in order: a binary primary
             // in $2 wins over `!` negation and `( )` grouping, so
             // `[ ! = x ]` compares the strings `!` and `x`.
             if is_binary_primary(args[1]) {
@@ -163,7 +163,7 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
     }
 }
 
-/// True when `op` is one of the POSIX §2.14 binary primaries.
+/// True when `op` is one of the POSIX `test` binary primaries.
 fn is_binary_primary(op: &str) -> bool {
     matches!(
         op,
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn three_arg_binary_primary_beats_negation() {
-        // POSIX §2.14: `[ ! = x ]` compares the strings `!` and `x`.
+        // POSIX `test`: `[ ! = x ]` compares the strings `!` and `x`.
         assert_eq!(t(&["!", "=", "x"]), 1);
         assert_eq!(t(&["!", "=", "!"]), 0);
         assert_eq!(t(&["!", "!=", "x"]), 0);

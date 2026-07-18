@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.11 set
+# POSIX_REF: 2.15 set
 # DESCRIPTION: Use case - abort a script on the first failing command with set -e
 # EXPECT_OUTPUT: step 1 ok
 # EXPECT_EXIT: 1

@@ -70,7 +70,7 @@ impl Executor {
     pub fn exec_and_or(&mut self, and_or: &AndOrList) -> i32 {
         let has_rest = !and_or.rest.is_empty();
 
-        // POSIX §2.14.11: the final status is exempt from `set -e` when the
+        // POSIX §2.15 set: the final status is exempt from `set -e` when the
         // pipeline that produced it began with `!`, or when it came from a
         // non-final component of the list (short-circuit). The flag is set
         // AFTER each pipeline runs (nested lists inside the pipeline set it
@@ -204,7 +204,7 @@ impl Executor {
                     // stay in this job's process group instead.
                     self.env.mode.options.monitor = false;
                 } else {
-                    // POSIX §2.9.3.1 / §2.11: with job control disabled,
+                    // POSIX §2.9.3.1 / §2.12: with job control disabled,
                     // commands in an asynchronous list ignore SIGINT and
                     // SIGQUIT, and read stdin from /dev/null (before any
                     // explicit redirection, which happens later during
@@ -296,7 +296,7 @@ impl Executor {
         }
 
         self.env.exec.last_exit_status = status;
-        // POSIX §2.11: handle async signals (SIGINT trap etc.) between commands.
+        // POSIX §2.12: handle async signals (SIGINT trap etc.) between commands.
         self.process_pending_signals();
         status
     }

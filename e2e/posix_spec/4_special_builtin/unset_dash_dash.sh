@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.14.18 unset (XBD 12.2 Guideline 10)
+# POSIX_REF: 2.15 unset (XBD 12.2 Guideline 10)
 # DESCRIPTION: unset honors -- after flag parsing
 # EXPECT_OUTPUT: empty
 # EXPECT_EXIT: 0

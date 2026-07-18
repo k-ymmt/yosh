@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: 2.12 Shell Execution Environment
+# POSIX_REF: 2.13 Shell Execution Environment
 # DESCRIPTION: Aliases defined in subshell do not exist in parent
 # EXPECT_OUTPUT: original
 alias greet='echo original'

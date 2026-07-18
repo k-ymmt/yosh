@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX_REF: wait utility
+# POSIX_REF: 4 Utilities - wait
 # DESCRIPTION: wait on a child terminated by a signal returns 128+N
 # EXPECT_OUTPUT: 143
 # EXPECT_EXIT: 0
