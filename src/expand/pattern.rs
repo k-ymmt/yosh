@@ -492,45 +492,45 @@ mod tests {
     // ── POSIX character classes ──
 
     #[test]
-    fn class_alpha_matches_letter() {
+    fn test_class_alpha_matches_letter() {
         assert!(matches("[[:alpha:]]", "a"));
         assert!(matches("[[:alpha:]]", "Z"));
     }
 
     #[test]
-    fn class_alpha_rejects_digit() {
+    fn test_class_alpha_rejects_digit() {
         assert!(!matches("[[:alpha:]]", "5"));
         assert!(!matches("[[:alpha:]]", "_"));
     }
 
     #[test]
-    fn class_upper_matches_only_upper() {
+    fn test_class_upper_matches_only_upper() {
         assert!(matches("[[:upper:]]", "A"));
         assert!(!matches("[[:upper:]]", "a"));
     }
 
     #[test]
-    fn class_lower_matches_only_lower() {
+    fn test_class_lower_matches_only_lower() {
         assert!(matches("[[:lower:]]", "z"));
         assert!(!matches("[[:lower:]]", "Z"));
     }
 
     #[test]
-    fn class_digit() {
+    fn test_class_digit() {
         assert!(matches("[[:digit:]]", "0"));
         assert!(matches("[[:digit:]]", "9"));
         assert!(!matches("[[:digit:]]", "a"));
     }
 
     #[test]
-    fn class_alnum() {
+    fn test_class_alnum() {
         assert!(matches("[[:alnum:]]", "5"));
         assert!(matches("[[:alnum:]]", "a"));
         assert!(!matches("[[:alnum:]]", "_"));
     }
 
     #[test]
-    fn class_xdigit() {
+    fn test_class_xdigit() {
         assert!(matches("[[:xdigit:]]", "0"));
         assert!(matches("[[:xdigit:]]", "f"));
         assert!(matches("[[:xdigit:]]", "F"));
@@ -538,42 +538,42 @@ mod tests {
     }
 
     #[test]
-    fn class_space_matches_whitespace() {
+    fn test_class_space_matches_whitespace() {
         assert!(matches("[[:space:]]", " "));
         assert!(matches("[[:space:]]", "\t"));
         assert!(!matches("[[:space:]]", "a"));
     }
 
     #[test]
-    fn class_blank_matches_horizontal_only() {
+    fn test_class_blank_matches_horizontal_only() {
         assert!(matches("[[:blank:]]", " "));
         assert!(matches("[[:blank:]]", "\t"));
         assert!(!matches("[[:blank:]]", "\n"));
     }
 
     #[test]
-    fn class_cntrl_matches_control() {
+    fn test_class_cntrl_matches_control() {
         assert!(matches("[[:cntrl:]]", "\x01"));
         assert!(matches("[[:cntrl:]]", "\x7f"));
         assert!(!matches("[[:cntrl:]]", "a"));
     }
 
     #[test]
-    fn class_print_includes_space() {
+    fn test_class_print_includes_space() {
         assert!(matches("[[:print:]]", " "));
         assert!(matches("[[:print:]]", "a"));
         assert!(!matches("[[:print:]]", "\x01"));
     }
 
     #[test]
-    fn class_graph_excludes_space() {
+    fn test_class_graph_excludes_space() {
         assert!(matches("[[:graph:]]", "a"));
         assert!(!matches("[[:graph:]]", " "));
         assert!(!matches("[[:graph:]]", "\x01"));
     }
 
     #[test]
-    fn class_punct_is_print_minus_alnum_space() {
+    fn test_class_punct_is_print_minus_alnum_space() {
         assert!(matches("[[:punct:]]", "."));
         assert!(matches("[[:punct:]]", "_"));
         assert!(!matches("[[:punct:]]", "a"));
@@ -582,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn class_combined_with_range() {
+    fn test_class_combined_with_range() {
         // [[:alpha:]0-9] matches letters OR digits
         assert!(matches("[[:alpha:]0-9]", "a"));
         assert!(matches("[[:alpha:]0-9]", "5"));
@@ -590,14 +590,23 @@ mod tests {
     }
 
     #[test]
-    fn class_negation_with_outer_bang() {
+    fn test_multiple_classes_in_one_bracket() {
+        // [[:alpha:][:digit:]] matches letters OR digits
+        assert!(matches("[[:alpha:][:digit:]]", "a"));
+        assert!(matches("[[:alpha:][:digit:]]", "5"));
+        assert!(!matches("[[:alpha:][:digit:]]", "_"));
+        assert!(!matches("[[:alpha:][:digit:]]", " "));
+    }
+
+    #[test]
+    fn test_class_negation_with_outer_bang() {
         // [![:digit:]] matches non-digit
         assert!(matches("[![:digit:]]", "a"));
         assert!(!matches("[![:digit:]]", "5"));
     }
 
     #[test]
-    fn unknown_class_name_falls_through_to_literal_chars() {
+    fn test_unknown_class_name_falls_through_to_literal_chars() {
         // [[:unknown:]] does not panic. The class name "unknown"
         // is not in POSIX_CLASSES, so `try_parse_posix_class`
         // returns None and the loop falls through to char-by-char
@@ -613,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_colon_close_does_not_panic() {
+    fn test_missing_colon_close_does_not_panic() {
         // [[:alpha] (no `:]` inside) — `try_parse_posix_class`
         // scans `alpha]` and never finds `:]`, so it returns
         // None. The outer bracket then eats `[`, `:`, `a`, `l`,
@@ -628,7 +637,7 @@ mod tests {
     // These pass on the &[char] implementation and guard the &str rewrite
     // against splitting a multibyte char at a non-char-boundary byte offset.
     #[test]
-    fn multibyte_literal_and_star() {
+    fn test_multibyte_literal_and_star() {
         assert!(matches("日*", "日本語"));
         assert!(matches("*語", "日本語"));
         assert!(matches("日本語", "日本語"));
@@ -636,14 +645,14 @@ mod tests {
     }
 
     #[test]
-    fn multibyte_question() {
+    fn test_multibyte_question() {
         assert!(matches("?", "あ"));
         assert!(!matches("?", "あい"));
         assert!(matches("a?c", "aあc"));
     }
 
     #[test]
-    fn multibyte_bracket_range() {
+    fn test_multibyte_bracket_range() {
         // あ=U+3042, か=U+304B, ん=U+3093, ン=U+30F3 (katakana, out of range)
         assert!(matches("[あ-ん]", "か"));
         assert!(!matches("[あ-ん]", "ン"));
@@ -651,7 +660,14 @@ mod tests {
     }
 
     #[test]
-    fn multibyte_backslash_trailing() {
+    fn test_multibyte_bracket_set_member() {
+        // Multibyte chars as plain set members (not range endpoints).
+        assert!(matches("[あいう]", "い"));
+        assert!(!matches("[あいう]", "え"));
+    }
+
+    #[test]
+    fn test_multibyte_backslash_trailing() {
         assert!(matches("あ\\", "あ\\"));
         assert!(matches("\\あ", "あ"));
     }
@@ -663,7 +679,7 @@ mod tests {
     // Locks correctness under the pre-parsed-tokens refactor.
 
     #[test]
-    fn star_then_bracket_then_literal_matches() {
+    fn test_star_then_bracket_then_literal_matches() {
         assert!(matches("*[abc]x", "abcx"));
         assert!(matches("*[abc]x", "zzzbx"));
         assert!(matches("*[abc]x", "ax"));
@@ -672,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn star_then_bracket_then_literal_no_match_when_bracket_never_satisfied() {
+    fn test_star_then_bracket_then_literal_no_match_when_bracket_never_satisfied() {
         // Every suffix retry must independently re-check the bracket;
         // this pins that the pre-parsed token isn't accidentally consumed
         // or mutated across retries.
@@ -680,13 +696,13 @@ mod tests {
     }
 
     #[test]
-    fn star_then_negated_bracket_then_literal() {
+    fn test_star_then_negated_bracket_then_literal() {
         assert!(matches("*[!abc]x", "dx"));
         assert!(!matches("*[!abc]x", "ax"));
     }
 
     #[test]
-    fn star_then_posix_class_bracket_retries_correctly() {
+    fn test_star_then_posix_class_bracket_retries_correctly() {
         // Exercises the POSIX-class bracket variant (allocates a
         // `Vec<BracketItem>` in `parse_bracket`) under the same retry loop.
         assert!(matches("*[[:digit:]]x", "abc5x"));
@@ -694,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn star_then_range_bracket_multiple_retries() {
+    fn test_star_then_range_bracket_multiple_retries() {
         // Longer prefix forces many suffix retries before the bracket
         // finally matches, exercising the re-parse-per-retry hot path.
         assert!(matches("*[0-9]end", "aaaaaaaaaaaaaaaa5end"));
@@ -702,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn double_star_then_bracket() {
+    fn test_double_star_then_bracket() {
         // Two consecutive `*` tokens both retry against the same bracket
         // token that follows.
         assert!(matches("**[abc]", "xyzzyb"));
@@ -710,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn star_then_malformed_bracket_falls_back_to_literal() {
+    fn test_star_then_malformed_bracket_falls_back_to_literal() {
         // No closing `]` — parse_bracket returns None once at tokenize
         // time; the `[` becomes a Literal token reused across all retries.
         assert!(matches("*[abc", "xx[abc"));
@@ -718,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn star_then_bracket_with_escaped_literal_member() {
+    fn test_star_then_bracket_with_escaped_literal_member() {
         // `[a\]b]` — backslash is not special inside brackets (POSIX),
         // so this is parsed as members a, \, b with the first `]` closing.
         // Confirms bracket member parsing is unaffected by pre-parsing.
@@ -731,13 +747,13 @@ mod tests {
     // built on top of `pattern::matches` / a shared literal-scan helper.
 
     #[test]
-    fn escaped_metachars_are_literal_not_wildcards() {
+    fn test_escaped_metachars_are_literal_not_wildcards() {
         assert!(matches("\\*\\?\\[", "*?["));
         assert!(!matches("\\*\\?\\[", "abc"));
     }
 
     #[test]
-    fn mixed_escaped_and_unescaped_metachar() {
+    fn test_mixed_escaped_and_unescaped_metachar() {
         // Escaped '*' is literal; the second bare '*' is a wildcard.
         assert!(matches("\\**", "*anything"));
         assert!(!matches("\\**", "xanything"));

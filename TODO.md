@@ -2,22 +2,6 @@
 
 ## Code-Review Follow-ups (non-blocking)
 
-### 2026-05-19 trap-reset follow-ups (non-blocking)
-
-- [ ] `tests/subshell.rs` の trap-reset 統合テスト 3 件
-      (`test_nested_subshell_inside_cmdsub_shows_reset_traps`,
-      `test_pipeline_child_clears_saved_traps`,
-      `test_background_async_clears_saved_traps`) がファイル末尾にあり、
-      意味的に近い `test_cmdsub_trap_isolation`
-      (`tests/subshell.rs:237` 周辺) から離れている。次回 subshell.rs を
-      触る時にコマンドサブセクションへ寄せる。
-      Code-review follow-up from f703a26.
-- [ ] `reset_for_subshell` が `Command` 種 `exit_trap` をクリアする
-      ことを直接検証するユニットテストがない。`reset_non_ignored`
-      の `exit_trap` クリア挙動は `test_trap_store_reset_non_ignored`
-      が間接的にカバーするのみ。`reset_for_subshell` 経由の同等カバレッジ
-      を追加すると安心。Code-review follow-up from f703a26.
-
 ### 2026-05-21 locale-support follow-ups (non-blocking)
 
 - [ ] `LocaleCategory::env_var_name` is `fn` (private). When a
@@ -25,37 +9,6 @@
       messages referring to "LC_CTYPE"), promote to `pub(crate)`.
       Code-review follow-up from 2026-05-21 locale-support branch
       (`src/env/locale.rs`).
-- [ ] `each_category_reads_its_own_var` test verifies only `value`,
-      not `source`. A regression that swaps the LC_<category> and
-      LANG branches in `resolve()` would still pass this test. Add
-      `assert_eq!(r.source, LocaleSource::LcCategory)` to each of
-      the six assertions. Code-review follow-up from 2026-05-21
-      locale-support branch (`src/env/locale.rs`).
-- [ ] `ResolvedLocale` derives only `Clone, Debug`. Add `PartialEq`
-      (and possibly `Eq`) for symmetry with `LocaleCategory` and
-      `LocaleSource`. Cheap, but YAGNI until a caller wants struct
-      equality. Code-review follow-up from 2026-05-21 locale-support
-      branch (`src/env/locale.rs`).
-- [ ] `pattern.rs` test naming inconsistency — existing tests use
-      `test_*` prefix (e.g. `test_bracket_set`), new POSIX-class
-      tests use bare names (e.g. `class_alpha_matches_letter`).
-      Unify in a future cleanup. Code-review follow-up from
-      2026-05-21 locale-support branch (`src/expand/pattern.rs`).
-- [ ] No unit test exercises multiple POSIX classes in one bracket
-      (`[[:alpha:][:digit:]]`). Manually traced as correct, but a
-      regression test would solidify the behaviour. Code-review
-      follow-up from 2026-05-21 locale-support branch
-      (`src/expand/pattern.rs`).
-- [ ] `docs/yosh/posix-compliance.md` LC_COLLATE description says
-      "Unicode codepoint ordering coincides with C-locale bytewise
-      ordering". Strictly true only in the ASCII range; UTF-8 byte
-      order and codepoint order diverge for non-ASCII characters
-      (e.g. multi-byte sequences sort by leading-byte value, which
-      matches codepoint order for U+0080-U+07FF but diverges in
-      detail). yosh's `str::cmp` is bytewise (per `src/builtin/test.rs`
-      comment), so the doc could tighten to "yosh uses bytewise
-      comparison on UTF-8 encoding, which equals C-locale ordering
-      on ASCII strings."
 - [ ] `locale::resolve()` API has no live callers in v1 (intentional
       `#![allow(dead_code)]` scaffolding). When non-C locale support
       is added, wire `resolve()` into the pattern range / POSIX
@@ -72,44 +25,6 @@
       block plus head/tail edges — measurably faster if/when
       `cargo bench` shows expand pressure. Code-review follow-up
       from Task 1 (Important).
-- [ ] Test gap: no direct assertion that the
-      `append_char (true, false) → push_literal` arm preserves
-      per-byte attributes through field splitting. Add a unit test
-      like `f.push_literal("a*"); f.push_expanded(" b");` with
-      `IFS=" "`, split, then assert `is_glob_protected(0)=false` on
-      the resulting first field so a future regression that routed
-      this byte through `push_expanded` (value would still match,
-      but downstream pathname expansion would glob a literal byte)
-      is caught (`src/expand/field_split.rs::tests`). Final-review
-      follow-up from the branch (4366bc9..6d57c52).
-- [ ] Test gap: UTF-8 multi-byte content through `push_literal` is
-      uncovered. `push_expanded` and `push_quoted` already have
-      multi-byte UTF-8 tests (`test_utf8_*`, `test_utf8_quoted_not_split`);
-      add `push_literal("日本")` + IFS-splittable expansion mix for
-      symmetry. Cheap (`src/expand/field_split.rs::tests`). Final-review
-      follow-up from the branch.
-- [ ] `literal_glob_metachar_still_globs.sh` (`e2e/posix_spec/2_06_05_field_splitting/`)
-      silently relies on `mktemp -d` succeeding. If it ever fails,
-      `d` is empty, `cd ""` lands in `$HOME`, and `echo *.tmpext`
-      prints the literal `*.tmpext` — the test still fails loudly
-      via EXPECT_OUTPUT mismatch, but with a misleading reason. Add
-      `d=$(mktemp -d) || exit 1` to surface the real failure. Code-review
-      follow-up from Task 3.
-- [ ] `e2e/run_tests.sh` heredoc EXPECT_OUTPUT parser (lines
-      204-211) silently strips a leading `"# "` from each body line.
-      If a future contributor writes a body line as bare `#` (no
-      trailing space) the strip leaves the `#` and silently
-      mismatches. Either add a defensive parser check ("body lines
-      must start with `# `") or document the convention prominently
-      at runner entry. Code-review follow-up from Task 3.
-- [ ] `literal_glob_metachar_still_globs.sh` POSIX_REF cites only
-      `2.6.5 Field Splitting`, but the test exercises the
-      interaction with `2.6.6 Pathname Expansion`. Extend to
-      `POSIX_REF: 2.6.5 Field Splitting (interaction with 2.6.6
-      Pathname Expansion)` for discoverability — a contributor
-      browsing by pathname-expansion reference would otherwise miss
-      this test (`e2e/posix_spec/2_06_05_field_splitting/literal_glob_metachar_still_globs.sh`).
-      Code-review follow-up from Task 3.
 
 ### 2026-07-03 selector-UI follow-ups
 
@@ -207,13 +122,9 @@
 
 - [ ] `JobTable::update_status` per-process status tracking — currently overwrites the overall `job.status` on each child exit; if per-process status tracking (e.g., `$PIPESTATUS` array) is needed in the future, the `Job` struct will need a `Vec<(Pid, JobStatus)>` field instead of a single `status` (`src/env/jobs/mod.rs`)
 - [ ] `exec_regular_builtin` "internal error" guards for `wait` / `fg`/`bg`/`jobs` / `command` are growing — consider factoring "Executor-requiring builtins" into an explicit classification or dispatch table instead of per-name guards (`src/builtin/mod.rs`)
-- [ ] `render_verbose` Function arm has no unit test — `command -V <function>` branch exercised only through E2E; add a focused unit test in `src/builtin/command.rs` tests module
-- [ ] `preview_command` has no direct unit tests — only exercised via E2E; add focused tests for compound-command / unexpandable-word fallback and pipeline first-command extraction (`src/exec/mod.rs`)
 - [ ] `highlight_scanner` `KEYWORDS` duplicates POSIX §2.4 list — `src/interactive/highlight_scanner/helpers.rs` defines its own copy of the 16 reserved words, separate from the canonical `crate::lexer::reserved::RESERVED_WORDS`. Consolidate once the contextual subsets (`COMMAND_POSITION_KEYWORDS` includes `"time"`, command-position restoration logic) are re-expressed in terms of the canonical list (`src/interactive/highlight_scanner/helpers.rs`)
 - [ ] `cargo fmt --check -- <path>` misreads edition — rustfmt 1.8.0 / Rust 1.94.1 fails to parse let-chain syntax as edition 2024 when invoked with explicit file paths despite `Cargo.toml` specifying `edition = "2024"`, producing spurious fmt errors. Workaround: invoke `rustfmt --edition 2024 --check <path>` directly. Revisit when upstream rustfmt catches up.
-- [ ] `parse_compound_list` non-empty regression tests are incomplete — only `nonempty_if_parses_ok` exists in `src/parser/compound.rs`. Add parallel `nonempty_while_parses_ok` / `nonempty_until_parses_ok` / `nonempty_for_parses_ok` / `nonempty_brace_group_parses_ok` / `nonempty_subshell_parses_ok` so future refactors cannot accidentally over-reject any individual context.
 - [ ] LINENO update allocates a `String` per command — `exec_simple_command` / `exec_compound_command` call `cmd.line.to_string()` and go through `VarStore::set`. For tight loops this is ~500μs per 10k commands. If benchmarks ever show pressure, add `ShellEnv.exec.current_lineno: usize` and intercept `$LINENO` in `expand::param` to read that field directly, bypassing the alloc + HashMap write (`src/exec/simple.rs`, `src/exec/compound.rs`, `src/expand/param.rs`).
-- [ ] `pattern::matches` bracket set-member multibyte test gap — `src/expand/pattern.rs` tests cover a multibyte char as a bracket **range endpoint** (`matches("[あ-ん]", "か")`) but not as a plain **set member** (e.g. `matches("[あいう]", "い")`). No reachable bug — the set-member path reuses the same `BracketItem::Char(c0)` char decoding the range test exercises — but an explicit case would make `parse_bracket`'s loop intent clearer. Cosmetic test-coverage follow-up from the 2026-05-27 `&str` matcher rewrite final review.
 - [ ] `strip_prefix` / `strip_suffix` re-parse `pat` on every candidate cut point — `pattern::matches` re-walks the whole pattern (rebuilding a `Vec<BracketItem>` per bracket) once per char boundary, so a value with N boundaries does O(N) full pattern parses and the cut-point scan is O(n²) char comparisons. The 2026-05-27 Layer-2 rewrite removed the per-cut `String` / `Vec<char>` *allocations* but not this CPU cost. Options: compile `pat` to an AST once and match it many times, or replace the brute-force cut-point loop with a left/right-anchored single-pass matcher. Recorded out-of-scope in `docs/superpowers/specs/2026-05-27-strip-prefix-suffix-zero-alloc-design.md` §7 (`src/expand/param.rs`, `src/expand/pattern.rs`).
 - [ ] `try_parse_assignment` `other.clone()` deep-copies CommandSub — the non-Literal branch clones each remaining `WordPart`, which for `$(...)` substitutions clones the embedded `Program`. Same inefficiency as the prior `extend_from_slice`, so not a regression, but consider consuming `Word` (take ownership) or draining `word.parts` to avoid the copy (`src/parser/simple.rs`).
 - [ ] `expand_assignment_builtin_args` string round-trip — helper builds `"NAME=value"` strings that the builtin re-parses with `find('=')`. Lossless today, but couples the helper shape to the legacy builtin API. When a future refactor touches `builtin_export`/`builtin_readonly` signatures, consider passing `Vec<(String, Option<String>)>` directly to skip the round-trip (`src/exec/simple.rs`, `src/builtin/special.rs`).
@@ -225,7 +136,6 @@
 - [ ] Bench API surface — `Parser::new` and `parse_program` are the only two `Parser` items required to stay `pub`; their sole external consumers are `benches/parser_bench.rs` and `benches/exec_bench.rs`. Wrapping them in a bench-only helper module (e.g. an internal `pub(crate) fn parse_for_bench(s: &str) -> Program` reachable through a `#[cfg(any(test, feature = "internal_api"))]` shim) would let both `Parser::new` and `parse_program` drop to `pub(crate)`, shrinking the public Parser surface from 10 to 8. Requires bench-side refactor. Discovered during the 2026-05-05 visibility-tightening spec follow-up (§4.2-3, `benches/parser_bench.rs`, `benches/exec_bench.rs`).
 - [ ] `Executor` API visibility tightening (post-split follow-up) — five `pub` methods on `Executor` are candidates for `pub(crate)` since their callers are all in-crate: `Executor::exec_command` (only `pipeline.rs` + tests), `exec_and_or` (internal-only), `exec_program` (used by `expand/command_sub.rs`, `bin/yosh-dhat.rs`, `builtin/special.rs`), `exec_complete_command` (used by `compound.rs`, `interactive/mod.rs`, `main.rs`), and `display_job_notifications` (only `interactive/mod.rs` + `control.rs::exec_complete_command`). Mirrors the 2026-05-05 parser-visibility-tightening pattern. Surfaced during the 2026-05-05 exec/mod.rs split final review (`src/exec/control.rs`, `src/exec/job_control.rs`).
 - [ ] `ulimit` `-f` block arithmetic assumes `libc::rlim_t == u64` — `BLOCK_SIZE: libc::rlim_t = 512` and `SetBlocks(n: u64).saturating_mul(BLOCK_SIZE)` (`src/builtin/regular.rs`) compile only where `rlim_t` is `u64` (macOS, 64-bit Linux). On 32-bit Linux `rlim_t` is `u32`, making the `u64 * u32` a type error. Not a runtime risk and the project has no Linux CI / targets macOS, but if a 32-bit target is ever added, type `BLOCK_SIZE` as `u64` and cast at the `set_fsize` / `format_fsize_limit` call sites. Final-review follow-up from 2026-05-26 ulimit native -f branch.
-- [ ] `indirection_level_balanced_after_dot_script*` tests use `tempfile::NamedTempFile` while the sibling `source_file_*` tests use `std::env::temp_dir()` + `std::fs::write`/`remove_file`. The `NamedTempFile` style is cleaner (auto-cleanup) — unify the `source_file_*` tests onto it in a future pass for consistency (`src/exec/mod.rs`). Code-review follow-up from 2026-05-28 PS4 full-support branch.
 
 ## Future: Release Skill Enhancements
 

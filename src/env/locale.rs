@@ -49,7 +49,7 @@ pub enum LocaleSource {
 }
 
 /// Resolved locale for a single category.
-#[derive(Clone, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub struct ResolvedLocale {
     pub category: LocaleCategory,
     pub value: String,
@@ -209,12 +209,21 @@ mod tests {
         env.assign_var("LC_MONETARY", "v_mon").unwrap();
         env.assign_var("LC_NUMERIC", "v_num").unwrap();
         env.assign_var("LC_TIME", "v_time").unwrap();
-        assert_eq!(resolve(&env, LocaleCategory::Collate).value, "v_collate");
-        assert_eq!(resolve(&env, LocaleCategory::Ctype).value, "v_ctype");
-        assert_eq!(resolve(&env, LocaleCategory::Messages).value, "v_msg");
-        assert_eq!(resolve(&env, LocaleCategory::Monetary).value, "v_mon");
-        assert_eq!(resolve(&env, LocaleCategory::Numeric).value, "v_num");
-        assert_eq!(resolve(&env, LocaleCategory::Time).value, "v_time");
+        // Assert source alongside value: a regression swapping the
+        // LC_<category> and LANG branches in resolve() would still
+        // produce the right value but the wrong source.
+        for (category, value) in [
+            (LocaleCategory::Collate, "v_collate"),
+            (LocaleCategory::Ctype, "v_ctype"),
+            (LocaleCategory::Messages, "v_msg"),
+            (LocaleCategory::Monetary, "v_mon"),
+            (LocaleCategory::Numeric, "v_num"),
+            (LocaleCategory::Time, "v_time"),
+        ] {
+            let r = resolve(&env, category);
+            assert_eq!(r.value, value);
+            assert_eq!(r.source, LocaleSource::LcCategory);
+        }
     }
 
     #[test]

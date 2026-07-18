@@ -242,6 +242,48 @@ fn test_cmdsub_trap_isolation() {
     assert!(stdout.contains("parent"));
 }
 
+// POSIX §2.11: saved_traps cleared in nested literal subshell / pipeline child
+// (fix: reset_for_subshell replaces reset_non_ignored at fork sites)
+
+#[test]
+fn test_nested_subshell_inside_cmdsub_shows_reset_traps() {
+    // $( (trap) ) — nested literal subshell inside command sub must clear
+    // saved_traps and show the inner subshell's reset state.
+    let out = yosh_exec(
+        "trap 'echo parent' USR1; out=$( (trap) ); \
+         case \"$out\" in *USR1*) echo bad ;; *) echo ok ;; esac",
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+}
+
+#[test]
+fn test_pipeline_child_clears_saved_traps() {
+    // Pipeline child should also clear saved_traps.
+    let out = yosh_exec(
+        "trap 'echo parent' USR1; \
+         out=$(echo dummy | (trap)); \
+         case \"$out\" in *USR1*) echo bad ;; *) echo ok ;; esac",
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+}
+
+#[test]
+fn test_background_async_clears_saved_traps() {
+    // exec_async fork must also clear saved_traps: $(... & wait) routes
+    // the async child's stdout into the command-sub pipe, so the inner
+    // `trap` builtin's output is captured. USR1 must not appear because
+    // reset_for_subshell clears the parent snapshot in the async child.
+    let out = yosh_exec(
+        "trap 'echo parent' USR1; \
+         out=$(trap & wait); \
+         case \"$out\" in *USR1*) echo bad ;; *) echo ok ;; esac",
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+}
+
 #[test]
 fn test_cmdsub_function_isolation() {
     let out = yosh_exec("f() { echo original; }; X=$(f() { echo changed; }; f); f; echo $X");
@@ -515,48 +557,4 @@ fn subshell_exit_trap_runs_even_when_subshell_exits_nonzero() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("bye"), "stdout was {:?}", stdout);
     assert_eq!(out.status.code(), Some(5), "subshell exit code propagates");
-}
-
-// =============================================================================
-// POSIX §2.11: saved_traps cleared in nested literal subshell / pipeline child
-// (fix: reset_for_subshell replaces reset_non_ignored at fork sites)
-// =============================================================================
-
-#[test]
-fn test_nested_subshell_inside_cmdsub_shows_reset_traps() {
-    // $( (trap) ) — nested literal subshell inside command sub must clear
-    // saved_traps and show the inner subshell's reset state.
-    let out = yosh_exec(
-        "trap 'echo parent' USR1; out=$( (trap) ); \
-         case \"$out\" in *USR1*) echo bad ;; *) echo ok ;; esac",
-    );
-    assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
-}
-
-#[test]
-fn test_pipeline_child_clears_saved_traps() {
-    // Pipeline child should also clear saved_traps.
-    let out = yosh_exec(
-        "trap 'echo parent' USR1; \
-         out=$(echo dummy | (trap)); \
-         case \"$out\" in *USR1*) echo bad ;; *) echo ok ;; esac",
-    );
-    assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
-}
-
-#[test]
-fn test_background_async_clears_saved_traps() {
-    // exec_async fork must also clear saved_traps: $(... & wait) routes
-    // the async child's stdout into the command-sub pipe, so the inner
-    // `trap` builtin's output is captured. USR1 must not appear because
-    // reset_for_subshell clears the parent snapshot in the async child.
-    let out = yosh_exec(
-        "trap 'echo parent' USR1; \
-         out=$(trap & wait); \
-         case \"$out\" in *USR1*) echo bad ;; *) echo ok ;; esac",
-    );
-    assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
 }

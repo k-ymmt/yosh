@@ -215,6 +215,14 @@ parse_metadata() {
                 meta_has_expect_output=1
                 continue
             fi
+            # Defensive: body lines must start with "# " (note the
+            # trailing space — an empty expected line is written "# ").
+            # A bare "#" or any other prefix survives the strip and
+            # would silently mismatch, so surface it loudly.
+            if [ "$_stripped" = "$_line" ]; then
+                printf "Warning: EXPECT_OUTPUT heredoc body line without '# ' prefix in %s: '%s'\n" \
+                    "$_file" "$_line" >&2
+            fi
             # Append line (strip leading "# ")
             if [ "$_heredoc_first" = 1 ]; then
                 _heredoc_buf="$_stripped"

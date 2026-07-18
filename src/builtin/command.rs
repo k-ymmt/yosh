@@ -315,6 +315,30 @@ mod tests {
     }
 
     #[test]
+    fn verbose_function() {
+        use crate::parser::ast::{CompoundCommand, CompoundCommandKind, FunctionDef};
+        use std::rc::Rc;
+
+        let mut env = env_with_path("/bin:/usr/bin");
+        env.functions.insert(
+            "myfunc".to_string(),
+            FunctionDef {
+                name: "myfunc".to_string(),
+                body: Rc::new(CompoundCommand {
+                    kind: CompoundCommandKind::BraceGroup { body: vec![] },
+                    line: 1,
+                    assignments: vec![],
+                }),
+                redirects: vec![],
+            },
+        );
+        let (out, err, code) = render_verbose(&mut env, "myfunc");
+        assert_eq!(out, "myfunc is a function");
+        assert_eq!(err, "");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
     fn verbose_external() {
         let mut env = env_with_path("/bin:/usr/bin");
         let (out, _, code) = render_verbose(&mut env, "sh");

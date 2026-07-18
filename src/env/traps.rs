@@ -470,6 +470,30 @@ mod tests {
     }
 
     #[test]
+    fn test_reset_for_subshell_clears_command_exit_trap() {
+        // POSIX §2.12: a Command-action EXIT trap must not survive subshell
+        // entry, while an Ignore-action EXIT trap must.
+        let mut store = TrapStore::default();
+        store
+            .set_trap("EXIT", TrapAction::Command("echo bye".into()))
+            .expect("set_trap with a valid signal name must succeed");
+        store.reset_for_subshell();
+        assert!(
+            store.exit_trap.is_none(),
+            "Command exit_trap must be cleared by reset_for_subshell"
+        );
+
+        let mut store = TrapStore::default();
+        store.exit_trap = Some(TrapAction::Ignore);
+        store.reset_for_subshell();
+        assert_eq!(
+            store.exit_trap,
+            Some(TrapAction::Ignore),
+            "Ignore exit_trap must be preserved by reset_for_subshell"
+        );
+    }
+
+    #[test]
     fn test_reset_for_subshell_with_no_saved_traps_is_safe() {
         // Calling reset_for_subshell on a store without a prior
         // reset_for_command_sub must not panic and must reset signal_traps.

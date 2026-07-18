@@ -597,6 +597,31 @@ mod tests {
     }
 
     #[test]
+    fn nonempty_while_parses_ok() {
+        parse_ok("while false; do :; done\n");
+    }
+
+    #[test]
+    fn nonempty_until_parses_ok() {
+        parse_ok("until true; do :; done\n");
+    }
+
+    #[test]
+    fn nonempty_for_parses_ok() {
+        parse_ok("for i in a b; do :; done\n");
+    }
+
+    #[test]
+    fn nonempty_brace_group_parses_ok() {
+        parse_ok("{ :; }\n");
+    }
+
+    #[test]
+    fn nonempty_subshell_parses_ok() {
+        parse_ok("( : )\n");
+    }
+
+    #[test]
     fn case_empty_body_still_parses_ok() {
         parse_ok("case x in pat) ;; esac\n");
     }

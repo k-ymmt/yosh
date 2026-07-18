@@ -33,9 +33,12 @@ preserved for child processes but interpreted as C internally."
 
 ### Per-Category Notes
 
-- **`LC_COLLATE`**: pattern range `[a-z]` and `test` string compare
-  use Unicode codepoint ordering, which coincides with C-locale
-  bytewise ordering.
+- **`LC_COLLATE`**: pattern range `[a-z]` uses Unicode codepoint
+  ordering; `test` string compare uses bytewise comparison on the
+  UTF-8 encoding (`str::cmp`), which equals C-locale ordering on
+  ASCII strings. Outside ASCII the two orderings agree only
+  coarsely (UTF-8 leading-byte order tracks codepoint order), so
+  neither is a full C-locale collation for non-ASCII input.
 - **`LC_CTYPE`**: POSIX character classes (`[[:alpha:]]`,
   `[[:digit:]]`, `[[:upper:]]`, `[[:lower:]]`, `[[:alnum:]]`,
   `[[:xdigit:]]`, `[[:space:]]`, `[[:blank:]]`, `[[:cntrl:]]`,

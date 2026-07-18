@@ -602,6 +602,27 @@ mod tests {
     }
 
     #[test]
+    fn split_literal_glob_metachar_stays_glob_subject() {
+        // append_char (split=true, glob=false) → push_literal arm: the glob
+        // mask must survive field splitting so downstream pathname expansion
+        // still globs the literal `*`. A regression routing this byte through
+        // push_expanded would keep the same value but change the mask.
+        let env = env_with_ifs(" ");
+        let mut f = ExpandedField::new();
+        f.push_literal("a*");
+        f.push_expanded(" b");
+
+        let result = split(&env, vec![f]);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].value, "a*");
+        for i in 0..result[0].byte_len() {
+            assert!(result[0].is_split_protected(i), "byte {i} split-protected");
+            assert!(!result[0].is_glob_protected(i), "byte {i} glob-subject");
+        }
+        assert_eq!(result[1].value, "b");
+    }
+
+    #[test]
     fn split_expanded_multibyte_remains_split_subject() {
         let env = env_with_ifs(":");
         let mut f = ExpandedField::new();

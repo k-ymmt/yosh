@@ -359,25 +359,71 @@ mod tests {
 
     #[test]
     fn source_file_sets_variable() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "MY_TEST_VAR=hello_from_rc").unwrap();
         let mut exec = Executor::new("yosh", vec![]);
-        let dir = std::env::temp_dir();
-        let path = dir.join("yosh_test_source_file.sh");
-        std::fs::write(&path, "MY_TEST_VAR=hello_from_rc\n").unwrap();
-        let result = exec.source_file(&path);
-        std::fs::remove_file(&path).ok();
+        let result = exec.source_file(tmp.path());
         assert_eq!(result, Some(0));
         assert_eq!(exec.env.vars.get("MY_TEST_VAR"), Some("hello_from_rc"));
     }
 
     #[test]
     fn source_file_parse_error_returns_some_2() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "if").unwrap();
         let mut exec = Executor::new("yosh", vec![]);
-        let dir = std::env::temp_dir();
-        let path = dir.join("yosh_test_source_parse_error.sh");
-        std::fs::write(&path, "if\n").unwrap();
-        let result = exec.source_file(&path);
-        std::fs::remove_file(&path).ok();
+        let result = exec.source_file(tmp.path());
         assert_eq!(result, Some(2));
+    }
+
+    // ── preview_command ──
+
+    fn first_and_or(src: &str) -> AndOrList {
+        let prog = crate::parser::Parser::new(src).parse_program().unwrap();
+        prog.commands[0].items[0].0.clone()
+    }
+
+    #[test]
+    fn preview_command_literal_words() {
+        assert_eq!(preview_command(&first_and_or("sleep 5")), "sleep 5");
+    }
+
+    #[test]
+    fn preview_command_single_quoted_word_kept_quoted() {
+        assert_eq!(
+            preview_command(&first_and_or("echo 'a b' c")),
+            "echo 'a b' c"
+        );
+    }
+
+    #[test]
+    fn preview_command_pipeline_uses_first_simple_command() {
+        assert_eq!(preview_command(&first_and_or("sleep 5 | cat")), "sleep 5");
+    }
+
+    #[test]
+    fn preview_command_compound_falls_back() {
+        assert_eq!(
+            preview_command(&first_and_or("( echo hi )")),
+            "(background)"
+        );
+        assert_eq!(
+            preview_command(&first_and_or("while true; do :; done")),
+            "(background)"
+        );
+    }
+
+    #[test]
+    fn preview_command_unexpandable_word_falls_back() {
+        // Parameter expansion and command substitution in any word are not
+        // previewable without expansion.
+        assert_eq!(preview_command(&first_and_or("echo $x")), "(background)");
+        assert_eq!(
+            preview_command(&first_and_or("echo $(date)")),
+            "(background)"
+        );
     }
 
     #[test]
