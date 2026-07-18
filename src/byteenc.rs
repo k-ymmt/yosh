@@ -195,8 +195,8 @@ mod tests {
         let cases: &[&[u8]] = &[
             b"a\xe9b",
             b"\xff\xfe",
-            b"\xe6\x97",             // truncated multi-byte
-            b"\xe6\x97\xa5",         // valid multi-byte stays intact
+            b"\xe6\x97",     // truncated multi-byte
+            b"\xe6\x97\xa5", // valid multi-byte stays intact
             b"pre\x80mid\xc3\xa9\xf0end",
             b"\x80\x81\x82\x83",
         ];

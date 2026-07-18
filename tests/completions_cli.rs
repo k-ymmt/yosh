@@ -35,19 +35,37 @@ fn export_writes_spec_and_refuses_overwrite_without_force() {
     let home = tempfile::TempDir::new().unwrap();
     let spec_path = home.path().join(".config/yosh/completions/git.toml");
 
-    let output = bin().env("HOME", home.path()).args(["export", "git"]).output().unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let output = bin()
+        .env("HOME", home.path())
+        .args(["export", "git"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(spec_path.is_file());
     let text = std::fs::read_to_string(&spec_path).unwrap();
-    assert!(text.contains("[[subcommands]]"), "exported file should be the git spec");
+    assert!(
+        text.contains("[[subcommands]]"),
+        "exported file should be the git spec"
+    );
 
     // Second export without --force must fail and leave the file alone.
     std::fs::write(&spec_path, "# user edit\n").unwrap();
-    let output = bin().env("HOME", home.path()).args(["export", "git"]).output().unwrap();
+    let output = bin()
+        .env("HOME", home.path())
+        .args(["export", "git"])
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("already exists"), "stderr: {stderr}");
-    assert_eq!(std::fs::read_to_string(&spec_path).unwrap(), "# user edit\n");
+    assert_eq!(
+        std::fs::read_to_string(&spec_path).unwrap(),
+        "# user edit\n"
+    );
 
     // --force overwrites.
     let output = bin()
@@ -56,7 +74,11 @@ fn export_writes_spec_and_refuses_overwrite_without_force() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert!(std::fs::read_to_string(&spec_path).unwrap().contains("[[subcommands]]"));
+    assert!(
+        std::fs::read_to_string(&spec_path)
+            .unwrap()
+            .contains("[[subcommands]]")
+    );
 }
 
 #[test]

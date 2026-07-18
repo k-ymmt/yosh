@@ -354,11 +354,7 @@ impl Executor {
 
         if self.env.mode.options.xtrace && !expanded.is_empty() {
             let prefix = xtrace_prefix(&mut self.env);
-            crate::byteenc::write_stderr_decoded_line(&format!(
-                "{}{}",
-                prefix,
-                expanded.join(" ")
-            ));
+            crate::byteenc::write_stderr_decoded_line(&format!("{}{}", prefix, expanded.join(" ")));
         }
 
         let mut expanded_iter = expanded.into_iter();

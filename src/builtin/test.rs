@@ -97,9 +97,9 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
     // non-UTF-8 path names reach the OS as their original raw bytes.
     let path = {
         use std::os::unix::ffi::OsStrExt;
-        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
-            &crate::byteenc::decode_bytes(arg),
-        ))
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&crate::byteenc::decode_bytes(
+            arg,
+        )))
     };
     let path = path.as_path();
 
@@ -109,13 +109,17 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
 
         // -e follows symlinks (bash/dash semantics): dangling links → false.
         "-e" => Ok(std::fs::metadata(path).is_ok()),
-        "-f" => Ok(std::fs::metadata(path).map(|m| m.is_file()).unwrap_or(false)),
+        "-f" => Ok(std::fs::metadata(path)
+            .map(|m| m.is_file())
+            .unwrap_or(false)),
         "-d" => Ok(std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)),
         // -h / -L do NOT follow symlinks.
         "-h" | "-L" => Ok(std::fs::symlink_metadata(path)
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false)),
-        "-s" => Ok(std::fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false)),
+        "-s" => Ok(std::fs::metadata(path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)),
         "-p" => Ok(std::fs::metadata(path)
             .map(|m| m.file_type().is_fifo())
             .unwrap_or(false)),

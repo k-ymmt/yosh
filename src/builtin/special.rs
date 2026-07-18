@@ -240,7 +240,10 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         let mut sorted = readonly_vars;
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in sorted {
-            crate::builtin::regular::write_stdout_decoded(&format!("readonly {}={}", name, value), true);
+            crate::builtin::regular::write_stdout_decoded(
+                &format!("readonly {}={}", name, value),
+                true,
+            );
         }
         return Ok(0);
     }
@@ -574,9 +577,9 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> Result<i32, Shell
     // the real on-disk names.
     let decode_path = |s: &str| {
         use std::os::unix::ffi::OsStrExt;
-        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
-            &crate::byteenc::decode_bytes(s),
-        ))
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&crate::byteenc::decode_bytes(
+            s,
+        )))
     };
     let path = if filename.contains('/') {
         decode_path(filename)

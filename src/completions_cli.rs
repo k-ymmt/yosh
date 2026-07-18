@@ -79,8 +79,7 @@ fn export(args: &[String]) -> i32 {
             status = 1;
             continue;
         }
-        let written = std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::write(&path, text));
+        let written = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, text));
         match written {
             Ok(()) => println!("{}", path.display()),
             Err(err) => {

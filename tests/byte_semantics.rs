@@ -66,19 +66,14 @@ fn exported_var_reaches_child_process_as_raw_bytes() {
 
 #[test]
 fn command_substitution_preserves_invalid_bytes() {
-    let stdout = run_stdout(yosh().args([
-        "-c",
-        r#"x=$(printf '%s' $'a\xe9b'); printf '%s' "$x""#,
-    ]));
+    let stdout = run_stdout(yosh().args(["-c", r#"x=$(printf '%s' $'a\xe9b'); printf '%s' "$x""#]));
     assert_eq!(stdout, b"a\xe9b");
 }
 
 #[test]
 fn command_substitution_strips_trailing_newlines_after_invalid_bytes() {
-    let stdout = run_stdout(yosh().args([
-        "-c",
-        r#"x=$(printf '%s\n\n' $'ab\xff'); printf '%s' "$x""#,
-    ]));
+    let stdout =
+        run_stdout(yosh().args(["-c", r#"x=$(printf '%s\n\n' $'ab\xff'); printf '%s' "$x""#]));
     assert_eq!(stdout, b"ab\xff");
 }
 
@@ -91,12 +86,7 @@ fn read_preserves_invalid_bytes() {
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn yosh");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"a\xe9b\n")
-        .unwrap();
+    child.stdin.take().unwrap().write_all(b"a\xe9b\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success());
     assert_eq!(out.stdout, b"a\xe9b");
@@ -136,10 +126,7 @@ fn stdin_script_with_invalid_bytes_is_preserved() {
 
 #[test]
 fn heredoc_preserves_invalid_bytes() {
-    let stdout = run_stdout(yosh().args([
-        "-c",
-        "cat <<EOF\n$(printf '%s' $'\\xe9')\nEOF",
-    ]));
+    let stdout = run_stdout(yosh().args(["-c", "cat <<EOF\n$(printf '%s' $'\\xe9')\nEOF"]));
     assert_eq!(stdout, b"\xe9\n");
 }
 

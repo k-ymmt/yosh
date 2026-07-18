@@ -941,7 +941,10 @@ name = \"add\"
             .iter()
             .map(|(name, _)| name.to_string())
             .collect();
-        assert_eq!(embedded, on_disk, "EMBEDDED_SPECS out of sync with completions/");
+        assert_eq!(
+            embedded, on_disk,
+            "EMBEDDED_SPECS out of sync with completions/"
+        );
     }
 
     // ── SpecStore ────────────────────────────────────────────────────
@@ -1010,8 +1013,11 @@ name = \"add\"
         let (_tmp, dir) = {
             let tmp = tempfile::TempDir::new().unwrap();
             let dir = tmp.path().to_path_buf();
-            std::fs::write(dir.join("git.toml"), "[[subcommands]]\nname = \"only-mine\"\n")
-                .unwrap();
+            std::fs::write(
+                dir.join("git.toml"),
+                "[[subcommands]]\nname = \"only-mine\"\n",
+            )
+            .unwrap();
             (tmp, dir)
         };
         let mut store = SpecStore::with_embedded(dir);

@@ -146,9 +146,9 @@ fn expand_components(dir: String, components: &[&str]) -> Vec<String> {
 /// original raw bytes, for filesystem checks during glob walking.
 fn fs_path(s: &str) -> std::path::PathBuf {
     use std::os::unix::ffi::OsStrExt;
-    std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
-        &crate::byteenc::decode_bytes(s),
-    ))
+    std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&crate::byteenc::decode_bytes(
+        s,
+    )))
 }
 
 /// Join a directory and a filename into a path string.

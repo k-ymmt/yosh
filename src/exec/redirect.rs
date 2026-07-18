@@ -9,11 +9,7 @@ use crate::parser::ast::{Redirect, RedirectKind};
 
 /// Open a byteenc-encoded redirect target, decoding escape codepoints so
 /// non-UTF-8 paths reach the OS as their original raw bytes.
-fn open_decoded(
-    path: &str,
-    flags: OFlag,
-    mode: Mode,
-) -> nix::Result<std::os::fd::OwnedFd> {
+fn open_decoded(path: &str, flags: OFlag, mode: Mode) -> nix::Result<std::os::fd::OwnedFd> {
     use std::os::unix::ffi::OsStrExt;
     let bytes = crate::byteenc::decode_bytes(path);
     open(std::ffi::OsStr::from_bytes(&bytes), flags, mode)

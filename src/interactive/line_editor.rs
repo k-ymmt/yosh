@@ -774,21 +774,21 @@ impl LineEditor {
         // because the unchanged prefix has identical layout in both
         // renders), and writing relies on terminal auto-wrap exactly like
         // the full-repaint path.
-        let mut partial_repaint_start = self
-            .prev_render
-            .as_ref()
-            .and_then(|(prev_buf, prev_spans)| {
-                if tw == 0 {
-                    return None;
-                }
-                let char_diff = prev_buf
-                    .iter()
-                    .zip(self.buf.iter())
-                    .position(|(a, b)| a != b)
-                    .unwrap_or_else(|| prev_buf.len().min(self.buf.len()));
-                let style_diff = style_diff_pos(prev_spans, spans, char_diff);
-                Some(style_diff)
-            });
+        let mut partial_repaint_start =
+            self.prev_render
+                .as_ref()
+                .and_then(|(prev_buf, prev_spans)| {
+                    if tw == 0 {
+                        return None;
+                    }
+                    let char_diff = prev_buf
+                        .iter()
+                        .zip(self.buf.iter())
+                        .position(|(a, b)| a != b)
+                        .unwrap_or_else(|| prev_buf.len().min(self.buf.len()));
+                    let style_diff = style_diff_pos(prev_spans, spans, char_diff);
+                    Some(style_diff)
+                });
 
         // A diff that starts exactly on a wrap boundary would have to write
         // into the terminal's deferred-wrap cell (or onto a physical row

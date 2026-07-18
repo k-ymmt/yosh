@@ -31,8 +31,8 @@ impl Parser {
                     && redirects.is_empty()
                     && let Token::Word(word) = &self.current.token
                     && let Some(
-                        kw @ ("}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do"
-                        | "in"),
+                        kw
+                        @ ("}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do" | "in"),
                     ) = word.as_literal()
                 {
                     let span = self.current_span();

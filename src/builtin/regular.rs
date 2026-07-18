@@ -6,9 +6,9 @@ use std::os::unix::ffi::OsStrExt;
 /// Convert a byteenc-encoded shell path string into an `OsStr`-backed path
 /// carrying the original raw bytes for OS calls.
 fn os_path(s: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
-        &crate::byteenc::decode_bytes(s),
-    ))
+    std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&crate::byteenc::decode_bytes(
+        s,
+    )))
 }
 
 /// Encode an OS path back into the shell's internal (byteenc) string form.
