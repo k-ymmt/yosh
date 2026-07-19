@@ -137,13 +137,33 @@ _run_test_job() {
   # so 14 free jobs are still consuming CPU while a PTY job runs, and the
   # budget breaks at threads=4 (every test times out).
   local threads=4
+  local t0 t1 t2
+  t0="$(date +%s)"
   if [[ "$group" == "pty" ]]; then
     while ! mkdir "$PTY_LOCK_DIR" 2>/dev/null; do sleep 0.05; done
     trap 'rmdir "$PTY_LOCK_DIR" 2>/dev/null' EXIT
     threads=2
   fi
+  t1="$(date +%s)"
 
-  RUST_TEST_THREADS="$threads" cargo "$@" >"$log" 2>&1
+  local rc=0
+  RUST_TEST_THREADS="$threads" cargo "$@" >"$log" 2>&1 || rc=$?
+  t2="$(date +%s)"
+  # Per-job wall-time record: name, lock-wait, run, total (seconds).
+  # Appends are short single lines to an O_APPEND fd — safe across the
+  # concurrent job subshells.
+  printf '%s\t%s\t%s\t%s\n' "$name" "$((t1 - t0))" "$((t2 - t1))" "$((t2 - t0))" \
+    >>"$(dirname "$log")/durations.tsv"
+  return "$rc"
+}
+
+# Print the per-job duration table (sorted by total desc) to stderr.
+_print_job_durations() {
+  local tsv="$1"
+  [[ -f "$tsv" ]] || return 0
+  echo "yosh-release: per-job wall times (lock-wait / run / total):" >&2
+  sort -t$'\t' -k4 -rn "$tsv" \
+    | awk -F'\t' '{ printf "  %-18s %5ss %6ss %6ss\n", $1, $2, $3, $4 }' >&2
 }
 
 # Launch all jobs in PHASE_TEST_JOBS plus e2e in parallel, wait, aggregate.
@@ -176,7 +196,15 @@ _run_all_tests_parallel() {
   # cargo jobs hog CPU. 45s is well above the worst observed stall and
   # still tight enough to surface real hangs.
   local e2e_log="$log_dir/e2e.log"
-  ( YOSH_E2E_TIMEOUT=45 ./e2e/run_tests.sh >"$e2e_log" 2>&1 ) &
+  (
+    t0="$(date +%s)"
+    rc=0
+    YOSH_E2E_TIMEOUT=45 ./e2e/run_tests.sh >"$e2e_log" 2>&1 || rc=$?
+    t1="$(date +%s)"
+    printf 'e2e\t0\t%s\t%s\n' "$((t1 - t0))" "$((t1 - t0))" \
+      >>"$log_dir/durations.tsv"
+    exit "$rc"
+  ) &
   pids[$idx]=$!
   names[$idx]="e2e"
   logs[$idx]="$e2e_log"
@@ -188,6 +216,8 @@ _run_all_tests_parallel() {
       failed+=("$i")
     fi
   done
+
+  _print_job_durations "$log_dir/durations.tsv"
 
   if [[ ${#failed[@]} -gt 0 ]]; then
     for i in "${failed[@]}"; do
@@ -245,8 +275,12 @@ phase_test() {
 
   check_baseline_load
 
+  local ts_start ts_build ts_precompile ts_tests ts_end
+  ts_start="$(date +%s)"
+
   echo "yosh-release: building debug binary for e2e..." >&2
   cargo build || fail "cargo build failed — fix and rerun"
+  ts_build="$(date +%s)"
 
   # Pre-compile each job's exact cargo invocation. A single
   # `cargo test --no-run --workspace` is NOT equivalent: --workspace
@@ -278,6 +312,7 @@ phase_test() {
     cargo $cmd --no-run \
       || fail "cargo $cmd --no-run failed — fix and rerun"
   done
+  ts_precompile="$(date +%s)"
 
   # Reserve a unique lock path. mktemp -d creates it; rmdir removes it so the
   # path is absent on entry. Absent = unlocked, present = held.
@@ -285,8 +320,12 @@ phase_test() {
   rmdir "$PTY_LOCK_DIR"
 
   echo "yosh-release: running ${#PHASE_TEST_JOBS[@]} test jobs + e2e in parallel..." >&2
-  echo "yosh-release: output is buffered (shown only on failure); this can take 15-30 min" >&2
+  # Wall-time expectation (measured 2026-07-19 with per-job instrumentation):
+  # ~90 s fully warm, ~3.5 min after a dependency rebuild. Critical path is
+  # e2e (~86 s); if this drifts past ~5 min, read the per-job table below.
+  echo "yosh-release: output is buffered (shown only on failure); typically ~2-4 min (longer after big rebuilds)" >&2
   _run_all_tests_parallel
+  ts_tests="$(date +%s)"
 
   # Catch packaging-time bugs that workspace builds miss — e.g. bindgen!
   # macros with workspace-relative paths that resolve in the workspace
@@ -307,7 +346,9 @@ phase_test() {
     cargo publish --dry-run --allow-dirty -p "$check" >/dev/null 2>&1 \
       || fail "cargo publish --dry-run failed for $check — rerun manually for full output: cargo publish --dry-run --allow-dirty -p $check"
   done
+  ts_end="$(date +%s)"
 
+  echo "yosh-release: phase timing: build=$((ts_build - ts_start))s precompile=$((ts_precompile - ts_build))s parallel-tests=$((ts_tests - ts_precompile))s package-dry-run=$((ts_end - ts_tests))s total=$((ts_end - ts_start))s" >&2
   echo "yosh-release: all tests passed" >&2
 }
 
