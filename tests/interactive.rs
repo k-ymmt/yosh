@@ -1097,6 +1097,8 @@ fn test_tab_completes_single_candidate() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("ls unique_file.txt ".to_string()));
@@ -1150,6 +1152,8 @@ fn test_tab_completes_common_prefix() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("ls file_".to_string()));
@@ -1202,6 +1206,8 @@ fn test_tab_directory_appends_slash() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("ls mydir/".to_string()));
@@ -1254,6 +1260,8 @@ fn test_tab_no_match_does_nothing() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("ls xyz".to_string()));
@@ -1314,6 +1322,8 @@ fn test_double_tab_opens_completion_ui() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("ls file_beta.rs ".to_string()));
@@ -1378,6 +1388,8 @@ fn test_tab_command_completion_at_line_start() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("yosh_test_mycmd ".to_string()));
@@ -1432,6 +1444,8 @@ fn test_tab_command_position_path_fallback() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("./myscript.sh ".to_string()));
@@ -1485,6 +1499,8 @@ fn test_tab_argument_position_uses_path_completion() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("cat testfile.txt ".to_string()));
@@ -1537,6 +1553,8 @@ fn test_tab_completes_builtin() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("export ".to_string()));
@@ -1595,6 +1613,8 @@ fn test_tab_spec_completion_subcommand_values() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("mytool deploy prod ".to_string()));
@@ -1650,6 +1670,8 @@ fn test_tab_spec_none_source_suppresses_path_completion() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     // Tab must NOT expand to unique_file.txt.
@@ -1704,6 +1726,8 @@ fn test_tab_no_spec_falls_back_to_path_completion() {
             &mut scanner,
             &checker_env,
             "",
+            "> ",
+            &|_| false,
         )
         .unwrap();
     assert_eq!(result, Some("ls unique_file.txt ".to_string()));
@@ -2562,4 +2586,275 @@ fn test_mock_numeric_arg_movement() {
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "abc");
+}
+
+// ── Multiline editing tests ─────────────────────────────────────────────
+
+/// Alt+Enter key event (force-insert newline).
+fn alt_enter() -> crossterm::event::Event {
+    crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+        KeyCode::Enter,
+        crossterm::event::KeyModifiers::ALT,
+    ))
+}
+
+/// Completeness probe backed by the real REPL classifier.
+fn shell_incomplete(text: &str) -> bool {
+    let aliases = AliasStore::default();
+    let candidate = format!("{}\n", text);
+    matches!(
+        classify_parse(&candidate, &aliases),
+        ParseStatus::Incomplete
+    )
+}
+
+/// Drive `read_line_with_completion` with minimal contexts, a "$ " prompt,
+/// a "> " continuation prompt, and the given completeness probe.
+fn read_multiline(
+    events: Vec<crossterm::event::Event>,
+    history: &mut History,
+    is_incomplete: &dyn Fn(&str) -> bool,
+) -> (Option<String>, Vec<String>) {
+    let ctx = CompletionContext {
+        cwd: "/".to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
+    let result = editor
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut spec_store,
+            &mut scanner,
+            &checker_env,
+            "",
+            "> ",
+            is_incomplete,
+        )
+        .unwrap();
+    (result, term.output().to_vec())
+}
+
+#[test]
+fn test_multiline_enter_on_incomplete_inserts_newline() {
+    // `if true` is incomplete; Enter continues in-buffer until `fi` closes it.
+    let events = [
+        chars("if true"),
+        vec![key(KeyCode::Enter)],
+        chars("then echo hi"),
+        vec![key(KeyCode::Enter)],
+        chars("fi"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &shell_incomplete);
+    assert_eq!(result, Some("if true\nthen echo hi\nfi".to_string()));
+}
+
+#[test]
+fn test_multiline_unclosed_quote_continues() {
+    let events = [
+        chars("echo 'a"),
+        vec![key(KeyCode::Enter)],
+        chars("b'"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &shell_incomplete);
+    assert_eq!(result, Some("echo 'a\nb'".to_string()));
+}
+
+#[test]
+fn test_multiline_continuation_prompt_rendered() {
+    // After Enter on incomplete input, the redraw must paint the "> "
+    // continuation prompt. Ctrl+C ends the read (returns Some("")).
+    let events = [chars("if true"), vec![key(KeyCode::Enter)], vec![ctrl('c')]].concat();
+    let mut history = History::new();
+    let (result, output) = read_multiline(events, &mut history, &shell_incomplete);
+    assert_eq!(result, Some(String::new()));
+    assert!(
+        output.iter().any(|s| s == "> "),
+        "expected continuation prompt in output: {:?}",
+        output
+    );
+}
+
+#[test]
+fn test_multiline_alt_enter_forces_newline() {
+    // Alt+Enter inserts a newline even when the input is complete.
+    let events = [
+        chars("echo a"),
+        vec![alt_enter()],
+        chars("echo b"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("echo a\necho b".to_string()));
+}
+
+#[test]
+fn test_multiline_up_down_cursor_movement() {
+    // Up moves to the previous logical line (column preserved), Down back.
+    let events = [
+        chars("abc"),
+        vec![alt_enter()],
+        chars("def"),
+        vec![key(KeyCode::Up)],
+        chars("X"),
+        vec![key(KeyCode::Down)],
+        chars("Y"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("abcX\ndefY".to_string()));
+}
+
+#[test]
+fn test_multiline_up_at_first_line_navigates_history() {
+    let mut history = History::new();
+    history.add("echo old", 500, "");
+    // Buffer "ab\ncd": first Up moves to line 1, second Up recalls history.
+    let events = [
+        chars("ab"),
+        vec![alt_enter()],
+        chars("cd"),
+        vec![key(KeyCode::Up)],
+        vec![key(KeyCode::Up)],
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("echo old".to_string()));
+}
+
+#[test]
+fn test_multiline_ctrl_a_e_are_line_local() {
+    let events = [
+        chars("ab"),
+        vec![alt_enter()],
+        chars("cd"),
+        vec![ctrl('a')],
+        chars("Z"),
+        vec![ctrl('e')],
+        chars("W"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("ab\nZcdW".to_string()));
+}
+
+#[test]
+fn test_multiline_ctrl_k_at_line_end_kills_newline() {
+    // Cursor at end of first line; Ctrl+K removes the newline, joining lines.
+    let events = [
+        chars("ab"),
+        vec![alt_enter()],
+        chars("cd"),
+        vec![key(KeyCode::Up)],
+        vec![ctrl('k')],
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("abcd".to_string()));
+}
+
+#[test]
+fn test_multiline_ctrl_u_kills_to_line_start_only() {
+    let events = [
+        chars("ab"),
+        vec![alt_enter()],
+        chars("cd"),
+        vec![ctrl('u')],
+        chars("x"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("ab\nx".to_string()));
+}
+
+#[test]
+fn test_multiline_up_preserves_display_column_wide_chars() {
+    // Line 1 "あい" (width 4). Cursor on line 2 at col 3 ("def" end… use
+    // "abc" end = col 3): Up lands after "あ" (width 2 ≤ 3 < 4 would split
+    // "い", so the cursor stops before it).
+    let events = [
+        chars("あい"),
+        vec![alt_enter()],
+        chars("abc"),
+        vec![key(KeyCode::Up)],
+        chars("X"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("あXい\nabc".to_string()));
+}
+
+#[test]
+fn test_multiline_backspace_joins_lines() {
+    // Backspace at a line start deletes the newline separator.
+    let events = [
+        chars("ab"),
+        vec![alt_enter()],
+        vec![key(KeyCode::Backspace)],
+        chars("c"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("abc".to_string()));
+}
+
+#[test]
+fn test_multiline_buffer_line_helpers() {
+    let mut ed = LineEditor::new();
+    for ch in "ab\ncd\nef".chars() {
+        ed.insert_char(ch);
+    }
+    assert_eq!(ed.line_count(), 3);
+    assert_eq!(ed.cursor_line_index(), 2);
+    ed.move_cursor_up();
+    assert_eq!(ed.cursor_line_index(), 1);
+    ed.move_to_start();
+    assert_eq!(ed.cursor(), 3); // start of "cd"
+    ed.move_to_end();
+    assert_eq!(ed.cursor(), 5); // end of "cd"
+    ed.move_cursor_down();
+    assert_eq!(ed.cursor_line_index(), 2);
 }

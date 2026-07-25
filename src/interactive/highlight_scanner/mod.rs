@@ -330,6 +330,29 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_newline_resets_command_position() {
+        // A '\n' inside a multiline editor buffer separates commands like
+        // ';': "then" on the continuation line is a keyword, not an argument.
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "if true\nthen echo hi\nfi");
+        assert_span(&spans, 0, 0, 2, HighlightStyle::Keyword); // if
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.start == 8 && s.end == 12 && s.style == HighlightStyle::Keyword),
+            "expected Keyword span for 'then' after newline. Spans: {:?}",
+            spans
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.start == 21 && s.end == 23 && s.style == HighlightStyle::Keyword),
+            "expected Keyword span for 'fi' after newline. Spans: {:?}",
+            spans
+        );
+    }
+
+    #[test]
     fn test_scan_comment() {
         let mut scanner = test_scanner();
         let spans = scan_input(&mut scanner, "echo hi # comment");

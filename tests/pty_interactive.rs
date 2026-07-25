@@ -271,6 +271,38 @@ fn test_pty_ps2_continuation() {
 }
 
 #[test]
+fn test_pty_multiline_edit_previous_line() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    // Unclosed quote: Enter starts an in-editor continuation line.
+    s.send("echo 'A\r").unwrap();
+    wait_for_ps2(&mut s);
+
+    // Second line, then move the cursor back INTO the first line (Up no
+    // longer recalls history mid-buffer), jump to its end (Ctrl+E) and
+    // append X before the newline. Submitting executes the edited buffer
+    // `echo 'AX\nZ' QQ`, which prints "AX\nZ QQ".
+    //
+    // The quote placed mid-line ("Z' QQ") keeps the executed output
+    // ("Z QQ") distinguishable from every echoed/repainted input frame,
+    // which always contains the quote or a "> " prefix.
+    s.send("Z' QQ").unwrap();
+    s.send("\x1b[A").unwrap(); // Up — cursor to first line
+    s.send("\x05").unwrap(); // Ctrl+E — end of first line
+    s.send("X").unwrap();
+    s.send("\r").unwrap();
+    expect_output(
+        &mut s,
+        "AX\r\nZ QQ",
+        "cross-line edit not reflected in output",
+    );
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_ctrl_r_history_search() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);

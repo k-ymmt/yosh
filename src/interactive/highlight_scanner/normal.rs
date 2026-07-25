@@ -23,6 +23,12 @@ pub(super) fn scan_normal(ctx: &mut ScanCtx<'_>, env: &CheckerEnv<'_>, pos: usiz
 
     // --- Whitespace ---
     if ch.is_ascii_whitespace() {
+        // A newline separates commands like `;`: the first word of the next
+        // line (in-editor multiline buffer or accumulated PS2 text) is at
+        // command position again.
+        if ch == '\n' {
+            ctx.state.command_position = true;
+        }
         ctx.state.word_start = true;
         return pos + 1;
     }

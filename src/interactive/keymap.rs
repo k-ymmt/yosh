@@ -120,6 +120,7 @@ impl Keymap {
             (KeyCode::Backspace, false, true) => EditAction::KillBackwardWord,
 
             // --- Plain keys ---
+            (KeyCode::Enter, false, true) => EditAction::InsertNewline,
             (KeyCode::Enter, false, false) => EditAction::Submit,
             (KeyCode::Backspace, false, false) => EditAction::DeleteBackward,
             (KeyCode::Delete, false, false) => EditAction::DeleteForward,

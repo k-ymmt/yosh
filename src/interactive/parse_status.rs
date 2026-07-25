@@ -28,6 +28,9 @@ const CLOSING_KEYWORDS: &[&str] = &[
     // `do :\ndone` covers header-only `for x in ...\n` and `while cond\n`
     // inputs where `do` itself has not been typed yet.
     "\ndo :\ndone\n",
+    // `then :\nfi` covers header-only `if cond\n` (and `elif cond\n`)
+    // inputs where `then` itself has not been typed yet.
+    "\nthen :\nfi\n",
 ];
 
 pub fn classify_parse(input: &str, aliases: &AliasStore) -> ParseStatus {

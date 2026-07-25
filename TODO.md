@@ -55,7 +55,16 @@
 ## Future: Interactive Mode Enhancements
 
 - [ ] `ENV` tilde expansion PTY test — `ENV=~/foo` tilde expansion is only exercised on interactive startup; add PTY test to verify `~` and `~user` cases (`tests/pty_interactive.rs`)
-- [ ] Multiline editing — visual multiline editing with cursor movement across lines
+- [ ] Multiline editing follow-ups (core landed 2026-07-26: in-buffer
+      continuation on incomplete Enter, Alt+Enter forced newline, up/down
+      cursor movement, line-local C-a/C-e/C-k/C-u, PS2-prefixed rendering):
+      (a) multiline buffers always take the full clear+repaint path — extend
+      the diff-based partial repaint to multiline layouts if large pasted
+      blocks make per-keystroke repaints visibly slow; (b) up/down movement
+      clamps to line end without readline-style preferred-column stickiness
+      across consecutive moves; (c) autosuggestions whose remainder contains
+      a newline are suppressed rather than rendered with continuation
+      prompts (`src/interactive/line_editor.rs`).
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
 - [ ] `set -x` does not emit bash-style structural headers for `for` / `case` (yosh matches dash here; POSIX leaves the header format implementation-defined). Empirical survey 2026-05-28 confirmed compound bodies and pipeline members are already traced via `exec_simple_command`; the assignment-only gap was closed in the 2026-05-28 assignment-trace work. Adding bash parity for the headers requires Word→source rendering plus an xtrace argument-quoting algorithm; the latter also affects existing simple-command trace output (`echo "a b" c` traces as `+ echo a b c` not `+ echo 'a b' c`). Tracked together because both want the same quoting helper. See `docs/superpowers/specs/2026-05-28-set-x-assignment-trace-design.md` §5 for the closed assignment portion (`src/exec/compound.rs`, `src/exec/simple.rs`).

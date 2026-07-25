@@ -230,14 +230,95 @@ impl LineEditor {
         }
     }
 
-    /// Move the cursor to the beginning of the buffer (position 0).
-    pub fn move_to_start(&mut self) {
-        self.pos = 0;
+    /// Return the char index of the start of the logical line containing
+    /// `pos` (the position just after the previous `'\n'`, or 0).
+    fn line_start(&self, pos: usize) -> usize {
+        self.buf[..pos]
+            .iter()
+            .rposition(|&c| c == '\n')
+            .map(|i| i + 1)
+            .unwrap_or(0)
     }
 
-    /// Move the cursor to the end of the buffer.
+    /// Return the char index of the end of the logical line containing
+    /// `pos` (the position of the next `'\n'`, or `buf.len()`).
+    fn line_end(&self, pos: usize) -> usize {
+        self.buf[pos..]
+            .iter()
+            .position(|&c| c == '\n')
+            .map(|i| pos + i)
+            .unwrap_or(self.buf.len())
+    }
+
+    /// Return the 0-based index of the logical line the cursor is on.
+    pub fn cursor_line_index(&self) -> usize {
+        self.buf[..self.pos].iter().filter(|&&c| c == '\n').count()
+    }
+
+    /// Return the number of logical lines in the buffer (1 when empty).
+    pub fn line_count(&self) -> usize {
+        self.buf.iter().filter(|&&c| c == '\n').count() + 1
+    }
+
+    /// Move the cursor to the previous logical line, preserving the display
+    /// column as closely as possible. Does nothing on the first line.
+    pub fn move_cursor_up(&mut self) {
+        let cur_start = self.line_start(self.pos);
+        if cur_start == 0 {
+            return;
+        }
+        let target: usize = self.buf[cur_start..self.pos]
+            .iter()
+            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+            .sum();
+        let prev_end = cur_start - 1; // index of the '\n'
+        let prev_start = self.line_start(prev_end);
+        self.pos = Self::pos_at_column(&self.buf, prev_start, prev_end, target);
+    }
+
+    /// Move the cursor to the next logical line, preserving the display
+    /// column as closely as possible. Does nothing on the last line.
+    pub fn move_cursor_down(&mut self) {
+        let cur_end = self.line_end(self.pos);
+        if cur_end == self.buf.len() {
+            return;
+        }
+        let cur_start = self.line_start(self.pos);
+        let target: usize = self.buf[cur_start..self.pos]
+            .iter()
+            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+            .sum();
+        let next_start = cur_end + 1;
+        let next_end = self.line_end(next_start);
+        self.pos = Self::pos_at_column(&self.buf, next_start, next_end, target);
+    }
+
+    /// Walk `buf[start..end]` accumulating display width and return the char
+    /// index closest to (without exceeding) `target` columns.
+    fn pos_at_column(buf: &[char], start: usize, end: usize, target: usize) -> usize {
+        let mut w = 0usize;
+        let mut p = start;
+        while p < end {
+            let cw = UnicodeWidthChar::width(buf[p]).unwrap_or(0);
+            if w + cw > target {
+                break;
+            }
+            w += cw;
+            p += 1;
+        }
+        p
+    }
+
+    /// Move the cursor to the beginning of the current logical line.
+    /// (For a single-line buffer this is position 0, as before.)
+    pub fn move_to_start(&mut self) {
+        self.pos = self.line_start(self.pos);
+    }
+
+    /// Move the cursor to the end of the current logical line.
+    /// (For a single-line buffer this is the end of the buffer, as before.)
     pub fn move_to_end(&mut self) {
-        self.pos = self.buf.len();
+        self.pos = self.line_end(self.pos);
     }
 
     /// Returns true if `ch` is a word character (alphanumeric or underscore).
@@ -266,19 +347,29 @@ impl LineEditor {
         }
     }
 
-    /// Kill from cursor to end of line. Returns the killed text.
+    /// Kill from cursor to end of the current logical line. When the cursor
+    /// is already at the line end and a newline follows, kill the newline
+    /// (emacs `C-k` behavior). Returns the killed text.
     pub fn kill_to_end(&mut self) -> String {
-        let killed: String = self.buf[self.pos..].iter().collect();
-        self.buf.truncate(self.pos);
+        let end = self.line_end(self.pos);
+        if self.pos == end && end < self.buf.len() {
+            self.buf.remove(self.pos);
+            self.invalidate_width_cache();
+            return "\n".to_string();
+        }
+        let killed: String = self.buf[self.pos..end].iter().collect();
+        self.buf.drain(self.pos..end);
         self.invalidate_width_cache();
         killed
     }
 
-    /// Kill from start of line to cursor. Returns the killed text.
+    /// Kill from the start of the current logical line to the cursor
+    /// (readline `unix-line-discard`). Returns the killed text.
     pub fn kill_to_start(&mut self) -> String {
-        let killed: String = self.buf[..self.pos].iter().collect();
-        self.buf.drain(..self.pos);
-        self.pos = 0;
+        let start = self.line_start(self.pos);
+        let killed: String = self.buf[start..self.pos].iter().collect();
+        self.buf.drain(start..self.pos);
+        self.pos = start;
         self.invalidate_width_cache();
         killed
     }
@@ -579,7 +670,13 @@ impl LineEditor {
                 self.suggestion = cached.clone();
                 return;
             }
-            let result = history.suggest(&self.buffer());
+            // A suggestion remainder containing '\n' would be rendered as a
+            // raw newline by the dim-suggestion painter (which has no notion
+            // of continuation prompts); drop those rather than corrupt the
+            // layout.
+            let result = history
+                .suggest(&self.buffer())
+                .filter(|s| !s.contains('\n'));
             self.suggestion_cache = Some((self.buf_generation, result.clone()));
             self.suggestion = result;
         } else {
@@ -706,7 +803,7 @@ impl LineEditor {
                     }
                     self.update_suggestion(history);
                     let (tw, _) = term.size().unwrap_or((80, 24));
-                    self.redraw(term, prompt, prompt_width, &[], tw)?;
+                    self.redraw(term, prompt, prompt_width, "> ", &[], tw)?;
                 }
                 Event::Resize(_cols, _rows) => {
                     // Terminal dimensions changed, invalidating all cached
@@ -715,7 +812,7 @@ impl LineEditor {
                     self.invalidate_render_state();
                     let (tw, _) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
-                    self.redraw(term, prompt, prompt_width, &[], tw)?;
+                    self.redraw(term, prompt, prompt_width, "> ", &[], tw)?;
                 }
                 _ => {}
             }
@@ -723,17 +820,34 @@ impl LineEditor {
     }
 
     /// Redraw the current buffer on screen, positioning the cursor correctly.
-    /// Handles input that wraps past the terminal width.
+    /// Handles input that wraps past the terminal width. Buffers containing
+    /// literal newlines are rendered as multiple logical lines, each
+    /// continuation line prefixed with `cont_prompt`.
+    #[allow(clippy::too_many_arguments)]
     fn redraw<T: Terminal>(
         &mut self,
         term: &mut T,
         prompt: &str,
         prompt_width: usize,
+        cont_prompt: &str,
         spans: &[ColorSpan],
         term_width: u16,
     ) -> io::Result<()> {
         let tw = term_width as usize;
         let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
+
+        // Multiline buffers get their own renderer; the soft-wrap row math
+        // below assumes a single logical line.
+        if self.buf.contains(&'\n') {
+            return self.redraw_multiline(term, prompt, prompt_width, cont_prompt, spans, tw);
+        }
+        // If the *previous* render was multiline, the diff-based partial
+        // repaint below would misinterpret its layout; the full clear +
+        // repaint path handles it fine (clearing only uses row counts).
+        let prev_was_multiline = self
+            .prev_render
+            .as_ref()
+            .is_some_and(|(prev_buf, _)| prev_buf.contains(&'\n'));
 
         // Precompute the width/row info the new-render needs regardless of
         // which repaint strategy is chosen below.
@@ -778,7 +892,7 @@ impl LineEditor {
             self.prev_render
                 .as_ref()
                 .and_then(|(prev_buf, prev_spans)| {
-                    if tw == 0 {
+                    if tw == 0 || prev_was_multiline {
                         return None;
                     }
                     let char_diff = prev_buf
@@ -954,6 +1068,153 @@ impl LineEditor {
         Ok(())
     }
 
+    /// Render a buffer containing literal newlines: each logical line
+    /// soft-wraps within the terminal width like the single-line renderer,
+    /// and every continuation line is prefixed with `cont_prompt`. Always a
+    /// full clear + repaint — the partial-repaint diff only models
+    /// single-line layouts.
+    fn redraw_multiline<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        prompt_width: usize,
+        cont_prompt: &str,
+        spans: &[ColorSpan],
+        tw: usize,
+    ) -> io::Result<()> {
+        let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
+        let cont_width = display_width(cont_prompt);
+        // Physical rows occupied by a display width `w`: ceil(w/tw), min 1.
+        // A width that is an exact multiple of `tw` still occupies w/tw rows
+        // because the terminal defers the final wrap.
+        let rows_for = |w: usize| -> usize { if tw == 0 || w == 0 { 1 } else { w.div_ceil(tw) } };
+
+        // ---- Clear every row of the previous render ----
+        if self.prev_cursor_row > 0 {
+            term.move_up(self.prev_cursor_row as u16)?;
+        }
+        term.move_to_column(0)?;
+        for i in 0..=self.prev_total_rows {
+            if i > 0 {
+                term.move_down(1)?;
+            }
+            term.clear_current_line()?;
+        }
+        if self.prev_total_rows > 0 {
+            term.move_up(self.prev_total_rows as u16)?;
+        }
+        term.move_to_column(0)?;
+
+        // ---- Logical line char ranges [start, end); buf[end] is the '\n'
+        // separator (or end == buf.len() for the last line) ----
+        let mut lines: Vec<(usize, usize)> = Vec::new();
+        let mut start = 0usize;
+        for (i, &c) in self.buf.iter().enumerate() {
+            if c == '\n' {
+                lines.push((start, i));
+                start = i + 1;
+            }
+        }
+        lines.push((start, self.buf.len()));
+
+        let suggestion_active = self.suggestion.is_some() && self.pos == self.buf.len();
+        let suggestion_width: usize = if suggestion_active {
+            self.suggestion
+                .as_ref()
+                .unwrap()
+                .chars()
+                .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+                .sum()
+        } else {
+            0
+        };
+
+        // ---- Write prompt + content, line by line ----
+        let mut span_idx = 0;
+        let mut current_style = HighlightStyle::Default;
+        for (li, &(s, e)) in lines.iter().enumerate() {
+            if li > 0 {
+                // Continuation prompts are always unstyled; highlight spans
+                // resume at the first char after the prompt.
+                if current_style != HighlightStyle::Default {
+                    term.reset_style()?;
+                    current_style = HighlightStyle::Default;
+                }
+                term.write_str("\r\n")?;
+            }
+            term.write_str(if li == 0 { prompt } else { cont_prompt })?;
+            for i in s..e {
+                if !spans.is_empty() {
+                    let new_style = style_at_advancing(spans, &mut span_idx, i);
+                    if new_style != current_style {
+                        if current_style != HighlightStyle::Default {
+                            term.reset_style()?;
+                        }
+                        apply_style(term, new_style)?;
+                        current_style = new_style;
+                    }
+                }
+                term.write_char(self.buf[i])?;
+            }
+        }
+        if current_style != HighlightStyle::Default {
+            term.reset_style()?;
+        }
+        if suggestion_active {
+            term.set_dim(true)?;
+            term.write_str(self.suggestion.as_deref().unwrap_or(""))?;
+            term.set_dim(false)?;
+        }
+
+        // ---- Row layout + cursor position ----
+        // The cursor position `pos` belongs to exactly one line: line ranges
+        // are [s, e] inclusive of the position *before* the separator, and
+        // the next line starts at e + 1.
+        let mut rows_before = 0usize;
+        let mut cursor_row = 0usize;
+        let mut cursor_col = 0usize;
+        let last = lines.len() - 1;
+        for (li, &(s, e)) in lines.iter().enumerate() {
+            let prefix_w = if li == 0 { prompt_width } else { cont_width };
+            let line_w: usize = self.buf[s..e]
+                .iter()
+                .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                .sum();
+            let mut full_w = prefix_w + line_w;
+            if li == last {
+                full_w += suggestion_width;
+            }
+            let rows = rows_for(full_w);
+            if s <= self.pos && self.pos <= e {
+                let off: usize = prefix_w
+                    + self.buf[s..self.pos]
+                        .iter()
+                        .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                        .sum::<usize>();
+                // Same exact-multiple clamp as the single-line renderer: a
+                // cursor logically one past a row-final wrap boundary stays
+                // on the last physical row of its line.
+                let r = off.checked_div(tw).unwrap_or(0).min(rows - 1);
+                cursor_col = off.checked_rem(tw).unwrap_or(off);
+                cursor_row = rows_before + r;
+            }
+            rows_before += rows;
+        }
+        let end_row = rows_before - 1;
+
+        // The write above left the physical cursor on the last rendered row.
+        if end_row > cursor_row {
+            term.move_up((end_row - cursor_row) as u16)?;
+        }
+        term.move_to_column(col(cursor_col))?;
+
+        self.prev_total_rows = end_row;
+        self.prev_cursor_row = cursor_row;
+        self.prev_render = Some((self.buf.clone(), spans.to_vec()));
+        term.flush()?;
+        Ok(())
+    }
+
     /// Map a single key event to a [`KeyAction`], mutating the buffer as needed.
     fn handle_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
         let state = BufferState {
@@ -983,7 +1244,8 @@ impl LineEditor {
                     self.undo.save(&self.buf, self.pos);
                 }
             }
-            EditAction::KillToEnd
+            EditAction::InsertNewline
+            | EditAction::KillToEnd
             | EditAction::KillToStart
             | EditAction::KillBackwardWord
             | EditAction::KillForwardWord
@@ -1033,6 +1295,12 @@ impl LineEditor {
             EditAction::InsertChar(ch) => {
                 for _ in 0..count {
                     self.insert_char(ch);
+                }
+                KeyAction::Continue
+            }
+            EditAction::InsertNewline => {
+                for _ in 0..count {
+                    self.insert_char('\n');
                 }
                 KeyAction::Continue
             }
@@ -1182,7 +1450,12 @@ impl LineEditor {
             }
             EditAction::HistoryPrev => {
                 for _ in 0..count {
-                    if let Some(line) = history.navigate_up(&self.buffer()) {
+                    // In a multiline buffer, Up first moves the cursor across
+                    // logical lines; history navigation takes over on the
+                    // first line (zsh `up-line-or-history` behavior).
+                    if self.cursor_line_index() > 0 {
+                        self.move_cursor_up();
+                    } else if let Some(line) = history.navigate_up(&self.buffer()) {
                         self.buf = line.chars().collect();
                         self.pos = self.buf.len();
                         self.invalidate_width_cache();
@@ -1193,7 +1466,11 @@ impl LineEditor {
             }
             EditAction::HistoryNext => {
                 for _ in 0..count {
-                    if let Some(line) = history.navigate_down() {
+                    // Mirror of HistoryPrev: Down moves within the buffer
+                    // until the last line, then navigates history.
+                    if self.cursor_line_index() + 1 < self.line_count() {
+                        self.move_cursor_down();
+                    } else if let Some(line) = history.navigate_down() {
                         self.buf = line.chars().collect();
                         self.pos = self.buf.len();
                         self.invalidate_width_cache();
@@ -1212,6 +1489,12 @@ impl LineEditor {
     ///
     /// Behaves identically to [`read_line`] but also handles Tab key events
     /// by invoking the completion engine.
+    ///
+    /// Multiline editing: when Enter is pressed and `is_incomplete` returns
+    /// `true` for the current buffer contents, a literal newline is inserted
+    /// at the cursor instead of submitting, and editing continues across
+    /// lines. Continuation lines are rendered with the `cont_prompt` prefix
+    /// (the caller's expanded `PS2`).
     #[allow(clippy::too_many_arguments)]
     pub fn read_line_with_completion<T: Terminal>(
         &mut self,
@@ -1225,6 +1508,8 @@ impl LineEditor {
         scanner: &mut HighlightScanner,
         checker_env: &CheckerEnv<'_>,
         accumulated: &str,
+        cont_prompt: &str,
+        is_incomplete: &dyn Fn(&str) -> bool,
     ) -> io::Result<Option<String>> {
         self.clear();
         term.enable_raw_mode()?;
@@ -1239,6 +1524,8 @@ impl LineEditor {
             scanner,
             checker_env,
             accumulated,
+            cont_prompt,
+            is_incomplete,
         );
         let _ = term.disable_raw_mode();
         result
@@ -1257,6 +1544,8 @@ impl LineEditor {
         scanner: &mut HighlightScanner,
         checker_env: &CheckerEnv<'_>,
         accumulated: &str,
+        cont_prompt: &str,
+        is_incomplete: &dyn Fn(&str) -> bool,
     ) -> io::Result<Option<String>> {
         let prompt_width = display_width(prompt);
         loop {
@@ -1265,13 +1554,22 @@ impl LineEditor {
                 Event::Key(key_event) => {
                     match self.handle_key(key_event, history) {
                         KeyAction::Submit => {
-                            history.reset_cursor();
-                            term.reset_style()?;
-                            self.move_below_render(term, prompt_width)?;
-                            term.move_to_column(0)?;
-                            term.write_str("\r\n")?;
-                            term.flush()?;
-                            return Ok(Some(self.buffer()));
+                            if is_incomplete(&self.buffer()) {
+                                // Structurally incomplete input (unclosed
+                                // if/quote/heredoc, trailing pipe, …): start
+                                // a continuation line in-buffer instead of
+                                // submitting, keeping the whole construct
+                                // editable with cursor movement across lines.
+                                self.insert_char('\n');
+                            } else {
+                                history.reset_cursor();
+                                term.reset_style()?;
+                                self.move_below_render(term, prompt_width)?;
+                                term.move_to_column(0)?;
+                                term.write_str("\r\n")?;
+                                term.flush()?;
+                                return Ok(Some(self.buffer()));
+                            }
                         }
                         KeyAction::Eof => {
                             return Ok(None);
@@ -1330,14 +1628,14 @@ impl LineEditor {
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
                     let (tw, _) = term.size().unwrap_or((80, 24));
-                    self.redraw(term, prompt, prompt_width, &spans, tw)?;
+                    self.redraw(term, prompt, prompt_width, cont_prompt, &spans, tw)?;
                 }
                 Event::Resize(_cols, _rows) => {
                     self.invalidate_render_state();
                     let (tw, _) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
-                    self.redraw(term, prompt, prompt_width, &spans, tw)?;
+                    self.redraw(term, prompt, prompt_width, cont_prompt, &spans, tw)?;
                 }
                 _ => {}
             }

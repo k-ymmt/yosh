@@ -168,6 +168,12 @@ impl Repl {
             let prompt = expand_prompt(&mut self.executor.env, prompt_var);
             let prompt_info = PromptInfo::from_prompt(&prompt);
 
+            // Expanded PS2 for in-editor continuation lines: multiline
+            // editing renders the continuation prompt itself instead of
+            // returning to this loop for each PS2 line.
+            let cont_prompt = expand_prompt(&mut self.executor.env, "PS2");
+            let cont_info = PromptInfo::from_prompt(&cont_prompt);
+
             // Display prompt on stderr
             for line in &prompt_info.upper_lines {
                 eprint!("{}\r\n", line);
@@ -210,6 +216,21 @@ impl Repl {
                 aliases: &self.executor.env.aliases,
             };
 
+            // Completeness probe for in-editor multiline editing: Enter on
+            // input this closure deems incomplete inserts a newline into the
+            // editor buffer instead of submitting. Mirrors exactly what the
+            // post-submit classification below would see (byteenc-encoded,
+            // newline-terminated, appended to any accumulated PS2 input).
+            let aliases = &self.executor.env.aliases;
+            let is_incomplete = |buf_text: &str| {
+                let candidate = format!(
+                    "{}{}\n",
+                    input_buffer,
+                    crate::byteenc::encode_bytes(buf_text.as_bytes())
+                );
+                matches!(classify_parse(&candidate, aliases), ParseStatus::Incomplete)
+            };
+
             // Read a line
             let line = match self.line_editor.read_line_with_completion(
                 &prompt_info.last_line,
@@ -222,6 +243,8 @@ impl Repl {
                 &mut self.scanner,
                 &checker_env,
                 &input_buffer,
+                &cont_info.last_line,
+                &is_incomplete,
             ) {
                 Ok(Some(line)) => line,
                 Ok(None) => {

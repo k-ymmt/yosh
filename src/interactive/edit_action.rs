@@ -4,6 +4,9 @@
 pub enum EditAction {
     // Character input
     InsertChar(char),
+    /// Insert a literal newline into the buffer (Alt+Enter), starting a new
+    /// logical line without submitting.
+    InsertNewline,
 
     // Cursor movement
     MoveBackward,
