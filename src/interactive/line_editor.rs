@@ -450,8 +450,11 @@ impl LineEditor {
             self.buf.swap(self.pos - 1, self.pos);
             self.pos += 1;
         }
-        // A swap can't change the total display width (same multiset of
-        // chars), so the cache stays valid — no invalidation needed.
+        // A swap can't change the total display width, but the *content*
+        // changed: the generation bump inside invalidate_width_cache is
+        // what keeps suggestion_cache from serving a suggestion computed
+        // for the pre-swap buffer.
+        self.invalidate_width_cache();
     }
 
     /// Transpose the two words around the cursor (Alt+T).
@@ -517,7 +520,10 @@ impl LineEditor {
 
         self.buf.splice(w1s..w2e, replacement);
         self.pos = w1s + word2.len() + sep.len() + word1.len();
-        // Reordering existing chars can't change the total display width.
+        // Reordering can't change the total display width, but the content
+        // generation must advance so suggestion_cache doesn't serve a
+        // suggestion computed for the pre-transpose buffer.
+        self.invalidate_width_cache();
     }
 
     /// Convert the next word to uppercase (Alt+U).
@@ -616,17 +622,23 @@ impl LineEditor {
     }
 
     /// Accept the next word from the autosuggestion.
-    /// A "word" is defined as: any leading spaces + non-space characters up to the next space.
+    /// A "word" is any leading delimiters (spaces/newlines) + characters up
+    /// to the next delimiter. Newlines delimit so one accept never spans two
+    /// logical lines: on a multiline suggestion the first accept stops
+    /// before the `'\n'`, and the next accept takes the newline together
+    /// with the following word — crossing the line boundary only on a
+    /// deliberate further press.
     fn accept_word_suggestion(&mut self) {
+        let is_delim = |c: char| c == ' ' || c == '\n';
         if let Some(suggestion) = self.suggestion.take() {
             let chars: Vec<char> = suggestion.chars().collect();
             let mut i = 0;
-            // Skip leading spaces
-            while i < chars.len() && chars[i] == ' ' {
+            // Skip leading delimiters
+            while i < chars.len() && is_delim(chars[i]) {
                 i += 1;
             }
-            // Take non-space characters
-            while i < chars.len() && chars[i] != ' ' {
+            // Take word characters
+            while i < chars.len() && !is_delim(chars[i]) {
                 i += 1;
             }
             // Append the accepted portion to the buffer
@@ -756,6 +768,25 @@ impl LineEditor {
         result
     }
 
+    /// If an un-accepted autosuggestion is on screen, repaint without it so
+    /// it doesn't linger in scrollback after the read ends — a multiline
+    /// suggestion would otherwise leave dim phantom continuation lines that
+    /// were never input above the command's output.
+    fn clear_lingering_suggestion<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        prompt_width: usize,
+        cont_prompt: &str,
+        spans: &[ColorSpan],
+    ) -> io::Result<()> {
+        if self.suggestion.take().is_some() {
+            let (tw, th) = term.size().unwrap_or((80, 24));
+            self.redraw(term, prompt, prompt_width, cont_prompt, spans, tw, th)?;
+        }
+        Ok(())
+    }
+
     /// Move the cursor down past the last rendered row so subsequent
     /// terminal output starts below the full (possibly wrapped) input.
     /// No-op when nothing has been rendered yet.
@@ -781,6 +812,7 @@ impl LineEditor {
                     match self.handle_key(key_event, history) {
                         KeyAction::Submit => {
                             history.reset_cursor();
+                            self.clear_lingering_suggestion(term, prompt, prompt_width, "> ", &[])?;
                             self.move_below_render(term, prompt_width)?;
                             term.move_to_column(0)?;
                             term.write_str("\r\n")?;
@@ -792,6 +824,7 @@ impl LineEditor {
                         }
                         KeyAction::Interrupt => {
                             history.reset_cursor();
+                            self.clear_lingering_suggestion(term, prompt, prompt_width, "> ", &[])?;
                             self.move_below_render(term, prompt_width)?;
                             term.move_to_column(0)?;
                             term.write_str("\r\n")?;
@@ -897,7 +930,19 @@ impl LineEditor {
         // soft-wrapped render would be taller than the terminal.
         let suggestion_multiline =
             suggestion_active && self.suggestion.as_deref().is_some_and(|s| s.contains('\n'));
-        if self.buf.contains(&'\n') || suggestion_multiline || total_rows + 1 > th {
+        // Wide (width-2) chars cannot straddle a row boundary, so a real
+        // terminal can wrap up to one column early per row and pure width
+        // division underestimates physical rows for CJK-heavy content. The
+        // height dispatch therefore uses the pessimistic bound (one wasted
+        // column per row) so a physically taller-than-screen buffer cannot
+        // stay on the auto-wrap single-line path; `total_rows` itself keeps
+        // the exact-division model the single-line painter is built on.
+        let worst_case_rows = if tw > 1 {
+            content_width.div_ceil(tw - 1)
+        } else {
+            content_width
+        };
+        if self.buf.contains(&'\n') || suggestion_multiline || (tw > 0 && worst_case_rows > th) {
             return self.redraw_multiline(term, prompt, prompt_width, cont_prompt, spans, tw, th);
         }
         // If the *previous* render went through the multiline renderer, the
@@ -1175,11 +1220,18 @@ impl LineEditor {
         }
 
         // ---- Pack display lines into physical rows ----
-        // `first` marks a row that starts its logical line (and therefore
-        // carries the prompt/continuation prefix).
+        // `first` marks the row where its logical line's prefix write
+        // begins. A prefix wider than the terminal auto-wraps when painted
+        // (it is written atomically with `write_str`, since it may contain
+        // ANSI escapes that must not be split); `in_prefix` marks the extra
+        // physical rows that auto-wrap produces — painting must not emit a
+        // row break to enter them. `start_col` is where a row's cells begin
+        // (non-zero only on the last prefix-flow row).
         struct Row {
             line: usize,
             first: bool,
+            in_prefix: bool,
+            start_col: usize,
             cells: Vec<(char, Cell)>,
         }
         let mut rows: Vec<Row> = Vec::new();
@@ -1187,23 +1239,66 @@ impl LineEditor {
         let mut cursor_at: Option<(usize, usize)> = None;
         for (li, cells) in dlines.iter().enumerate() {
             let prefix_w = if li == 0 { prompt_width } else { cont_width };
-            let mut cur = Row {
-                line: li,
-                first: true,
-                cells: Vec::new(),
+            // Physical rows the prefix's characters occupy beyond the
+            // first. `(prefix_w - 1) / tw` (not `prefix_w / tw`) because a
+            // prefix that exactly fills its last row leaves the cursor in
+            // the terminal's deferred-wrap state on that row rather than
+            // opening a new one.
+            let extra = if tw > 0 && prefix_w > 0 {
+                (prefix_w - 1) / tw
+            } else {
+                0
             };
-            let mut cur_col = prefix_w;
+            let mut cur;
+            let mut cur_col;
+            if extra == 0 {
+                cur_col = prefix_w;
+                cur = Row {
+                    line: li,
+                    first: true,
+                    in_prefix: false,
+                    start_col: cur_col,
+                    cells: Vec::new(),
+                };
+            } else {
+                rows.push(Row {
+                    line: li,
+                    first: true,
+                    in_prefix: false,
+                    start_col: 0,
+                    cells: Vec::new(),
+                });
+                for _ in 1..extra {
+                    rows.push(Row {
+                        line: li,
+                        first: false,
+                        in_prefix: true,
+                        start_col: 0,
+                        cells: Vec::new(),
+                    });
+                }
+                cur_col = prefix_w - extra * tw;
+                cur = Row {
+                    line: li,
+                    first: false,
+                    in_prefix: true,
+                    start_col: cur_col,
+                    cells: Vec::new(),
+                };
+            }
             for (ci, &(ch, kind)) in cells.iter().enumerate() {
                 let w = UnicodeWidthChar::width(ch).unwrap_or(0);
                 // Wrap before a cell that no longer fits — but always place
                 // at least one cell on a continuation row so packing makes
                 // progress even for degenerate widths.
-                if cur_col + w > tw_eff && (cur.first || !cur.cells.is_empty()) {
+                if cur_col + w > tw_eff && (cur.first || cur.in_prefix || !cur.cells.is_empty()) {
                     let done = std::mem::replace(
                         &mut cur,
                         Row {
                             line: li,
                             first: false,
+                            in_prefix: false,
+                            start_col: 0,
                             cells: Vec::new(),
                         },
                     );
@@ -1268,11 +1363,17 @@ impl LineEditor {
                     dim_on = false;
                 }
             }
-            if vi > 0 {
+            // `in_prefix` rows are reached by the prefix write's auto-wrap,
+            // not by an explicit row break. (If the viewport ever starts
+            // mid-prefix — a prompt wider than a whole screen — the prefix
+            // tail is not repainted; cells are positioned explicitly below.)
+            if vi > 0 && !row.in_prefix {
                 term.write_str("\r\n")?;
             }
             if row.first {
                 term.write_str(if row.line == 0 { prompt } else { cont_prompt })?;
+            } else if vi == 0 && row.in_prefix && !row.cells.is_empty() {
+                term.move_to_column(col(row.start_col))?;
             }
             for &(ch, kind) in &row.cells {
                 match kind {
@@ -1319,6 +1420,14 @@ impl LineEditor {
         if end_row > cursor_row {
             term.move_up((end_row - cursor_row) as u16)?;
         }
+        // A cursor one past an exactly-full row sits in the terminal's
+        // deferred-wrap position; emit the last real column explicitly
+        // instead of relying on the terminal clamping an out-of-range CHA.
+        let cursor_col = if tw > 0 {
+            cursor_col.min(tw - 1)
+        } else {
+            cursor_col
+        };
         term.move_to_column(col(cursor_col))?;
 
         self.prev_total_rows = visible - 1;
@@ -1407,9 +1516,14 @@ impl LineEditor {
     ) -> KeyAction {
         // Preferred-column stickiness only survives an unbroken run of
         // vertical moves (Up/Down map to HistoryPrev/HistoryNext); any
-        // other action ends the run. Buffer mutations additionally reset
-        // it via invalidate_width_cache.
-        if !matches!(action, EditAction::HistoryPrev | EditAction::HistoryNext) {
+        // other *edit* action ends the run. A numeric-argument prefix
+        // (`Alt+3 Up` = "three more lines of this run") edits nothing and
+        // must not recapture the clamped column mid-run. Buffer mutations
+        // additionally reset it via invalidate_width_cache.
+        if !matches!(
+            action,
+            EditAction::HistoryPrev | EditAction::HistoryNext | EditAction::SetNumericArg(_)
+        ) {
             self.preferred_col = None;
         }
         match action {
@@ -1557,11 +1671,23 @@ impl LineEditor {
             EditAction::ClearScreen => KeyAction::ClearScreen,
             EditAction::Cancel => KeyAction::Continue,
             EditAction::AcceptSuggestion => {
+                let lines_before = self.line_count();
                 self.accept_full_suggestion();
+                if self.line_count() > lines_before {
+                    // Same rationale as InsertNewline: accepting a multiline
+                    // suggestion turns the buffer into a new in-progress
+                    // construct; a stale history cursor would let a later Up
+                    // replace it with an unrelated older entry.
+                    history.reset_cursor();
+                }
                 KeyAction::Continue
             }
             EditAction::AcceptWordSuggestion => {
+                let lines_before = self.line_count();
                 self.accept_word_suggestion();
+                if self.line_count() > lines_before {
+                    history.reset_cursor();
+                }
                 KeyAction::Continue
             }
             EditAction::SetNumericArg(_) => KeyAction::Continue,
@@ -1698,6 +1824,15 @@ impl LineEditor {
                             } else {
                                 history.reset_cursor();
                                 term.reset_style()?;
+                                let spans = scanner.scan(accumulated, &self.buf, checker_env);
+                                let cont = self.resolve_cont_prompt(cont_prompt);
+                                self.clear_lingering_suggestion(
+                                    term,
+                                    prompt,
+                                    prompt_width,
+                                    &cont,
+                                    &spans,
+                                )?;
                                 self.move_below_render(term, prompt_width)?;
                                 term.move_to_column(0)?;
                                 term.write_str("\r\n")?;
@@ -1711,6 +1846,15 @@ impl LineEditor {
                         KeyAction::Interrupt => {
                             history.reset_cursor();
                             term.reset_style()?;
+                            let spans = scanner.scan(accumulated, &self.buf, checker_env);
+                            let cont = self.resolve_cont_prompt(cont_prompt);
+                            self.clear_lingering_suggestion(
+                                term,
+                                prompt,
+                                prompt_width,
+                                &cont,
+                                &spans,
+                            )?;
                             self.move_below_render(term, prompt_width)?;
                             term.move_to_column(0)?;
                             term.write_str("\r\n")?;

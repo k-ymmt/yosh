@@ -14,6 +14,7 @@ use yosh::interactive::parse_status::{ParseStatus, classify_parse};
 use yosh::interactive::prompt::expand_prompt;
 
 mod helpers;
+use helpers::grid_terminal::GridTerminal;
 use helpers::mock_terminal::{MockTerminal, alt, chars, ctrl, key};
 
 #[test]
@@ -3087,4 +3088,310 @@ fn test_multiline_suggestion_accept_full() {
     .concat();
     let (result, _) = read_multiline_sized(events, &mut history, &shell_incomplete, 80, 24);
     assert_eq!(result, Some("for i in 1 2; do\necho $i\ndone".to_string()));
+}
+
+#[test]
+fn test_word_accept_stops_at_suggestion_newline() {
+    // Alt+F must not swallow a line boundary as part of a "word": the
+    // first accept stops before the suggestion's '\n'; a further accept
+    // crosses it deliberately.
+    let mut history = History::new();
+    history.add("a b\nc d", 500, "");
+    let events = [chars("a"), vec![alt('f')], vec![key(KeyCode::Enter)]].concat();
+    let (result, _) = read_multiline_sized(events, &mut history, &|_| false, 80, 24);
+    assert_eq!(result, Some("a b".to_string()));
+
+    let mut history = History::new();
+    history.add("a b\nc d", 500, "");
+    let events = [
+        chars("a"),
+        vec![alt('f'), alt('f')],
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let (result, _) = read_multiline_sized(events, &mut history, &|_| false, 80, 24);
+    assert_eq!(result, Some("a b\nc".to_string()));
+}
+
+#[test]
+fn test_numeric_arg_preserves_preferred_column() {
+    // Alt+1 between two Ups is a count prefix, not an edit: the second Up
+    // must still return to the original column 8, not the clamped column 2.
+    let events = [
+        chars("abcdefgh"),
+        vec![alt_enter()],
+        chars("xy"),
+        vec![alt_enter()],
+        chars("abcdefgh"),
+        vec![key(KeyCode::Up), alt('1'), key(KeyCode::Up)],
+        chars("Z"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("abcdefghZ\nxy\nabcdefgh".to_string()));
+}
+
+#[test]
+fn test_transpose_invalidates_suggestion() {
+    // Ctrl+T changes buffer content; a suggestion computed for the
+    // pre-transpose prefix must not be acceptable afterwards.
+    let mut history = History::new();
+    history.add("echo hi", 500, "");
+    let events = [
+        chars("ec"),
+        vec![ctrl('t')],           // buffer now "ce"
+        vec![key(KeyCode::Right)], // no suggestion for "ce" — normal cursor move
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let (result, _) = read_multiline_sized(events, &mut history, &|_| false, 80, 24);
+    assert_eq!(result, Some("ce".to_string()));
+}
+
+// ── Grid-emulation tests (physical screen assertions) ───────────────────
+//
+// GridTerminal models xterm geometry (auto-wrap, deferred wrap, edge
+// clamping, scrolling), so these tests pin the *final screen contents* —
+// the class of guarantee neither the stream-recording MockTerminal nor the
+// PTY escape scan provides.
+
+/// Drive `read_line_with_completion` against a [`GridTerminal`]. The event
+/// stream may end without submitting — the read then returns an error and
+/// the grid holds the last painted state for inspection.
+fn read_multiline_grid(
+    events: Vec<crossterm::event::Event>,
+    history: &mut History,
+    is_incomplete: &dyn Fn(&str) -> bool,
+    prompt: &str,
+    width: u16,
+    height: u16,
+) -> (std::io::Result<Option<String>>, GridTerminal) {
+    read_multiline_grid_from(events, history, is_incomplete, prompt, width, height, 0)
+}
+
+/// Like [`read_multiline_grid`] but with the cursor pre-advanced
+/// `start_row` rows — simulating a prompt that begins near the bottom of a
+/// screen that already holds output, so growth exercises real scrolling.
+#[allow(clippy::too_many_arguments)]
+fn read_multiline_grid_from(
+    events: Vec<crossterm::event::Event>,
+    history: &mut History,
+    is_incomplete: &dyn Fn(&str) -> bool,
+    prompt: &str,
+    width: u16,
+    height: u16,
+    start_row: usize,
+) -> (std::io::Result<Option<String>>, GridTerminal) {
+    let ctx = CompletionContext {
+        cwd: "/".to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+    let mut term = GridTerminal::new(events, width, height);
+    for _ in 0..start_row {
+        use yosh::interactive::terminal::Terminal;
+        term.write_str("\r\n").unwrap();
+    }
+    let mut editor = LineEditor::new();
+    let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
+    let result = editor.read_line_with_completion(
+        prompt,
+        &[],
+        history,
+        &mut term,
+        &ctx,
+        &mut cmd_ctx,
+        &mut spec_store,
+        &mut scanner,
+        &checker_env,
+        "",
+        &mut || "> ".to_string(),
+        is_incomplete,
+    );
+    (result, term)
+}
+
+/// Build "l0" .. Alt+Enter .. "l{n-1}" events (no submit).
+fn grid_lines_events(n: usize) -> Vec<crossterm::event::Event> {
+    let mut events = chars("l0");
+    for i in 1..n {
+        events.push(alt_enter());
+        events.extend(chars(&format!("l{}", i)));
+    }
+    events
+}
+
+#[test]
+fn test_grid_tall_construct_shows_tail_viewport() {
+    // 8 logical lines on a 5-row screen: the final screen must show
+    // exactly the last 5 rows, cursor at the end of the last line, with
+    // no cursor movement ever clamped at a screen edge.
+    let mut history = History::new();
+    let (_, term) =
+        read_multiline_grid(grid_lines_events(8), &mut history, &|_| false, "$ ", 20, 5);
+    assert_eq!(
+        term.screen(),
+        vec!["> l3", "> l4", "> l5", "> l6", "> l7"],
+        "screen should show the tail viewport"
+    );
+    assert_eq!(term.cursor(), (4, 4));
+    assert_eq!(
+        term.edge_violations(),
+        0,
+        "renderer addressed off-screen rows"
+    );
+    assert_eq!(term.col_overflows(), 0);
+}
+
+#[test]
+fn test_grid_growth_from_bottom_row_scrolls_cleanly() {
+    // Start with the prompt on the bottom row of a screen already full of
+    // output: growing the construct line by line forces the terminal to
+    // scroll during paints, and the relative bookkeeping must stay aligned
+    // (the screen still ends up showing exactly the tail viewport).
+    let mut history = History::new();
+    let (_, term) = read_multiline_grid_from(
+        grid_lines_events(8),
+        &mut history,
+        &|_| false,
+        "$ ",
+        20,
+        5,
+        4,
+    );
+    assert_eq!(term.screen(), vec!["> l3", "> l4", "> l5", "> l6", "> l7"]);
+    assert_eq!(term.cursor(), (4, 4));
+    assert!(term.scrolls() > 0, "growth from the bottom row must scroll");
+    assert_eq!(term.edge_violations(), 0);
+    assert_eq!(term.col_overflows(), 0);
+}
+
+#[test]
+fn test_grid_viewport_follows_cursor_to_top() {
+    // Walking the cursor to the first of 8 lines on a 4-row screen must
+    // scroll the viewport up to show the head of the construct.
+    let mut events = grid_lines_events(8);
+    for _ in 0..7 {
+        events.push(key(KeyCode::Up));
+    }
+    let mut history = History::new();
+    let (_, term) = read_multiline_grid(events, &mut history, &|_| false, "$ ", 20, 4);
+    assert_eq!(term.screen(), vec!["$ l0", "> l1", "> l2", "> l3"]);
+    // Sticky column: col 2 within the line, after the 2-wide prompt.
+    assert_eq!(term.cursor(), (0, 4));
+    assert_eq!(term.edge_violations(), 0);
+    assert_eq!(term.col_overflows(), 0);
+}
+
+#[test]
+fn test_grid_prompt_wider_than_terminal() {
+    // A 26-wide prompt on a 10-col screen auto-wraps over three physical
+    // rows; the packer must model those rows so the clear/repaint cycle
+    // stays aligned. (Adversarial-review regression: the packer used to
+    // count every prefix as one row, smearing the display.)
+    let prompt = "PROMPTPROMPTPROMPTPROMPT$ ";
+    let events = [chars("abc"), vec![alt_enter()], chars("def")].concat();
+    let mut history = History::new();
+    let (_, term) = read_multiline_grid(events, &mut history, &|_| false, prompt, 10, 6);
+    assert_eq!(
+        term.screen(),
+        vec!["PROMPTPROM", "PTPROMPTPR", "OMPT$ abc", "> def", "", ""]
+    );
+    assert_eq!(term.cursor(), (3, 5));
+    assert_eq!(term.edge_violations(), 0);
+    assert_eq!(term.col_overflows(), 0);
+}
+
+#[test]
+fn test_grid_cjk_tall_buffer_takes_viewport_path() {
+    // 12 double-width chars on a 9x3 screen: pure width division predicts
+    // 3 rows (fits), but wide chars wrap early — physically 4 rows. The
+    // pessimistic dispatch must route to the viewport renderer; the screen
+    // shows the tail window with no clamped movement.
+    let events = chars(&"あ".repeat(12));
+    let mut history = History::new();
+    let (_, term) = read_multiline_grid(events, &mut history, &|_| false, "$ ", 9, 3);
+    // Packing: 3 chars fit after the 2-wide prompt, then 4 per row: the
+    // 4 physical rows are [3, 4, 4, 1] chars; the viewport shows the tail.
+    assert_eq!(term.screen(), vec!["ああああ", "ああああ", "あ"]);
+    assert_eq!(term.edge_violations(), 0);
+    assert_eq!(term.col_overflows(), 0);
+}
+
+#[test]
+fn test_grid_exact_width_row_cursor_clamped() {
+    // Prompt(2) + "abcdefgh"(8) exactly fills a 10-col row; Ctrl+E on that
+    // line puts the cursor in the deferred-wrap position, which must be
+    // emitted as the last real column — never past the screen edge.
+    let events = [
+        chars("abcdefgh"),
+        vec![alt_enter()],
+        chars("x"),
+        vec![key(KeyCode::Up), ctrl('e')],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (_, term) = read_multiline_grid(events, &mut history, &|_| false, "$ ", 10, 5);
+    assert_eq!(term.screen(), vec!["$ abcdefgh", "> x", "", "", ""]);
+    assert_eq!(term.cursor(), (0, 9));
+    assert_eq!(
+        term.col_overflows(),
+        0,
+        "cursor column emitted past the screen edge"
+    );
+    assert_eq!(term.edge_violations(), 0);
+}
+
+#[test]
+fn test_grid_multiline_suggestion_layout() {
+    // A multiline history suggestion renders as continuation-prompt lines
+    // below the input, cursor staying at the end of the typed prefix.
+    let mut history = History::new();
+    history.add("for i in 1 2; do\necho $i\ndone", 500, "");
+    let events = chars("for");
+    let (_, term) = read_multiline_grid(events, &mut history, &shell_incomplete, "$ ", 30, 10);
+    let screen = term.screen();
+    assert_eq!(screen[0], "$ for i in 1 2; do");
+    assert_eq!(screen[1], "> echo $i");
+    assert_eq!(screen[2], "> done");
+    assert_eq!(term.cursor(), (0, 5));
+    assert_eq!(term.edge_violations(), 0);
+}
+
+#[test]
+fn test_grid_submit_clears_unaccepted_multiline_suggestion() {
+    // Submitting while a multiline suggestion is displayed must not leave
+    // its dim phantom continuation lines on screen above the output.
+    let mut history = History::new();
+    history.add("echo apple\nls", 500, "");
+    let events = [chars("echo a"), vec![key(KeyCode::Enter)]].concat();
+    let (result, term) = read_multiline_grid(events, &mut history, &|_| false, "$ ", 30, 10);
+    assert_eq!(result.unwrap(), Some("echo a".to_string()));
+    let screen = term.screen();
+    assert_eq!(screen[0], "$ echo a");
+    assert!(
+        screen
+            .iter()
+            .all(|l| !l.contains("pple") && !l.contains("ls")),
+        "un-accepted suggestion left on screen: {:?}",
+        screen
+    );
+    assert_eq!(term.edge_violations(), 0);
 }

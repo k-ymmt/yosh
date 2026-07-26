@@ -128,7 +128,11 @@ impl Terminal for CrosstermTerminal {
     }
 
     fn move_up(&mut self, n: u16) -> io::Result<()> {
-        self.stdout.execute(cursor::MoveUp(n))?;
+        // Guard like move_down: crossterm emits `ESC[0A` for MoveUp(0),
+        // which most terminals treat as CUU 1 — a real one-row move.
+        if n > 0 {
+            self.stdout.execute(cursor::MoveUp(n))?;
+        }
         Ok(())
     }
 

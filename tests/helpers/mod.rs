@@ -2,6 +2,7 @@
 // referenced from any given binary, so dead-code warnings are noise.
 #![allow(dead_code)]
 
+pub mod grid_terminal;
 pub mod mock_terminal;
 pub mod pty;
 

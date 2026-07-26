@@ -70,85 +70,33 @@
       the diff-based partial repaint to multiline layouts if large pasted
       blocks make per-keystroke repaints visibly slow
       (`src/interactive/line_editor.rs`).
-- [ ] 2026-07-27 viewport-rendering adversarial review findings (3
-      independent reviewers; confirmed findings reproduced via grid-emulating
-      terminal harnesses against both 2a210de and its parent):
-  - [ ] (major, regression, CONFIRMED ×2) Prompt or PS2 wider than the
-        terminal corrupts every multiline-path render: the row packer starts
-        each logical line at `cur_col = prefix_w` and models the prefix as
-        exactly one physical row, but painting writes the prefix with
-        `write_str` and the terminal auto-wraps it over
-        `ceil(prefix_w/tw)` rows. Modeled rows ≠ physical rows, so the next
-        repaint's clear phase erases the wrong rows and the smear compounds.
-        The pre-2a210de renderer counted prefix wrap via
-        `rows_for(prefix_w + line_w)` and handled this correctly. Realistic
-        trigger: long PS1 + narrow tmux pane. Fix: pack prefix overflow into
-        extra rows (or include the prefix as packed cells) for both
-        `prompt_width` and `cont_width` (`src/interactive/line_editor.rs`
-        packer + paint).
-  - [ ] (major, CONFIRMED) `Alt+digit` numeric argument breaks the
-        preferred-column run: `SetNumericArg` falls through the
-        "non-vertical action resets `preferred_col`" guard in
-        `execute_action`, so `Up Alt+1 Up` recaptures the clamped column
-        instead of returning to the original one. Add
-        `EditAction::SetNumericArg(_)` to the keep-sticky `matches!` arm
-        (`src/interactive/line_editor.rs`).
-  - [ ] (major, CONFIRMED) `accept_word_suggestion` treats `'\n'` as a word
-        character: with multiline suggestions now enabled, one `Alt+F` can
-        accept a "word" spanning two logical lines, silently inserting a
-        newline (and skipping the `history.reset_cursor()` that
-        `InsertNewline` performs). Stop the word scan at `' ' | '\n'`
-        (`src/interactive/line_editor.rs`).
-  - [ ] (minor, CONFIRMED ×3) Line-end cursor on an exactly-full packed row
-        records `cur_col == tw` and emits `move_to_column(tw)` — out of
-        range, silently clamped by the terminal to `tw-1`, so the cursor
-        visually overlaps the last cell. Cosmetic (bookkeeping stays
-        consistent); either clamp explicitly or document the reliance on
-        CHA right-edge clamping (`src/interactive/line_editor.rs`).
-  - [ ] (minor, pre-existing, CONFIRMED) `transpose_chars`/`transpose_words`
-        skip `invalidate_width_cache()` ("width unchanged"), but that call
-        is also what bumps `buf_generation` — so `suggestion_cache` serves a
-        suggestion computed for the pre-transpose buffer (`ec`→`Ctrl+T`→
-        accept yields `ceho hi` from history `echo hi`). Bump
-        `buf_generation` in both transpose methods or split width-cache from
-        content-generation invalidation (`src/interactive/line_editor.rs`).
-  - [ ] (minor) Submit/Interrupt leave the un-accepted dim suggestion
-        painted; with multiline suggestions this now leaves phantom dim
-        PS2-prefixed lines in scrollback that were never input. Repaint with
-        `suggestion = None` (or clear below the buffer) before the final
-        `\r\n` (`src/interactive/line_editor.rs` Submit/Interrupt arms).
-  - [ ] (minor, pre-existing exposure) The `total_rows + 1 > th` dispatch
-        estimate uses pure width division; wide (CJK) chars wrap early on
-        real terminals, so a physically-taller-than-screen buffer of wide
-        chars can stay on the auto-wrap single-line path and corrupt (12×`あ`
-        at tw=9/th=3 shows only 11 chars; parent commit byte-identical, so
-        not a regression — but the "taller than terminal cannot corrupt"
-        claim doesn't hold for CJK until the estimate accounts for
-        non-splittable wide cells) (`src/interactive/line_editor.rs`).
-  - [ ] (nit) `CrosstermTerminal::move_up` lacks the `n > 0` guard that
-        `move_down` has; `MoveUp(0)` emits `ESC[0A`, which most terminals
-        treat as 1. No current caller passes 0, but the asymmetry is a
-        latent hazard (`src/interactive/terminal.rs`).
+- [ ] 2026-07-27 viewport-rendering adversarial review residuals (the
+      confirmed majors/minors and the grid-emulation test gap were fixed
+      2026-07-27; remaining acknowledged items):
   - [ ] (nit) tw=1 + width-2 char: the packer's progress guard force-places
         the cell, making a row wider than the terminal (model/physical
         1-row drift). Degenerate geometry; acknowledged cost of the
         progress guarantee (`src/interactive/line_editor.rs`).
-  - [ ] (design note) A side-effectful PS2 (`PS2='$(...)'`) now executes
-        once per read session when a *multiline suggestion* is merely
-        displayed, without the user ever entering a continuation line —
+  - [ ] (design note) A side-effectful PS2 (`PS2='$(...)'`) executes once
+        per read session when a *multiline suggestion* is merely displayed,
+        without the user ever entering a continuation line —
         `resolve_cont_prompt` intentionally treats the suggestion as
         needing PS2. Surprising trigger for user-defined command execution;
         document or gate if user reports surface
         (`src/interactive/line_editor.rs`).
-  - [ ] (test gap) MockTerminal models no geometry (width/height/clamp/
-        scroll/columns), so the new viewport tests pin only buffer
-        round-trips and single-shot `move_up ≤ th-1`; the PTY escape-stream
-        scan detects only the move-up-clamp class, not scroll-misalignment
-        or model-vs-physical row drift (finding 1 class). Porting the
-        reviewers' grid-emulation harness (pyte or a Rust grid mock with
-        auto-wrap/deferred-wrap/scroll/clamp semantics) into the test suite
-        would pin display correctness itself
-        (`tests/helpers/mock_terminal.rs`, `tests/pty_interactive.rs`).
+  - [ ] (pre-existing) The single-line renderer's *within-screen* soft-wrap
+        row math still uses pure width division, which mis-models wide
+        (CJK) chars that wrap early; the 2026-07-27 fix only made the
+        taller-than-screen dispatch pessimistic so such buffers reach the
+        packing renderer. Sub-screen wide-char soft-wrap positioning
+        retains the historical approximation
+        (`src/interactive/line_editor.rs`).
+  - [ ] (degenerate) A prompt wider than the whole screen (`prefix rows >
+        th`) still overflows the viewport during its atomic `write_str`,
+        and a viewport window starting mid-prefix repaints cells but not
+        the prefix tail on its top row. Both need a prompt occupying most
+        of the screen; recorded, not planned
+        (`src/interactive/line_editor.rs`).
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
 - [ ] `set -x` does not emit bash-style structural headers for `for` / `case` (yosh matches dash here; POSIX leaves the header format implementation-defined). Empirical survey 2026-05-28 confirmed compound bodies and pipeline members are already traced via `exec_simple_command`; the assignment-only gap was closed in the 2026-05-28 assignment-trace work. Adding bash parity for the headers requires Word→source rendering plus an xtrace argument-quoting algorithm; the latter also affects existing simple-command trace output (`echo "a b" c` traces as `+ echo a b c` not `+ echo 'a b' c`). Tracked together because both want the same quoting helper. See `docs/superpowers/specs/2026-05-28-set-x-assignment-trace-design.md` §5 for the closed assignment portion (`src/exec/compound.rs`, `src/exec/simple.rs`).
