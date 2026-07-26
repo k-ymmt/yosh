@@ -2684,12 +2684,26 @@ fn read_multiline(
     history: &mut History,
     is_incomplete: &dyn Fn(&str) -> bool,
 ) -> (Option<String>, Vec<String>) {
+    let (result, term) = read_multiline_sized(events, history, is_incomplete, 80, 24);
+    (result, term.output().to_vec())
+}
+
+/// Like [`read_multiline`] but with an explicit terminal size, returning the
+/// terminal so tests can assert on its movement bookkeeping.
+fn read_multiline_sized(
+    events: Vec<crossterm::event::Event>,
+    history: &mut History,
+    is_incomplete: &dyn Fn(&str) -> bool,
+    width: u16,
+    height: u16,
+) -> (Option<String>, MockTerminal) {
     let ctx = CompletionContext {
         cwd: "/".to_string(),
         home: "/home/user".to_string(),
         show_dotfiles: false,
     };
     let mut term = MockTerminal::new(events);
+    term.set_size(width, height);
     let mut editor = LineEditor::new();
     let aliases = AliasStore::default();
     let mut command_completer = CommandCompleter::new();
@@ -2723,7 +2737,7 @@ fn read_multiline(
             is_incomplete,
         )
         .unwrap();
-    (result, term.output().to_vec())
+    (result, term)
 }
 
 #[test]
@@ -2926,4 +2940,151 @@ fn test_multiline_buffer_line_helpers() {
     assert_eq!(ed.cursor(), 5); // end of "cd"
     ed.move_cursor_down();
     assert_eq!(ed.cursor_line_index(), 2);
+}
+
+// ── Viewport-clamped rendering (taller-than-terminal constructs) ────────
+
+#[test]
+fn test_multiline_taller_than_terminal_stays_in_viewport() {
+    // 8 logical lines on a 5-row terminal: every relative cursor movement
+    // must stay within the viewport (move_up ≤ height - 1). Before viewport
+    // clamping, redraw moved up by the full off-screen row count, which a
+    // real terminal clamps at the top row — corrupting the display.
+    let mut events = chars("l0");
+    for i in 1..8 {
+        events.push(alt_enter());
+        events.extend(chars(&format!("l{}", i)));
+    }
+    events.push(key(KeyCode::Enter));
+    let mut history = History::new();
+    let (result, term) = read_multiline_sized(events, &mut history, &|_| false, 80, 5);
+    assert_eq!(result, Some("l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7".to_string()));
+    assert!(
+        term.max_move_up() <= 4,
+        "cursor moved up {} rows on a 5-row terminal",
+        term.max_move_up()
+    );
+}
+
+#[test]
+fn test_multiline_viewport_scrolls_to_cursor() {
+    // Move the cursor from the last of 8 lines back to the first on a
+    // 4-row terminal: the viewport must follow the cursor, keeping edits
+    // at the top of the construct working.
+    let mut events = chars("l0");
+    for i in 1..8 {
+        events.push(alt_enter());
+        events.extend(chars(&format!("l{}", i)));
+    }
+    for _ in 0..7 {
+        events.push(key(KeyCode::Up));
+    }
+    events.extend(chars("X"));
+    events.push(key(KeyCode::Enter));
+    let mut history = History::new();
+    let (result, term) = read_multiline_sized(events, &mut history, &|_| false, 80, 4);
+    assert_eq!(result, Some("l0X\nl1\nl2\nl3\nl4\nl5\nl6\nl7".to_string()));
+    assert!(
+        term.max_move_up() <= 3,
+        "cursor moved up {} rows on a 4-row terminal",
+        term.max_move_up()
+    );
+}
+
+#[test]
+fn test_soft_wrapped_single_line_taller_than_terminal() {
+    // A single logical line that soft-wraps past the terminal height must
+    // take the viewport-clamped path too.
+    let long: String = "x".repeat(50);
+    let mut events = chars(&long);
+    events.push(key(KeyCode::Enter));
+    let mut history = History::new();
+    let (result, term) = read_multiline_sized(events, &mut history, &|_| false, 10, 3);
+    assert_eq!(result, Some(long));
+    assert!(
+        term.max_move_up() <= 2,
+        "cursor moved up {} rows on a 3-row terminal",
+        term.max_move_up()
+    );
+}
+
+// ── Preferred-column stickiness across vertical moves ───────────────────
+
+#[test]
+fn test_up_down_preferred_column_stickiness() {
+    // From column 8 on the last line, Up clamps to the short middle line
+    // but a second Up must return to column 8 (readline behavior), not
+    // stay at the clamped column.
+    let events = [
+        chars("abcdefgh"),
+        vec![alt_enter()],
+        chars("xy"),
+        vec![alt_enter()],
+        chars("abcdefgh"),
+        vec![key(KeyCode::Up), key(KeyCode::Up)],
+        chars("Z"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("abcdefghZ\nxy\nabcdefgh".to_string()));
+}
+
+#[test]
+fn test_preferred_column_resets_on_horizontal_move() {
+    // A horizontal move between vertical moves ends the sticky run: the
+    // next Up targets the new column, not the original one.
+    let events = [
+        chars("abcdefgh"),
+        vec![alt_enter()],
+        chars("xy"),
+        vec![alt_enter()],
+        chars("abcdefgh"),
+        vec![key(KeyCode::Up), key(KeyCode::Left), key(KeyCode::Up)],
+        chars("Z"),
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut history = History::new();
+    let (result, _) = read_multiline(events, &mut history, &|_| false);
+    assert_eq!(result, Some("aZbcdefgh\nxy\nabcdefgh".to_string()));
+}
+
+// ── Multiline autosuggestions ───────────────────────────────────────────
+
+#[test]
+fn test_multiline_suggestion_rendered_dim_with_cont_prompt() {
+    // A history entry spanning lines must be suggested (not suppressed)
+    // and its continuation lines rendered with the continuation prompt.
+    let mut history = History::new();
+    history.add("for i in 1 2; do\necho $i\ndone", 500, "");
+    let events = [chars("for"), vec![ctrl('c')]].concat();
+    let (result, term) = read_multiline_sized(events, &mut history, &shell_incomplete, 80, 24);
+    assert_eq!(result, Some(String::new()));
+    let output = term.output().to_vec();
+    assert!(
+        output.iter().any(|s| s == "[DIM]"),
+        "multiline suggestion should render dim: {:?}",
+        output
+    );
+    assert!(
+        output.iter().any(|s| s == "> "),
+        "suggestion continuation lines should carry the continuation prompt: {:?}",
+        output
+    );
+}
+
+#[test]
+fn test_multiline_suggestion_accept_full() {
+    let mut history = History::new();
+    history.add("for i in 1 2; do\necho $i\ndone", 500, "");
+    let events = [
+        chars("for"),
+        vec![key(KeyCode::Right)],
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let (result, _) = read_multiline_sized(events, &mut history, &shell_incomplete, 80, 24);
+    assert_eq!(result, Some("for i in 1 2; do\necho $i\ndone".to_string()));
 }

@@ -62,20 +62,13 @@
       continuation, navigate_down guard, lazy PS2 expansion, newline-aware
       completion, composable closing-keyword probes, comment-aware
       trailing-operator check, multiline-safe history file format v2,
-      heredoc highlight mode):
+      heredoc highlight mode; 2026-07-27 landed: viewport-clamped
+      terminal-height-aware rendering with explicit row packing,
+      preferred-column stickiness on up/down, multiline autosuggestions
+      rendered with continuation prompts):
       (a) multiline buffers always take the full clear+repaint path — extend
       the diff-based partial repaint to multiline layouts if large pasted
-      blocks make per-keystroke repaints visibly slow; (b) up/down movement
-      clamps to line end without readline-style preferred-column stickiness
-      across consecutive moves; (c) autosuggestions whose remainder contains
-      a newline are suppressed rather than rendered with continuation
-      prompts; (d) constructs taller than the terminal corrupt the display —
-      `redraw_multiline` assumes the entire previous render is still
-      on-screen; once output scrolls, `move_up(prev_cursor_row)` clamps at
-      the top row, the clear loop erases the wrong rows, and the repaint
-      duplicates content for the rest of the edit; needs
-      terminal-height-aware rendering (clamp the repaint window to the
-      viewport, or scroll-region handling)
+      blocks make per-keystroke repaints visibly slow
       (`src/interactive/line_editor.rs`).
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default

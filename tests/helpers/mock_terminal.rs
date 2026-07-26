@@ -16,6 +16,10 @@ pub struct MockTerminal {
     /// Tracks vertical cursor movement. Each `\n` in write_str increments,
     /// each move_up(n) decrements by n.  Starts at 0.
     cursor_row: i32,
+    /// Largest single `move_up(n)` seen. A renderer that keeps all relative
+    /// movement inside the terminal viewport never moves up by more than
+    /// `height - 1` rows at once.
+    max_move_up: u16,
     dim: bool,
     bold: bool,
     underline: bool,
@@ -29,6 +33,7 @@ impl MockTerminal {
             size: (80, 24),
             output: Vec::new(),
             cursor_row: 0,
+            max_move_up: 0,
             dim: false,
             bold: false,
             underline: false,
@@ -56,6 +61,12 @@ impl MockTerminal {
     #[allow(dead_code)]
     pub fn dim(&self) -> bool {
         self.dim
+    }
+
+    /// Largest single upward cursor movement issued so far.
+    #[allow(dead_code)]
+    pub fn max_move_up(&self) -> u16 {
+        self.max_move_up
     }
 }
 
@@ -87,6 +98,7 @@ impl Terminal for MockTerminal {
 
     fn move_up(&mut self, n: u16) -> io::Result<()> {
         self.cursor_row -= n as i32;
+        self.max_move_up = self.max_move_up.max(n);
         Ok(())
     }
 

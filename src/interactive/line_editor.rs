@@ -113,6 +113,21 @@ pub struct LineEditor {
     /// containing command substitution is only executed when a continuation
     /// line is actually displayed. Reset by `clear`.
     cont_prompt_cache: Option<String>,
+    /// Readline-style "preferred column" for consecutive vertical moves:
+    /// captured on the first Up/Down, retained while the cursor passes
+    /// through shorter lines, and cleared by any other edit action or
+    /// buffer mutation.
+    preferred_col: Option<usize>,
+    /// Whether the previous `redraw` went through the multiline renderer.
+    /// The single-line partial-repaint diff must not run against a
+    /// multiline on-screen layout, and buffer content alone can't tell
+    /// (an oversized single-logical-line buffer also renders multiline).
+    prev_render_multiline: bool,
+    /// First visible physical row (into the full row layout) of the
+    /// multiline renderer's viewport. 0 while everything fits on screen;
+    /// scrolls minimally to keep the cursor row visible when the render
+    /// is taller than the terminal.
+    viewport_top: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +163,9 @@ impl LineEditor {
             suggestion_cache: None,
             prev_render: None,
             cont_prompt_cache: None,
+            preferred_col: None,
+            prev_render_multiline: false,
+            viewport_top: 0,
         }
     }
 
@@ -191,6 +209,8 @@ impl LineEditor {
         self.prev_render = None;
         self.prev_total_rows = 0;
         self.prev_cursor_row = 0;
+        self.prev_render_multiline = false;
+        self.viewport_top = 0;
     }
 
     /// Insert a character at the current cursor position and advance
@@ -269,15 +289,21 @@ impl LineEditor {
 
     /// Move the cursor to the previous logical line, preserving the display
     /// column as closely as possible. Does nothing on the first line.
+    ///
+    /// Consecutive vertical moves keep the column of the *first* move
+    /// (readline-style preferred column): passing through a shorter line
+    /// clamps the cursor visually but does not shrink the target column
+    /// for subsequent moves.
     pub fn move_cursor_up(&mut self) {
         let cur_start = self.line_start(self.pos);
         if cur_start == 0 {
             return;
         }
-        let target: usize = self.buf[cur_start..self.pos]
+        let visual: usize = self.buf[cur_start..self.pos]
             .iter()
             .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
             .sum();
+        let target = *self.preferred_col.get_or_insert(visual);
         let prev_end = cur_start - 1; // index of the '\n'
         let prev_start = self.line_start(prev_end);
         self.pos = Self::pos_at_column(&self.buf, prev_start, prev_end, target);
@@ -285,16 +311,18 @@ impl LineEditor {
 
     /// Move the cursor to the next logical line, preserving the display
     /// column as closely as possible. Does nothing on the last line.
+    /// Uses the same preferred-column stickiness as [`move_cursor_up`].
     pub fn move_cursor_down(&mut self) {
         let cur_end = self.line_end(self.pos);
         if cur_end == self.buf.len() {
             return;
         }
         let cur_start = self.line_start(self.pos);
-        let target: usize = self.buf[cur_start..self.pos]
+        let visual: usize = self.buf[cur_start..self.pos]
             .iter()
             .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
             .sum();
+        let target = *self.preferred_col.get_or_insert(visual);
         let next_start = cur_end + 1;
         let next_end = self.line_end(next_start);
         self.pos = Self::pos_at_column(&self.buf, next_start, next_end, target);
@@ -621,6 +649,8 @@ impl LineEditor {
     fn invalidate_width_cache(&mut self) {
         self.cached_total_width = None;
         self.buf_generation += 1;
+        // Any content change ends a run of consecutive vertical moves.
+        self.preferred_col = None;
     }
 
     /// Return `(prefix_width, total_width)`: the display width of
@@ -677,13 +707,7 @@ impl LineEditor {
                 self.suggestion = cached.clone();
                 return;
             }
-            // A suggestion remainder containing '\n' would be rendered as a
-            // raw newline by the dim-suggestion painter (which has no notion
-            // of continuation prompts); drop those rather than corrupt the
-            // layout.
-            let result = history
-                .suggest(&self.buffer())
-                .filter(|s| !s.contains('\n'));
+            let result = history.suggest(&self.buffer());
             self.suggestion_cache = Some((self.buf_generation, result.clone()));
             self.suggestion = result;
         } else {
@@ -809,17 +833,17 @@ impl LineEditor {
                         KeyAction::TabComplete | KeyAction::Continue => {}
                     }
                     self.update_suggestion(history);
-                    let (tw, _) = term.size().unwrap_or((80, 24));
-                    self.redraw(term, prompt, prompt_width, "> ", &[], tw)?;
+                    let (tw, th) = term.size().unwrap_or((80, 24));
+                    self.redraw(term, prompt, prompt_width, "> ", &[], tw, th)?;
                 }
                 Event::Resize(_cols, _rows) => {
                     // Terminal dimensions changed, invalidating all cached
                     // row/column math from the previous render; force a full
                     // repaint.
                     self.invalidate_render_state();
-                    let (tw, _) = term.size().unwrap_or((80, 24));
+                    let (tw, th) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
-                    self.redraw(term, prompt, prompt_width, "> ", &[], tw)?;
+                    self.redraw(term, prompt, prompt_width, "> ", &[], tw, th)?;
                 }
                 _ => {}
             }
@@ -839,25 +863,14 @@ impl LineEditor {
         cont_prompt: &str,
         spans: &[ColorSpan],
         term_width: u16,
+        term_height: u16,
     ) -> io::Result<()> {
         let tw = term_width as usize;
+        let th = (term_height as usize).max(1);
         let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
 
-        // Multiline buffers get their own renderer; the soft-wrap row math
-        // below assumes a single logical line.
-        if self.buf.contains(&'\n') {
-            return self.redraw_multiline(term, prompt, prompt_width, cont_prompt, spans, tw);
-        }
-        // If the *previous* render was multiline, the diff-based partial
-        // repaint below would misinterpret its layout; the full clear +
-        // repaint path handles it fine (clearing only uses row counts).
-        let prev_was_multiline = self
-            .prev_render
-            .as_ref()
-            .is_some_and(|(prev_buf, _)| prev_buf.contains(&'\n'));
-
-        // Precompute the width/row info the new-render needs regardless of
-        // which repaint strategy is chosen below.
+        // Precompute the width/row info both the dispatch decision and the
+        // single-line renderer need.
         let (buf_pos_width, buf_total_width) = self.buf_prefix_and_total_width();
         let suggestion_active = self.suggestion.is_some() && self.pos == self.buf.len();
         let suggestion_width: usize = if suggestion_active {
@@ -876,6 +889,22 @@ impl LineEditor {
         } else {
             0
         };
+
+        // Multiline buffers get their own renderer; the soft-wrap row math
+        // below assumes a single logical line. The same renderer also
+        // handles a suggestion whose remainder spans lines, and — because
+        // it is the only path with viewport clamping — any buffer whose
+        // soft-wrapped render would be taller than the terminal.
+        let suggestion_multiline =
+            suggestion_active && self.suggestion.as_deref().is_some_and(|s| s.contains('\n'));
+        if self.buf.contains(&'\n') || suggestion_multiline || total_rows + 1 > th {
+            return self.redraw_multiline(term, prompt, prompt_width, cont_prompt, spans, tw, th);
+        }
+        // If the *previous* render went through the multiline renderer, the
+        // diff-based partial repaint below would misinterpret its layout;
+        // the full clear + repaint path handles it fine (clearing only uses
+        // row counts).
+        let prev_was_multiline = self.prev_render_multiline;
 
         // Decide whether a partial repaint (from the first changed cell)
         // is safe, or whether to fall back to the full clear+repaint.
@@ -1054,6 +1083,8 @@ impl LineEditor {
 
         self.prev_total_rows = total_rows;
         self.prev_render = Some((self.buf.clone(), spans.to_vec()));
+        self.prev_render_multiline = false;
+        self.viewport_top = 0;
 
         // Position cursor at self.pos
         let cursor_total = prompt_width + buf_pos_width;
@@ -1075,11 +1106,20 @@ impl LineEditor {
         Ok(())
     }
 
-    /// Render a buffer containing literal newlines: each logical line
-    /// soft-wraps within the terminal width like the single-line renderer,
-    /// and every continuation line is prefixed with `cont_prompt`. Always a
-    /// full clear + repaint — the partial-repaint diff only models
-    /// single-line layouts.
+    /// Render a buffer as logical lines: each soft-wraps within the terminal
+    /// width, and every continuation line is prefixed with `cont_prompt`. An
+    /// autosuggestion remainder is rendered dim after the buffer, its own
+    /// newlines starting further continuation lines. Always a full clear +
+    /// repaint — the partial-repaint diff only models single-line layouts.
+    ///
+    /// Unlike the single-line renderer this path does not rely on terminal
+    /// auto-wrap: the layout is packed into explicit physical rows first,
+    /// and only a viewport of at most `th` rows — always containing the
+    /// cursor — is painted. That keeps every relative cursor movement within
+    /// the screen, so renders taller than the terminal cannot corrupt the
+    /// display (`move_up` past the top row would otherwise clamp and
+    /// misalign all subsequent bookkeeping).
+    #[allow(clippy::too_many_arguments)]
     fn redraw_multiline<T: Terminal>(
         &mut self,
         term: &mut T,
@@ -1088,15 +1128,115 @@ impl LineEditor {
         cont_prompt: &str,
         spans: &[ColorSpan],
         tw: usize,
+        th: usize,
     ) -> io::Result<()> {
         let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
         let cont_width = display_width(cont_prompt);
-        // Physical rows occupied by a display width `w`: ceil(w/tw), min 1.
-        // A width that is an exact multiple of `tw` still occupies w/tw rows
-        // because the terminal defers the final wrap.
-        let rows_for = |w: usize| -> usize { if tw == 0 || w == 0 { 1 } else { w.div_ceil(tw) } };
+        // Column budget per row; tw == 0 means "unknown width" — treat as
+        // unbounded so each logical line stays on one row.
+        let tw_eff = if tw == 0 { usize::MAX } else { tw };
 
-        // ---- Clear every row of the previous render ----
+        /// What a rendered cell's char is styled as.
+        #[derive(Clone, Copy, PartialEq)]
+        enum Cell {
+            /// Buffer char at this index — styled by the highlight spans.
+            Buf(usize),
+            /// Autosuggestion char — rendered dim, never highlighted.
+            Sugg,
+        }
+
+        // ---- Build logical display lines (buffer lines + suggestion
+        // continuation lines), each a list of (char, cell kind) ----
+        let mut dlines: Vec<Vec<(char, Cell)>> = vec![Vec::new()];
+        for (i, &c) in self.buf.iter().enumerate() {
+            if c == '\n' {
+                dlines.push(Vec::new());
+            } else {
+                dlines.last_mut().unwrap().push((c, Cell::Buf(i)));
+            }
+        }
+        // The cursor's display line/offset must be computed against buffer
+        // lines only, before suggestion cells are appended.
+        let cursor_line = self.cursor_line_index();
+        let cursor_ofs = self.pos - self.line_start(self.pos);
+
+        let suggestion_active = self.suggestion.is_some() && self.pos == self.buf.len();
+        if suggestion_active {
+            let sugg = self.suggestion.clone().unwrap_or_default();
+            for (si, seg) in sugg.split('\n').enumerate() {
+                if si > 0 {
+                    dlines.push(Vec::new());
+                }
+                dlines
+                    .last_mut()
+                    .unwrap()
+                    .extend(seg.chars().map(|c| (c, Cell::Sugg)));
+            }
+        }
+
+        // ---- Pack display lines into physical rows ----
+        // `first` marks a row that starts its logical line (and therefore
+        // carries the prompt/continuation prefix).
+        struct Row {
+            line: usize,
+            first: bool,
+            cells: Vec<(char, Cell)>,
+        }
+        let mut rows: Vec<Row> = Vec::new();
+        // (row index, column) the cursor lands on, in absolute row terms.
+        let mut cursor_at: Option<(usize, usize)> = None;
+        for (li, cells) in dlines.iter().enumerate() {
+            let prefix_w = if li == 0 { prompt_width } else { cont_width };
+            let mut cur = Row {
+                line: li,
+                first: true,
+                cells: Vec::new(),
+            };
+            let mut cur_col = prefix_w;
+            for (ci, &(ch, kind)) in cells.iter().enumerate() {
+                let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+                // Wrap before a cell that no longer fits — but always place
+                // at least one cell on a continuation row so packing makes
+                // progress even for degenerate widths.
+                if cur_col + w > tw_eff && (cur.first || !cur.cells.is_empty()) {
+                    let done = std::mem::replace(
+                        &mut cur,
+                        Row {
+                            line: li,
+                            first: false,
+                            cells: Vec::new(),
+                        },
+                    );
+                    rows.push(done);
+                    cur_col = 0;
+                }
+                if li == cursor_line && ci == cursor_ofs {
+                    cursor_at = Some((rows.len(), cur_col));
+                }
+                cur.cells.push((ch, kind));
+                cur_col += w;
+            }
+            if li == cursor_line && cursor_ofs == cells.len() && cursor_at.is_none() {
+                cursor_at = Some((rows.len(), cur_col));
+            }
+            rows.push(cur);
+        }
+        let total_rows = rows.len();
+        let (cursor_row, cursor_col) = cursor_at.unwrap_or((0, prompt_width));
+
+        // ---- Choose the viewport: at most `th` rows, containing the
+        // cursor, scrolled minimally from the previous window ----
+        let visible = total_rows.min(th);
+        let mut vt = self.viewport_top.min(total_rows - visible);
+        if cursor_row < vt {
+            vt = cursor_row;
+        } else if cursor_row >= vt + visible {
+            vt = cursor_row + 1 - visible;
+        }
+        self.viewport_top = vt;
+
+        // ---- Clear every row of the previous render (its bookkeeping is
+        // viewport-relative, so all rows are on screen) ----
         if self.prev_cursor_row > 0 {
             term.move_up(self.prev_cursor_row as u16)?;
         }
@@ -1112,111 +1252,78 @@ impl LineEditor {
         }
         term.move_to_column(0)?;
 
-        // ---- Logical line char ranges [start, end); buf[end] is the '\n'
-        // separator (or end == buf.len() for the last line) ----
-        let mut lines: Vec<(usize, usize)> = Vec::new();
-        let mut start = 0usize;
-        for (i, &c) in self.buf.iter().enumerate() {
-            if c == '\n' {
-                lines.push((start, i));
-                start = i + 1;
-            }
-        }
-        lines.push((start, self.buf.len()));
-
-        let suggestion_active = self.suggestion.is_some() && self.pos == self.buf.len();
-        let suggestion_width: usize = if suggestion_active {
-            self.suggestion
-                .as_ref()
-                .unwrap()
-                .chars()
-                .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
-                .sum()
-        } else {
-            0
-        };
-
-        // ---- Write prompt + content, line by line ----
+        // ---- Paint the visible rows ----
         let mut span_idx = 0;
         let mut current_style = HighlightStyle::Default;
-        for (li, &(s, e)) in lines.iter().enumerate() {
-            if li > 0 {
-                // Continuation prompts are always unstyled; highlight spans
-                // resume at the first char after the prompt.
+        let mut dim_on = false;
+        for (vi, row) in rows[vt..vt + visible].iter().enumerate() {
+            if vi > 0 || row.first {
+                // Row breaks and prefixes are always unstyled.
                 if current_style != HighlightStyle::Default {
                     term.reset_style()?;
                     current_style = HighlightStyle::Default;
                 }
+                if dim_on {
+                    term.set_dim(false)?;
+                    dim_on = false;
+                }
+            }
+            if vi > 0 {
                 term.write_str("\r\n")?;
             }
-            term.write_str(if li == 0 { prompt } else { cont_prompt })?;
-            for i in s..e {
-                if !spans.is_empty() {
-                    let new_style = style_at_advancing(spans, &mut span_idx, i);
-                    if new_style != current_style {
+            if row.first {
+                term.write_str(if row.line == 0 { prompt } else { cont_prompt })?;
+            }
+            for &(ch, kind) in &row.cells {
+                match kind {
+                    Cell::Buf(i) => {
+                        if dim_on {
+                            term.set_dim(false)?;
+                            dim_on = false;
+                        }
+                        if !spans.is_empty() {
+                            let new_style = style_at_advancing(spans, &mut span_idx, i);
+                            if new_style != current_style {
+                                if current_style != HighlightStyle::Default {
+                                    term.reset_style()?;
+                                }
+                                apply_style(term, new_style)?;
+                                current_style = new_style;
+                            }
+                        }
+                    }
+                    Cell::Sugg => {
                         if current_style != HighlightStyle::Default {
                             term.reset_style()?;
+                            current_style = HighlightStyle::Default;
                         }
-                        apply_style(term, new_style)?;
-                        current_style = new_style;
+                        if !dim_on {
+                            term.set_dim(true)?;
+                            dim_on = true;
+                        }
                     }
                 }
-                term.write_char(self.buf[i])?;
+                term.write_char(ch)?;
             }
         }
         if current_style != HighlightStyle::Default {
             term.reset_style()?;
         }
-        if suggestion_active {
-            term.set_dim(true)?;
-            term.write_str(self.suggestion.as_deref().unwrap_or(""))?;
+        if dim_on {
             term.set_dim(false)?;
         }
 
-        // ---- Row layout + cursor position ----
-        // The cursor position `pos` belongs to exactly one line: line ranges
-        // are [s, e] inclusive of the position *before* the separator, and
-        // the next line starts at e + 1.
-        let mut rows_before = 0usize;
-        let mut cursor_row = 0usize;
-        let mut cursor_col = 0usize;
-        let last = lines.len() - 1;
-        for (li, &(s, e)) in lines.iter().enumerate() {
-            let prefix_w = if li == 0 { prompt_width } else { cont_width };
-            let line_w: usize = self.buf[s..e]
-                .iter()
-                .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                .sum();
-            let mut full_w = prefix_w + line_w;
-            if li == last {
-                full_w += suggestion_width;
-            }
-            let rows = rows_for(full_w);
-            if s <= self.pos && self.pos <= e {
-                let off: usize = prefix_w
-                    + self.buf[s..self.pos]
-                        .iter()
-                        .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                        .sum::<usize>();
-                // Same exact-multiple clamp as the single-line renderer: a
-                // cursor logically one past a row-final wrap boundary stays
-                // on the last physical row of its line.
-                let r = off.checked_div(tw).unwrap_or(0).min(rows - 1);
-                cursor_col = off.checked_rem(tw).unwrap_or(off);
-                cursor_row = rows_before + r;
-            }
-            rows_before += rows;
-        }
-        let end_row = rows_before - 1;
-
-        // The write above left the physical cursor on the last rendered row.
+        // ---- Position the cursor (window-relative) ----
+        // The paint left the physical cursor on the last visible row.
+        let end_row = vt + visible - 1;
         if end_row > cursor_row {
             term.move_up((end_row - cursor_row) as u16)?;
         }
         term.move_to_column(col(cursor_col))?;
 
-        self.prev_total_rows = end_row;
-        self.prev_cursor_row = cursor_row;
+        self.prev_total_rows = visible - 1;
+        self.prev_cursor_row = cursor_row - vt;
+        self.prev_render_multiline = true;
         self.prev_render = Some((self.buf.clone(), spans.to_vec()));
         term.flush()?;
         Ok(())
@@ -1298,6 +1405,13 @@ impl LineEditor {
         history: &mut History,
         consecutive_kill: bool,
     ) -> KeyAction {
+        // Preferred-column stickiness only survives an unbroken run of
+        // vertical moves (Up/Down map to HistoryPrev/HistoryNext); any
+        // other action ends the run. Buffer mutations additionally reset
+        // it via invalidate_width_cache.
+        if !matches!(action, EditAction::HistoryPrev | EditAction::HistoryNext) {
+            self.preferred_col = None;
+        }
         match action {
             EditAction::InsertChar(ch) => {
                 for _ in 0..count {
@@ -1647,17 +1761,17 @@ impl LineEditor {
                     }
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
-                    let (tw, _) = term.size().unwrap_or((80, 24));
+                    let (tw, th) = term.size().unwrap_or((80, 24));
                     let cont = self.resolve_cont_prompt(cont_prompt);
-                    self.redraw(term, prompt, prompt_width, &cont, &spans, tw)?;
+                    self.redraw(term, prompt, prompt_width, &cont, &spans, tw, th)?;
                 }
                 Event::Resize(_cols, _rows) => {
                     self.invalidate_render_state();
-                    let (tw, _) = term.size().unwrap_or((80, 24));
+                    let (tw, th) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
                     let cont = self.resolve_cont_prompt(cont_prompt);
-                    self.redraw(term, prompt, prompt_width, &cont, &spans, tw)?;
+                    self.redraw(term, prompt, prompt_width, &cont, &spans, tw, th)?;
                 }
                 _ => {}
             }
@@ -1668,7 +1782,11 @@ impl LineEditor {
     /// the lazy callback once per read session and only when the buffer is
     /// actually multiline (single-line redraws never print it).
     fn resolve_cont_prompt(&mut self, cont_prompt: &mut dyn FnMut() -> String) -> String {
-        if !self.buf.contains(&'\n') {
+        // A multiline autosuggestion renders continuation prompts too, so it
+        // needs the resolved PS2 even while the buffer itself is single-line.
+        let sugg_multiline = self.pos == self.buf.len()
+            && self.suggestion.as_deref().is_some_and(|s| s.contains('\n'));
+        if !self.buf.contains(&'\n') && !sugg_multiline {
             return String::new();
         }
         if self.cont_prompt_cache.is_none() {

@@ -5,7 +5,8 @@ use std::time::Duration;
 use expectrl::{Eof, Expect, Regex, session::OsSession};
 
 use helpers::pty::{
-    TIMEOUT, read_until_prompt, spawn_yosh, wait_for_prompt, wait_for_ps2, wait_for_raw_mode,
+    TIMEOUT, read_until_prompt, spawn_yosh, strip_ansi, wait_for_prompt, wait_for_ps2,
+    wait_for_raw_mode,
 };
 
 /// Wait for command output (a line following a newline, not the input echo).
@@ -298,6 +299,103 @@ fn test_pty_multiline_edit_previous_line() {
         "cross-line edit not reflected in output",
     );
     wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_multiline_taller_than_terminal() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    // Shrink the window to 5 rows before editing so the construct below
+    // (8 logical lines) exceeds the terminal height. The viewport-clamped
+    // renderer must keep the buffer editable and submit it intact; the
+    // pre-clamp renderer moved the cursor up past the top of the screen,
+    // which a real terminal clamps — corrupting all later bookkeeping.
+    s.get_process_mut()
+        .set_window_size(60, 5)
+        .expect("failed to shrink PTY window");
+    wait_for_prompt(&mut s);
+
+    // Queue the whole construct plus a cursor walk across off-screen rows
+    // in one write; the editor processes queued input sequentially.
+    let mut input = String::from("for i in a b c\rdo\r");
+    for n in 1..=5 {
+        input.push_str(&format!("echo body{}$i\r", n));
+    }
+    input.push_str(&"\x1b[A".repeat(4)); // Up into off-screen rows
+    input.push_str(&"\x1b[B".repeat(4)); // and back down
+    input.push_str("done\r");
+    s.send(&input).unwrap();
+
+    // Capture the renderer's raw output (escapes included) until the
+    // executed loop output and the idle prompt appear, so the assertion
+    // below can inspect the escape stream itself.
+    let mut raw: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        match s.try_read(&mut chunk) {
+            Ok(0) => panic!(
+                "EOF during multiline viewport capture: {:?}",
+                strip_ansi(&raw)
+            ),
+            Ok(n) => raw.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let text = strip_ansi(&raw);
+                if text.contains("body5c") && text.ends_with("$ ") {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for loop output + idle prompt; captured: {:?}",
+                    text
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("PTY read error: {}", e),
+        }
+    }
+
+    // Executed output proves the buffer survived the off-screen cursor
+    // walk: the echoed input frames always contain `$i`, so `body1a` /
+    // `body5c` can only come from execution.
+    let text = strip_ansi(&raw);
+    for needle in ["body1a", "body5c"] {
+        assert!(
+            text.contains(needle),
+            "loop output {:?} missing after submit: {:?}",
+            needle,
+            text
+        );
+    }
+
+    // The corruption trigger itself: on a 5-row terminal, no repaint may
+    // ever move the cursor up by more than 4 rows (`ESC [ n A`).
+    let mut worst: u32 = 0;
+    let mut i = 0;
+    while i + 2 < raw.len() {
+        if raw[i] == 0x1b && raw[i + 1] == b'[' {
+            let mut j = i + 2;
+            let mut n: u32 = 0;
+            let mut has_digits = false;
+            while j < raw.len() && raw[j].is_ascii_digit() {
+                n = n * 10 + u32::from(raw[j] - b'0');
+                has_digits = true;
+                j += 1;
+            }
+            if j < raw.len() && raw[j] == b'A' {
+                worst = worst.max(if has_digits { n } else { 1 });
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    assert!(
+        worst <= 4,
+        "renderer moved the cursor up {} rows on a 5-row terminal",
+        worst
+    );
 
     exit_shell(&mut s);
 }
