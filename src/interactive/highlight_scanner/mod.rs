@@ -6,6 +6,7 @@ mod comment;
 mod ctx;
 mod expansion;
 mod helpers;
+mod heredoc;
 mod normal;
 mod quotes;
 mod state;
@@ -172,6 +173,7 @@ impl HighlightScanner {
                 ScanMode::Comment { start } => {
                     comment::scan_comment(&mut ctx, checker_env, pos, start)
                 }
+                ScanMode::HereDoc => heredoc::scan_heredoc(&mut ctx, checker_env, pos),
                 ScanMode::CommandSub { .. } => {
                     // CommandSub itself doesn't scan — it pushes Normal which does the
                     // real scanning. When Normal pops, we detect the CommandSub below
@@ -416,6 +418,118 @@ mod tests {
         assert_span(&spans, 0, 0, 5, HighlightStyle::CommandValid);
         assert_span(&spans, 1, 6, 7, HighlightStyle::Default);
         assert_span(&spans, 2, 8, 9, HighlightStyle::Operator);
+    }
+
+    // ── Here-document tests ──────────────────────────────────────
+
+    #[test]
+    fn test_scan_heredoc_body_not_command_checked() {
+        let mut scanner = test_scanner();
+        // "cat <<EOF\nnot_a_command_xyz\nEOF"
+        //  cat=0..3  <<=4..6  EOF=6..9  body=10..27  EOF=28..31
+        let spans = scan_input(&mut scanner, "cat <<EOF\nnot_a_command_xyz\nEOF");
+        assert!(
+            !spans
+                .iter()
+                .any(|s| s.style == HighlightStyle::CommandInvalid),
+            "heredoc body must not be command-checked. Spans: {:?}",
+            spans
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.start == 10 && s.end == 27 && s.style == HighlightStyle::String),
+            "expected String span for heredoc body. Spans: {:?}",
+            spans
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.start == 28 && s.end == 31 && s.style == HighlightStyle::String),
+            "expected String span for terminator line. Spans: {:?}",
+            spans
+        );
+    }
+
+    #[test]
+    fn test_scan_heredoc_command_position_restored_after_terminator() {
+        let mut scanner = test_scanner();
+        // "cat <<EOF\nbody\nEOF\nls" — ls=19..21 is a command again
+        let spans = scan_input(&mut scanner, "cat <<EOF\nbody\nEOF\nls");
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.start == 19 && s.end == 21 && s.style == HighlightStyle::CommandValid),
+            "expected CommandValid for the line after the terminator. Spans: {:?}",
+            spans
+        );
+    }
+
+    #[test]
+    fn test_scan_heredoc_dash_strips_tabs_before_terminator() {
+        let mut scanner = test_scanner();
+        // "cat <<-EOF\nbody\n\tEOF\nls" — ls=21..23
+        let spans = scan_input(&mut scanner, "cat <<-EOF\nbody\n\tEOF\nls");
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.start == 21 && s.end == 23 && s.style == HighlightStyle::CommandValid),
+            "expected CommandValid after tab-indented terminator. Spans: {:?}",
+            spans
+        );
+    }
+
+    #[test]
+    fn test_scan_heredoc_unterminated_no_error_span() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "cat <<EOF\nstill typing");
+        assert!(
+            !spans.iter().any(|s| s.style == HighlightStyle::Error),
+            "open heredoc body must not be painted as an error. Spans: {:?}",
+            spans
+        );
+        assert!(
+            !spans
+                .iter()
+                .any(|s| s.style == HighlightStyle::CommandInvalid),
+            "open heredoc body must not be command-checked. Spans: {:?}",
+            spans
+        );
+    }
+
+    #[test]
+    fn test_scan_heredoc_quoted_delimiter() {
+        let mut scanner = test_scanner();
+        // "cat <<'EOF'\nbody\nEOF\nls" — ls=21..23
+        let spans = scan_input(&mut scanner, "cat <<'EOF'\nbody\nEOF\nls");
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.start == 21 && s.end == 23 && s.style == HighlightStyle::CommandValid),
+            "expected CommandValid after quoted-delimiter heredoc. Spans: {:?}",
+            spans
+        );
+    }
+
+    #[test]
+    fn test_scan_comment_ends_at_newline() {
+        let mut scanner = test_scanner();
+        // "echo hi # foo\nls" — comment=8..13, ls=14..16
+        let spans = scan_input(&mut scanner, "echo hi # foo\nls");
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.start == 8 && s.end == 13 && s.style == HighlightStyle::Comment),
+            "comment must stop at the newline. Spans: {:?}",
+            spans
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.start == 14 && s.end == 16 && s.style == HighlightStyle::CommandValid),
+            "line after a comment is a command again. Spans: {:?}",
+            spans
+        );
     }
 
     // ── Error and PS2 tests ──────────────────────────────────────

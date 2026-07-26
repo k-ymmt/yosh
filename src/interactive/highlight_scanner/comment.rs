@@ -1,5 +1,5 @@
 //! Comment scanner — handles a `#`-comment that starts at the beginning
-//! of a word and runs to the end of the input.
+//! of a word and runs to the end of the line.
 
 use super::super::command_checker::CheckerEnv;
 use super::super::highlight::{ColorSpan, HighlightStyle};
@@ -11,12 +11,19 @@ pub(super) fn scan_comment(
     _pos: usize,
     start: usize,
 ) -> usize {
-    // Comment spans to the end of the input.
+    // Comment spans to the end of the line: a multiline buffer's following
+    // lines are commands again. The newline itself is handed back to
+    // scan_normal so command position is restored there.
+    let end = ctx.input[start..]
+        .iter()
+        .position(|&c| c == '\n')
+        .map(|i| start + i)
+        .unwrap_or(ctx.input.len());
     ctx.spans.push(ColorSpan {
         start,
-        end: ctx.input.len(),
+        end,
         style: HighlightStyle::Comment,
     });
     ctx.state.pop_mode();
-    ctx.input.len()
+    end
 }

@@ -57,103 +57,26 @@
 - [ ] `ENV` tilde expansion PTY test — `ENV=~/foo` tilde expansion is only exercised on interactive startup; add PTY test to verify `~` and `~user` cases (`tests/pty_interactive.rs`)
 - [ ] Multiline editing follow-ups (core landed 2026-07-26: in-buffer
       continuation on incomplete Enter, Alt+Enter forced newline, up/down
-      cursor movement, line-local C-a/C-e/C-k/C-u, PS2-prefixed rendering):
+      cursor movement, line-local C-a/C-e/C-k/C-u, PS2-prefixed rendering;
+      2026-07-26 adversarial-review fixes landed: history-cursor reset on
+      continuation, navigate_down guard, lazy PS2 expansion, newline-aware
+      completion, composable closing-keyword probes, comment-aware
+      trailing-operator check, multiline-safe history file format v2,
+      heredoc highlight mode):
       (a) multiline buffers always take the full clear+repaint path — extend
       the diff-based partial repaint to multiline layouts if large pasted
       blocks make per-keystroke repaints visibly slow; (b) up/down movement
       clamps to line end without readline-style preferred-column stickiness
       across consecutive moves; (c) autosuggestions whose remainder contains
       a newline are suppressed rather than rendered with continuation
-      prompts (`src/interactive/line_editor.rs`).
-
-### 2026-07-26 multiline-editing adversarial review (10 confirmed findings, ranked)
-
-All findings verified by an adversarial multi-agent review of commit
-`380cdb0`; ranked by severity. Suggested fix order: #3 → #2 → #9 →
-#6/#7 → #1 → #4/#5/#8 (see each item).
-
-- [ ] #1 Multiline history entries shatter across restarts —
-      `History::save` writes one physical line per entry (`writeln!`) and
-      `load` splits on lines, so a stored `if true\nthen echo hi\nfi`
-      entry reloads as three fragment entries ("if true", "then echo hi",
-      "fi"); Up then recalls a bare `fi` that errors on submit. Latent
-      since the PS2-accumulation era but now triggered by every multiline
-      command. Fix needs a persistence-format decision (escape newlines
-      on save + unescape on load, or a length-prefixed/quoted format) —
-      the most design-sensitive item of this batch
-      (`src/interactive/history.rs`, `src/interactive/mod.rs:326`).
-- [ ] #2 Down on the last line of a fresh multiline buffer wipes it —
-      `History::navigate_down` returns `Some(&self.saved_line)` (empty
-      string) when `cursor == None`, and the editor replaces the whole
-      buffer with it. Pre-existing single-line quirk, but multiline
-      editing turns it into multi-line data loss with no undo snapshot.
-      Fix: return `None` from `navigate_down` when not navigating (or
-      guard in `execute_action`) (`src/interactive/history.rs:97-110`,
-      `src/interactive/line_editor.rs:1473`).
-- [ ] #3 Enter-on-incomplete keeps a stale history cursor — the newline-
-      insertion branch skips the old Submit path's unconditional
-      `history.reset_cursor()`, so after recalling an entry with Up and
-      continuing it into a multiline construct, Up on line 0 resumes from
-      the stale cursor and replaces the in-progress buffer with an older
-      entry; `saved_line` never captured the construct, so Down cannot
-      restore it. Regression introduced by 380cdb0; one-line fix (call
-      `history.reset_cursor()` when inserting the continuation newline)
-      (`src/interactive/line_editor.rs:1563`).
-- [ ] #4 Constructs taller than the terminal corrupt the display —
+      prompts; (d) constructs taller than the terminal corrupt the display —
       `redraw_multiline` assumes the entire previous render is still
-      on-screen; once output scrolls, `move_up(prev_cursor_row)` clamps
-      at the top row, the clear loop erases the wrong rows, and the
-      repaint duplicates content for the rest of the edit. Needs
+      on-screen; once output scrolls, `move_up(prev_cursor_row)` clamps at
+      the top row, the clear loop erases the wrong rows, and the repaint
+      duplicates content for the rest of the edit; needs
       terminal-height-aware rendering (clamp the repaint window to the
       viewport, or scroll-region handling)
-      (`src/interactive/line_editor.rs:1094`).
-- [ ] #5 Nested header-only constructs still classify as Error —
-      `classify_parse("while true\nif x\n")` returns Error because the
-      `CLOSING_KEYWORDS` probes cannot compose (would need
-      `\nthen :\nfi\ndone\n`), so Enter submits the half-finished
-      construct and discards the multiline edit with a syntax error.
-      Pre-existing classification gap, but the blast radius grew from
-      "PS2 not offered" to "in-progress buffer destroyed". Durable fix:
-      have the parser report its expected-closer set on
-      UnexpectedToken-at-EOF, or compose probes iteratively instead of
-      the growing literal list (`src/interactive/parse_status.rs:21-33`).
-- [ ] #6 Tab completion broken on continuation lines —
-      `is_unquoted_delimiter` (completion) does not include `\n`, so the
-      completion word spans the newline (`"true\nth"` in
-      `if true\nth<Tab>`): command-name completion never fires on
-      continuation lines, and an accidental path match would replace text
-      across the newline, deleting the line break. Fix: add `\n` (and
-      `\t`) to the delimiter set and teach `is_command_position` that a
-      newline starts a command (`src/interactive/completion.rs:65-86`).
-- [ ] #7 A comment ending in `|` traps Enter forever — the textual
-      trailing-`|`/`&&`/`||` Incomplete check in `classify_parse` ignores
-      comment context, so `echo hi #|` keeps classifying Incomplete;
-      pre-380cdb0 the PS2 empty-line submit cleared `input_buffer`, but
-      that escape hatch is now unreachable, leaving Ctrl+C as the only
-      exit. Fix: strip comments (lexer-aware) before the textual
-      trailing-operator check (`src/interactive/parse_status.rs:44-48`,
-      `src/interactive/mod.rs:267`).
-- [ ] #8 Heredoc body lines render as invalid commands — the scanner now
-      unconditionally sets `command_position = true` at `\n`, so while
-      typing a heredoc body in the multiline editor every body line's
-      first word goes through the command checker and paints
-      CommandInvalid red. The scanner has no heredoc mode; either add
-      one (track `<<WORD` until the delimiter line) or suppress the
-      command-position reset while a pending heredoc is open
-      (`src/interactive/highlight_scanner/normal.rs:25-35`).
-- [ ] #9 PS2 expanded every REPL iteration — `expand_prompt(env, "PS2")`
-      now runs before every read (including plain PS1 prompts), so a PS2
-      containing command substitution (e.g. `$(date +%T)> `) executes
-      once per prompt display, and the continuation prompt is a stale
-      snapshot for the whole read. Fix: defer PS2 expansion until the
-      buffer first goes multiline (lazy callback), or at minimum only
-      expand when the editor will actually render a continuation line
-      (`src/interactive/mod.rs:171-175`).
-- [ ] #10 Multi-line PS2 upper lines silently dropped — only
-      `cont_info.last_line` is passed to the editor, so a PS2 containing
-      newlines loses its leading lines in continuation rendering.
-      Either render `cont_info.upper_lines` too or document last-line-only
-      as the supported shape (`src/interactive/mod.rs:246`).
+      (`src/interactive/line_editor.rs`).
 - [ ] `set -o interactive` flag management
 - [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
 - [ ] `set -x` does not emit bash-style structural headers for `for` / `case` (yosh matches dash here; POSIX leaves the header format implementation-defined). Empirical survey 2026-05-28 confirmed compound bodies and pipeline members are already traced via `exec_simple_command`; the assignment-only gap was closed in the 2026-05-28 assignment-trace work. Adding bash parity for the headers requires Word→source rendering plus an xtrace argument-quoting algorithm; the latter also affects existing simple-command trace output (`echo "a b" c` traces as `+ echo a b c` not `+ echo 'a b' c`). Tracked together because both want the same quoting helper. See `docs/superpowers/specs/2026-05-28-set-x-assignment-trace-design.md` §5 for the closed assignment portion (`src/exec/compound.rs`, `src/exec/simple.rs`).

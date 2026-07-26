@@ -3,6 +3,49 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 
+/// First line of history files written in the v2 (newline-escaped) format.
+/// Multiline entries are stored on one physical line with `\` and newline
+/// escaped; files without this header are read as the legacy one-entry-
+/// per-line format (under which multiline entries shattered into fragments
+/// on reload).
+const FILE_HEADER_V2: &str = "#yosh-history-v2";
+
+/// Escape one entry for v2 persistence: `\` -> `\\`, newline -> `\n`.
+fn escape_entry(entry: &str) -> String {
+    let mut out = String::with_capacity(entry.len());
+    for c in entry.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Inverse of [`escape_entry`]. Lenient: an unknown escape or a trailing
+/// lone backslash is kept literally.
+fn unescape_entry(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 /// Command history storage with navigation and persistence.
 ///
 /// Stores commands in chronological order (oldest first) and supports
@@ -96,7 +139,9 @@ impl History {
 
     pub fn navigate_down(&mut self) -> Option<&str> {
         let pos = match self.cursor {
-            None => return Some(&self.saved_line),
+            // Not navigating: returning the (empty) saved line here would
+            // let the caller wipe a freshly typed buffer on a stray Down.
+            None => return None,
             Some(pos) => pos,
         };
 
@@ -120,15 +165,24 @@ impl History {
             Err(_) => return,
         };
         let reader = BufReader::new(file);
-        for line in reader.lines().map_while(Result::ok) {
-            if !line.is_empty() {
-                self.entries.push(line);
+        let mut lines = reader.lines().map_while(Result::ok).peekable();
+        let v2 = lines.peek().map(|l| l.as_str()) == Some(FILE_HEADER_V2);
+        if v2 {
+            lines.next();
+        }
+        for line in lines {
+            if line.is_empty() {
+                continue;
             }
+            self.entries
+                .push(if v2 { unescape_entry(&line) } else { line });
         }
     }
 
-    /// Persist history entries to `path`, keeping at most `histfilesize` most-recent
-    /// entries (`0` means keep all).
+    /// Persist history entries to `path` in the v2 (newline-escaped) format,
+    /// keeping at most `histfilesize` most-recent entries (`0` means keep
+    /// all). One physical line per entry, so multiline commands survive a
+    /// save/load round trip instead of shattering into per-line fragments.
     ///
     /// Errors from `create_dir_all`, `File::create`, and per-entry `writeln!` are
     /// propagated. On a partial-write failure the file is left truncated to
@@ -140,13 +194,14 @@ impl History {
             fs::create_dir_all(parent)?;
         }
         let mut file = fs::File::create(path)?;
+        writeln!(file, "{}", FILE_HEADER_V2)?;
         let start = if histfilesize > 0 && self.entries.len() > histfilesize {
             self.entries.len() - histfilesize
         } else {
             0
         };
         for entry in &self.entries[start..] {
-            writeln!(file, "{}", entry)?;
+            writeln!(file, "{}", escape_entry(entry))?;
         }
         Ok(())
     }
@@ -268,7 +323,16 @@ mod tests {
         h.navigate_up("typing");
         assert_eq!(h.navigate_down(), Some("second"));
         assert_eq!(h.navigate_down(), Some("typing"));
-        assert_eq!(h.navigate_down(), Some("typing"));
+        // Cursor is cleared after returning the saved line; a further Down
+        // is not navigating and must not offer the saved line again.
+        assert_eq!(h.navigate_down(), None);
+    }
+
+    #[test]
+    fn test_navigate_down_without_navigation_returns_none() {
+        let mut h = History::new();
+        h.add("first", 500, "");
+        assert_eq!(h.navigate_down(), None);
     }
 
     #[test]
@@ -376,6 +440,48 @@ mod tests {
         let mut h = History::new();
         h.load(&path);
         assert_eq!(h.entries(), &["cmd1", "cmd2"]);
+    }
+
+    #[test]
+    fn test_save_and_load_multiline_entry_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history");
+        let mut h = History::new();
+        h.add("if true\nthen echo hi\nfi", 500, "");
+        h.add("echo plain", 500, "");
+        h.save(&path, 500).unwrap();
+        let mut h2 = History::new();
+        h2.load(&path);
+        assert_eq!(h2.entries(), &["if true\nthen echo hi\nfi", "echo plain"]);
+    }
+
+    #[test]
+    fn test_save_and_load_backslash_round_trip() {
+        // A literal backslash-n typed by the user must stay two characters,
+        // not become a real newline on reload.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history");
+        let mut h = History::new();
+        h.add(r"printf 'a\nb'", 500, "");
+        h.add(r"echo \\", 500, "");
+        h.save(&path, 500).unwrap();
+        let mut h2 = History::new();
+        h2.load(&path);
+        assert_eq!(h2.entries(), &[r"printf 'a\nb'", r"echo \\"]);
+    }
+
+    #[test]
+    fn test_load_legacy_file_without_header_is_literal() {
+        // Pre-v2 files have no header and no escaping: a literal `\n`
+        // two-character sequence must load unchanged.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, r"printf 'a\nb'").unwrap();
+        writeln!(f, "cmd2").unwrap();
+        let mut h = History::new();
+        h.load(&path);
+        assert_eq!(h.entries(), &[r"printf 'a\nb'", "cmd2"]);
     }
 
     #[test]

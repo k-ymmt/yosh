@@ -108,6 +108,11 @@ pub struct LineEditor {
     /// the first `redraw` call (or after anything that invalidates the
     /// on-screen state wholesale, e.g. `clear`).
     prev_render: Option<(Vec<char>, Vec<ColorSpan>)>,
+    /// Continuation prompt (expanded PS2 last line) resolved lazily on the
+    /// first multiline render of the current `read_line` session, so a PS2
+    /// containing command substitution is only executed when a continuation
+    /// line is actually displayed. Reset by `clear`.
+    cont_prompt_cache: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +147,7 @@ impl LineEditor {
             buf_generation: 0,
             suggestion_cache: None,
             prev_render: None,
+            cont_prompt_cache: None,
         }
     }
 
@@ -171,6 +177,7 @@ impl LineEditor {
         self.last_action = EditAction::Noop;
         self.last_was_insert = false;
         self.undo.clear();
+        self.cont_prompt_cache = None;
         self.invalidate_width_cache();
         self.invalidate_render_state();
     }
@@ -1299,6 +1306,10 @@ impl LineEditor {
                 KeyAction::Continue
             }
             EditAction::InsertNewline => {
+                // Same rationale as the Enter-on-incomplete continuation:
+                // a forced newline starts a multiline construct, so drop any
+                // in-flight history navigation state.
+                history.reset_cursor();
                 for _ in 0..count {
                     self.insert_char('\n');
                 }
@@ -1493,8 +1504,11 @@ impl LineEditor {
     /// Multiline editing: when Enter is pressed and `is_incomplete` returns
     /// `true` for the current buffer contents, a literal newline is inserted
     /// at the cursor instead of submitting, and editing continues across
-    /// lines. Continuation lines are rendered with the `cont_prompt` prefix
-    /// (the caller's expanded `PS2`).
+    /// lines. Continuation lines are rendered with the prompt returned by
+    /// `cont_prompt` (the caller's expanded `PS2` last line); the callback
+    /// is invoked lazily — once per read, on the first multiline render —
+    /// so a side-effectful PS2 (command substitution) only runs when a
+    /// continuation line is actually displayed.
     #[allow(clippy::too_many_arguments)]
     pub fn read_line_with_completion<T: Terminal>(
         &mut self,
@@ -1508,7 +1522,7 @@ impl LineEditor {
         scanner: &mut HighlightScanner,
         checker_env: &CheckerEnv<'_>,
         accumulated: &str,
-        cont_prompt: &str,
+        cont_prompt: &mut dyn FnMut() -> String,
         is_incomplete: &dyn Fn(&str) -> bool,
     ) -> io::Result<Option<String>> {
         self.clear();
@@ -1544,7 +1558,7 @@ impl LineEditor {
         scanner: &mut HighlightScanner,
         checker_env: &CheckerEnv<'_>,
         accumulated: &str,
-        cont_prompt: &str,
+        cont_prompt: &mut dyn FnMut() -> String,
         is_incomplete: &dyn Fn(&str) -> bool,
     ) -> io::Result<Option<String>> {
         let prompt_width = display_width(prompt);
@@ -1560,6 +1574,12 @@ impl LineEditor {
                                 // a continuation line in-buffer instead of
                                 // submitting, keeping the whole construct
                                 // editable with cursor movement across lines.
+                                // Reset history navigation like the Submit
+                                // path does: the buffer is now a new
+                                // in-progress construct, and a stale cursor
+                                // would let a later Up replace it with an
+                                // unrelated older entry.
+                                history.reset_cursor();
                                 self.insert_char('\n');
                             } else {
                                 history.reset_cursor();
@@ -1628,18 +1648,33 @@ impl LineEditor {
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
                     let (tw, _) = term.size().unwrap_or((80, 24));
-                    self.redraw(term, prompt, prompt_width, cont_prompt, &spans, tw)?;
+                    let cont = self.resolve_cont_prompt(cont_prompt);
+                    self.redraw(term, prompt, prompt_width, &cont, &spans, tw)?;
                 }
                 Event::Resize(_cols, _rows) => {
                     self.invalidate_render_state();
                     let (tw, _) = term.size().unwrap_or((80, 24));
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
-                    self.redraw(term, prompt, prompt_width, cont_prompt, &spans, tw)?;
+                    let cont = self.resolve_cont_prompt(cont_prompt);
+                    self.redraw(term, prompt, prompt_width, &cont, &spans, tw)?;
                 }
                 _ => {}
             }
         }
+    }
+
+    /// Return the continuation prompt for the upcoming redraw, resolving
+    /// the lazy callback once per read session and only when the buffer is
+    /// actually multiline (single-line redraws never print it).
+    fn resolve_cont_prompt(&mut self, cont_prompt: &mut dyn FnMut() -> String) -> String {
+        if !self.buf.contains(&'\n') {
+            return String::new();
+        }
+        if self.cont_prompt_cache.is_none() {
+            self.cont_prompt_cache = Some(cont_prompt());
+        }
+        self.cont_prompt_cache.clone().unwrap_or_default()
     }
 
     fn handle_tab_complete<T: Terminal>(

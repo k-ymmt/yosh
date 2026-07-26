@@ -44,8 +44,11 @@ pub fn classify_parse(input: &str, aliases: &AliasStore) -> ParseStatus {
         return ParseStatus::Incomplete;
     }
 
-    // 3. If input ends with | or && or || (trimmed) -> Incomplete
-    let trimmed = input.trim_end_matches('\n').trim_end();
+    // 3. If input ends with | or && or || (trimmed) -> Incomplete.
+    //    Comments are stripped first so a trailing operator *inside* a
+    //    comment (`echo hi #|`) doesn't classify as Incomplete forever.
+    let stripped = strip_comments(input);
+    let trimmed = stripped.trim_end_matches('\n').trim_end();
     if trimmed.ends_with('|') || trimmed.ends_with("&&") || trimmed.ends_with("||") {
         return ParseStatus::Incomplete;
     }
@@ -108,14 +111,99 @@ pub fn classify_parse(input: &str, aliases: &AliasStore) -> ParseStatus {
     ParseStatus::Complete(commands)
 }
 
-/// Check whether appending a closing keyword makes the input parseable,
+/// Remove comment text from `input` for the textual trailing-operator
+/// check above. Quote- and backslash-aware: `#` opens a comment only when
+/// unquoted and at the start of a word (input start, or after whitespace
+/// or an operator/redirect character), and runs to the end of the line.
+/// The terminating newline is kept so line structure is preserved.
+fn strip_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut word_start = true;
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if !in_single => {
+                out.push(c);
+                if let Some(escaped) = chars.next() {
+                    out.push(escaped);
+                }
+                word_start = false;
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+                out.push(c);
+                word_start = false;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                out.push(c);
+                word_start = false;
+            }
+            '#' if !in_single && !in_double && word_start => {
+                for rest in chars.by_ref() {
+                    if rest == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+                word_start = true;
+            }
+            c if c.is_whitespace() => {
+                out.push(c);
+                word_start = true;
+            }
+            '|' | '&' | ';' | '(' | ')' | '<' | '>' => {
+                out.push(c);
+                word_start = true;
+            }
+            c => {
+                out.push(c);
+                word_start = false;
+            }
+        }
+    }
+    out
+}
+
+/// Probe depth for `is_completable`: each level appends one closing-keyword
+/// suffix, so depth N resolves N nested header-only constructs (e.g.
+/// `while true\nif x\n` needs `then :\nfi` and then `do :\ndone`). Nesting
+/// more than 3 unfinished headers is rare enough that classifying deeper
+/// input as Error is acceptable.
+const MAX_PROBE_DEPTH: usize = 3;
+
+/// Check whether appending closing keywords makes the input parseable,
 /// which indicates the original input was incomplete rather than erroneous.
+/// Probes compose (bounded by `MAX_PROBE_DEPTH`): a suffix that closes the
+/// innermost construct but leaves an outer construct open recurses on the
+/// partially closed candidate.
 fn is_completable(input: &str, aliases: &AliasStore) -> bool {
+    is_completable_at_depth(input, aliases, MAX_PROBE_DEPTH)
+}
+
+fn is_completable_at_depth(input: &str, aliases: &AliasStore, depth: usize) -> bool {
     for suffix in CLOSING_KEYWORDS {
         let candidate = format!("{}{}", input, suffix);
         let mut p = Parser::new_with_aliases(&candidate, aliases);
-        if p.parse_program().is_ok() {
-            return true;
+        match p.parse_program() {
+            Ok(_) => return true,
+            Err(e) => {
+                // Input plus a closer parses as merely-incomplete: the
+                // original input was incomplete (the probe suffixes cannot
+                // themselves introduce unterminated constructs).
+                if is_incomplete_error(&e.kind) {
+                    return true;
+                }
+                if depth > 1
+                    && e.kind == ShellErrorKind::Parse(ParseErrorKind::UnexpectedToken)
+                    && p.is_at_end()
+                    && is_completable_at_depth(&candidate, aliases, depth - 1)
+                {
+                    return true;
+                }
+            }
         }
     }
     false

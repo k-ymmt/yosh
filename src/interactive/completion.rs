@@ -12,9 +12,11 @@ use super::terminal::Terminal;
 
 /// Scan leftward from `cursor` to find the start of the completion word.
 ///
-/// Delimiters that break a word: space, `|`, `;`, `&`, `<`, `>`, `(`, `)`.
-/// Inside quotes (single or double), spaces do not act as delimiters,
-/// but the quote character itself is included in the returned word.
+/// Delimiters that break a word: whitespace (space, tab, newline — newlines
+/// separate logical lines of a multiline buffer), `|`, `;`, `&`, `<`, `>`,
+/// `(`, `)`. Inside quotes (single or double), whitespace does not act as
+/// a delimiter, but the quote character itself is included in the returned
+/// word.
 ///
 /// Returns `(word_start_index, word_slice)`.
 pub fn extract_completion_word(buf: &str, cursor: usize) -> (usize, &str) {
@@ -49,7 +51,7 @@ pub fn extract_completion_word(buf: &str, cursor: usize) -> (usize, &str) {
                 }
                 in_double_quote = !in_double_quote;
             }
-            b' ' | b'|' | b';' | b'&' | b'<' | b'>' | b'(' | b')'
+            b' ' | b'\t' | b'\n' | b'|' | b';' | b'&' | b'<' | b'>' | b'(' | b')'
                 if !in_single_quote && !in_double_quote =>
             {
                 word_start = i + 1;
@@ -63,20 +65,29 @@ pub fn extract_completion_word(buf: &str, cursor: usize) -> (usize, &str) {
 }
 
 fn is_unquoted_delimiter(ch: u8) -> bool {
-    matches!(ch, b' ' | b'|' | b';' | b'&' | b'<' | b'>' | b'(' | b')')
+    matches!(
+        ch,
+        b' ' | b'\t' | b'\n' | b'|' | b';' | b'&' | b'<' | b'>' | b'(' | b')'
+    )
 }
 
 /// Returns `true` if `word_start` is at command position in `buf`.
 ///
 /// Command position means the word is the first token after:
 /// - line start (nothing before it)
+/// - a newline (first word of a continuation line in a multiline buffer)
 /// - `|`, `;`, `&`, `(`, `!`
 ///
 /// Scans backward from `word_start`, skipping whitespace, and checks
 /// the last non-whitespace character.
 pub fn is_command_position(buf: &str, word_start: usize) -> bool {
-    let before = buf[..word_start].trim_end();
+    let before_raw = &buf[..word_start];
+    let before = before_raw.trim_end();
     if before.is_empty() {
+        return true;
+    }
+    // A newline in the trailing whitespace separates commands like `;`.
+    if before_raw[before.len()..].contains('\n') {
         return true;
     }
     matches!(
@@ -343,6 +354,32 @@ mod tests {
         let (start, word) = extract_completion_word("ls 'My Doc", 10);
         assert_eq!(start, 3);
         assert_eq!(word, "'My Doc");
+    }
+
+    #[test]
+    fn test_extract_newline_delimits_word() {
+        // Continuation line of a multiline buffer: the word must not span
+        // the newline.
+        let buf = "if true\nth";
+        let (start, word) = extract_completion_word(buf, buf.len());
+        assert_eq!(start, 8);
+        assert_eq!(word, "th");
+    }
+
+    #[test]
+    fn test_extract_tab_delimits_word() {
+        let buf = "ls\tsr";
+        let (start, word) = extract_completion_word(buf, buf.len());
+        assert_eq!(start, 3);
+        assert_eq!(word, "sr");
+    }
+
+    #[test]
+    fn test_extract_newline_inside_quotes_not_delimiter() {
+        let buf = "echo 'a\nb";
+        let (start, word) = extract_completion_word(buf, buf.len());
+        assert_eq!(start, 5);
+        assert_eq!(word, "'a\nb");
     }
 
     // ── split_path ──────────────────────────────────────────────────
@@ -626,5 +663,17 @@ mod tests {
     fn test_not_command_position_second_arg() {
         // "echo hello wor" — word_start=11
         assert!(!is_command_position("echo hello wor", 11));
+    }
+
+    #[test]
+    fn test_command_position_after_newline() {
+        // "if true\nth" — word_start=8: first word of a continuation line
+        assert!(is_command_position("if true\nth", 8));
+    }
+
+    #[test]
+    fn test_command_position_after_newline_with_indent() {
+        // "while true\n  ec" — word_start=13
+        assert!(is_command_position("while true\n  ec", 13));
     }
 }

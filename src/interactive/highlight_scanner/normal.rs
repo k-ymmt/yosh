@@ -25,8 +25,14 @@ pub(super) fn scan_normal(ctx: &mut ScanCtx<'_>, env: &CheckerEnv<'_>, pos: usiz
     if ch.is_ascii_whitespace() {
         // A newline separates commands like `;`: the first word of the next
         // line (in-editor multiline buffer or accumulated PS2 text) is at
-        // command position again.
+        // command position again — unless a here-doc redirection is pending,
+        // in which case the following lines are its body, not commands.
         if ch == '\n' {
+            if !ctx.state.pending_heredocs.is_empty() {
+                ctx.state.push_mode(ScanMode::HereDoc);
+                ctx.state.word_start = true;
+                return pos + 1;
+            }
             ctx.state.command_position = true;
         }
         ctx.state.word_start = true;
@@ -92,6 +98,52 @@ pub(super) fn scan_normal(ctx: &mut ScanCtx<'_>, env: &CheckerEnv<'_>, pos: usiz
             end,
             style: HighlightStyle::Redirect,
         });
+
+        // `<<WORD` / `<<-WORD`: here-document. Capture the delimiter here
+        // (in one scan step, so incremental checkpoints never land inside
+        // it) and remember it; the body lines that follow the next newline
+        // are scanned by ScanMode::HereDoc instead of as commands.
+        let is_heredoc = ch == '<'
+            && end >= start + 2
+            && ctx.input[start + 1] == '<'
+            && (end == start + 2 || ctx.input[start + 2] == '-');
+        if is_heredoc {
+            let strip_tabs = end == start + 3;
+            let mut p = end;
+            while p < ctx.input.len() && matches!(ctx.input[p], ' ' | '\t') {
+                p += 1;
+            }
+            let delim_start = p;
+            let mut delim = String::new();
+            if p < ctx.input.len() && matches!(ctx.input[p], '\'' | '"') {
+                let quote = ctx.input[p];
+                p += 1;
+                while p < ctx.input.len() && ctx.input[p] != quote && ctx.input[p] != '\n' {
+                    delim.push(ctx.input[p]);
+                    p += 1;
+                }
+                if p < ctx.input.len() && ctx.input[p] == quote {
+                    p += 1;
+                }
+            } else {
+                while p < ctx.input.len() && !is_heredoc_delim_end(ctx.input[p]) {
+                    delim.push(ctx.input[p]);
+                    p += 1;
+                }
+            }
+            if !delim.is_empty() {
+                ctx.spans.push(ColorSpan {
+                    start: delim_start,
+                    end: p,
+                    style: HighlightStyle::String,
+                });
+                ctx.state.pending_heredocs.push((delim, strip_tabs));
+            }
+            ctx.state.command_position = false;
+            ctx.state.word_start = true;
+            return p;
+        }
+
         // After a redirect the next token is a filename, not a command
         ctx.state.command_position = false;
         ctx.state.word_start = true;
@@ -201,4 +253,9 @@ pub(super) fn scan_normal(ctx: &mut ScanCtx<'_>, env: &CheckerEnv<'_>, pos: usiz
 
     // --- Regular word ---
     word::scan_word(ctx, env, pos)
+}
+
+/// Characters that end an unquoted here-doc delimiter word.
+fn is_heredoc_delim_end(ch: char) -> bool {
+    ch.is_ascii_whitespace() || matches!(ch, '|' | '&' | ';' | '<' | '>' | '(' | ')')
 }

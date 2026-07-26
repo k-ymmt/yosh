@@ -338,6 +338,75 @@ fn test_classify_incomplete_and_or() {
 }
 
 #[test]
+fn test_classify_trailing_pipe_inside_comment_is_complete() {
+    // `echo hi #|` — the `|` is comment text; classifying it Incomplete
+    // used to trap Enter forever in the multiline editor.
+    let aliases = AliasStore::default();
+    match classify_parse("echo hi #|\n", &aliases) {
+        ParseStatus::Complete(_) => {}
+        other => panic!("expected Complete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_trailing_and_and_inside_comment_is_complete() {
+    let aliases = AliasStore::default();
+    match classify_parse("echo hi # foo &&\n", &aliases) {
+        ParseStatus::Complete(_) => {}
+        other => panic!("expected Complete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_real_trailing_pipe_before_comment_incomplete() {
+    // A real trailing pipe followed by a comment is still Incomplete.
+    let aliases = AliasStore::default();
+    match classify_parse("echo hi | # comment\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_hash_in_quotes_not_a_comment() {
+    let aliases = AliasStore::default();
+    match classify_parse("echo '#|'\n", &aliases) {
+        ParseStatus::Complete(_) => {}
+        other => panic!("expected Complete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_nested_header_only_constructs_incomplete() {
+    // Closing-keyword probes must compose: `while true\nif true\n` needs
+    // both `then :\nfi` and `do :\ndone` appended before it parses.
+    let aliases = AliasStore::default();
+    match classify_parse("while true\nif true\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_triple_nested_header_only_incomplete() {
+    let aliases = AliasStore::default();
+    match classify_parse("while true\nwhile true\nif true\n", &aliases) {
+        ParseStatus::Incomplete => {}
+        other => panic!("expected Incomplete, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_classify_invalid_input_still_error() {
+    // Probe composition must not reclassify genuinely invalid input.
+    let aliases = AliasStore::default();
+    match classify_parse("if then\n", &aliases) {
+        ParseStatus::Error(_) => {}
+        other => panic!("expected Error, got {:?}", other),
+    }
+}
+
+#[test]
 fn test_classify_error() {
     let aliases = AliasStore::default();
     match classify_parse("echo hello >>\n", &aliases) {
@@ -1097,7 +1166,7 @@ fn test_tab_completes_single_candidate() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1152,7 +1221,7 @@ fn test_tab_completes_common_prefix() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1206,7 +1275,7 @@ fn test_tab_directory_appends_slash() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1260,7 +1329,7 @@ fn test_tab_no_match_does_nothing() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1322,7 +1391,7 @@ fn test_double_tab_opens_completion_ui() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1388,7 +1457,7 @@ fn test_tab_command_completion_at_line_start() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1444,7 +1513,7 @@ fn test_tab_command_position_path_fallback() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1499,7 +1568,7 @@ fn test_tab_argument_position_uses_path_completion() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1553,7 +1622,7 @@ fn test_tab_completes_builtin() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1613,7 +1682,7 @@ fn test_tab_spec_completion_subcommand_values() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1670,7 +1739,7 @@ fn test_tab_spec_none_source_suppresses_path_completion() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -1726,7 +1795,7 @@ fn test_tab_no_spec_falls_back_to_path_completion() {
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             &|_| false,
         )
         .unwrap();
@@ -2650,7 +2719,7 @@ fn read_multiline(
             &mut scanner,
             &checker_env,
             "",
-            "> ",
+            &mut || "> ".to_string(),
             is_incomplete,
         )
         .unwrap();

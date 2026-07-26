@@ -168,12 +168,6 @@ impl Repl {
             let prompt = expand_prompt(&mut self.executor.env, prompt_var);
             let prompt_info = PromptInfo::from_prompt(&prompt);
 
-            // Expanded PS2 for in-editor continuation lines: multiline
-            // editing renders the continuation prompt itself instead of
-            // returning to this loop for each PS2 line.
-            let cont_prompt = expand_prompt(&mut self.executor.env, "PS2");
-            let cont_info = PromptInfo::from_prompt(&cont_prompt);
-
             // Display prompt on stderr
             for line in &prompt_info.upper_lines {
                 eprint!("{}\r\n", line);
@@ -201,19 +195,27 @@ impl Repl {
 
             // Build checker env for syntax highlighting
             let path_val = self.executor.env.vars.get("PATH").unwrap_or("").to_string();
-            let checker_env = CheckerEnv {
-                path: &path_val,
-                aliases: &self.executor.env.aliases,
-            };
 
             self.spec_store
                 .set_exec_env(self.executor.env.vars.environ().to_vec());
+
+            // Take history and aliases out of the environment for the
+            // duration of the read: the lazy PS2 closure below borrows the
+            // whole ShellEnv mutably while the editor holds these two.
+            // Restored right after the read returns.
+            let mut history = std::mem::take(&mut self.executor.env.history);
+            let aliases = std::mem::take(&mut self.executor.env.aliases);
+
+            let checker_env = CheckerEnv {
+                path: &path_val,
+                aliases: &aliases,
+            };
 
             let mut cmd_ctx = CommandCompletionContext {
                 completer: &mut self.command_completer,
                 path: &path_val,
                 builtins: crate::builtin::BUILTIN_NAMES,
-                aliases: &self.executor.env.aliases,
+                aliases: &aliases,
             };
 
             // Completeness probe for in-editor multiline editing: Enter on
@@ -221,21 +223,38 @@ impl Repl {
             // editor buffer instead of submitting. Mirrors exactly what the
             // post-submit classification below would see (byteenc-encoded,
             // newline-terminated, appended to any accumulated PS2 input).
-            let aliases = &self.executor.env.aliases;
             let is_incomplete = |buf_text: &str| {
                 let candidate = format!(
                     "{}{}\n",
                     input_buffer,
                     crate::byteenc::encode_bytes(buf_text.as_bytes())
                 );
-                matches!(classify_parse(&candidate, aliases), ParseStatus::Incomplete)
+                matches!(
+                    classify_parse(&candidate, &aliases),
+                    ParseStatus::Incomplete
+                )
+            };
+
+            // Lazy continuation prompt for in-editor multiline editing: the
+            // editor invokes this at most once per read, on the first
+            // multiline render, so a side-effectful PS2 (e.g. command
+            // substitution `$(date +%T)> `) no longer executes on every
+            // prompt display. Only the last line of a multi-line PS2 is
+            // rendered on continuation lines — that is the supported shape
+            // (upper lines are a PS1-display-only feature). PS2 command
+            // substitution runs with history/aliases temporarily taken out
+            // of the environment; neither affects prompt expansion.
+            let env = &mut self.executor.env;
+            let mut cont_prompt = || {
+                let expanded = expand_prompt(env, "PS2");
+                PromptInfo::from_prompt(&expanded).last_line
             };
 
             // Read a line
-            let line = match self.line_editor.read_line_with_completion(
+            let read_result = self.line_editor.read_line_with_completion(
                 &prompt_info.last_line,
                 &prompt_info.upper_lines,
-                &mut self.executor.env.history,
+                &mut history,
                 &mut self.terminal,
                 &comp_ctx,
                 &mut cmd_ctx,
@@ -243,9 +262,15 @@ impl Repl {
                 &mut self.scanner,
                 &checker_env,
                 &input_buffer,
-                &cont_info.last_line,
+                &mut cont_prompt,
                 &is_incomplete,
-            ) {
+            );
+
+            // Restore the taken fields before anything else touches env.
+            self.executor.env.history = history;
+            self.executor.env.aliases = aliases;
+
+            let line = match read_result {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     // EOF (Ctrl+D)

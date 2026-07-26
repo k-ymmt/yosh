@@ -6,14 +6,36 @@ use crate::interactive::highlight::{ColorSpan, HighlightStyle};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ScanMode {
     Normal,
-    SingleQuote { start: usize },
-    DoubleQuote { start: usize },
-    DollarSingleQuote { start: usize },
-    Parameter { start: usize, braced: bool },
-    CommandSub { start: usize },
-    Backtick { start: usize },
-    ArithSub { start: usize },
-    Comment { start: usize },
+    SingleQuote {
+        start: usize,
+    },
+    DoubleQuote {
+        start: usize,
+    },
+    DollarSingleQuote {
+        start: usize,
+    },
+    Parameter {
+        start: usize,
+        braced: bool,
+    },
+    CommandSub {
+        start: usize,
+    },
+    Backtick {
+        start: usize,
+    },
+    ArithSub {
+        start: usize,
+    },
+    Comment {
+        start: usize,
+    },
+    /// Here-document body: entered at the newline following a line with one
+    /// or more pending `<<`/`<<-` redirections; the delimiters live in
+    /// `ScannerState::pending_heredocs`. Left when the last delimiter line
+    /// is seen.
+    HereDoc,
 }
 
 /// Mutable state carried through the scan.
@@ -26,6 +48,11 @@ pub(super) struct ScannerState {
     /// True when the next word is in command position (first word of a
     /// simple command, or immediately after `|`, `&&`, `||`, `;`, etc.).
     pub command_position: bool,
+    /// Here-doc delimiters seen on the current line whose bodies have not
+    /// been consumed yet, in order, with the `<<-` strip-leading-tabs flag.
+    /// Non-empty at a newline means the scanner enters `ScanMode::HereDoc`
+    /// instead of returning to command position.
+    pub pending_heredocs: Vec<(String, bool)>,
 }
 
 impl ScannerState {
@@ -34,6 +61,7 @@ impl ScannerState {
             mode_stack: vec![ScanMode::Normal],
             word_start: true,
             command_position: true,
+            pending_heredocs: Vec::new(),
         }
     }
 
@@ -89,7 +117,10 @@ pub(super) fn mark_unclosed_errors(
                     style: HighlightStyle::Error,
                 });
             }
-            ScanMode::Normal | ScanMode::Comment { .. } => {}
+            // An open here-doc body is normal while the user is still
+            // typing it — classify_parse treats it as Incomplete, so no
+            // error span.
+            ScanMode::Normal | ScanMode::Comment { .. } | ScanMode::HereDoc => {}
         }
     }
 }
