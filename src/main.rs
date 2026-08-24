@@ -69,6 +69,18 @@ fn print_help() {
             items: &[
                 ("-c <command>", "Read commands from command_string"),
                 ("-i", "Force the shell to be interactive"),
+                (
+                    "-s [arg...]",
+                    "Read commands from stdin; args become $1, $2, ...",
+                ),
+                (
+                    "-abCefhmnuvx",
+                    "Set shell option flags (prefix + to unset; see 'set')",
+                ),
+                (
+                    "-o <option>",
+                    "Set a shell option by name (+o <option> unsets)",
+                ),
                 ("--parse <code>", "Parse and dump AST (debug)"),
                 ("-h, --help", "Show this help message"),
                 ("--version", "Show version information"),
@@ -156,33 +168,66 @@ fn main() {
         }
     }
 
-    // Leading short-option parsing (POSIX sh invocation). Only `-i`
-    // (force interactive) and `-c` (command string) are recognized,
-    // singly or clustered (`-ic`); `--` ends option parsing. Other
-    // invocation options (-e, -x, ...) are not implemented yet.
+    // Leading option parsing (POSIX XCU sh SYNOPSIS): the set-option
+    // letters (-a -b -C -e -f -h -m -n -u -v -x, singly or clustered,
+    // `+` prefix to unset), `-o <option>` / `+o <option>` long names,
+    // `-c` (command string), `-s` (read stdin; operands become the
+    // positional parameters), and `-i` / `+i` (force interactive
+    // on/off). `--` — or a lone `-`, its obsolescent synonym — ends
+    // option parsing. Note `-h` as args[1] is claimed by the help
+    // dispatch above; in clusters or later positions it is the POSIX
+    // locate-utilities no-op.
     let mut idx = 1;
     let mut force_interactive = false;
     let mut cmd_mode = false;
+    let mut read_stdin = false;
+    let mut invocation_ops: Vec<env::InvocationOp> = Vec::new();
+    // Parse-time validation target so a bad `-o <name>` fails here with
+    // a usage error instead of surfacing mid-startup.
+    let mut probe = env::ShellOptions::default();
     while idx < args.len() {
         let arg = &args[idx];
-        if arg == "--" {
+        if arg == "--" || arg == "-" {
             idx += 1;
             break;
         }
-        let Some(cluster) = arg.strip_prefix('-') else {
-            break;
+        let (on, cluster) = match arg.as_bytes().first() {
+            Some(b'-') => (true, &arg[1..]),
+            Some(b'+') if arg.len() > 1 => (false, &arg[1..]),
+            _ => break,
         };
-        if cluster.is_empty() || !cluster.chars().all(|c| matches!(c, 'i' | 'c')) {
-            break;
-        }
-        for c in cluster.chars() {
+        idx += 1;
+        let sign = if on { '-' } else { '+' };
+        for (pos, c) in cluster.char_indices() {
             match c {
-                'i' => force_interactive = true,
-                'c' => cmd_mode = true,
-                _ => unreachable!("cluster chars are pre-validated"),
+                'c' if on => cmd_mode = true,
+                's' if on => read_stdin = true,
+                'i' => force_interactive = on,
+                'o' => {
+                    // Option name: rest of the cluster (`-opipefail`) or
+                    // the next argument (`-o pipefail`).
+                    let attached = &cluster[pos + 1..];
+                    let name = if !attached.is_empty() {
+                        attached.to_string()
+                    } else if idx < args.len() {
+                        idx += 1;
+                        args[idx - 1].clone()
+                    } else {
+                        invocation_usage_error(&format!("{}o: option requires an argument", sign));
+                    };
+                    if let Err(e) = probe.set_by_name(&name, on) {
+                        invocation_usage_error(&e);
+                    }
+                    invocation_ops.push(env::InvocationOp::Long(name, on));
+                    break;
+                }
+                'a' | 'b' | 'C' | 'e' | 'f' | 'h' | 'm' | 'n' | 'u' | 'v' | 'x' => {
+                    let _ = probe.set_by_char(c, on);
+                    invocation_ops.push(env::InvocationOp::Short(c, on));
+                }
+                _ => invocation_usage_error(&format!("{}{}: invalid option", sign, c)),
             }
         }
-        idx += 1;
     }
 
     if cmd_mode {
@@ -208,8 +253,23 @@ fn main() {
         } else {
             vec![]
         };
-        let status = run_string(&command, sn, positional, true, force_interactive);
+        let status = run_string(
+            &command,
+            sn,
+            positional,
+            true,
+            force_interactive,
+            &invocation_ops,
+        );
         process::exit(status);
+    }
+
+    if read_stdin {
+        // POSIX `sh -s [arg...]`: commands come from standard input and
+        // every remaining operand is a positional parameter; $0 stays
+        // the shell name.
+        let positional: Vec<String> = args[idx..].to_vec();
+        run_stdin(shell_name, positional, force_interactive, &invocation_ops);
     }
 
     if idx < args.len() {
@@ -224,12 +284,40 @@ fn main() {
         // POSIX §2.1: with a script file operand, $0 is the script
         // path and the remaining operands are $1, $2, ...
         let positional: Vec<String> = args[idx + 1..].to_vec();
-        let status = run_file(&args[idx], args[idx].clone(), positional, force_interactive);
+        let status = run_file(
+            &args[idx],
+            args[idx].clone(),
+            positional,
+            force_interactive,
+            &invocation_ops,
+        );
         process::exit(status);
     }
 
+    run_stdin(shell_name, vec![], force_interactive, &invocation_ops);
+}
+
+/// Invalid invocation: print the error plus a usage line and exit 2.
+fn invocation_usage_error(msg: &str) -> ! {
+    eprintln!("yosh: {}", msg);
+    eprintln!(
+        "Usage: yosh [-abCefhimnuvx] [-o option]... [+abCefhimnuvx] [+o option]... \
+         [-c command_string | -s | file] [argument...]"
+    );
+    process::exit(2);
+}
+
+/// Read commands from standard input: the interactive REPL on a
+/// terminal, otherwise the whole stream as a script (used for the
+/// no-operand invocation and for `-s`).
+fn run_stdin(
+    shell_name: String,
+    positional: Vec<String>,
+    force_interactive: bool,
+    invocation_ops: &[env::InvocationOp],
+) -> ! {
     if nix::unistd::isatty(std::io::stdin()).unwrap_or(false) {
-        let mut repl = interactive::Repl::new(shell_name);
+        let mut repl = interactive::Repl::new(shell_name, positional, invocation_ops);
         process::exit(repl.run());
     } else {
         // stdin is a pipe — read as script (bytes, so non-UTF-8 input is
@@ -244,7 +332,14 @@ fn main() {
             process::exit(1);
         });
         let input = byteenc::encode_bytes(&raw).into_owned();
-        let status = run_string(&input, shell_name, vec![], false, force_interactive);
+        let status = run_string(
+            &input,
+            shell_name,
+            positional,
+            false,
+            force_interactive,
+            invocation_ops,
+        );
         process::exit(status);
     }
 }
@@ -277,10 +372,16 @@ fn run_string(
     positional: Vec<String>,
     cmd_string: bool,
     interactive: bool,
+    invocation_ops: &[env::InvocationOp],
 ) -> i32 {
     signal::init_signal_handling();
     let mut executor = Executor::new(shell_name, positional);
     env::default_path::ensure_default_path(&mut executor.env);
+    // Invocation-time set options (-e, -x, -o name, ...), validated at
+    // parse time in main; applied before any command runs.
+    for op in invocation_ops {
+        let _ = executor.env.mode.options.apply_invocation_op(op);
+    }
     executor.load_plugins();
     executor.env.mode.options.cmd_string = cmd_string;
     if interactive {
@@ -366,7 +467,13 @@ fn run_string(
     status
 }
 
-fn run_file(path: &str, shell_name: String, positional: Vec<String>, interactive: bool) -> i32 {
+fn run_file(
+    path: &str,
+    shell_name: String,
+    positional: Vec<String>,
+    interactive: bool,
+    invocation_ops: &[env::InvocationOp],
+) -> i32 {
     use std::os::unix::ffi::OsStrExt;
     // `path` is byteenc-encoded (it came from args_os); decode it back to
     // raw bytes for the OS call, and read the script as bytes so non-UTF-8
@@ -380,5 +487,12 @@ fn run_file(path: &str, shell_name: String, positional: Vec<String>, interactive
         }
     };
     let content = byteenc::encode_bytes(&content).into_owned();
-    run_string(&content, shell_name, positional, false, interactive)
+    run_string(
+        &content,
+        shell_name,
+        positional,
+        false,
+        interactive,
+        invocation_ops,
+    )
 }

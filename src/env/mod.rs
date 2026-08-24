@@ -15,7 +15,7 @@ use aliases::AliasStore;
 pub use exec_state::{ExecState, FlowControl};
 use jobs::JobTable;
 use nix::unistd::{Pid, getpgrp, getpid, getppid};
-pub use shell_mode::{ShellMode, ShellOptions};
+pub use shell_mode::{InvocationOp, ShellMode, ShellOptions};
 pub use traps::{TrapAction, TrapStore};
 use vars::VarStore;
 

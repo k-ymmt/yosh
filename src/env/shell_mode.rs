@@ -139,6 +139,30 @@ impl ShellOptions {
     }
 }
 
+/// One invocation-time option application from the sh command line
+/// (`yosh -e +x -o pipefail ...`, POSIX XCU sh SYNOPSIS). Kept as an
+/// ordered list rather than a merged [`ShellOptions`] so that per-mode
+/// defaults (e.g. the interactive `monitor = true`) can be set first
+/// and still be overridden by an explicit `+m`.
+#[derive(Debug, Clone)]
+pub enum InvocationOp {
+    /// Short flag: `-e` / `+e`. `true` = set (`-`), `false` = unset (`+`).
+    Short(char, bool),
+    /// Long name: `-o errexit` / `+o errexit`.
+    Long(String, bool),
+}
+
+impl ShellOptions {
+    /// Apply one invocation-time op; errors mirror
+    /// [`set_by_char`](Self::set_by_char) / [`set_by_name`](Self::set_by_name).
+    pub fn apply_invocation_op(&mut self, op: &InvocationOp) -> Result<(), String> {
+        match op {
+            InvocationOp::Short(c, on) => self.set_by_char(*c, *on),
+            InvocationOp::Long(name, on) => self.set_by_name(name, *on),
+        }
+    }
+}
+
 /// Shell mode and option flags.
 #[derive(Debug, Clone)]
 pub struct ShellMode {
@@ -249,6 +273,36 @@ mod tests {
             in_dot_script: false,
         };
         assert_eq!(mode.flag_string(), "i");
+    }
+
+    #[test]
+    fn test_apply_invocation_op_ordered_override() {
+        // Interactive default first, then an explicit `+m` overrides it —
+        // the ordered-op design exists exactly for this case.
+        let mut opts = ShellOptions {
+            monitor: true,
+            ..Default::default()
+        };
+        let ops = [
+            InvocationOp::Short('e', true),
+            InvocationOp::Short('m', false),
+            InvocationOp::Long("pipefail".to_string(), true),
+        ];
+        for op in &ops {
+            opts.apply_invocation_op(op).unwrap();
+        }
+        assert!(opts.errexit);
+        assert!(!opts.monitor);
+        assert!(opts.pipefail);
+
+        assert!(
+            opts.apply_invocation_op(&InvocationOp::Short('Z', true))
+                .is_err()
+        );
+        assert!(
+            opts.apply_invocation_op(&InvocationOp::Long("bogus".to_string(), true))
+                .is_err()
+        );
     }
 
     #[test]

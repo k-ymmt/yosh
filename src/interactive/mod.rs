@@ -41,28 +41,37 @@ pub struct Repl {
 }
 
 impl Repl {
-    pub fn new(shell_name: String) -> Self {
+    pub fn new(
+        shell_name: String,
+        positional: Vec<String>,
+        invocation_ops: &[crate::env::InvocationOp],
+    ) -> Self {
         signal::init_signal_handling();
         signal::set_interactive_shell(true);
-        let mut executor = Executor::new(shell_name, vec![]);
+        let mut executor = Executor::new(shell_name, positional);
         crate::env::default_path::ensure_default_path(&mut executor.env);
         executor.env.mode.is_interactive = true;
         executor.env.mode.options.monitor = true;
+        // Invocation-time set options, applied after the interactive
+        // monitor default so an explicit `+m` can turn it off (POSIX:
+        // -m is on by default for interactive shells). Validated at
+        // parse time in main.
+        for op in invocation_ops {
+            let _ = executor.env.mode.options.apply_invocation_op(op);
+        }
         signal::init_job_control_signals();
         // Ensure shell has terminal
         crate::env::jobs::take_terminal(executor.env.process.shell_pgid).ok();
 
         // Snapshot the terminal's termios so we can restore it after every
         // foreground job completes. Only meaningful in interactive + monitor
-        // mode (both flags were set above). capture_tty_termios returns
-        // Ok(None) silently if stdin is not a TTY.
+        // mode. capture_tty_termios returns Ok(None) silently if stdin is
+        // not a TTY.
         //
-        // The `is_interactive && monitor` check is documentation-only at
-        // this site (both flags were set unconditionally above), but
-        // mirrors the symmetric guard in `restore_shell_termios_if_interactive`,
-        // which runs after each foreground wait — there the check IS
-        // load-bearing. Keep both in sync so a future "simplification"
-        // does not drop one and leave the other dangling.
+        // The `is_interactive && monitor` check is load-bearing: an
+        // invocation-time `+m` turns monitor off above, and the guard
+        // mirrors the symmetric one in `restore_shell_termios_if_interactive`,
+        // which runs after each foreground wait. Keep both in sync.
         if executor.env.mode.is_interactive
             && executor.env.mode.options.monitor
             && let Ok(Some(t)) = crate::exec::terminal_state::capture_tty_termios()

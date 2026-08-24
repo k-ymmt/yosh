@@ -112,12 +112,6 @@
   - [ ] `-i -c` / `-i script` do not enable monitor mode; bash reports
         `m` in `$-` there. Enabling it without the REPL needs the job
         control terminal setup from `Repl::new` (`src/interactive/mod.rs`).
-- [ ] Invocation-time set options — `yosh -e/-x/-u/... script` and
-      `-o <name>`/`+o` at invocation are not parsed; only `-i`/`-c`
-      clusters and `--` are recognized in the leading-option loop
-      (`src/main.rs`). Wire the remaining letters through
-      `ShellOptions::set_by_char`, and consider `-s` (read stdin with
-      operands as positional parameters) at the same time.
 - [ ] Interactive trap latency at the idle prompt — pending signal traps
       (e.g. `trap 'echo hi' USR1`) fire only after the next command
       completes (`process_pending_signals` in the REPL loop), not while

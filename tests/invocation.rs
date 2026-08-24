@@ -1,5 +1,6 @@
-//! Invocation-option tests for the `-i` (force interactive) flag and the
-//! `$-` interactive-letter snapshot (POSIX XCU sh invocation + 2.5.2).
+//! Invocation-option tests: the `-i` (force interactive) flag, the `$-`
+//! interactive-letter snapshot (POSIX XCU sh invocation + 2.5.2), and
+//! invocation-time set options (-e/-x/-u/..., -o/+o, -s).
 //!
 //! These run the real binary with piped stdin, so stdin is NOT a terminal:
 //! any `i` in `$-` comes from the `-i` flag, not from tty auto-detection.
@@ -179,6 +180,141 @@ fn dash_c_without_argument_errors() {
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("-c requires an argument"), "got {err:?}");
+}
+
+#[test]
+fn dash_e_enables_errexit() {
+    for args in [
+        vec!["-e", "-c", "false; echo after"],
+        vec!["-ec", "false; echo after"], // clustered
+        vec!["-o", "errexit", "-c", "false; echo after"],
+        vec!["-oerrexit", "-c", "false; echo after"], // attached -o argument
+    ] {
+        let output = yosh_bin().args(&args).output().unwrap();
+        let out = String::from_utf8_lossy(&output.stdout);
+        assert!(!out.contains("after"), "args {args:?} gave {out:?}");
+        assert_eq!(output.status.code(), Some(1), "args {args:?}");
+    }
+}
+
+#[test]
+fn plus_e_unsets_earlier_dash_e() {
+    let output = yosh_bin()
+        .args(["-e", "+e", "-c", "false; echo after"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("after"), "+e must undo -e, got {out:?}");
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn dash_x_traces_commands() {
+    let output = yosh_bin().args(["-x", "-c", "echo hi"]).output().unwrap();
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("+ echo hi"), "got stderr {err:?}");
+}
+
+#[test]
+fn dash_u_errors_on_unset_parameter() {
+    let output = yosh_bin()
+        .args(["-u", "-c", "echo $undefined_var_xyz"])
+        .output()
+        .unwrap();
+    assert_ne!(output.status.code(), Some(0));
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("parameter not set"), "got stderr {err:?}");
+}
+
+#[test]
+fn invocation_flags_appear_in_dollar_dash() {
+    let output = yosh_bin()
+        .args(["-ef", "-c", "echo flags-$-"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&output.stdout);
+    let flags = out.trim().strip_prefix("flags-").unwrap().to_string();
+    for f in ['c', 'e', 'f'] {
+        assert!(flags.contains(f), "missing {f} in {out:?}");
+    }
+}
+
+#[test]
+fn dash_e_script_file() {
+    let dir = std::env::temp_dir().join(format!("yosh-inv-e-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("errexit.sh");
+    std::fs::write(&script, "false\necho after\n").unwrap();
+
+    let output = yosh_bin().arg("-e").arg(&script).output().unwrap();
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(!out.contains("after"), "got {out:?}");
+    assert_eq!(output.status.code(), Some(1));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn invalid_option_is_usage_error() {
+    for args in [vec!["-z"], vec!["+c", "echo x"], vec!["+s"]] {
+        let output = yosh_bin().args(&args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "args {args:?}");
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(err.contains("invalid option"), "args {args:?} gave {err:?}");
+        assert!(err.contains("Usage:"), "args {args:?} gave {err:?}");
+    }
+}
+
+#[test]
+fn dash_o_without_argument_errors() {
+    let output = yosh_bin().arg("-o").output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("option requires an argument"), "got {err:?}");
+}
+
+#[test]
+fn dash_o_unknown_name_errors() {
+    let output = yosh_bin()
+        .args(["-o", "bogus", "-c", "echo x"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(!out.contains('x'), "must not execute, got {out:?}");
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("unknown option: bogus"), "got {err:?}");
+}
+
+#[test]
+fn dash_s_reads_stdin_with_positional_params() {
+    let (out, code) = run_with_stdin(&["-s", "one", "two"], "echo p-$1:$2:$#\n");
+    assert_eq!(code, 0);
+    assert_eq!(out.trim(), "p-one:two:2");
+}
+
+#[test]
+fn dash_s_keeps_shell_name_as_dollar_zero() {
+    // POSIX sh -s: operands are $1..., $0 stays the shell name — an
+    // operand must NOT be opened as a script file.
+    let (out, code) = run_with_stdin(&["-s", "one"], "echo zero-$0\n");
+    assert_eq!(code, 0);
+    assert!(out.trim().ends_with("yosh"), "got {out:?}");
+}
+
+#[test]
+fn dash_s_clusters_with_set_options() {
+    let (out, code) = run_with_stdin(&["-es"], "false\necho after\n");
+    assert!(!out.contains("after"), "got {out:?}");
+    assert_eq!(code, 1);
+}
+
+#[test]
+fn lone_dash_ends_option_parsing() {
+    // POSIX sh: a lone `-` is an obsolescent synonym for `--`.
+    let (out, code) = run_with_stdin(&["-"], "echo lone-ok\n");
+    assert_eq!(code, 0);
+    assert_eq!(out.trim(), "lone-ok");
 }
 
 #[test]
