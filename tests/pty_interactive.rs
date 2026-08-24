@@ -685,6 +685,86 @@ fn test_pty_sighup_saves_history() {
 }
 
 #[test]
+fn test_pty_external_sigterm_ignored_at_prompt() {
+    // POSIX sh: an interactive shell ignores untrapped SIGTERM. The
+    // external-delivery variant exercises the read-loop gating: before
+    // the fix, the signal handler set PENDING_EXIT_SIGNAL, the terminal
+    // read loop returned Interrupted, and the REPL exited.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    let pid = s.get_process().pid();
+    unsafe {
+        libc::kill(pid.as_raw(), libc::SIGTERM);
+    }
+    // Give the async delivery a moment so the shell demonstrably
+    // survives the signal (not just wins a race against it).
+    std::thread::sleep(Duration::from_millis(200));
+
+    s.send("echo alive-$?\r").unwrap();
+    expect_output(&mut s, "alive-0", "shell should survive external SIGTERM");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_untrapped_term_quit_int_ignored() {
+    // Self-delivered TERM/QUIT/INT via the kill builtin: drained by
+    // process_pending_signals after the command, then ignored at the
+    // dispatch level. bash/dash survive all three silently.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    for sig in ["TERM", "QUIT", "INT"] {
+        s.send(&format!("kill -{} $$\r", sig)).unwrap();
+        wait_for_prompt(&mut s);
+        s.send(&format!("echo alive-{}-$?\r", sig)).unwrap();
+        expect_output(
+            &mut s,
+            &format!("alive-{}-0", sig),
+            "shell should survive self-delivered signal",
+        );
+        wait_for_prompt(&mut s);
+    }
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_term_trap_fires_interactively() {
+    // A user trap on TERM still runs — only the untrapped default is
+    // ignored. The trap body prints trap-$((40+2)) so the expected
+    // output "trap-42" cannot be matched against the echoed input.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("trap 'echo trap-$((40+2))' TERM\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    s.send("kill -TERM $$\r").unwrap();
+    expect_output(&mut s, "trap-42", "TERM trap should fire");
+    wait_for_prompt(&mut s);
+
+    s.send("echo still-alive-$?\r").unwrap();
+    expect_output(&mut s, "still-alive-0", "shell should survive trapped TERM");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_dollar_dash_contains_i() {
+    // POSIX XCU 2.5.2: $- contains `i` for interactive shells. The
+    // interactive REPL also enables monitor mode, so expect "im".
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("echo flags-$-\r").unwrap();
+    expect_output(&mut s, "flags-im", "$- should contain i and m");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_set_plus_m_disables_job_control() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);

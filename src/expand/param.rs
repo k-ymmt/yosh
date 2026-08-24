@@ -246,7 +246,7 @@ fn expand_special(env: &ShellEnv, sp: &SpecialParam) -> String {
             .last_bg_pid()
             .map(|p| p.as_raw().to_string())
             .unwrap_or_default(),
-        SpecialParam::Dash => env.mode.options.to_flag_string(),
+        SpecialParam::Dash => env.mode.flag_string(),
     }
 }
 

@@ -147,6 +147,23 @@ pub struct ShellMode {
     pub in_dot_script: bool,
 }
 
+impl ShellMode {
+    /// Full `$-` flag string: the option letters plus `i` when the shell
+    /// is interactive (POSIX XCU 2.5.2 special parameters). `i` is
+    /// invocation state, not a settable option, so it lives here rather
+    /// than in [`ShellOptions`].
+    pub fn flag_string(&self) -> String {
+        let mut s = self.options.to_flag_string();
+        if self.is_interactive {
+            // Preserve to_flag_string's alphabetical-ish emit order
+            // (a, b, c, C, e, f, [i], m, n, u, v, x).
+            let pos = s.find(['m', 'n', 'u', 'v', 'x']).unwrap_or(s.len());
+            s.insert(pos, 'i');
+        }
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +198,34 @@ mod tests {
         assert!(!opts.allexport);
 
         assert!(opts.set_by_char('Z', true).is_err());
+    }
+
+    #[test]
+    fn test_flag_string_includes_i_when_interactive() {
+        let mut mode = ShellMode {
+            options: ShellOptions::default(),
+            is_interactive: true,
+            in_dot_script: false,
+        };
+        mode.options.monitor = true;
+        // `i` slots into the emit order before `m`.
+        assert_eq!(mode.flag_string(), "im");
+
+        mode.options.allexport = true;
+        assert_eq!(mode.flag_string(), "aim");
+
+        mode.is_interactive = false;
+        assert_eq!(mode.flag_string(), "am");
+    }
+
+    #[test]
+    fn test_flag_string_appends_i_when_no_later_flags() {
+        let mode = ShellMode {
+            options: ShellOptions::default(),
+            is_interactive: true,
+            in_dot_script: false,
+        };
+        assert_eq!(mode.flag_string(), "i");
     }
 
     #[test]

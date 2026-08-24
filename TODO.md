@@ -1,5 +1,6 @@
 # TODO
 
+---
 ## Code-Review Follow-ups (non-blocking)
 
 ### 2026-05-21 locale-support follow-ups (non-blocking)
@@ -97,8 +98,25 @@
         the prefix tail on its top row. Both need a prompt occupying most
         of the screen; recorded, not planned
         (`src/interactive/line_editor.rs`).
-- [ ] `set -o interactive` flag management
-- [ ] Interactive-specific trap behavior — SIGTERM/SIGQUIT ignored by default
+- [ ] `sh -i` invocation flag — force-interactive startup is not implemented;
+      interactivity is auto-detected (no operands + stdin isatty) in
+      `src/main.rs`. `$-` now reports `i` for interactive shells
+      (landed 2026-08-24).
+- [ ] Command-substitution `$-` drops `i` — the command-sub child env is
+      built with `is_interactive: false` (`src/expand/command_sub.rs`), so
+      `$(echo $-)` in an interactive shell omits `i` where bash/dash keep it.
+      Deliberate: flipping the child flag would make the child inherit the
+      interactive untrapped-TERM/QUIT/INT ignore in `handle_default_signal`,
+      leaving command-sub children unkillable at the dispatch level. Fixing
+      faithfully needs a `$-` letter snapshot decoupled from live
+      `mode.is_interactive`.
+- [ ] Interactive trap latency at the idle prompt — pending signal traps
+      (e.g. `trap 'echo hi' USR1`) fire only after the next command
+      completes (`process_pending_signals` in the REPL loop), not while
+      waiting at the prompt. bash fires them immediately via its readline
+      event loop. Would need a self-pipe check inside the terminal
+      `read_event` poll loop plus executor access from the line editor
+      (`src/interactive/terminal.rs`, `src/interactive/mod.rs`).
 - [ ] `set -x` does not emit bash-style structural headers for `for` / `case` (yosh matches dash here; POSIX leaves the header format implementation-defined). Empirical survey 2026-05-28 confirmed compound bodies and pipeline members are already traced via `exec_simple_command`; the assignment-only gap was closed in the 2026-05-28 assignment-trace work. Adding bash parity for the headers requires Word→source rendering plus an xtrace argument-quoting algorithm; the latter also affects existing simple-command trace output (`echo "a b" c` traces as `+ echo a b c` not `+ echo 'a b' c`). Tracked together because both want the same quoting helper. See `docs/superpowers/specs/2026-05-28-set-x-assignment-trace-design.md` §5 for the closed assignment portion (`src/exec/compound.rs`, `src/exec/simple.rs`).
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)

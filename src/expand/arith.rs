@@ -49,7 +49,7 @@ fn arith_var_lookup(env: &ShellEnv, name: &str) -> String {
             b'#' => return env.vars.positional_params().len().to_string(),
             b'?' => return env.exec.last_exit_status.to_string(),
             b'-' => {
-                let s = env.mode.options.to_flag_string();
+                let s = env.mode.flag_string();
                 return if s.is_empty() { "0".to_string() } else { s };
             }
             b'!' => {

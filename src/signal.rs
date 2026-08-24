@@ -9,6 +9,21 @@ use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction
 /// Checked by the terminal read loop to interrupt blocking reads gracefully.
 static PENDING_EXIT_SIGNAL: AtomicBool = AtomicBool::new(false);
 
+/// `true` once the shell has entered interactive mode. Read by the
+/// async-signal handler (atomic load is async-signal-safe) to decide
+/// whether SIGTERM should interrupt the terminal read loop: POSIX sh
+/// requires interactive shells to ignore untrapped SIGTERM, so setting
+/// [`PENDING_EXIT_SIGNAL`] for it would wrongly abort the read loop and
+/// exit the shell. SIGHUP (terminal hangup) still interrupts either way.
+static INTERACTIVE_SHELL: AtomicBool = AtomicBool::new(false);
+
+/// Mark the shell as interactive (called once from `Repl::new`).
+/// Forked children reset their signal dispositions via
+/// [`reset_child_signals`] before this flag could matter to them.
+pub fn set_interactive_shell(on: bool) {
+    INTERACTIVE_SHELL.store(on, Ordering::Release);
+}
+
 /// Returns `true` if a SIGHUP or SIGTERM has been received since the last
 /// call to [`drain_pending_signals`].
 ///
@@ -137,8 +152,10 @@ pub fn ignored_on_entry_set() -> &'static HashSet<i32> {
 /// write end of the self-pipe, and sets the PENDING_EXIT_SIGNAL flag for
 /// SIGHUP and SIGTERM so that the terminal read loop can notice quickly.
 extern "C" fn signal_handler(sig: libc::c_int) {
-    // AtomicBool::store is async-signal-safe.
-    if sig == libc::SIGHUP || sig == libc::SIGTERM {
+    // AtomicBool::store/load are async-signal-safe. SIGTERM only counts
+    // as an exit signal for non-interactive shells — interactive shells
+    // ignore it (POSIX sh) and must keep the read loop running.
+    if sig == libc::SIGHUP || (sig == libc::SIGTERM && !INTERACTIVE_SHELL.load(Ordering::Acquire)) {
         PENDING_EXIT_SIGNAL.store(true, Ordering::Release);
     }
     let Some(&(_, write_fd)) = SELF_PIPE.get() else {

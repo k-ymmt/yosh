@@ -43,6 +43,7 @@ pub struct Repl {
 impl Repl {
     pub fn new(shell_name: String) -> Self {
         signal::init_signal_handling();
+        signal::set_interactive_shell(true);
         let mut executor = Executor::new(shell_name, vec![]);
         crate::env::default_path::ensure_default_path(&mut executor.env);
         executor.env.mode.is_interactive = true;

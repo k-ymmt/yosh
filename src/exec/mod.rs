@@ -244,6 +244,16 @@ impl Executor {
 
     /// Handle a signal with default behavior (terminate).
     pub(crate) fn handle_default_signal(&mut self, sig: i32) {
+        // POSIX sh: an interactive shell ignores untrapped SIGQUIT and
+        // SIGTERM, and untrapped SIGINT only discards the current line —
+        // none of the three may terminate the shell (bash/dash survive
+        // `kill -INT/-QUIT/-TERM $$` silently). The EXIT trap must not
+        // run either, since the shell is not exiting.
+        if self.env.mode.is_interactive
+            && matches!(sig, libc::SIGINT | libc::SIGQUIT | libc::SIGTERM)
+        {
+            return;
+        }
         self.execute_exit_trap();
         if self.env.mode.is_interactive {
             self.exit_requested = Some(128 + sig);
@@ -339,6 +349,51 @@ mod tests {
         exec.env.mode.is_interactive = true;
         exec.handle_default_signal(libc::SIGHUP);
         assert_eq!(exec.exit_requested, Some(128 + libc::SIGHUP));
+    }
+
+    #[test]
+    fn handle_default_signal_ignores_term_quit_int_in_interactive_mode() {
+        // POSIX sh: interactive shells ignore untrapped SIGTERM/SIGQUIT,
+        // and untrapped SIGINT must not exit the shell either.
+        for sig in [libc::SIGTERM, libc::SIGQUIT, libc::SIGINT] {
+            let mut exec = Executor::new("yosh", vec![]);
+            exec.env.mode.is_interactive = true;
+            exec.handle_default_signal(sig);
+            assert_eq!(
+                exec.exit_requested, None,
+                "interactive shell must not exit on signal {sig}"
+            );
+        }
+    }
+
+    #[test]
+    fn handle_default_signal_ignore_does_not_consume_exit_trap() {
+        // The ignored-signal early return must not fire (or take) the
+        // EXIT trap — the shell is not exiting.
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.env.mode.is_interactive = true;
+        exec.env
+            .traps
+            .set_trap("EXIT", crate::env::TrapAction::Command("x=exited".into()))
+            .unwrap();
+        exec.handle_default_signal(libc::SIGTERM);
+        assert_eq!(exec.env.vars.get("x"), None);
+        assert!(exec.env.traps.exit_trap.is_some());
+    }
+
+    #[test]
+    fn run_signal_traps_runs_term_trap_in_interactive_mode() {
+        // A user-installed trap on TERM still fires in an interactive
+        // shell — only the *untrapped* default is ignored.
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.env.mode.is_interactive = true;
+        exec.env
+            .traps
+            .set_trap("TERM", crate::env::TrapAction::Command("x=trapped".into()))
+            .unwrap();
+        exec.run_signal_traps(&[libc::SIGTERM]);
+        assert_eq!(exec.env.vars.get("x"), Some("trapped"));
+        assert_eq!(exec.exit_requested, None);
     }
 
     #[test]
