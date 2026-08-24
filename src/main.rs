@@ -68,6 +68,7 @@ fn print_help() {
             heading: "Options",
             items: &[
                 ("-c <command>", "Read commands from command_string"),
+                ("-i", "Force the shell to be interactive"),
                 ("--parse <code>", "Parse and dump AST (debug)"),
                 ("-h, --help", "Show this help message"),
                 ("--version", "Show version information"),
@@ -123,85 +124,128 @@ fn main() {
     };
     let shell_name = args.first().map_or("yosh".to_string(), |a| a.clone());
 
-    match args.len() {
-        1 => {
-            if nix::unistd::isatty(std::io::stdin()).unwrap_or(false) {
-                let mut repl = interactive::Repl::new(shell_name);
-                process::exit(repl.run());
-            } else {
-                // stdin is a pipe — read as script (bytes, so non-UTF-8
-                // input is preserved via the byteenc escape encoding)
+    // Long options and subcommand-style dispatch keep their historical
+    // args[1]-position behavior.
+    if args.len() > 1 {
+        if args[1] == "--help" || args[1] == "-h" {
+            print_help();
+            process::exit(0);
+        } else if args[1] == "--version" {
+            print_version();
+            process::exit(0);
+        } else if args[1] == "--parse" {
+            if args.len() < 3 {
+                eprintln!("yosh: --parse requires an argument");
+                process::exit(2);
+            }
+            let input = if args[2] == "-" {
                 let mut raw = Vec::new();
-                io::stdin().read_to_end(&mut raw).unwrap_or_else(|e| {
-                    eprintln!("yosh: {}", e);
-                    process::exit(1);
-                });
-                let input = byteenc::encode_bytes(&raw).into_owned();
-                let status = run_string(&input, shell_name, vec![], false);
-                process::exit(status);
-            }
-        }
-        _ => {
-            if args[1] == "--help" || args[1] == "-h" {
-                print_help();
-                process::exit(0);
-            } else if args[1] == "--version" {
-                print_version();
-                process::exit(0);
-            } else if args[1] == "-c" {
-                if args.len() < 3 {
-                    eprintln!("yosh: -c requires an argument");
-                    process::exit(2);
-                }
-                // POSIX: sh -c cmd [name [arg...]]
-                // After the script, the next arg is $0 (shell_name), remaining are $1, $2, ...
-                // Support `--` as an optional separator before positional args.
-                let rest_start = if args.len() > 3 && args[3] == "--" {
-                    4
-                } else {
-                    3
-                };
-                let sn = if rest_start < args.len() {
-                    args[rest_start].clone()
-                } else {
-                    shell_name
-                };
-                let positional: Vec<String> = if rest_start + 1 < args.len() {
-                    args[rest_start + 1..].to_vec()
-                } else {
-                    vec![]
-                };
-                let status = run_string(&args[2], sn, positional, true);
-                process::exit(status);
-            } else if args[1] == "--parse" {
-                if args.len() < 3 {
-                    eprintln!("yosh: --parse requires an argument");
-                    process::exit(2);
-                }
-                let input = if args[2] == "-" {
-                    let mut raw = Vec::new();
-                    io::stdin().read_to_end(&mut raw).unwrap();
-                    byteenc::encode_bytes(&raw).into_owned()
-                } else {
-                    args[2].clone()
-                };
-                match parser::Parser::new(&input).parse_program() {
-                    Ok(ast) => println!("{:#?}", ast),
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        process::exit(2);
-                    }
-                }
-            } else if let Some(status) = try_subcommand(&args[1..]) {
-                process::exit(status);
+                io::stdin().read_to_end(&mut raw).unwrap();
+                byteenc::encode_bytes(&raw).into_owned()
             } else {
-                // POSIX §2.1: with a script file operand, $0 is the script
-                // path and the remaining operands are $1, $2, ...
-                let positional: Vec<String> = args[2..].to_vec();
-                let status = run_file(&args[1], args[1].clone(), positional);
-                process::exit(status);
+                args[2].clone()
+            };
+            match parser::Parser::new(&input).parse_program() {
+                Ok(ast) => println!("{:#?}", ast),
+                Err(e) => {
+                    eprintln!("{}", e);
+                    process::exit(2);
+                }
+            }
+            process::exit(0);
+        }
+    }
+
+    // Leading short-option parsing (POSIX sh invocation). Only `-i`
+    // (force interactive) and `-c` (command string) are recognized,
+    // singly or clustered (`-ic`); `--` ends option parsing. Other
+    // invocation options (-e, -x, ...) are not implemented yet.
+    let mut idx = 1;
+    let mut force_interactive = false;
+    let mut cmd_mode = false;
+    while idx < args.len() {
+        let arg = &args[idx];
+        if arg == "--" {
+            idx += 1;
+            break;
+        }
+        let Some(cluster) = arg.strip_prefix('-') else {
+            break;
+        };
+        if cluster.is_empty() || !cluster.chars().all(|c| matches!(c, 'i' | 'c')) {
+            break;
+        }
+        for c in cluster.chars() {
+            match c {
+                'i' => force_interactive = true,
+                'c' => cmd_mode = true,
+                _ => unreachable!("cluster chars are pre-validated"),
             }
         }
+        idx += 1;
+    }
+
+    if cmd_mode {
+        if idx >= args.len() {
+            eprintln!("yosh: -c requires an argument");
+            process::exit(2);
+        }
+        // POSIX: sh -c cmd [name [arg...]]
+        // After the script, the next arg is $0 (shell_name), remaining are $1, $2, ...
+        // Support `--` as an optional separator before positional args.
+        let command = args[idx].clone();
+        let mut rest_start = idx + 1;
+        if rest_start < args.len() && args[rest_start] == "--" {
+            rest_start += 1;
+        }
+        let sn = if rest_start < args.len() {
+            args[rest_start].clone()
+        } else {
+            shell_name
+        };
+        let positional: Vec<String> = if rest_start + 1 < args.len() {
+            args[rest_start + 1..].to_vec()
+        } else {
+            vec![]
+        };
+        let status = run_string(&command, sn, positional, true, force_interactive);
+        process::exit(status);
+    }
+
+    if idx < args.len() {
+        // `yosh <sub> ...` delegation only applies to the historical
+        // no-option form; with options consumed, the operand is a
+        // script path per POSIX §2.1.
+        if idx == 1
+            && let Some(status) = try_subcommand(&args[1..])
+        {
+            process::exit(status);
+        }
+        // POSIX §2.1: with a script file operand, $0 is the script
+        // path and the remaining operands are $1, $2, ...
+        let positional: Vec<String> = args[idx + 1..].to_vec();
+        let status = run_file(&args[idx], args[idx].clone(), positional, force_interactive);
+        process::exit(status);
+    }
+
+    if nix::unistd::isatty(std::io::stdin()).unwrap_or(false) {
+        let mut repl = interactive::Repl::new(shell_name);
+        process::exit(repl.run());
+    } else {
+        // stdin is a pipe — read as script (bytes, so non-UTF-8 input is
+        // preserved via the byteenc escape encoding). With -i the shell
+        // still reads the whole stream but runs with interactive
+        // semantics ($- reports i, untrapped TERM/QUIT/INT ignored,
+        // shell errors do not exit); the line editor and prompts need a
+        // terminal and are not engaged.
+        let mut raw = Vec::new();
+        io::stdin().read_to_end(&mut raw).unwrap_or_else(|e| {
+            eprintln!("yosh: {}", e);
+            process::exit(1);
+        });
+        let input = byteenc::encode_bytes(&raw).into_owned();
+        let status = run_string(&input, shell_name, vec![], false, force_interactive);
+        process::exit(status);
     }
 }
 
@@ -227,12 +271,26 @@ fn try_subcommand(args: &[String]) -> Option<i32> {
     Some(status.code().unwrap_or(1))
 }
 
-fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_string: bool) -> i32 {
+fn run_string(
+    input: &str,
+    shell_name: String,
+    positional: Vec<String>,
+    cmd_string: bool,
+    interactive: bool,
+) -> i32 {
     signal::init_signal_handling();
     let mut executor = Executor::new(shell_name, positional);
     env::default_path::ensure_default_path(&mut executor.env);
     executor.load_plugins();
     executor.env.mode.options.cmd_string = cmd_string;
+    if interactive {
+        // POSIX sh -i: the shell is interactive regardless of stdin —
+        // $- reports `i`, untrapped TERM/QUIT/INT are ignored, and
+        // shell errors return control instead of exiting. Monitor mode
+        // and the line editor stay off on this non-terminal path.
+        executor.env.mode.is_interactive = true;
+        signal::set_interactive_shell(true);
+    }
 
     // Parse and execute one complete command at a time so that aliases
     // defined by earlier commands are available for later ones.
@@ -308,7 +366,7 @@ fn run_string(input: &str, shell_name: String, positional: Vec<String>, cmd_stri
     status
 }
 
-fn run_file(path: &str, shell_name: String, positional: Vec<String>) -> i32 {
+fn run_file(path: &str, shell_name: String, positional: Vec<String>, interactive: bool) -> i32 {
     use std::os::unix::ffi::OsStrExt;
     // `path` is byteenc-encoded (it came from args_os); decode it back to
     // raw bytes for the OS call, and read the script as bytes so non-UTF-8
@@ -322,5 +380,5 @@ fn run_file(path: &str, shell_name: String, positional: Vec<String>) -> i32 {
         }
     };
     let content = byteenc::encode_bytes(&content).into_owned();
-    run_string(&content, shell_name, positional, false)
+    run_string(&content, shell_name, positional, false, interactive)
 }

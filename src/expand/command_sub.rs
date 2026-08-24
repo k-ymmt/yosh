@@ -59,7 +59,14 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 },
                 mode: crate::env::ShellMode {
                     options: env.mode.options.clone(),
+                    // Behavioral flag off so the child does not inherit
+                    // the interactive untrapped-TERM/QUIT/INT ignore in
+                    // handle_default_signal (which would make command-sub
+                    // children unkillable at the dispatch level) …
                     is_interactive: false,
+                    // … but `$-` must still report `i` inside $( ) of an
+                    // interactive shell (POSIX XCU 2.5.2; bash/dash agree).
+                    flag_i: env.mode.is_interactive || env.mode.flag_i,
                     in_dot_script: false,
                 },
                 shell_name: env.shell_name.clone(),

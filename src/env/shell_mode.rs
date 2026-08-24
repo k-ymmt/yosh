@@ -144,6 +144,14 @@ impl ShellOptions {
 pub struct ShellMode {
     pub options: ShellOptions,
     pub is_interactive: bool,
+    /// Snapshot of the `i` letter for `$-`, decoupled from the live
+    /// `is_interactive` behavior flag. Command-substitution children of
+    /// an interactive shell must run with `is_interactive: false` (so
+    /// they do not inherit the interactive untrapped-TERM/QUIT/INT
+    /// ignore in `handle_default_signal` and become unkillable), yet
+    /// POSIX XCU 2.5.2 requires their `$-` to still report `i` —
+    /// bash/dash agree. `flag_string` ORs this with `is_interactive`.
+    pub flag_i: bool,
     pub in_dot_script: bool,
 }
 
@@ -154,7 +162,7 @@ impl ShellMode {
     /// than in [`ShellOptions`].
     pub fn flag_string(&self) -> String {
         let mut s = self.options.to_flag_string();
-        if self.is_interactive {
+        if self.is_interactive || self.flag_i {
             // Preserve to_flag_string's alphabetical-ish emit order
             // (a, b, c, C, e, f, [i], m, n, u, v, x).
             let pos = s.find(['m', 'n', 'u', 'v', 'x']).unwrap_or(s.len());
@@ -205,6 +213,7 @@ mod tests {
         let mut mode = ShellMode {
             options: ShellOptions::default(),
             is_interactive: true,
+            flag_i: false,
             in_dot_script: false,
         };
         mode.options.monitor = true;
@@ -223,6 +232,20 @@ mod tests {
         let mode = ShellMode {
             options: ShellOptions::default(),
             is_interactive: true,
+            flag_i: false,
+            in_dot_script: false,
+        };
+        assert_eq!(mode.flag_string(), "i");
+    }
+
+    #[test]
+    fn test_flag_i_snapshot_reports_i_without_is_interactive() {
+        // Command-sub children: is_interactive=false (behavior) but the
+        // `i` letter snapshot keeps $- faithful to the parent shell.
+        let mode = ShellMode {
+            options: ShellOptions::default(),
+            is_interactive: false,
+            flag_i: true,
             in_dot_script: false,
         };
         assert_eq!(mode.flag_string(), "i");

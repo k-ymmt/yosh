@@ -101,6 +101,7 @@ impl ShellEnv {
             mode: ShellMode {
                 options: ShellOptions::default(),
                 is_interactive: false,
+                flag_i: false,
                 in_dot_script: false,
             },
             shell_name: shell_name.into(),

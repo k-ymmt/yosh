@@ -765,6 +765,20 @@ fn test_pty_dollar_dash_contains_i() {
 }
 
 #[test]
+fn test_pty_dollar_dash_keeps_i_in_command_sub() {
+    // The command-sub child env runs with is_interactive=false (so it
+    // stays killable at the dispatch level), but its $- must still
+    // report `i` via the ShellMode::flag_i snapshot — bash/dash agree.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("echo sub-$(echo $-)\r").unwrap();
+    expect_output(&mut s, "sub-im", "command-sub $- should contain i and m");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_set_plus_m_disables_job_control() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);

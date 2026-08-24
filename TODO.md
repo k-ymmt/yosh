@@ -98,18 +98,26 @@
         the prefix tail on its top row. Both need a prompt occupying most
         of the screen; recorded, not planned
         (`src/interactive/line_editor.rs`).
-- [ ] `sh -i` invocation flag — force-interactive startup is not implemented;
-      interactivity is auto-detected (no operands + stdin isatty) in
-      `src/main.rs`. `$-` now reports `i` for interactive shells
-      (landed 2026-08-24).
-- [ ] Command-substitution `$-` drops `i` — the command-sub child env is
-      built with `is_interactive: false` (`src/expand/command_sub.rs`), so
-      `$(echo $-)` in an interactive shell omits `i` where bash/dash keep it.
-      Deliberate: flipping the child flag would make the child inherit the
-      interactive untrapped-TERM/QUIT/INT ignore in `handle_default_signal`,
-      leaving command-sub children unkillable at the dispatch level. Fixing
-      faithfully needs a `$-` letter snapshot decoupled from live
-      `mode.is_interactive`.
+- [ ] `-i` non-terminal residuals (core landed 2026-08-24: `-i` forces
+      `is_interactive` for the stdin-pipe / `-c` / script-file paths,
+      `$-` reports `i`, untrapped TERM/QUIT/INT ignored, shell errors
+      return instead of exiting; command-sub `$-` keeps `i` via the
+      `ShellMode::flag_i` snapshot):
+  - [ ] `-i` with non-tty stdin does not print PS1/PS2 prompts to stderr
+        or source `$ENV`/`~/.yoshrc` the way bash/dash do — the whole
+        stream is read up front by `run_string` (`src/main.rs`).
+  - [ ] `-i` with non-tty stdin still aborts the stream on a syntax
+        error (exit 2) instead of skipping to the next line as POSIX
+        §2.8.1 prescribes for interactive shells (`src/main.rs`).
+  - [ ] `-i -c` / `-i script` do not enable monitor mode; bash reports
+        `m` in `$-` there. Enabling it without the REPL needs the job
+        control terminal setup from `Repl::new` (`src/interactive/mod.rs`).
+- [ ] Invocation-time set options — `yosh -e/-x/-u/... script` and
+      `-o <name>`/`+o` at invocation are not parsed; only `-i`/`-c`
+      clusters and `--` are recognized in the leading-option loop
+      (`src/main.rs`). Wire the remaining letters through
+      `ShellOptions::set_by_char`, and consider `-s` (read stdin with
+      operands as positional parameters) at the same time.
 - [ ] Interactive trap latency at the idle prompt — pending signal traps
       (e.g. `trap 'echo hi' USR1`) fire only after the next command
       completes (`process_pending_signals` in the REPL loop), not while
