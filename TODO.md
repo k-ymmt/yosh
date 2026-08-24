@@ -109,9 +109,72 @@
   - [ ] `-i` with non-tty stdin still aborts the stream on a syntax
         error (exit 2) instead of skipping to the next line as POSIX
         §2.8.1 prescribes for interactive shells (`src/main.rs`).
-  - [ ] `-i -c` / `-i script` do not enable monitor mode; bash reports
-        `m` in `$-` there. Enabling it without the REPL needs the job
-        control terminal setup from `Repl::new` (`src/interactive/mod.rs`).
+  - [ ] `-i -c` / `-i script` do not enable monitor mode by default;
+        bash reports `m` in `$-` there. An explicit `-m` now enables it
+        on those paths (2026-08-25) with job-control signal init gated
+        on terminal ownership, but the implicit interactive default and
+        the full `Repl::new` terminal setup (take_terminal, termios
+        snapshot) remain REPL-only (`src/main.rs::run_string`,
+        `src/interactive/mod.rs`).
+- [ ] 2026-08-25 invocation-options review residuals (set-option
+      letters/-o/+o/-s landed 2026-08-24; adversarial review round 1+2
+      fixes landed 2026-08-25 — interactive `-n` ignore incl. command
+      subs, `-h`-with-operand POSIX no-op, `--long` error naming,
+      byteenc-decoded usage errors, `s` in `$-`, `+m` REPL signal
+      state, `-m` terminal-ownership gate; remaining acknowledged
+      items):
+  - [ ] `+i` cannot force non-interactive on a tty — `force_interactive`
+        is a one-way bool and `run_stdin` dispatches on `isatty` alone,
+        so `yosh +i` at a terminal still starts the REPL. `+i` today
+        only cancels an earlier `-i` on the non-tty paths. Needs a
+        tri-state (unspecified/-i/+i) threaded into `run_stdin`
+        (`src/main.rs`).
+  - [ ] Piped/redirected `yosh -h` (sole argument, non-tty stdin) still
+        prints help instead of the POSIX locate-utilities no-op +
+        reading commands from stdin (`echo 'echo hi' | bash -h` prints
+        hi). The sole-argument gate (2026-08-25) only fixed the operand
+        form; conditioning the help alias on `isatty(stdin)` would
+        break automated `yosh -h` help-scraping, so decide policy
+        first (`src/main.rs`).
+  - [ ] Invocation `-e` is armed while `~/.yoshrc`/`$ENV` are sourced:
+        a failing rc command sets `exit_requested` during startup, which
+        `Repl::run` only checks after the first user command — the
+        prompt appears, the first typed command runs, then the shell
+        exits with the rc file's status, and the EXIT trap fired at
+        startup is skipped on the real exit
+        (`src/interactive/mod.rs::{new,run}`).
+  - [ ] `-o vi` / `-o nolog` — POSIX `set -o` option names not in
+        `ShellOptions::set_by_name`, so `yosh -o vi ...` exits 2
+        (`yosh: unknown option: vi`); runtime `set -o vi` fails the
+        same way. vi line-editing mode itself is unimplemented
+        (`src/env/shell_mode.rs`).
+  - [ ] Attached `-oNAME` (`yosh -oerrexit`) is accepted at invocation
+        but `set -oerrexit` is rejected by the builtin's char-cluster
+        walk (`unknown option: -o`); bash rejects both attached forms.
+        Decide whether the builtin should share the invocation scanner
+        (`src/builtin/special.rs::builtin_set`, `src/main.rs`).
+  - [ ] Runtime `set -m` (builtin transition) calls
+        `init_job_control_signals()` without the terminal-ownership
+        check the invocation `-m` path now performs — a background
+        non-interactive shell running `set -m` can still steal the tty
+        from the invoking shell, and `yosh -c 'set -m; ...'` diverges
+        from `yosh -m -c ...` in both behavior and `$-`. Hoist the
+        ownership gate into one shared monitor-transition helper. Also:
+        the gate probes stdin, so a foreground `yosh -m script <input`
+        silently loses job control — probe the controlling terminal
+        (stderr or /dev/tty) instead (`src/builtin/special.rs`,
+        `src/main.rs::run_string`).
+  - [ ] PTY regression tests deferred: `yosh +m` (child SIGTSTP
+        disposition default, `$-` without `m`, later `set -m` restores
+        termios from the still-captured snapshot) and foreground
+        `yosh -m -c` job-control setup (`tests/pty_interactive.rs`).
+  - [ ] `tests/invocation.rs` hand-rolls pid-named temp dirs in three
+        tests (leaks the dir if an assertion panics before cleanup);
+        switch to `tempfile::tempdir()` next time the file is touched.
+  - [ ] `test_apply_invocation_op_ordered_override`
+        (`src/env/shell_mode.rs`) exercises only the set_by_char/
+        set_by_name delegation; the ordering invariant it names (monitor
+        default before ops) lives in `Repl::new` and is untested there.
 - [ ] Interactive trap latency at the idle prompt — pending signal traps
       (e.g. `trap 'echo hi' USR1`) fire only after the next command
       completes (`process_pending_signals` in the REPL loop), not while
