@@ -10,7 +10,14 @@ use crate::signal;
 impl Executor {
     /// Dispatch a `Command` to the appropriate execution path.
     pub fn exec_command(&mut self, cmd: &Command) -> i32 {
-        if self.env.mode.options.noexec {
+        // POSIX XCU set: "-n ... This option is ignored by interactive
+        // shells" — without the guard, `yosh -n` at a terminal wedges the
+        // REPL (every command including `set +n` and `exit` becomes a
+        // no-op). flag_i covers command-substitution children, which run
+        // with is_interactive=false but belong to an interactive shell;
+        // without it, `$(...)` inside an interactive -n shell silently
+        // expands to nothing (bash keeps -n ignored there too).
+        if self.env.mode.options.noexec && !(self.env.mode.is_interactive || self.env.mode.flag_i) {
             return 0;
         }
         match cmd {
@@ -255,7 +262,12 @@ impl Executor {
                     .process
                     .jobs
                     .add_job(child, vec![child], command_name, false);
-                eprintln!("[{}] {}", job_id, child.as_raw());
+                // POSIX §2.9.3.1: the "[n] pid" notice belongs to job
+                // control; plain non-interactive scripts stay silent
+                // (bash/dash agree).
+                if self.env.mode.is_interactive || self.env.mode.options.monitor {
+                    eprintln!("[{}] {}", job_id, child.as_raw());
+                }
                 Ok(0)
             }
         }
@@ -263,6 +275,16 @@ impl Executor {
 
     /// Execute a complete command (list of AND-OR lists with separators).
     pub fn exec_complete_command(&mut self, cmd: &CompleteCommand) -> i32 {
+        // noexec (set -n) stubs the whole complete command here, above
+        // the AND-OR machinery: returning 0 from exec_command alone is
+        // not enough — a trailing `! cmd` would negate the stub 0 into
+        // exit 1, and `cmd &` would fork and print a job line before
+        // ever reaching exec_command (bash -n does neither). Interactive
+        // exemption mirrors the exec_command guard (POSIX: -n is
+        // ignored by interactive shells; flag_i covers command subs).
+        if self.env.mode.options.noexec && !(self.env.mode.is_interactive || self.env.mode.flag_i) {
+            return 0;
+        }
         // Reap any finished background children before forking new ones
         self.reap_zombies();
 

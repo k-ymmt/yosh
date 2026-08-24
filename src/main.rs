@@ -139,7 +139,11 @@ fn main() {
     // Long options and subcommand-style dispatch keep their historical
     // args[1]-position behavior.
     if args.len() > 1 {
-        if args[1] == "--help" || args[1] == "-h" {
+        // Bare `-h` doubles as help only when it is the sole argument;
+        // with anything after it, it is the POSIX locate-utilities
+        // no-op handled by the option loop (`yosh -h script` must run
+        // the script).
+        if args[1] == "--help" || (args[1] == "-h" && args.len() == 2) {
             print_help();
             process::exit(0);
         } else if args[1] == "--version" {
@@ -192,10 +196,18 @@ fn main() {
             break;
         }
         let (on, cluster) = match arg.as_bytes().first() {
+            // A lone `+` is an empty cluster: consumed as a no-op
+            // (bash agrees); a lone `-` was handled above.
             Some(b'-') => (true, &arg[1..]),
-            Some(b'+') if arg.len() > 1 => (false, &arg[1..]),
+            Some(b'+') => (false, &arg[1..]),
             _ => break,
         };
+        // `--long` words other than the exact `--` terminator are not
+        // supported here (the args[1] dispatch above handles the yosh
+        // extensions); report the whole word, not its first character.
+        if on && cluster.starts_with('-') {
+            invocation_usage_error(&format!("{}: invalid option", arg));
+        }
         idx += 1;
         let sign = if on { '-' } else { '+' };
         for (pos, c) in cluster.char_indices() {
@@ -221,19 +233,20 @@ fn main() {
                     invocation_ops.push(env::InvocationOp::Long(name, on));
                     break;
                 }
-                'a' | 'b' | 'C' | 'e' | 'f' | 'h' | 'm' | 'n' | 'u' | 'v' | 'x' => {
-                    let _ = probe.set_by_char(c, on);
-                    invocation_ops.push(env::InvocationOp::Short(c, on));
-                }
-                _ => invocation_usage_error(&format!("{}{}: invalid option", sign, c)),
+                // ShellOptions::set_by_char is the single authority on
+                // which set-option letters exist; the arms above cover
+                // exactly the invocation-only options (-c, -s, -i, -o).
+                _ => match probe.set_by_char(c, on) {
+                    Ok(()) => invocation_ops.push(env::InvocationOp::Short(c, on)),
+                    Err(_) => invocation_usage_error(&format!("{}{}: invalid option", sign, c)),
+                },
             }
         }
     }
 
     if cmd_mode {
         if idx >= args.len() {
-            eprintln!("yosh: -c requires an argument");
-            process::exit(2);
+            invocation_usage_error("-c requires an argument");
         }
         // POSIX: sh -c cmd [name [arg...]]
         // After the script, the next arg is $0 (shell_name), remaining are $1, $2, ...
@@ -257,7 +270,9 @@ fn main() {
             &command,
             sn,
             positional,
-            true,
+            // -s alongside -c still shows `s` in $- (bash agrees),
+            // though commands come from the string.
+            (true, read_stdin),
             force_interactive,
             &invocation_ops,
         );
@@ -269,7 +284,13 @@ fn main() {
         // every remaining operand is a positional parameter; $0 stays
         // the shell name.
         let positional: Vec<String> = args[idx..].to_vec();
-        run_stdin(shell_name, positional, force_interactive, &invocation_ops);
+        run_stdin(
+            shell_name,
+            positional,
+            force_interactive,
+            true,
+            &invocation_ops,
+        );
     }
 
     if idx < args.len() {
@@ -294,12 +315,19 @@ fn main() {
         process::exit(status);
     }
 
-    run_stdin(shell_name, vec![], force_interactive, &invocation_ops);
+    run_stdin(
+        shell_name,
+        vec![],
+        force_interactive,
+        false,
+        &invocation_ops,
+    );
 }
 
 /// Invalid invocation: print the error plus a usage line and exit 2.
 fn invocation_usage_error(msg: &str) -> ! {
-    eprintln!("yosh: {}", msg);
+    // Decode byteenc escapes so raw argv bytes round-trip to stderr.
+    byteenc::write_stderr_decoded_line(&format!("yosh: {}", msg));
     eprintln!(
         "Usage: yosh [-abCefhimnuvx] [-o option]... [+abCefhimnuvx] [+o option]... \
          [-c command_string | -s | file] [argument...]"
@@ -314,10 +342,11 @@ fn run_stdin(
     shell_name: String,
     positional: Vec<String>,
     force_interactive: bool,
+    explicit_s: bool,
     invocation_ops: &[env::InvocationOp],
 ) -> ! {
     if nix::unistd::isatty(std::io::stdin()).unwrap_or(false) {
-        let mut repl = interactive::Repl::new(shell_name, positional, invocation_ops);
+        let mut repl = interactive::Repl::new(shell_name, positional, explicit_s, invocation_ops);
         process::exit(repl.run());
     } else {
         // stdin is a pipe — read as script (bytes, so non-UTF-8 input is
@@ -336,7 +365,7 @@ fn run_stdin(
             &input,
             shell_name,
             positional,
-            false,
+            (false, explicit_s),
             force_interactive,
             invocation_ops,
         );
@@ -370,7 +399,9 @@ fn run_string(
     input: &str,
     shell_name: String,
     positional: Vec<String>,
-    cmd_string: bool,
+    // `$-` invocation-source letters: `c` (command string), `s`
+    // (explicit -s read-stdin); both may be set (`yosh -sc cmd`).
+    (cmd_string, stdin_reads): (bool, bool),
     interactive: bool,
     invocation_ops: &[env::InvocationOp],
 ) -> i32 {
@@ -379,11 +410,32 @@ fn run_string(
     env::default_path::ensure_default_path(&mut executor.env);
     // Invocation-time set options (-e, -x, -o name, ...), validated at
     // parse time in main; applied before any command runs.
-    for op in invocation_ops {
-        let _ = executor.env.mode.options.apply_invocation_op(op);
+    executor
+        .env
+        .mode
+        .options
+        .apply_invocation_ops(invocation_ops);
+    if executor.env.mode.options.monitor {
+        // Invocation -m: mirror the runtime `set -m` transition in
+        // builtin_set (job-control signal setup paired with the flag),
+        // but only when the shell actually owns its controlling
+        // terminal. Otherwise a background `yosh -m -c ...` would
+        // either be stopped by SIGTTOU on the terminal handoffs (with
+        // SIG_DFL) or steal the terminal from the invoking shell (with
+        // SIG_IGN). bash likewise disables job control — dropping `m`
+        // from `$-` — when it cannot get the terminal.
+        let stdin_fd = std::io::stdin();
+        let owns_terminal = nix::unistd::isatty(&stdin_fd).unwrap_or(false)
+            && nix::unistd::tcgetpgrp(&stdin_fd).ok() == Some(nix::unistd::getpgrp());
+        if owns_terminal {
+            signal::init_job_control_signals();
+        } else {
+            executor.env.mode.options.monitor = false;
+        }
     }
     executor.load_plugins();
     executor.env.mode.options.cmd_string = cmd_string;
+    executor.env.mode.options.stdin_reads = stdin_reads;
     if interactive {
         // POSIX sh -i: the shell is interactive regardless of stdin —
         // $- reports `i`, untrapped TERM/QUIT/INT are ignored, and
@@ -491,7 +543,7 @@ fn run_file(
         &content,
         shell_name,
         positional,
-        false,
+        (false, false),
         interactive,
         invocation_ops,
     )

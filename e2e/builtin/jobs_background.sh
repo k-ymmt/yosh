@@ -1,7 +1,7 @@
 #!/bin/sh
 # POSIX_REF: 2.11 Job Control
-# DESCRIPTION: background job tracked with job number and PID on stderr
+# DESCRIPTION: background job PID in $!, reaped by wait; non-interactive shells print no [n] pid notice (bash/dash parity)
+# EXPECT_OUTPUT: done
 # EXPECT_EXIT: 0
-# EXPECT_STDERR: [1]
 sleep 0.1 &
-wait
+[ -n "$!" ] && wait "$!" && echo done

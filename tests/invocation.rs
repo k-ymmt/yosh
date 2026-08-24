@@ -310,6 +310,191 @@ fn dash_s_clusters_with_set_options() {
 }
 
 #[test]
+fn dash_n_ignored_for_interactive_shells() {
+    // POSIX XCU set: "-n ... This option is ignored by interactive
+    // shells". Without the guard, -n + interactive made every command
+    // (including `exit` and `set +n`) a silent no-op.
+    let output = yosh_bin()
+        .args(["-i", "-n", "-c", "exit 3"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "-n must be ignored when the shell is interactive"
+    );
+
+    // Non-interactive -n still means noexec (syntax-check mode).
+    let output = yosh_bin()
+        .args(["-n", "-c", "echo should-not-print"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.is_empty(), "noexec must not run commands, got {out:?}");
+}
+
+#[test]
+fn dash_h_with_operand_is_posix_noop() {
+    // `-h` alone is the yosh help alias, but with anything after it,
+    // it is the POSIX locate-utilities no-op: the script must run.
+    let dir = std::env::temp_dir().join(format!("yosh-inv-h-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("hello.sh");
+    std::fs::write(&script, "echo from-script\n").unwrap();
+
+    let output = yosh_bin().arg("-h").arg(&script).output().unwrap();
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(out.trim(), "from-script", "got {out:?}");
+    assert_eq!(output.status.code(), Some(0));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn long_option_error_names_whole_argument() {
+    let output = yosh_bin().arg("--verbose").output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.contains("--verbose: invalid option"),
+        "must name the whole word, got {err:?}"
+    );
+}
+
+#[test]
+fn dash_s_reports_s_in_dollar_dash() {
+    // Explicit -s puts `s` into $- (bash/dash agree); the implicit
+    // stdin-pipe path does not (matches bash).
+    let (out, _) = run_with_stdin(&["-s"], "echo flags-$-\n");
+    let flags = out.trim().strip_prefix("flags-").unwrap().to_string();
+    assert!(flags.contains('s'), "-s must put s into $-, got {out:?}");
+
+    let (out, _) = run_with_stdin(&[], "echo flags-$-\n");
+    let flags = out.trim().strip_prefix("flags-").unwrap().to_string();
+    assert!(!flags.contains('s'), "implicit pipe has no s, got {out:?}");
+}
+
+#[test]
+fn noexec_ignored_in_command_sub_of_interactive_shell() {
+    // Command-substitution children run with is_interactive=false but
+    // flag_i=true; -n must stay ignored there too, or every $(...) in
+    // an interactive -n shell silently expands to nothing.
+    let output = yosh_bin()
+        .args(["-i", "-n", "-c", "echo A$(echo B)"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(out.trim(), "AB", "command sub must run under -i -n");
+}
+
+#[test]
+fn dash_sc_reports_both_c_and_s_in_dollar_dash() {
+    let output = yosh_bin().args(["-sc", "echo got:$-"]).output().unwrap();
+    let out = String::from_utf8_lossy(&output.stdout);
+    let flags = out.trim().strip_prefix("got:").unwrap().to_string();
+    assert!(flags.contains('c'), "got {out:?}");
+    assert!(
+        flags.contains('s'),
+        "-s must survive alongside -c, got {out:?}"
+    );
+}
+
+#[test]
+fn dash_m_without_terminal_disables_monitor() {
+    // A shell that does not own a controlling terminal cannot do job
+    // control; -m is dropped (and with it the `m` in $-), matching
+    // bash. Prevents a background `yosh -m -c ...` from stealing the
+    // invoking shell's terminal or being stopped by SIGTTOU.
+    let (out, code) = run_with_stdin(&["-m", "-s"], "echo m-$-\n");
+    assert_eq!(code, 0);
+    let flags = out.trim().strip_prefix("m-").unwrap().to_string();
+    assert!(
+        !flags.contains('m'),
+        "monitor must be disabled without a terminal, got {out:?}"
+    );
+}
+
+#[test]
+fn noexec_stubs_negation_and_async_lists() {
+    // The noexec stub must sit above the AND-OR machinery: a trailing
+    // `! cmd` must not negate the stub status into exit 1, and `cmd &`
+    // must not fork or print a job line (bash -n does neither).
+    let (out, code) = run_with_stdin(&["-n", "-s"], "echo a\n! false\n");
+    assert_eq!(code, 0, "-n with trailing ! pipeline must exit 0");
+    assert!(out.is_empty(), "noexec must not run commands, got {out:?}");
+
+    let output = yosh_bin().args(["-n", "-c", "sleep 0 &"]).output().unwrap();
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.is_empty(),
+        "-n must not fork/announce jobs, got {err:?}"
+    );
+}
+
+#[test]
+fn background_job_notice_only_with_job_control() {
+    // POSIX §2.9.3.1: the "[n] pid" notice belongs to job control;
+    // plain non-interactive scripts stay silent (bash/dash agree).
+    let output = yosh_bin()
+        .args(["-c", "/bin/sleep 0 & wait"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !err.contains("[1]"),
+        "non-interactive shell must not print job notice, got {err:?}"
+    );
+
+    // The interactive flag brings the notice back.
+    let output = yosh_bin()
+        .args(["-i", "-c", "/bin/sleep 0 & wait"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.contains("[1]"),
+        "interactive shell prints the job notice, got {err:?}"
+    );
+}
+
+#[test]
+fn lone_plus_is_consumed_as_noop() {
+    // A lone `+` is an empty option cluster (bash agrees): consumed,
+    // and option parsing continues with the next argument.
+    let (out, code) = run_with_stdin(&["+"], "echo plus-ok\n");
+    assert_eq!(code, 0);
+    assert_eq!(out.trim(), "plus-ok");
+
+    let (out, code) = run_with_stdin(&["+", "-e"], "false\necho after\n");
+    assert!(
+        !out.contains("after"),
+        "-e after lone + must apply, got {out:?}"
+    );
+    assert_eq!(code, 1);
+}
+
+#[test]
+fn invalid_option_error_decodes_raw_bytes() {
+    // Raw non-UTF-8 argv bytes are byteenc-escaped internally; the
+    // usage error must decode them back instead of leaking the
+    // U+10FExx escape codepoints to stderr.
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let output = yosh_bin()
+        .arg(OsStr::from_bytes(b"-\xff"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let first_line = output.stderr.split(|&b| b == b'\n').next().unwrap();
+    assert!(
+        first_line.windows(2).any(|w| w == b"-\xff"),
+        "stderr must contain the raw byte, got {:x?}",
+        first_line
+    );
+}
+
+#[test]
 fn lone_dash_ends_option_parsing() {
     // POSIX sh: a lone `-` is an obsolescent synonym for `--`.
     let (out, code) = run_with_stdin(&["-"], "echo lone-ok\n");

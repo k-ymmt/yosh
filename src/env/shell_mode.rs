@@ -14,11 +14,15 @@ pub struct ShellOptions {
     pub ignoreeof: bool,
     pub pipefail: bool,
     pub cmd_string: bool, // -c
+    /// `-s` invocation flag / interactive stdin reading. Like
+    /// `cmd_string`, invocation state reported in `$-`, not settable
+    /// via `set`.
+    pub stdin_reads: bool, // -s
 }
 
 impl ShellOptions {
     /// Returns active flags as a string (e.g., "aex") for `$-`.
-    /// Order: a, b, C, e, f, m, n, u, v, x
+    /// Order: a, b, c, C, e, f, m, n, s, u, v, x
     pub fn to_flag_string(&self) -> String {
         let mut s = String::new();
         if self.allexport {
@@ -44,6 +48,9 @@ impl ShellOptions {
         }
         if self.noexec {
             s.push('n');
+        }
+        if self.stdin_reads {
+            s.push('s');
         }
         if self.nounset {
             s.push('u');
@@ -161,6 +168,16 @@ impl ShellOptions {
             InvocationOp::Long(name, on) => self.set_by_name(name, *on),
         }
     }
+
+    /// Apply a parse-time-validated op list (panics on an invalid op —
+    /// main's leading-option loop is the only producer and validates
+    /// every op through `set_by_char`/`set_by_name` before pushing it).
+    pub fn apply_invocation_ops(&mut self, ops: &[InvocationOp]) {
+        for op in ops {
+            self.apply_invocation_op(op)
+                .expect("invocation ops are validated at parse time");
+        }
+    }
 }
 
 /// Shell mode and option flags.
@@ -188,8 +205,8 @@ impl ShellMode {
         let mut s = self.options.to_flag_string();
         if self.is_interactive || self.flag_i {
             // Preserve to_flag_string's alphabetical-ish emit order
-            // (a, b, c, C, e, f, [i], m, n, u, v, x).
-            let pos = s.find(['m', 'n', 'u', 'v', 'x']).unwrap_or(s.len());
+            // (a, b, c, C, e, f, [i], m, n, s, u, v, x).
+            let pos = s.find(['m', 'n', 's', 'u', 'v', 'x']).unwrap_or(s.len());
             s.insert(pos, 'i');
         }
         s

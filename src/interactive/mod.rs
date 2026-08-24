@@ -44,6 +44,7 @@ impl Repl {
     pub fn new(
         shell_name: String,
         positional: Vec<String>,
+        explicit_s: bool,
         invocation_ops: &[crate::env::InvocationOp],
     ) -> Self {
         signal::init_signal_handling();
@@ -52,28 +53,38 @@ impl Repl {
         crate::env::default_path::ensure_default_path(&mut executor.env);
         executor.env.mode.is_interactive = true;
         executor.env.mode.options.monitor = true;
+        // `$-` reports `s` only for an explicit `yosh -s` (bash agrees:
+        // an interactive bash without -s has no `s` in $-; dash differs
+        // and always reports it when reading stdin).
+        executor.env.mode.options.stdin_reads = explicit_s;
         // Invocation-time set options, applied after the interactive
         // monitor default so an explicit `+m` can turn it off (POSIX:
         // -m is on by default for interactive shells). Validated at
         // parse time in main.
-        for op in invocation_ops {
-            let _ = executor.env.mode.options.apply_invocation_op(op);
+        executor
+            .env
+            .mode
+            .options
+            .apply_invocation_ops(invocation_ops);
+        if executor.env.mode.options.monitor {
+            signal::init_job_control_signals();
+            // Ensure shell has terminal
+            crate::env::jobs::take_terminal(executor.env.process.shell_pgid).ok();
         }
-        signal::init_job_control_signals();
-        // Ensure shell has terminal
-        crate::env::jobs::take_terminal(executor.env.process.shell_pgid).ok();
+        // With invocation `+m` the two calls above are skipped: leaving
+        // SIGTSTP/SIGTTIN/SIGTTOU at SIG_DFL matches the state the
+        // runtime `set +m` path produces via reset_job_control_signals,
+        // so Ctrl-Z suspends the whole shell normally and children do
+        // not inherit SIG_IGN for the job-control signals.
 
         // Snapshot the terminal's termios so we can restore it after every
-        // foreground job completes. Only meaningful in interactive + monitor
-        // mode. capture_tty_termios returns Ok(None) silently if stdin is
-        // not a TTY.
-        //
-        // The `is_interactive && monitor` check is load-bearing: an
-        // invocation-time `+m` turns monitor off above, and the guard
-        // mirrors the symmetric one in `restore_shell_termios_if_interactive`,
-        // which runs after each foreground wait. Keep both in sync.
+        // foreground job completes. capture_tty_termios returns Ok(None)
+        // silently if stdin is not a TTY. Captured even under invocation
+        // `+m` so a later `set -m` still has a snapshot to restore from;
+        // the symmetric `is_interactive && monitor` guard lives in
+        // `restore_shell_termios_if_interactive`, which runs after each
+        // foreground wait and re-checks the live monitor flag.
         if executor.env.mode.is_interactive
-            && executor.env.mode.options.monitor
             && let Ok(Some(t)) = crate::exec::terminal_state::capture_tty_termios()
         {
             executor.env.process.jobs.set_shell_tmodes(t);
