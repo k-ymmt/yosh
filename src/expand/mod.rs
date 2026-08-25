@@ -42,6 +42,18 @@ pub struct ExpandedField {
     /// POSIX requires that quoted empty strings like `''` and `""` produce a
     /// zero-length field rather than being removed.
     pub was_quoted: bool,
+    /// Separator placed *before* this field when a scalar (non-splitting)
+    /// context flattens multiple fields into one string. Unquoted `$*`
+    /// records IFS[0] here on its second and later fields (POSIX §2.5.2:
+    /// in contexts where field splitting is not performed, `$*` joins with
+    /// the first IFS character); `None` joins with the historical space.
+    pub scalar_join_sep: Option<String>,
+    /// True once quoted *content* was pushed into this field (`push_quoted`,
+    /// including a quoted empty string like `''`). Distinct from
+    /// `was_quoted`, which the `DoubleQuoted` wrapper also sets before its
+    /// inner parts expand: a zero-parameter `"$@"` must drop the field only
+    /// when nothing quoted actually contributed to it.
+    pub(crate) quoted_content: bool,
 }
 
 impl ExpandedField {
@@ -51,6 +63,8 @@ impl ExpandedField {
             split_protected_mask: Vec::new(),
             glob_protected_mask: Vec::new(),
             was_quoted: false,
+            scalar_join_sep: None,
+            quoted_content: false,
         }
     }
 
@@ -73,6 +87,7 @@ impl ExpandedField {
         set_mask_range(&mut self.split_protected_mask, start, s.len());
         set_mask_range(&mut self.glob_protected_mask, start, s.len());
         self.was_quoted = true;
+        self.quoted_content = true;
     }
 
     /// Append `s` from a literal (un-quoted, non-expansion) text part.
@@ -113,6 +128,7 @@ impl ExpandedField {
             }
         }
         self.was_quoted |= other.was_quoted;
+        self.quoted_content |= other.quoted_content;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -150,6 +166,8 @@ impl ExpandedField {
             glob_protected_mask: vec![u64::MAX; needed_words],
             value,
             was_quoted: false,
+            scalar_join_sep: None,
+            quoted_content: false,
         }
     }
 }
@@ -218,13 +236,17 @@ pub fn expand_words(env: &mut ShellEnv, words: &[Word]) -> crate::error::Result<
 /// redirect targets (no field splitting, no glob).
 pub fn expand_word_to_string(env: &mut ShellEnv, word: &Word) -> crate::error::Result<String> {
     let fields = expand_word_to_fields(env, word)?;
-    // Concatenate all fields (there is normally only one here, but $@ inside
-    // double quotes can produce multiple — join them with a space in that case).
-    Ok(fields
-        .into_iter()
-        .map(ExpandedField::into_string)
-        .collect::<Vec<_>>()
-        .join(" "))
+    // Concatenate all fields (there is normally only one here, but $@/$*
+    // can produce multiple). Each field's `scalar_join_sep` names the
+    // separator preceding it: IFS[0] for `$*`'s fields, space otherwise.
+    let mut result = String::new();
+    for (i, f) in fields.into_iter().enumerate() {
+        if i > 0 {
+            result.push_str(f.scalar_join_sep.as_deref().unwrap_or(" "));
+        }
+        result.push_str(&f.into_string());
+    }
+    Ok(result)
 }
 
 /// Parse `raw` as the body of a double-quoted word and expand it

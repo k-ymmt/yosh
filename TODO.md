@@ -122,15 +122,22 @@
 
 ## Parameter Expansion: Known Limitations
 
-- [ ] Braced special parameters with modifiers treat the parameter as
-      unset — `lookup_var` (`src/expand/param.rs`) resolves LINENO,
-      positionals, and variables but not `!`/`?`/`$`/`#`/`-`/`*`/`@`,
-      so `${!:-empty}` prints `empty` even while `$!` expands to a live
-      pid (bash prints the pid); `${?:-x}`, `${-:-x}` etc. are affected
-      the same way. Discovered during the 2026-08-25 wrap-up review
-      round 3 verification, pre-existing. Fix wants special-param
-      resolution in `lookup_var` (or a pre-lookup in the modifier
-      arms), minding `${name=word}`'s unassignable guard and `${#…}`.
+- [ ] Heredoc `$*` joins with a space, not IFS[0] — the heredoc body
+      expands through the scalar `param::expand` path whose
+      `expand_special` joins `*`/`@` with `" "`. bash agrees with yosh
+      (`set -- a b; IFS=,;` heredoc `$*` → `a b`), dash and a strict
+      POSIX §2.5.2 reading give `a,b`. Assignments, `case` words, and
+      redirect targets were fixed via `ExpandedField::scalar_join_sep`
+      (2026-08-25); heredocs deliberately left bash-matching. Revisit
+      if a real script depends on the dash behavior
+      (`src/expand/heredoc.rs`, `src/expand/param.rs::expand_special`).
+- [ ] DEVIATION (decided 2026-08-25): scalar-context `$@` (`x=$@`)
+      joins with a space, matching bash; dash joins with IFS[0]. POSIX
+      leaves unquoted `$@` in non-splitting contexts unspecified.
+      `${#*}` / `${#@}` likewise follow dash (length of the joined
+      string) where bash returns `$#`; POSIX calls both unspecified
+      (`src/expand/pipeline.rs::push_positionals`,
+      `src/expand/param.rs`).
 
 ## History: Known Limitations
 

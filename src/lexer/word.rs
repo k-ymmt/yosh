@@ -384,6 +384,19 @@ impl Lexer {
                     // But ${#@}, ${#*} etc. in POSIX are technically invalid; we return Length anyway
                     return Ok(WordPart::Parameter(ParamExpr::Length(name)));
                 }
+                // ${#X} where X is a special parameter and the brace closes
+                // immediately after: string length of $X (`${#?}` is the
+                // length of `$?`, not `${#?word}` on `$#` — bash and dash
+                // agree). With more content before `}` the '#' stays the
+                // parameter (`${#-word}`, `${##pat}`, …).
+                c if matches!(c, b'@' | b'*' | b'?' | b'-' | b'$' | b'!' | b'#')
+                    && self.peek_byte2() == b'}' =>
+                {
+                    self.advance(); // consume '#'
+                    let name = self.read_param_name(span)?;
+                    self.expect_byte(b'}', span)?;
+                    return Ok(WordPart::Parameter(ParamExpr::Length(name)));
+                }
                 _ => {
                     // ${#operator...} — treat '#' as the name (special Hash param), then operator
                     // Actually treat it as param name '#'

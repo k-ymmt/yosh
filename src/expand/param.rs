@@ -205,6 +205,29 @@ pub(super) fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
     if name == "LINENO" {
         return Some(env.exec.lineno.to_string());
     }
+    // Special parameters reach here via the modifier forms (`${?:-x}`,
+    // `${!+y}`, …); bare `$?` et al. dispatch through `ParamExpr::Special`
+    // instead. `$!` is unset until an asynchronous list has run, and
+    // `$*`/`$@` are unset without positional parameters (POSIX §2.5.2);
+    // the rest are always set.
+    if let Some(sp) = special_param(name) {
+        return match sp {
+            SpecialParam::Bang if env.process.jobs.last_bg_pid().is_none() => None,
+            SpecialParam::At | SpecialParam::Star
+                if env.vars.positional_params().is_empty() =>
+            {
+                None
+            }
+            // `$*` joins with IFS[0] (POSIX §2.5.2); in unquoted contexts
+            // field splitting on IFS then recovers the separate fields.
+            SpecialParam::Star => Some(
+                env.vars
+                    .positional_params()
+                    .join(&super::pipeline::ifs_join_separator(env)),
+            ),
+            _ => Some(expand_special(env, &sp)),
+        };
+    }
     if !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
         let n: usize = name.parse().unwrap_or(0);
         if n == 0 {
@@ -230,6 +253,22 @@ pub(super) fn is_unset_or_null_inner(val: &Option<String>, null_check: bool) -> 
         None => true,
         Some(v) if null_check && v.is_empty() => true,
         _ => false,
+    }
+}
+
+/// Map a single-character special-parameter name (as produced by the
+/// lexer's `read_param_name`) to its `SpecialParam`. `0` is not included:
+/// the digit-string branch of `lookup_var` already resolves it.
+fn special_param(name: &str) -> Option<SpecialParam> {
+    match name {
+        "?" => Some(SpecialParam::Question),
+        "$" => Some(SpecialParam::Dollar),
+        "#" => Some(SpecialParam::Hash),
+        "@" => Some(SpecialParam::At),
+        "*" => Some(SpecialParam::Star),
+        "!" => Some(SpecialParam::Bang),
+        "-" => Some(SpecialParam::Dash),
+        _ => None,
     }
 }
 

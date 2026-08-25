@@ -23,6 +23,14 @@ impl Lexer {
         }
     }
 
+    pub(crate) fn peek_byte2(&self) -> u8 {
+        if self.pos + 2 >= self.input.len() {
+            0
+        } else {
+            self.input[self.pos + 2]
+        }
+    }
+
     pub(crate) fn advance(&mut self) -> u8 {
         let ch = self.current_byte();
         if !self.at_end() {

@@ -139,53 +139,10 @@ fn expand_param_to_fields(
     in_double_quote: bool,
 ) -> crate::error::Result<()> {
     match param {
-        // "$@" inside double quotes: each positional parameter becomes its own field.
-        ParamExpr::Special(SpecialParam::At) if in_double_quote => {
-            let params = env.vars.positional_params().to_vec();
-            if params.is_empty() {
-                // "$@" with no params → produces nothing (not even an empty field)
-                // Remove the last (empty) field if it is empty.
-                if fields.last().map(|f| f.is_empty()).unwrap_or(false) {
-                    fields.pop();
-                }
-                return Ok(());
-            }
-            for (i, p) in params.iter().enumerate() {
-                if i == 0 {
-                    fields.last_mut().unwrap().push_quoted(p);
-                } else {
-                    fields.push(ExpandedField::new());
-                    fields.last_mut().unwrap().push_quoted(p);
-                }
-            }
-        }
-
-        // "$*" inside double quotes: join all positional params with IFS[0].
-        // A set-but-null IFS joins with no separator (POSIX §2.5.2).
-        ParamExpr::Special(SpecialParam::Star) if in_double_quote => {
-            let sep = ifs_join_separator(env);
-            let joined = env.vars.positional_params().join(&sep);
-            fields.last_mut().unwrap().push_quoted(&joined);
-        }
-
-        // Unquoted $@ / $*: each positional parameter becomes its own field,
-        // with content unquoted (subject to IFS splitting and glob). POSIX
-        // §2.5.2 gives `*` the same initial one-field-per-parameter shape as
-        // `@` outside double quotes; joining with IFS[0] applies only to the
-        // quoted "$*" form (verified against bash and dash).
-        ParamExpr::Special(SpecialParam::At | SpecialParam::Star) if !in_double_quote => {
-            let params = env.vars.positional_params().to_vec();
-            if params.is_empty() {
-                return Ok(());
-            }
-            for (i, p) in params.iter().enumerate() {
-                if i == 0 {
-                    fields.last_mut().unwrap().push_expanded(p);
-                } else {
-                    fields.push(ExpandedField::new());
-                    fields.last_mut().unwrap().push_expanded(p);
-                }
-            }
+        // $@ / $* without modifiers: field-per-parameter (or "$*"'s
+        // IFS[0]-joined single field) — see `push_positionals`.
+        ParamExpr::Special(sp @ (SpecialParam::At | SpecialParam::Star)) => {
+            push_positionals(env, fields, matches!(sp, SpecialParam::Star), in_double_quote);
         }
 
         // ${name:-word} / ${name-word}: substituting `word` must preserve its
@@ -204,6 +161,10 @@ fn expand_param_to_fields(
                         expand_part_to_fields(env, part, fields, in_double_quote)?;
                     }
                 }
+            } else if let Some(star) = positional_special(name) {
+                // Set `${@:-w}` / `${*:-w}` keep the bare `$@`/`$*` field
+                // shape instead of collapsing to one scalar field.
+                push_positionals(env, fields, star, in_double_quote);
             } else {
                 push_param_value(fields, &val.unwrap_or_default(), in_double_quote);
             }
@@ -249,11 +210,15 @@ fn expand_param_to_fields(
                         expand_part_to_fields(env, part, &mut sub, in_double_quote)?;
                     }
                 }
-                let new_val = sub
-                    .iter()
-                    .map(|f| f.value.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                // Join like `expand_word_to_string`: each field's
+                // `scalar_join_sep` (IFS[0] for `$*`) precedes it.
+                let mut new_val = String::new();
+                for (i, f) in sub.iter().enumerate() {
+                    if i > 0 {
+                        new_val.push_str(f.scalar_join_sep.as_deref().unwrap_or(" "));
+                    }
+                    new_val.push_str(&f.value);
+                }
                 // LINENO is a computed pseudo-variable (see `param::lookup_var`);
                 // assigning it would resurrect a real `VarStore` entry.
                 if name != "LINENO" {
@@ -264,9 +229,27 @@ fn expand_param_to_fields(
                     fields.last_mut().unwrap().append_field(&first);
                 }
                 fields.extend(sub);
+            } else if let Some(star) = positional_special(name) {
+                push_positionals(env, fields, star, in_double_quote);
             } else {
                 push_param_value(fields, &val.unwrap_or_default(), in_double_quote);
             }
+        }
+
+        // ${@:?word} / ${*:?word} with the parameter set: keep the bare
+        // `$@`/`$*` field shape. The unset/null case falls through to the
+        // scalar path below for its error side effects.
+        ParamExpr::Error {
+            name, null_check, ..
+        } if positional_special(name).is_some()
+            && !param::is_unset_or_null_inner(&param::lookup_var(env, name), *null_check) =>
+        {
+            push_positionals(
+                env,
+                fields,
+                positional_special(name).unwrap_or_default(),
+                in_double_quote,
+            );
         }
 
         // Everything else: expand to a string, then push.
@@ -276,6 +259,71 @@ fn expand_param_to_fields(
         }
     }
     Ok(())
+}
+
+/// `Some(is_star)` when `name` is the `@` or `*` special parameter (as it
+/// appears in the modifier forms `${@:-w}`, `${*:=w}`, …), else `None`.
+fn positional_special(name: &str) -> Option<bool> {
+    match name {
+        "*" => Some(true),
+        "@" => Some(false),
+        _ => None,
+    }
+}
+
+/// Push the positional parameters into `fields` with the bare `$@`/`$*`
+/// shape (POSIX §2.5.2): quoted `"$@"` gives one quoted field per
+/// parameter (nothing at all for zero parameters), quoted `"$*"` a single
+/// IFS[0]-joined quoted field (set-but-null IFS joins with no separator),
+/// and both give one expanded (split- and glob-subject) field per
+/// parameter unquoted — verified against bash and dash.
+fn push_positionals(
+    env: &ShellEnv,
+    fields: &mut Vec<ExpandedField>,
+    star: bool,
+    in_double_quote: bool,
+) {
+    if star && in_double_quote {
+        let sep = ifs_join_separator(env);
+        let joined = env.vars.positional_params().join(&sep);
+        fields.last_mut().unwrap().push_quoted(&joined);
+        return;
+    }
+    let params = env.vars.positional_params().to_vec();
+    if params.is_empty() {
+        // "$@" with no params → produces nothing (not even an empty field).
+        // Reset the accumulator (rather than popping it — later word parts
+        // like `"$@"post` still append to it) unless quoted content already
+        // contributed, as in `''"$@"`.
+        if in_double_quote {
+            let f = fields.last_mut().unwrap();
+            if f.is_empty() && !f.quoted_content {
+                *f = ExpandedField::new();
+            }
+        }
+        return;
+    }
+    // Unquoted `$*`'s fields carry IFS[0] as their scalar-context join
+    // separator (see `ExpandedField::scalar_join_sep`), captured at
+    // expansion time.
+    let star_sep = if star {
+        Some(ifs_join_separator(env))
+    } else {
+        None
+    };
+    for (i, p) in params.iter().enumerate() {
+        if i > 0 {
+            let mut nf = ExpandedField::new();
+            nf.scalar_join_sep = star_sep.clone();
+            fields.push(nf);
+        }
+        let f = fields.last_mut().unwrap();
+        if in_double_quote {
+            f.push_quoted(p);
+        } else {
+            f.push_expanded(p);
+        }
+    }
 }
 
 /// Push a parameter's value into the current field: quoted context protects
@@ -292,7 +340,7 @@ fn push_param_value(fields: &mut [ExpandedField], value: &str, in_double_quote: 
 /// Return the `"$*"` join separator: the first character of IFS.
 /// Unset IFS joins with a space; set-but-null IFS joins with nothing
 /// (POSIX §2.5.2).
-fn ifs_join_separator(env: &ShellEnv) -> String {
+pub(super) fn ifs_join_separator(env: &ShellEnv) -> String {
     match env.vars.get("IFS") {
         None => " ".to_string(),
         Some(s) => s.chars().next().map(String::from).unwrap_or_default(),
