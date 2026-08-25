@@ -266,9 +266,6 @@
         Repl::new terminal setup remains REPL-only" residual above
         (`src/exec/terminal_state.rs`, `src/main.rs::run_string`,
         `src/builtin/special.rs`).
-  - [ ] `tests/invocation.rs` hand-rolls pid-named temp dirs in three
-        tests (leaks the dir if an assertion panics before cleanup);
-        switch to `tempfile::tempdir()` next time the file is touched.
   - [ ] `test_apply_invocation_op_ordered_override`
         (`src/env/shell_mode.rs`) exercises only the set_by_char/
         set_by_name delegation; the ordering invariant it names (monitor

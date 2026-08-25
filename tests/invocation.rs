@@ -76,9 +76,8 @@ fn dash_ic_cluster_equals_separate_flags() {
 
 #[test]
 fn dash_i_script_file_reports_i() {
-    let dir = std::env::temp_dir().join(format!("yosh-inv-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let script = dir.join("flags.sh");
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("flags.sh");
     std::fs::write(&script, "echo flags-$-\n").unwrap();
 
     let with_i = yosh_bin().arg("-i").arg(&script).output().unwrap();
@@ -90,8 +89,6 @@ fn dash_i_script_file_reports_i() {
     let out = String::from_utf8_lossy(&without_i.stdout);
     let flags = out.trim().strip_prefix("flags-").unwrap().to_string();
     assert!(!flags.contains('i'), "got {out:?}");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -148,14 +145,13 @@ fn command_sub_dollar_dash_omits_i_when_not_interactive() {
 
 #[test]
 fn double_dash_ends_option_parsing() {
-    let dir = std::env::temp_dir().join(format!("yosh-inv-dd-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tempfile::tempdir().unwrap();
     // A script literally named `-i` must be runnable behind `--`.
-    let script = dir.join("-i");
+    let script = dir.path().join("-i");
     std::fs::write(&script, "echo ran-a-script-$-\n").unwrap();
 
     let output = yosh_bin()
-        .current_dir(&dir)
+        .current_dir(dir.path())
         .args(["--", "-i"])
         .output()
         .unwrap();
@@ -170,8 +166,6 @@ fn double_dash_ends_option_parsing() {
         !flags.contains('i'),
         "-i after -- is an operand, got {out:?}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -241,17 +235,14 @@ fn invocation_flags_appear_in_dollar_dash() {
 
 #[test]
 fn dash_e_script_file() {
-    let dir = std::env::temp_dir().join(format!("yosh-inv-e-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let script = dir.join("errexit.sh");
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("errexit.sh");
     std::fs::write(&script, "false\necho after\n").unwrap();
 
     let output = yosh_bin().arg("-e").arg(&script).output().unwrap();
     let out = String::from_utf8_lossy(&output.stdout);
     assert!(!out.contains("after"), "got {out:?}");
     assert_eq!(output.status.code(), Some(1));
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -338,17 +329,14 @@ fn dash_n_ignored_for_interactive_shells() {
 fn dash_h_with_operand_is_posix_noop() {
     // `-h` alone is the yosh help alias, but with anything after it,
     // it is the POSIX locate-utilities no-op: the script must run.
-    let dir = std::env::temp_dir().join(format!("yosh-inv-h-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let script = dir.join("hello.sh");
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("hello.sh");
     std::fs::write(&script, "echo from-script\n").unwrap();
 
     let output = yosh_bin().arg("-h").arg(&script).output().unwrap();
     let out = String::from_utf8_lossy(&output.stdout);
     assert_eq!(out.trim(), "from-script", "got {out:?}");
     assert_eq!(output.status.code(), Some(0));
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
