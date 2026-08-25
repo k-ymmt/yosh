@@ -245,4 +245,69 @@ mod tests {
             Err(ErrorCode::NotFound)
         ));
     }
+
+    /// Mirror of `src/plugin/host/commands.rs::host_commands_exec_timeout_after_1000ms`
+    /// for this module's duplicated spawn helper. Upper bound follows the
+    /// grandchild test above (3000ms): generous enough for loaded parallel
+    /// runs, small enough to catch a wait-forever hang.
+    #[test]
+    fn exec_timeout_after_1000ms() {
+        let mut s = state_with_allow(&["/bin/sleep:*"]);
+        let start = std::time::Instant::now();
+        let result = host_exec(&mut s, "/bin/sleep", &["5".to_string()]);
+        let elapsed = start.elapsed();
+        assert!(matches!(result, Err(ErrorCode::Timeout)));
+        assert!(
+            elapsed < std::time::Duration::from_millis(3000),
+            "timeout took {:?}, expected <3000ms",
+            elapsed
+        );
+    }
+
+    /// Stronger than the production mirror: the child ignores SIGTERM, so
+    /// a bounded Err(Timeout) return proves the SIGKILL fallback and the
+    /// final reap actually ran (a TERM-obeying child like bare `sleep`
+    /// dies in the grace period and never reaches `child.kill()`).
+    #[test]
+    fn exec_kills_term_ignoring_child_on_timeout() {
+        let mut s = state_with_allow(&["/bin/sh:*"]);
+        let start = std::time::Instant::now();
+        let result = host_exec(
+            &mut s,
+            "/bin/sh",
+            // `exec` so the tracked child PID *is* the TERM-ignoring
+            // sleep (ignored dispositions survive exec) — killing a
+            // wrapper sh would orphan a still-sleeping grandchild. The
+            // odd duration is a unique process-table marker for the
+            // survivor check below.
+            &["-c".to_string(), "trap '' TERM; exec sleep 4.917".to_string()],
+        );
+        let elapsed = start.elapsed();
+        assert!(matches!(result, Err(ErrorCode::Timeout)));
+        // Lower bound: SIGTERM only fires after the 1000ms deadline.
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "elapsed {:?} too small — timeout fired before deadline",
+            elapsed
+        );
+        // Upper bound: deadline + grace + SIGKILL + scheduling slack. A
+        // hang here would mean the TERM-ignoring child was never killed.
+        assert!(
+            elapsed < std::time::Duration::from_millis(3000),
+            "elapsed {:?} too large — SIGKILL fallback or reap missing",
+            elapsed
+        );
+        // Survivor check: the bounded drain could return Timeout even
+        // with the SIGKILL step deleted; the unique marker proves the
+        // TERM-ignoring child is actually gone from the process table.
+        let survivors = std::process::Command::new("pgrep")
+            .args(["-f", "sleep 4.917"])
+            .output()
+            .expect("pgrep runs");
+        assert!(
+            survivors.stdout.is_empty(),
+            "TERM-ignoring child survived the timeout kill: {:?}",
+            String::from_utf8_lossy(&survivors.stdout)
+        );
+    }
 }
