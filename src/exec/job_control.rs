@@ -849,10 +849,7 @@ mod tests {
             .add_job(pid, vec![pid], "sh -c 'exit 7'", false);
 
         // Simulate the interactive notification pass: reap, report, drop.
-        exec.env
-            .process
-            .jobs
-            .update_status(pid, JobStatus::Done(7));
+        exec.env.process.jobs.update_status(pid, JobStatus::Done(7));
         exec.env.process.jobs.mark_notified(id);
         exec.env.process.jobs.cleanup_notified();
         assert!(exec.env.process.jobs.get(id).is_none());

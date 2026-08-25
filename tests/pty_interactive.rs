@@ -1009,8 +1009,7 @@ fn test_pty_wait_with_chld_trap_returns_child_status() {
         .expect("wait must return the child's status despite the CHLD trap");
     let before = String::from_utf8_lossy(m.before()).to_string();
     if !before.contains("TRAP-RAN") {
-        s.expect("TRAP-RAN")
-            .expect("the CHLD trap action must run");
+        s.expect("TRAP-RAN").expect("the CHLD trap action must run");
     }
     wait_for_prompt(&mut s);
     exit_shell(&mut s);

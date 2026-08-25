@@ -213,9 +213,7 @@ pub(super) fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
     if let Some(sp) = special_param(name) {
         return match sp {
             SpecialParam::Bang if env.process.jobs.last_bg_pid().is_none() => None,
-            SpecialParam::At | SpecialParam::Star
-                if env.vars.positional_params().is_empty() =>
-            {
+            SpecialParam::At | SpecialParam::Star if env.vars.positional_params().is_empty() => {
                 None
             }
             // `$*` joins with IFS[0] (POSIX §2.5.2); in unquoted contexts

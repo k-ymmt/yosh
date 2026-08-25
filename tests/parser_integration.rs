@@ -1046,7 +1046,10 @@ case "$-" in *m*) echo "m=on";; *) echo "m=off";; esac"#,
         });
     }
     let out = cmd.output().expect("failed to execute yosh");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "m=off\nm=off\nm=off\n");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "m=off\nm=off\nm=off\n"
+    );
 }
 
 #[test]

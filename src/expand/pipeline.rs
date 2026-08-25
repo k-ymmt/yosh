@@ -142,7 +142,12 @@ fn expand_param_to_fields(
         // $@ / $* without modifiers: field-per-parameter (or "$*"'s
         // IFS[0]-joined single field) — see `push_positionals`.
         ParamExpr::Special(sp @ (SpecialParam::At | SpecialParam::Star)) => {
-            push_positionals(env, fields, matches!(sp, SpecialParam::Star), in_double_quote);
+            push_positionals(
+                env,
+                fields,
+                matches!(sp, SpecialParam::Star),
+                in_double_quote,
+            );
         }
 
         // ${name:-word} / ${name-word}: substituting `word` must preserve its

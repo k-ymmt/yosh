@@ -280,7 +280,10 @@ mod tests {
             // wrapper sh would orphan a still-sleeping grandchild. The
             // odd duration is a unique process-table marker for the
             // survivor check below.
-            &["-c".to_string(), "trap '' TERM; exec sleep 4.917".to_string()],
+            &[
+                "-c".to_string(),
+                "trap '' TERM; exec sleep 4.917".to_string(),
+            ],
         );
         let elapsed = start.elapsed();
         assert!(matches!(result, Err(ErrorCode::Timeout)));

@@ -449,9 +449,9 @@ fn runtime_set_m_without_terminal_stays_off() {
     let (out, code) = run_detached_with_stdin(&["-s"], "set -m\necho rc-$?-m-$-\n");
     assert_eq!(code, 0);
     let trimmed = out.trim();
-    let rest = trimmed.strip_prefix("rc-0-m-").unwrap_or_else(|| {
-        panic!("set -m must succeed even without a terminal, got {out:?}")
-    });
+    let rest = trimmed
+        .strip_prefix("rc-0-m-")
+        .unwrap_or_else(|| panic!("set -m must succeed even without a terminal, got {out:?}"));
     assert!(
         !rest.contains('m'),
         "monitor must stay off without a terminal, got {out:?}"
