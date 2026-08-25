@@ -60,14 +60,30 @@ impl super::JobTable {
 
     /// Remove all jobs that are both notified AND in a terminal state
     /// (Done or Terminated).
+    ///
+    /// Before removal, each job's wait-style status is recorded in the
+    /// reaped-status map so `wait <pid>` on a known `$!` pid still
+    /// reports it after the job leaves the table (POSIX XCU wait).
     pub fn cleanup_notified(&mut self) {
-        let to_remove: Vec<JobId> = self
+        let to_remove: Vec<(JobId, Vec<nix::unistd::Pid>, Option<i32>)> = self
             .jobs
             .values()
             .filter(|j| is_cleanable(j))
-            .map(|j| j.id)
+            .map(|j| {
+                let code = match j.status {
+                    super::JobStatus::Done(code) => Some(code),
+                    super::JobStatus::Terminated(sig) => Some(128 + sig),
+                    _ => None,
+                };
+                (j.id, j.pids.clone(), code)
+            })
             .collect();
-        for id in to_remove {
+        for (id, pids, code) in to_remove {
+            if let Some(code) = code {
+                for pid in pids {
+                    self.record_reaped(pid, code);
+                }
+            }
             self.remove_job(id);
         }
     }
@@ -168,6 +184,62 @@ mod tests {
     // -----------------------------------------------------------------------
     // mark_notified clears pending
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // cleanup_notified records reaped statuses before removal
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cleanup_notified_records_done_status() {
+        let mut table = JobTable::default();
+        let id = table.add_job(pid(100), vec![pid(100)], "sh -c 'exit 7'", false);
+        table.update_status(pid(100), JobStatus::Done(7));
+        table.mark_notified(id);
+
+        table.cleanup_notified();
+
+        assert!(table.get(id).is_none(), "job must leave the table");
+        assert_eq!(table.reaped_status(pid(100)), Some(7));
+    }
+
+    #[test]
+    fn test_cleanup_notified_records_terminated_as_128_plus_sig() {
+        let mut table = JobTable::default();
+        let id = table.add_job(pid(200), vec![pid(200)], "sleep 100", false);
+        table.update_status(pid(200), JobStatus::Terminated(15));
+        table.mark_notified(id);
+
+        table.cleanup_notified();
+
+        assert_eq!(table.reaped_status(pid(200)), Some(128 + 15));
+    }
+
+    #[test]
+    fn test_cleanup_notified_records_all_pids_of_a_pipeline_job() {
+        let mut table = JobTable::default();
+        let id = table.add_job(pid(300), vec![pid(300), pid(301)], "a | b", false);
+        table.update_status(pid(301), JobStatus::Done(4));
+        table.mark_notified(id);
+
+        table.cleanup_notified();
+
+        assert_eq!(table.reaped_status(pid(300)), Some(4));
+        assert_eq!(table.reaped_status(pid(301)), Some(4));
+    }
+
+    #[test]
+    fn test_cleanup_notified_ignores_live_jobs() {
+        let mut table = JobTable::default();
+        table.add_job(pid(400), vec![pid(400)], "sleep 100", false);
+
+        table.cleanup_notified();
+
+        assert_eq!(
+            table.reaped_status(pid(400)),
+            None,
+            "running jobs must not be recorded or removed",
+        );
+    }
 
     #[test]
     fn test_mark_notified_clears_pending() {

@@ -852,6 +852,57 @@ fn test_pty_wait_reaps_background_job() {
 }
 
 #[test]
+fn test_pty_wait_returns_status_after_notification_cleanup() {
+    // Regression (2026-08-25 wrap-up review round 3): the interactive
+    // notification pass reports a Done background job and drops it from
+    // the job table, after which `wait $p` errored "pid N is not a
+    // child of this shell" (127). POSIX XCU wait requires known `$!`
+    // pids to stay waitable; bash reports the remembered status (7) —
+    // repeatedly — until a no-operand `wait` discards it (empirical,
+    // 2026-08-25).
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("sh -c 'exit 7' & p=$!\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    // A foreground sleep outlives the background child; the next prompt
+    // cycle reaps it, prints the Done notification, and drops the job.
+    s.send("/bin/sleep 0.3\r").unwrap();
+    s.expect("Done").expect("background job must be notified");
+    wait_for_prompt(&mut s);
+
+    s.send("wait $p; echo FIRST-$?\r").unwrap();
+    expect_output(
+        &mut s,
+        "FIRST-7",
+        "wait must report the remembered status of a cleaned-up job",
+    );
+    wait_for_prompt(&mut s);
+
+    // Non-consuming: a second wait reports the same status (bash).
+    s.send("wait $p; echo SECOND-$?\r").unwrap();
+    expect_output(
+        &mut s,
+        "SECOND-7",
+        "repeated wait must report the remembered status again",
+    );
+    wait_for_prompt(&mut s);
+
+    // A completed no-operand wait discards remembered statuses (bash).
+    s.send("wait\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("wait $p; echo THIRD-$?\r").unwrap();
+    expect_output(
+        &mut s,
+        "THIRD-127",
+        "after a bare wait the pid must be forgotten (bash parity)",
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_wait_with_chld_trap_returns_child_status() {
     // With a CHLD trap set, `wait $!` still returns the awaited
     // child's exit status: the trap action runs, but the child-exit

@@ -1,5 +1,5 @@
 use nix::unistd::Pid;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 mod format;
 mod model;
@@ -26,6 +26,25 @@ pub struct JobTable {
     /// restore the shell's terminal state after every foreground wait
     /// completion. `None` in non-interactive / non-monitor mode.
     shell_tmodes: Option<nix::sys::termios::Termios>,
+    /// Wait-style exit statuses (`code` or `128+sig`) of background jobs
+    /// that were reaped, notified, and removed from the table. POSIX XCU
+    /// `wait` requires known `$!` pids to stay waitable after the
+    /// interactive notification pass drops the job; bash keeps such
+    /// statuses (non-consuming) until a no-operand `wait` discards them
+    /// (empirical, 2026-08-25). FIFO order for CHILD_MAX-bounded
+    /// eviction of the oldest entries.
+    reaped_statuses: VecDeque<(Pid, i32)>,
+}
+
+/// Retention bound for `reaped_statuses`: POSIX requires remembering at
+/// least {CHILD_MAX} asynchronous job statuses. Falls back to 1024 when
+/// sysconf reports no value.
+fn reaped_cap() -> usize {
+    nix::unistd::sysconf(nix::unistd::SysconfVar::CHILD_MAX)
+        .ok()
+        .flatten()
+        .and_then(|v| usize::try_from(v).ok())
+        .unwrap_or(1024)
 }
 
 impl JobTable {
@@ -163,6 +182,42 @@ impl JobTable {
             .filter(|j| !j.foreground)
             .max_by_key(|j| j.id)
             .map(|j| j.pgid)
+    }
+
+    // -----------------------------------------------------------------------
+    // Reaped-status retention (POSIX XCU wait: known pids stay waitable)
+    // -----------------------------------------------------------------------
+
+    /// Remember the wait-style exit status of a reaped pid whose job is
+    /// being removed from the table, so a later `wait <pid>` can still
+    /// report it. Re-recording a pid (pid reuse) replaces the old entry.
+    pub fn record_reaped(&mut self, pid: Pid, status: i32) {
+        self.record_reaped_bounded(pid, status, reaped_cap());
+    }
+
+    fn record_reaped_bounded(&mut self, pid: Pid, status: i32, cap: usize) {
+        self.reaped_statuses.retain(|(p, _)| *p != pid);
+        self.reaped_statuses.push_back((pid, status));
+        while self.reaped_statuses.len() > cap {
+            self.reaped_statuses.pop_front();
+        }
+    }
+
+    /// Look up the remembered status of a reaped-and-forgotten pid.
+    /// Non-consuming: repeated `wait <pid>` keeps returning the status
+    /// (bash behavior) until `clear_reaped` discards it.
+    pub fn reaped_status(&self, pid: Pid) -> Option<i32> {
+        self.reaped_statuses
+            .iter()
+            .find(|(p, _)| *p == pid)
+            .map(|&(_, status)| status)
+    }
+
+    /// Discard all remembered statuses. POSIX XCU wait: a no-operand
+    /// `wait` may discard known process IDs once it completes; bash does
+    /// (`wait; wait $p` reports "not a child", empirical 2026-08-25).
+    pub fn clear_reaped(&mut self) {
+        self.reaped_statuses.clear();
     }
 
     /// Iterate over all jobs sorted by id (ascending).
@@ -376,6 +431,50 @@ mod tests {
     // -----------------------------------------------------------------------
     // all_jobs sorted by id
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Reaped-status retention
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_record_reaped_lookup_is_non_consuming() {
+        let mut table = JobTable::default();
+        table.record_reaped(pid(100), 7);
+        assert_eq!(table.reaped_status(pid(100)), Some(7));
+        // bash keeps the status across repeated waits.
+        assert_eq!(table.reaped_status(pid(100)), Some(7));
+        assert_eq!(table.reaped_status(pid(999)), None);
+    }
+
+    #[test]
+    fn test_record_reaped_rerecord_replaces_old_entry() {
+        let mut table = JobTable::default();
+        table.record_reaped(pid(100), 7);
+        table.record_reaped(pid(100), 3);
+        assert_eq!(table.reaped_status(pid(100)), Some(3));
+        assert_eq!(table.reaped_statuses.len(), 1);
+    }
+
+    #[test]
+    fn test_record_reaped_evicts_oldest_beyond_cap() {
+        let mut table = JobTable::default();
+        table.record_reaped_bounded(pid(1), 1, 2);
+        table.record_reaped_bounded(pid(2), 2, 2);
+        table.record_reaped_bounded(pid(3), 3, 2);
+        assert_eq!(table.reaped_status(pid(1)), None, "oldest must be evicted");
+        assert_eq!(table.reaped_status(pid(2)), Some(2));
+        assert_eq!(table.reaped_status(pid(3)), Some(3));
+    }
+
+    #[test]
+    fn test_clear_reaped_discards_all() {
+        let mut table = JobTable::default();
+        table.record_reaped(pid(100), 7);
+        table.record_reaped(pid(200), 128 + 15);
+        table.clear_reaped();
+        assert_eq!(table.reaped_status(pid(100)), None);
+        assert_eq!(table.reaped_status(pid(200)), None);
+    }
 
     #[test]
     fn test_all_jobs_sorted_by_id() {

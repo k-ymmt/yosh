@@ -43,17 +43,15 @@
 
 ## Job Control: Known Limitations
 
-- [ ] Reaped-and-notified background jobs forget their exit status —
-      the interactive notification pass deletes a Done job from the
-      job table after displaying it, so `sh -c 'exit 7' & p=$!`, two
-      prompts later `wait $p` prints `wait: pid N is not a child of
-      this shell` and returns 127 where bash returns 7. POSIX XCU wait
-      requires known `$!` pids to stay waitable until consumed or a
-      later async list. Fix needs a retained pid→status map (or
-      keeping Done jobs until waited) fed by the notification reaper
-      and consulted by `builtin_wait`'s already-done/ECHILD paths.
-      Wrap-up review 2026-08-25 round 3 finding, pre-existing
-      (`src/env/jobs/notification.rs`, `src/exec/job_control.rs`).
+- [ ] A background job foregrounded via `fg` that then completes is
+      removed by `wait_for_foreground_job` without entering the
+      reaped-status map, so a later `wait $!` on it errors 127 where
+      bash likely reports the remembered status. Recording there would
+      also capture plain foreground pipelines (bash: 127 for those) and
+      pollute the CHILD_MAX-bounded map, so it needs an
+      "originally-async" marker on Job first. Deliberately left out of
+      the 2026-08-25 reaped-status-map fix; revisit if a real script
+      hits it (`src/exec/job_control.rs::wait_for_foreground_job`).
 - [ ] Internal high fds (self-pipe at 10/11, controlling-terminal fd
       at ≥100) remain user-clobberable because yosh accepts
       multi-digit IO_NUMBER redirections — `exec 10>/dev/null` breaks

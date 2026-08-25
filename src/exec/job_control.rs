@@ -134,27 +134,47 @@ impl Executor {
         if target_pids.is_empty() {
             // No operands and nothing running: POSIX no-operand wait
             // exits 0 (previously leaked $?, so `false; wait` was 1).
+            // Completing a no-operand wait discards remembered statuses
+            // of already-forgotten jobs (bash: `wait; wait $p` then
+            // reports "not a child", empirical 2026-08-25).
+            self.env.process.jobs.clear_reaped();
             return Ok(0);
         }
 
         let mut last_status = 0;
 
         for pid in &target_pids {
-            // Check if already completed in jobs table
-            let already_done = self
+            // Check if already completed: first the live jobs table,
+            // then — when the interactive notification pass has already
+            // reaped, reported, and dropped the job — the retained
+            // reaped-status map (POSIX XCU wait: known `$!` pids stay
+            // waitable until consumed by a no-operand wait). The map is
+            // consulted only when the pid is absent from the table, so
+            // a recycled pid backing a live job cannot resolve to a
+            // stale status.
+            let table_status = self
                 .env
                 .process
                 .jobs
                 .all_jobs()
                 .find(|j| j.pgid == *pid)
-                .and_then(|j| match j.status {
-                    JobStatus::Done(code) => Some(code),
-                    JobStatus::Terminated(sig) => Some(128 + sig),
-                    _ => None,
-                });
-            if let Some(s) = already_done {
-                last_status = s;
-                continue;
+                .map(|j| j.status);
+            match table_status {
+                Some(JobStatus::Done(code)) => {
+                    last_status = code;
+                    continue;
+                }
+                Some(JobStatus::Terminated(sig)) => {
+                    last_status = 128 + sig;
+                    continue;
+                }
+                Some(_) => {}
+                None => {
+                    if let Some(s) = self.env.process.jobs.reaped_status(*pid) {
+                        last_status = s;
+                        continue;
+                    }
+                }
             }
 
             loop {
@@ -246,6 +266,13 @@ impl Executor {
                             last_status = s;
                             break;
                         }
+                        // Or a notification pass mid-wait may have
+                        // reaped AND removed the job — consult the
+                        // retained reaped-status map before erroring.
+                        if let Some(s) = self.env.process.jobs.reaped_status(*pid) {
+                            last_status = s;
+                            break;
+                        }
                         let err = ShellError::runtime(
                             RuntimeErrorKind::CommandNotFound,
                             format!("wait: pid {} is not a child of this shell", pid),
@@ -259,6 +286,12 @@ impl Executor {
             }
         }
 
+        if no_operands {
+            // Completed no-operand wait: discard remembered statuses of
+            // already-forgotten jobs (bash behavior; the >128 trapped-
+            // signal early return above intentionally skips this).
+            self.env.process.jobs.clear_reaped();
+        }
         Ok(if no_operands { 0 } else { last_status })
     }
 
@@ -785,6 +818,55 @@ mod tests {
         assert!(job.saved_tmodes().is_some(), "Some capture must be stored");
         assert!(matches!(job.status, JobStatus::Stopped(_)));
         assert!(!job.foreground);
+    }
+
+    #[test]
+    fn wait_reports_status_of_notified_and_cleaned_job() {
+        use crate::env::jobs::JobStatus;
+        use nix::unistd::Pid;
+        let mut exec = Executor::new("yosh", vec![]);
+        let pid = Pid::from_raw(88888);
+        let id = exec
+            .env
+            .process
+            .jobs
+            .add_job(pid, vec![pid], "sh -c 'exit 7'", false);
+
+        // Simulate the interactive notification pass: reap, report, drop.
+        exec.env
+            .process
+            .jobs
+            .update_status(pid, JobStatus::Done(7));
+        exec.env.process.jobs.mark_notified(id);
+        exec.env.process.jobs.cleanup_notified();
+        assert!(exec.env.process.jobs.get(id).is_none());
+
+        // POSIX XCU wait: the known pid must stay waitable — previously
+        // this errored "pid 88888 is not a child of this shell" (127).
+        let status = exec
+            .builtin_wait(&["88888".to_string()])
+            .expect("wait on a remembered pid must not error");
+        assert_eq!(status, 7);
+
+        // Non-consuming (bash behavior): a second wait reports it again.
+        let status = exec
+            .builtin_wait(&["88888".to_string()])
+            .expect("repeated wait on a remembered pid must not error");
+        assert_eq!(status, 7);
+    }
+
+    #[test]
+    fn no_operand_wait_discards_remembered_statuses() {
+        use nix::unistd::Pid;
+        let mut exec = Executor::new("yosh", vec![]);
+        let pid = Pid::from_raw(88889);
+        exec.env.process.jobs.record_reaped(pid, 7);
+
+        // Bare `wait` with nothing running completes immediately and
+        // discards the remembered statuses (bash behavior).
+        let status = exec.builtin_wait(&[]).expect("bare wait must succeed");
+        assert_eq!(status, 0);
+        assert_eq!(exec.env.process.jobs.reaped_status(pid), None);
     }
 
     #[test]
