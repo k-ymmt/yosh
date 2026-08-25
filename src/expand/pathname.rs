@@ -61,7 +61,7 @@ fn has_unquoted_glob_chars(field: &ExpandedField) -> bool {
 /// If the pattern contains `/`, it is split on the first `/`-delimited
 /// component, the directory portion is resolved (possibly recursively), and
 /// the final component pattern is matched against entries in that directory.
-fn glob_match(pattern: &str) -> Vec<String> {
+pub(crate) fn glob_match(pattern: &str) -> Vec<String> {
     if !pattern.contains('/') {
         // Simple case: glob in the current directory.
         let mut matches = glob_in_dir(".", pattern);

@@ -404,6 +404,30 @@ impl Repl {
                     continue;
                 }
                 ParseStatus::Empty => {
+                    // Comment-only lines still enter history (bash does
+                    // the same; POSIX requires it for the vi `#` command,
+                    // whose whole point is stashing the line in history).
+                    let cmd_text = input_buffer.trim_end().to_string();
+                    if cmd_text.trim_start().starts_with('#') {
+                        let histsize: usize = self
+                            .executor
+                            .env
+                            .vars
+                            .get("HISTSIZE")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(500);
+                        let histcontrol = self
+                            .executor
+                            .env
+                            .vars
+                            .get("HISTCONTROL")
+                            .unwrap_or("ignoreboth")
+                            .to_string();
+                        self.executor
+                            .env
+                            .history
+                            .add(&cmd_text, histsize, &histcontrol);
+                    }
                     input_buffer.clear();
                 }
                 ParseStatus::Error(msg) => {

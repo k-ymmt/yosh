@@ -187,6 +187,21 @@ pub enum ViCmd {
     /// `_` — append the count-th (default last) bigword of the previous
     /// input line and enter insert mode. Count 0 = "no count given".
     InsertPrevBigword,
+    /// `=` — list the pathname expansions of the current bigword.
+    ExpandList,
+    /// `\` — complete the current bigword to the largest unique match
+    /// and enter insert mode.
+    CompleteUnique,
+    /// `*` — replace the current bigword with all its pathname
+    /// expansions and enter insert mode.
+    ExpandAll,
+    /// `#` — comment the line out and submit it (into history).
+    CommentSubmit,
+    /// `@ c` — run the value of alias `_c` as editor input.
+    AliasMacro(char),
+    /// `v` — edit the line (or history entry `count`; 0 = current
+    /// line) in the vi editor, then execute the result.
+    EditInEditor,
     Submit,
     Eof,
     Interrupt,
@@ -214,6 +229,8 @@ enum Pending {
     FindChar(FindKind, Option<OpKind>),
     /// `r` seen — waiting for the replacement character.
     ReplaceChar,
+    /// `@` seen — waiting for the alias letter.
+    AliasChar,
     /// `d`/`c`/`y` seen — waiting for the motion (or a doubled operator
     /// char). A count typed after the operator accumulates here and
     /// multiplies the pre-operator count.
@@ -348,6 +365,11 @@ impl ViEngine {
                 let n = self.take_count();
                 return ViOutcome::Cmd(ViCmd::ReplaceChar(ch), n);
             }
+            Pending::AliasChar => {
+                self.pending = Pending::None;
+                self.count = None;
+                return ViOutcome::Cmd(ViCmd::AliasMacro(ch), 1);
+            }
             Pending::Op(op, count_after) => return self.resolve_op_motion(op, count_after, ch),
             Pending::None => {}
         }
@@ -377,6 +399,10 @@ impl ViEngine {
             '_' => {
                 let n = self.count.take().unwrap_or(0);
                 return ViOutcome::Cmd(ViCmd::InsertPrevBigword, n);
+            }
+            'v' => {
+                let n = self.count.take().unwrap_or(0);
+                return ViOutcome::Cmd(ViCmd::EditInEditor, n);
             }
             _ => {}
         }
@@ -462,6 +488,14 @@ impl ViEngine {
             '?' => ViCmd::SearchStart(SearchDir::Newer),
             'n' => ViCmd::SearchNext,
             'N' => ViCmd::SearchReverse,
+            '=' => ViCmd::ExpandList,
+            '\\' => ViCmd::CompleteUnique,
+            '*' => ViCmd::ExpandAll,
+            '#' => ViCmd::CommentSubmit,
+            '@' => {
+                self.pending = Pending::AliasChar;
+                return ViOutcome::Pending;
+            }
             _ => ViCmd::Bell,
         };
         ViOutcome::Cmd(cmd, n)
@@ -1185,6 +1219,40 @@ mod tests {
         assert_eq!(
             e.resolve_command_key(key('.')),
             ViOutcome::Cmd(ViCmd::Repeat, 3)
+        );
+    }
+
+    #[test]
+    fn engine_alias_macro_pending() {
+        let mut e = ViEngine::new();
+        e.mode = ViMode::Command;
+        assert_eq!(e.resolve_command_key(key('@')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('z')),
+            ViOutcome::Cmd(ViCmd::AliasMacro('z'), 1)
+        );
+        // Expansion commands resolve directly.
+        assert_eq!(
+            e.resolve_command_key(key('=')),
+            ViOutcome::Cmd(ViCmd::ExpandList, 1)
+        );
+        assert_eq!(
+            e.resolve_command_key(key('\\')),
+            ViOutcome::Cmd(ViCmd::CompleteUnique, 1)
+        );
+        assert_eq!(
+            e.resolve_command_key(key('#')),
+            ViOutcome::Cmd(ViCmd::CommentSubmit, 1)
+        );
+        // v with and without a number (0 = current line sentinel).
+        assert_eq!(
+            e.resolve_command_key(key('v')),
+            ViOutcome::Cmd(ViCmd::EditInEditor, 0)
+        );
+        assert_eq!(e.resolve_command_key(key('2')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('v')),
+            ViOutcome::Cmd(ViCmd::EditInEditor, 2)
         );
     }
 

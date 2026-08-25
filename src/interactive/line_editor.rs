@@ -1,4 +1,5 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use std::collections::VecDeque;
 use std::io;
 use unicode_width::UnicodeWidthChar;
 
@@ -159,6 +160,11 @@ pub struct LineEditor {
     /// Most recent executed search, for `n` / `N` and the empty-pattern
     /// reuse rule.
     vi_last_search: Option<(SearchDir, String)>,
+    /// Synthetic key events queued by `@letter` alias macros, consumed
+    /// before reading from the terminal.
+    pending_events: VecDeque<KeyEvent>,
+    /// vi insert-mode Ctrl+V: the next key is inserted literally.
+    vi_literal_next: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +212,8 @@ impl LineEditor {
             vi_last_insert: String::new(),
             vi_search_input: None,
             vi_last_search: None,
+            pending_events: VecDeque::new(),
+            vi_literal_next: false,
         }
     }
 
@@ -247,6 +255,8 @@ impl LineEditor {
         self.vi_line_base.clear();
         self.vi_insert_start = None;
         self.vi_search_input = None;
+        self.pending_events.clear();
+        self.vi_literal_next = false;
         if self.edit_mode == EditMode::Vi {
             // Base undo entry so `u` after the first insert session can
             // restore the empty line (vi undo is session-granular; the
@@ -795,6 +805,26 @@ impl std::fmt::Display for LineEditor {
 // Terminal I/O support (crossterm)
 // ---------------------------------------------------------------------------
 
+/// Longest common prefix of a non-empty list of strings (empty string
+/// for an empty list).
+fn longest_common_prefix(items: &[String]) -> String {
+    let Some(first) = items.first() else {
+        return String::new();
+    };
+    let mut prefix: Vec<char> = first.chars().collect();
+    for item in &items[1..] {
+        let mut common = 0;
+        for (a, b) in prefix.iter().zip(item.chars()) {
+            if *a != b {
+                break;
+            }
+            common += 1;
+        }
+        prefix.truncate(common);
+    }
+    prefix.into_iter().collect()
+}
+
 /// Result of processing a single key event.
 enum KeyAction {
     Continue,
@@ -804,6 +834,13 @@ enum KeyAction {
     FuzzySearch,
     TabComplete,
     ClearScreen,
+    /// vi `=`: list these pathname expansions below the line.
+    ViListExpansions(Vec<String>),
+    /// vi `@letter`: feed the value of alias `_letter` as editor input.
+    ViAliasMacro(char),
+    /// vi `v`: edit the line (or history entry `n`; 0 = current line)
+    /// in an external editor, then execute the result.
+    ViEditInEditor(u32),
 }
 
 impl LineEditor {
@@ -866,7 +903,7 @@ impl LineEditor {
         loop {
             self.sync_cursor_style(term)?;
             term.flush()?;
-            match term.read_event()? {
+            match self.next_event(term)? {
                 Event::Key(key_event) => {
                     match self.handle_key(key_event, history) {
                         KeyAction::Submit => {
@@ -921,6 +958,15 @@ impl LineEditor {
                             }
                             term.write_str(prompt)?;
                             self.invalidate_render_state();
+                        }
+                        KeyAction::ViListExpansions(items) => {
+                            self.print_vi_expansions(term, prompt, upper_lines, &items)?;
+                        }
+                        // The plain read path has no alias store or
+                        // editor integration (test-only entry point).
+                        KeyAction::ViAliasMacro(_) => {}
+                        KeyAction::ViEditInEditor(_) => {
+                            self.pending_bell = true;
                         }
                         KeyAction::TabComplete | KeyAction::Continue => {}
                     }
@@ -1585,6 +1631,24 @@ impl LineEditor {
                         self.suggestion = None;
                         return KeyAction::Continue;
                     }
+                    // Ctrl+V literal-next (POSIX vi insert mode): the next
+                    // key is inserted verbatim, control keys included.
+                    if self.vi_literal_next {
+                        self.vi_literal_next = false;
+                        if let Some(ch) = Self::literal_char_for(key) {
+                            if self.vi.replace_overwrite && self.pos < self.line_end(self.pos) {
+                                self.delete();
+                            }
+                            self.insert_char(ch);
+                        }
+                        return KeyAction::Continue;
+                    }
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('v')
+                    {
+                        self.vi_literal_next = true;
+                        return KeyAction::Continue;
+                    }
                     // `R` replace mode: a plain character overwrites the
                     // character under the cursor instead of shifting it
                     // right. Delete first, then fall through to the normal
@@ -2086,6 +2150,78 @@ impl LineEditor {
                 self.vi.mode = ViMode::Insert;
                 KeyAction::Continue
             }
+            ViCmd::ExpandList => match self.vi_expand_bigword() {
+                Some((_, mut matches)) => {
+                    // POSIX: directories are marked with a trailing '/'.
+                    for m in &mut matches {
+                        if !m.ends_with('/') && std::path::Path::new(&m).is_dir() {
+                            m.push('/');
+                        }
+                    }
+                    KeyAction::ViListExpansions(matches)
+                }
+                None => {
+                    self.pending_bell = true;
+                    KeyAction::Continue
+                }
+            },
+            ViCmd::CompleteUnique => match self.vi_expand_bigword() {
+                Some(((start, end), matches)) => {
+                    // Largest unique match: the longest common prefix of
+                    // all matches; a single match additionally gets '/'
+                    // (directory) or a space (file) appended.
+                    let mut replacement = longest_common_prefix(&matches);
+                    if matches.len() == 1 {
+                        if std::path::Path::new(&replacement).is_dir() {
+                            if !replacement.ends_with('/') {
+                                replacement.push('/');
+                            }
+                        } else {
+                            replacement.push(' ');
+                        }
+                    }
+                    self.vi_replace_range(start, end, &replacement);
+                    self.vi.mode = ViMode::Insert;
+                    KeyAction::Continue
+                }
+                None => {
+                    self.pending_bell = true;
+                    KeyAction::Continue
+                }
+            },
+            ViCmd::ExpandAll => match self.vi_expand_bigword() {
+                Some(((start, end), matches)) => {
+                    let replacement = matches.join(" ");
+                    self.vi_replace_range(start, end, &replacement);
+                    self.vi.mode = ViMode::Insert;
+                    KeyAction::Continue
+                }
+                None => {
+                    self.pending_bell = true;
+                    KeyAction::Continue
+                }
+            },
+            ViCmd::CommentSubmit => {
+                // Insert '#' at the start of every logical line and
+                // submit: the input is recorded in history but executes
+                // as comments. (POSIX describes the single-line case;
+                // commenting each line keeps multiline buffers inert.)
+                self.undo.save(&self.buf, self.pos);
+                self.buf.insert(0, '#');
+                let mut i = 1;
+                while i < self.buf.len() {
+                    if self.buf[i] == '\n' {
+                        self.buf.insert(i + 1, '#');
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                self.pos = self.buf.len();
+                self.invalidate_width_cache();
+                KeyAction::Submit
+            }
+            ViCmd::AliasMacro(c) => KeyAction::ViAliasMacro(c),
+            ViCmd::EditInEditor => KeyAction::ViEditInEditor(count),
             ViCmd::Repeat => {
                 let Some(rec) = self.vi.last_change() else {
                     self.pending_bell = true;
@@ -2236,6 +2372,82 @@ impl LineEditor {
         KeyAction::Continue
     }
 
+    /// The literal character a key event inserts under Ctrl+V.
+    fn literal_char_for(key: KeyEvent) -> Option<char> {
+        match key.code {
+            KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let up = c.to_ascii_uppercase();
+                if up.is_ascii_uppercase() || ('@'..='_').contains(&up) {
+                    Some(((up as u8) ^ 0x40) as char)
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char(c) => Some(c),
+            KeyCode::Esc => Some('\x1b'),
+            KeyCode::Tab => Some('\t'),
+            KeyCode::Enter => Some('\n'),
+            _ => None,
+        }
+    }
+
+    // ── vi pathname expansion (`=` `\` `*`) ───────────────────────────
+
+    /// The bigword containing (or immediately before) the cursor on the
+    /// current logical line, as a char range.
+    fn vi_bigword_at_cursor(&self) -> Option<(usize, usize)> {
+        let is_blank = |c: char| c == ' ' || c == '\t';
+        let ls = self.line_start(self.pos);
+        let le = self.line_end(self.pos);
+        if ls == le {
+            return None;
+        }
+        let mut p = self.pos.min(le - 1);
+        while p > ls && is_blank(self.buf[p]) {
+            p -= 1;
+        }
+        if is_blank(self.buf[p]) {
+            return None;
+        }
+        let mut start = p;
+        while start > ls && !is_blank(self.buf[start - 1]) {
+            start -= 1;
+        }
+        let mut end = p + 1;
+        while end < le && !is_blank(self.buf[end]) {
+            end += 1;
+        }
+        Some((start, end))
+    }
+
+    /// Pathname-expand the bigword at the cursor. POSIX: if the bigword
+    /// contains none of `* ? [`, a `*` is implicitly appended. Returns
+    /// the bigword range and the (sorted) matches.
+    fn vi_expand_bigword(&self) -> Option<((usize, usize), Vec<String>)> {
+        let (start, end) = self.vi_bigword_at_cursor()?;
+        let word: String = self.buf[start..end].iter().collect();
+        let pattern = if word.contains(['*', '?', '[']) {
+            word
+        } else {
+            format!("{}*", word)
+        };
+        let matches = crate::expand::pathname::glob_match(&pattern);
+        if matches.is_empty() {
+            None
+        } else {
+            Some(((start, end), matches))
+        }
+    }
+
+    /// Replace the char range `[start, end)` with `text`, leaving the
+    /// cursor after the inserted text.
+    fn vi_replace_range(&mut self, start: usize, end: usize, text: &str) {
+        self.undo.save(&self.buf, self.pos);
+        self.buf.splice(start..end, text.chars());
+        self.pos = start + text.chars().count();
+        self.invalidate_width_cache();
+    }
+
     /// Replay the last insert session's text (for `.`), honoring `R`
     /// overwrite semantics, then leave insert mode like ESC does.
     fn vi_replay_insert(&mut self) {
@@ -2279,6 +2491,114 @@ impl LineEditor {
             let _ = term.set_cursor_style(CursorStyle::Default);
             let _ = term.flush();
         }
+    }
+
+    /// Pop a queued synthetic event (`@letter` macro input) or read one
+    /// from the terminal.
+    fn next_event<T: Terminal>(&mut self, term: &mut T) -> io::Result<Event> {
+        if let Some(k) = self.pending_events.pop_front() {
+            return Ok(Event::Key(k));
+        }
+        term.read_event()
+    }
+
+    /// Convert alias-macro text into key events: ESC, Enter, Tab, and
+    /// control characters map to their key equivalents so an alias value
+    /// can contain editing commands (POSIX `@letter`).
+    fn key_events_for_text(text: &str) -> Vec<KeyEvent> {
+        text.chars()
+            .map(|c| match c {
+                '\x1b' => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                '\n' | '\r' => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                '\t' => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                c if (c as u32) < 0x20 => KeyEvent::new(
+                    KeyCode::Char((((c as u8) | 0x60) as char).to_ascii_lowercase()),
+                    KeyModifiers::CONTROL,
+                ),
+                c => KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            })
+            .collect()
+    }
+
+    /// Print the vi `=` expansion list below the current render, then
+    /// reprint the prompt for the follow-up redraw.
+    fn print_vi_expansions<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        upper_lines: &[String],
+        items: &[String],
+    ) -> io::Result<()> {
+        self.move_below_render(term, 0)?;
+        term.move_to_column(0)?;
+        term.write_str("\r\n")?;
+        term.write_str(&items.join("  "))?;
+        term.write_str("\r\n")?;
+        for line in upper_lines {
+            term.write_str(line)?;
+            term.write_str("\r\n")?;
+        }
+        term.write_str(prompt)?;
+        self.invalidate_render_state();
+        Ok(())
+    }
+
+    /// vi `v`: run the external editor on the current line (or history
+    /// entry `entry`; 0 = current line). On success the edited text
+    /// replaces the buffer and `Ok(true)` asks the caller to submit it.
+    fn vi_edit_in_editor<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        history: &History,
+        entry: u32,
+    ) -> io::Result<bool> {
+        let content = if entry == 0 {
+            self.buffer()
+        } else {
+            match history.entries().get(entry as usize - 1) {
+                Some(e) => e.clone(),
+                None => {
+                    self.pending_bell = true;
+                    return Ok(false);
+                }
+            }
+        };
+        let mut path = std::env::temp_dir();
+        path.push(format!("yosh-vi-{}.sh", std::process::id()));
+        std::fs::write(&path, format!("{}\n", content))?;
+
+        term.reset_style()?;
+        term.disable_raw_mode()?;
+        // POSIX prescribes vi; honor the conventional VISUAL/EDITOR
+        // overrides first. Shell variables set inside yosh are not
+        // process-environment exports, so this reads the inherited
+        // environment only.
+        let editor = std::env::var("VISUAL")
+            .unwrap_or_else(|_| std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string()));
+        let mut parts = editor.split_whitespace();
+        let status = parts.next().map(|prog| {
+            std::process::Command::new(prog)
+                .args(parts)
+                .arg(&path)
+                .status()
+        });
+        term.enable_raw_mode()?;
+
+        let ok = matches!(status, Some(Ok(st)) if st.success());
+        let result = if ok {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let text = text.strip_suffix('\n').unwrap_or(&text).to_string();
+            self.buf = text.chars().collect();
+            self.pos = self.buf.len();
+            self.invalidate_width_cache();
+            true
+        } else {
+            self.pending_bell = true;
+            self.invalidate_render_state();
+            false
+        };
+        let _ = std::fs::remove_file(&path);
+        Ok(result)
     }
 
     /// Emit (and clear) a pending vi alert as a terminal BEL.
@@ -2589,7 +2909,7 @@ impl LineEditor {
         loop {
             self.sync_cursor_style(term)?;
             term.flush()?;
-            match term.read_event()? {
+            match self.next_event(term)? {
                 Event::Key(key_event) => {
                     match self.handle_key(key_event, history) {
                         KeyAction::Submit => {
@@ -2686,6 +3006,44 @@ impl LineEditor {
                         }
                         KeyAction::ClearScreen => {
                             term.clear_all()?;
+                            for line in upper_lines {
+                                term.write_str(line)?;
+                                term.write_str("\r\n")?;
+                            }
+                            term.write_str(prompt)?;
+                            self.invalidate_render_state();
+                        }
+                        KeyAction::ViListExpansions(items) => {
+                            term.reset_style()?;
+                            self.print_vi_expansions(term, prompt, upper_lines, &items)?;
+                        }
+                        KeyAction::ViAliasMacro(c) => {
+                            // POSIX @letter: run alias `_letter`'s value as
+                            // editor input; no effect if unset. The queue
+                            // cap breaks alias-macro recursion.
+                            let name = format!("_{}", c);
+                            if let Some(value) = cmd_ctx.aliases.get(&name)
+                                && self.pending_events.len() + value.chars().count() <= 4096
+                            {
+                                for ev in Self::key_events_for_text(value) {
+                                    self.pending_events.push_back(ev);
+                                }
+                            }
+                        }
+                        KeyAction::ViEditInEditor(entry) => {
+                            term.reset_style()?;
+                            if self.vi_edit_in_editor(term, history, entry)? {
+                                // Execute the edited line (POSIX v).
+                                history.reset_cursor();
+                                term.move_to_column(0)?;
+                                term.write_str("\r\n")?;
+                                term.flush()?;
+                                return Ok(Some(self.buffer()));
+                            }
+                            // Editor failed or was aborted: repaint the
+                            // prompt line and continue editing.
+                            term.move_to_column(0)?;
+                            term.clear_current_line()?;
                             for line in upper_lines {
                                 term.write_str(line)?;
                                 term.write_str("\r\n")?;

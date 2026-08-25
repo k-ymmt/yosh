@@ -582,6 +582,115 @@ fn vi_undo_all_after_history_recall_restores_entry() {
     assert_eq!(line.as_deref(), Some("echo hello"));
 }
 
+// ── Expansion, comment, literal-next ───────────────────────────────────
+
+#[test]
+fn vi_star_expands_bigword_to_matches() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_str().unwrap().to_string();
+    std::fs::write(format!("{}/fa1", base), "").unwrap();
+    std::fs::write(format!("{}/fa2", base), "").unwrap();
+    let line = vi_read(seq![
+        chars(&format!("echo {}/fa", base)),
+        [esc()],
+        chars("*"),
+        [enter()]
+    ]);
+    assert_eq!(
+        line.as_deref(),
+        Some(format!("echo {0}/fa1 {0}/fa2", base).as_str())
+    );
+}
+
+#[test]
+fn vi_backslash_completes_to_unique_match() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_str().unwrap().to_string();
+    std::fs::write(format!("{}/unique_file", base), "").unwrap();
+    let line = vi_read(seq![
+        chars(&format!("cat {}/uni", base)),
+        [esc()],
+        chars("\\"),
+        [enter()]
+    ]);
+    // Single file match: completed with a trailing space.
+    assert_eq!(
+        line.as_deref(),
+        Some(format!("cat {}/unique_file ", base).as_str())
+    );
+}
+
+#[test]
+fn vi_backslash_completes_common_prefix() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_str().unwrap().to_string();
+    std::fs::write(format!("{}/prefix_one", base), "").unwrap();
+    std::fs::write(format!("{}/prefix_two", base), "").unwrap();
+    let line = vi_read(seq![
+        chars(&format!("cat {}/pre", base)),
+        [esc()],
+        chars("\\"),
+        [enter()]
+    ]);
+    assert_eq!(
+        line.as_deref(),
+        Some(format!("cat {}/prefix_", base).as_str())
+    );
+}
+
+#[test]
+fn vi_equals_lists_expansions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_str().unwrap().to_string();
+    std::fs::write(format!("{}/la1", base), "").unwrap();
+    std::fs::write(format!("{}/la2", base), "").unwrap();
+
+    let mut ed = LineEditor::new();
+    ed.set_edit_mode(EditMode::Vi);
+    let mut history = History::new();
+    let mut term = MockTerminal::new(seq![
+        chars(&format!("echo {}/la", base)),
+        [esc()],
+        chars("="),
+        [enter()]
+    ]);
+    let line = ed
+        .read_line("$ ", &[], &mut history, &mut term)
+        .expect("read_line failed");
+    // Buffer is unchanged; the matches were listed to the terminal.
+    assert_eq!(line.as_deref(), Some(format!("echo {}/la", base).as_str()));
+    let all_output = term.output().join("");
+    assert!(all_output.contains(&format!("{0}/la1  {0}/la2", base)));
+}
+
+#[test]
+fn vi_expansion_with_no_match_bells() {
+    let line = vi_read(seq![
+        chars("echo /nonexistent-yosh-test-zz"),
+        [esc()],
+        chars("*"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("echo /nonexistent-yosh-test-zz"));
+}
+
+#[test]
+fn vi_hash_comments_and_submits() {
+    let line = vi_read(seq![chars("echo hi"), [esc()], chars("#")]);
+    assert_eq!(line.as_deref(), Some("#echo hi"));
+}
+
+#[test]
+fn vi_ctrl_v_inserts_literal_tab() {
+    let line = vi_read(seq![
+        chars("a"),
+        [ctrl('v')],
+        [key(KeyCode::Tab)],
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("a\t"));
+}
+
 #[test]
 fn emacs_mode_ignores_esc_and_vi_keys() {
     // Default mode is emacs: ESC is a no-op and 'x' is a plain char.
