@@ -68,6 +68,7 @@ impl Executor {
                     ));
                 }
                 Ok(ForkResult::Child) => {
+                    super::mark_forked_child();
                     // Job control only: put the pipeline in its own process
                     // group. Without monitor mode, members must STAY in the
                     // shell's process group so a terminal-generated SIGINT

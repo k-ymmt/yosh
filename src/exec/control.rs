@@ -49,9 +49,13 @@ impl Executor {
                     }
                     return 2;
                 }
+                // One `Rc::new` per definition; every subsequent call is
+                // a refcount bump (see `ShellEnv::functions`). The body
+                // inside `FunctionDef` is already `Rc<CompoundCommand>`,
+                // so this clone is shallow.
                 self.env
                     .functions
-                    .insert(func_def.name.clone(), func_def.clone());
+                    .insert(func_def.name.clone(), std::rc::Rc::new(func_def.clone()));
                 0
             }
         }
@@ -209,6 +213,7 @@ impl Executor {
                 ))
             }
             Ok(ForkResult::Child) => {
+                super::mark_forked_child();
                 // Set process group BEFORE signal setup to ensure proper isolation.
                 let pid = nix::unistd::getpid();
                 nix::unistd::setpgid(pid, pid).ok();

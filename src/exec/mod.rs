@@ -28,6 +28,30 @@ pub(crate) fn exit_child(status: i32) -> ! {
     unsafe { libc::_exit(status) }
 }
 
+/// True once this process is a post-fork child of the shell (subshell,
+/// pipeline member, command substitution, or async list). Set in every
+/// `ForkResult::Child` branch so that exit paths reached *during* child
+/// execution (e.g. the `exit` special built-in) can pick the fork-safe
+/// exit.
+static IN_FORKED_CHILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark this process as a post-fork child. Call first thing in every
+/// `ForkResult::Child` branch.
+pub(crate) fn mark_forked_child() {
+    IN_FORKED_CHILD.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Exit the shell process, using [`exit_child`] when this process is a
+/// post-fork child: `std::process::exit` runs Rust runtime cleanup that
+/// can deadlock on std-internal mutexes inherited locked from a
+/// multithreaded parent.
+pub(crate) fn shell_exit(status: i32) -> ! {
+    if IN_FORKED_CHILD.load(std::sync::atomic::Ordering::Relaxed) {
+        exit_child(status);
+    }
+    std::process::exit(status);
+}
+
 /// Reconstruct a short, human-readable preview of an AndOrList for display in
 /// `jobs` output and for `%string` / `%?string` job-spec matching against
 /// `Job.command`. Uses the literal words of the first simple command when the
@@ -163,7 +187,7 @@ impl Executor {
             if self.env.mode.is_interactive {
                 self.exit_requested = Some(status);
             } else {
-                std::process::exit(status);
+                shell_exit(status);
             }
         }
     }
@@ -194,7 +218,7 @@ impl Executor {
     /// by `check_errexit` and `handle_default_signal`.
     pub(crate) fn exit_shell(&mut self, status: i32) -> ! {
         self.execute_exit_trap();
-        std::process::exit(status);
+        shell_exit(status);
     }
 
     /// Execute the EXIT trap if set.
@@ -258,7 +282,7 @@ impl Executor {
         if self.env.mode.is_interactive {
             self.exit_requested = Some(128 + sig);
         } else {
-            std::process::exit(128 + sig);
+            shell_exit(128 + sig);
         }
     }
 

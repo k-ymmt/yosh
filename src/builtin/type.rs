@@ -115,7 +115,7 @@ mod tests {
         let mut env = env_with_path("/bin:/usr/bin");
         env.functions.insert(
             "myfn".to_string(),
-            FunctionDef {
+            Rc::new(FunctionDef {
                 name: "myfn".to_string(),
                 body: Rc::new(CompoundCommand {
                     kind: CompoundCommandKind::BraceGroup { body: Vec::new() },
@@ -123,7 +123,7 @@ mod tests {
                     assignments: Vec::new(),
                 }),
                 redirects: Vec::new(),
-            },
+            }),
         );
         let (out, _, ex) = format_type_line(&mut env, "myfn");
         assert_eq!(out, "myfn is a function");

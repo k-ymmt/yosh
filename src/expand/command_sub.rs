@@ -32,6 +32,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
             String::new()
         }
         Ok(ForkResult::Child) => {
+            crate::exec::mark_forked_child();
             // Close the read end in the child
             unsafe { libc::close(pipe_read) };
 

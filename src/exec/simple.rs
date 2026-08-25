@@ -386,6 +386,8 @@ impl Executor {
             crate::builtin::BuiltinKind::Special
         );
         if !shadowed_by_special
+            // `.cloned()` here is an Rc refcount bump, not a deep copy of
+            // the definition — the table stores `Rc<FunctionDef>`.
             && let Some(func_def) = self.env.functions.get(&command_name).cloned()
         {
             let saved = self
@@ -725,6 +727,7 @@ impl Executor {
                 1
             }
             Ok(ForkResult::Child) => {
+                super::mark_forked_child();
                 // In monitor mode: put child in its own process group so Ctrl+Z
                 // (SIGTSTP) stops only the foreground job, not the shell.
                 if monitor {

@@ -37,7 +37,12 @@ pub struct ShellEnv {
     pub exec: ExecState,
     pub process: ProcessState,
     pub mode: ShellMode,
-    pub functions: HashMap<String, FunctionDef>,
+    /// Function table. Values are `Rc` so a call-site lookup is a
+    /// refcount bump instead of a deep clone of the definition (name +
+    /// redirects), and so command-substitution child envs clone the
+    /// table cheaply. The shell (and each fork child) is single-threaded,
+    /// so `Rc` suffices.
+    pub functions: HashMap<String, std::rc::Rc<FunctionDef>>,
     pub traps: TrapStore,
     pub aliases: AliasStore,
     pub history: History,

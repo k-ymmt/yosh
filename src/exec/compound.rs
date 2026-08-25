@@ -99,6 +99,7 @@ impl Executor {
                 format!("fork: {}", e),
             )),
             Ok(ForkResult::Child) => {
+                super::mark_forked_child();
                 let ignored = self.env.traps.ignored_signals();
                 self.env.traps.reset_for_subshell();
                 // A subshell has no children yet: the parent's remembered
@@ -318,6 +319,10 @@ impl Executor {
                             return Err(e);
                         }
                     };
+                    // Each expanded pattern is matched against exactly one
+                    // word per case execution, so `matches` (compile once,
+                    // match once) is already the compiled-pattern form —
+                    // no re-parse loop exists here.
                     if crate::expand::pattern::matches(&pat, &case_word) {
                         matched = true;
                         break;

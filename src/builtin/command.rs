@@ -322,7 +322,7 @@ mod tests {
         let mut env = env_with_path("/bin:/usr/bin");
         env.functions.insert(
             "myfunc".to_string(),
-            FunctionDef {
+            Rc::new(FunctionDef {
                 name: "myfunc".to_string(),
                 body: Rc::new(CompoundCommand {
                     kind: CompoundCommandKind::BraceGroup { body: vec![] },
@@ -330,7 +330,7 @@ mod tests {
                     assignments: vec![],
                 }),
                 redirects: vec![],
-            },
+            }),
         );
         let (out, err, code) = render_verbose(&mut env, "myfunc");
         assert_eq!(out, "myfunc is a function");

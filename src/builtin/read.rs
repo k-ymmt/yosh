@@ -26,8 +26,13 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         }
     };
 
-    let mut reader = StdinByteReader;
-    let result = match read_logical_line(parsed.raw, &mut reader) {
+    let mut reader = StdinByteReader::new();
+    let line_result = read_logical_line(parsed.raw, &mut reader);
+    // Seek fd 0 back over any block-buffered bytes beyond the consumed
+    // line, on success AND error paths, so the next reader of the fd
+    // starts exactly where this `read` logically stopped.
+    reader.rewind_unconsumed();
+    let result = match line_result {
         Ok(r) => r,
         Err(e) => {
             eprintln!("yosh: read: {}", e);
@@ -55,12 +60,105 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     if result.hit_eof { Ok(1) } else { Ok(0) }
 }
 
-/// Production `ByteReader` reading 1 byte at a time from fd 0,
-/// retrying on EINTR.
-struct StdinByteReader;
+/// Block size for buffered reads from seekable input. One page is plenty:
+/// the goal is to amortize the read(2)-per-byte syscall cost (~40
+/// syscalls/line before), not to stream large volumes.
+const READ_BLOCK: usize = 4096;
 
-impl ByteReader for StdinByteReader {
-    fn read_byte(&mut self) -> std::io::Result<Option<u8>> {
+/// Production `ByteReader` for fd 0.
+///
+/// POSIX requires `read` not to consume input past the logical line, so
+/// the safe universal strategy is one read(2) per byte. That costs ~40
+/// syscalls per typical line — measured 6x slower than bash on a
+/// 20k-line `while read` loop. When fd 0 is *seekable* (a regular file:
+/// `lseek(fd, 0, SEEK_CUR)` succeeds), we can batch: read in
+/// `READ_BLOCK` chunks and, once the line is complete, lseek back over
+/// whatever the buffer holds beyond the consumed newline
+/// (`rewind_unconsumed`). Pipes, FIFOs, and ttys — where lseek fails
+/// with ESPIPE — keep the byte-at-a-time reads, preserving the
+/// must-not-over-consume semantics exactly.
+///
+/// Byte semantics are unchanged either way: this only batches syscalls;
+/// every byte still flows through `read_byte` untouched (byteenc
+/// escaping happens later, in `field_to_string`).
+struct StdinByteReader {
+    /// Whether fd 0 is seekable (checked once at construction).
+    seekable: bool,
+    /// Buffered bytes from the last block read (seekable mode only).
+    buf: Vec<u8>,
+    /// Next unconsumed index into `buf`.
+    pos: usize,
+}
+
+impl StdinByteReader {
+    fn new() -> Self {
+        // A successful lseek means the fd has a file offset we can
+        // rewind; ESPIPE (pipe/FIFO/socket) and failures in general mean
+        // it does not — use the conservative per-byte path.
+        let seekable = unsafe { libc::lseek(libc::STDIN_FILENO, 0, libc::SEEK_CUR) } != -1;
+        StdinByteReader {
+            seekable,
+            buf: Vec::new(),
+            pos: 0,
+        }
+    }
+
+    /// Seek fd 0 back over the buffered-but-unconsumed bytes so the file
+    /// offset lands exactly after the last byte this reader handed out
+    /// (i.e. just past the consumed newline, or at EOF). No-op for
+    /// non-seekable input and when the buffer is fully drained.
+    fn rewind_unconsumed(&mut self) {
+        if !self.seekable {
+            return;
+        }
+        let unread = self.buf.len() - self.pos;
+        if unread > 0 {
+            // Best-effort: lseek succeeded at construction on this same
+            // fd, so a failure here is not actionable — the offset then
+            // stays past the line, which is the pre-batching worst case
+            // for an fd that lied about seekability.
+            unsafe { libc::lseek(libc::STDIN_FILENO, -(unread as libc::off_t), libc::SEEK_CUR) };
+        }
+        self.buf.clear();
+        self.pos = 0;
+    }
+
+    /// Refill `buf` with one block read, retrying on EINTR. Returns the
+    /// first byte, or `None` at EOF.
+    fn refill_block(&mut self) -> std::io::Result<Option<u8>> {
+        self.buf.resize(READ_BLOCK, 0);
+        self.pos = 0;
+        loop {
+            // SAFETY: `buf` is a live READ_BLOCK-byte allocation owned by
+            // self for the duration of the call; the length passed matches
+            // exactly. See `read_one` for why a stale/closed fd 0 is safe.
+            let n = unsafe {
+                libc::read(
+                    libc::STDIN_FILENO,
+                    self.buf.as_mut_ptr() as *mut libc::c_void,
+                    READ_BLOCK,
+                )
+            };
+            if n > 0 {
+                self.buf.truncate(n as usize);
+                self.pos = 1;
+                return Ok(Some(self.buf[0]));
+            }
+            self.buf.clear();
+            if n == 0 {
+                return Ok(None);
+            }
+            // n == -1: check errno
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(err);
+        }
+    }
+
+    /// Single-byte read(2), retrying on EINTR — the non-seekable path.
+    fn read_one(&mut self) -> std::io::Result<Option<u8>> {
         let mut buf = [0u8; 1];
         loop {
             // SAFETY: buf is a valid 1-byte stack allocation that lives for
@@ -84,6 +182,21 @@ impl ByteReader for StdinByteReader {
                 continue;
             }
             return Err(err);
+        }
+    }
+}
+
+impl ByteReader for StdinByteReader {
+    fn read_byte(&mut self) -> std::io::Result<Option<u8>> {
+        if self.pos < self.buf.len() {
+            let b = self.buf[self.pos];
+            self.pos += 1;
+            return Ok(Some(b));
+        }
+        if self.seekable {
+            self.refill_block()
+        } else {
+            self.read_one()
         }
     }
 }

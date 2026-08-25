@@ -349,11 +349,14 @@ fn strip_suffix(value: &str, pat: &str, longest: bool) -> String {
         pattern::PatternShape::StarThenLiteral(_) | pattern::PatternShape::General => {}
     }
 
-    // General path: `matches` is anchored (full match), so test each
-    // candidate suffix slice. `start` is a char-boundary byte offset; the
-    // suffix is `value[start..]`.
+    // General path: the matcher is anchored (full match), so test each
+    // candidate suffix slice. The pattern is compiled ONCE and reused
+    // across the per-cut loop (previously re-tokenized per boundary —
+    // O(n) full parses for a value with n char boundaries). `start` is a
+    // char-boundary byte offset; the suffix is `value[start..]`.
+    let compiled = pattern::compile(pat);
     let cut =
-        |start: usize| pattern::matches(pat, &value[start..]).then(|| value[..start].to_string());
+        |start: usize| compiled.matches(&value[start..]).then(|| value[..start].to_string());
     let found = if longest {
         // smallest start = longest suffix first
         boundaries(value).find_map(cut)
@@ -402,10 +405,12 @@ fn strip_prefix(value: &str, pat: &str, longest: bool) -> String {
         pattern::PatternShape::LiteralThenStar(_) | pattern::PatternShape::General => {}
     }
 
-    // General path: `matches` is anchored (full match), so test each
-    // candidate prefix slice. `end` is a char-boundary byte offset; the
-    // prefix is `value[..end]`.
-    let cut = |end: usize| pattern::matches(pat, &value[..end]).then(|| value[end..].to_string());
+    // General path: the matcher is anchored (full match), so test each
+    // candidate prefix slice. The pattern is compiled once and reused
+    // across the per-cut loop (see strip_suffix). `end` is a
+    // char-boundary byte offset; the prefix is `value[..end]`.
+    let compiled = pattern::compile(pat);
+    let cut = |end: usize| compiled.matches(&value[..end]).then(|| value[end..].to_string());
     let found = if longest {
         // largest end = longest prefix first
         boundaries(value).rev().find_map(cut)

@@ -6,7 +6,9 @@ use crate::env::ShellEnv;
 /// Perform pathname expansion (glob) on each field.
 ///
 /// Rules (POSIX 2.6.6):
-/// 1. If a field contains an unquoted `*`, `?`, or `[`, attempt glob expansion.
+/// 1. If a field contains an unquoted `*`, `?`, or `[` opening a closable
+///    bracket expression, attempt glob expansion. (A `[` with no later
+///    `]` is literal and does not trigger a filesystem walk.)
 /// 2. If one or more filesystem paths match, replace the field with those
 ///    matches (sorted, each marked fully-quoted so they are not re-split).
 /// 3. If no match is found, keep the original field unchanged.
@@ -41,12 +43,60 @@ pub fn expand(_env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField>
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-/// Return `true` if the field contains at least one unquoted glob metachar
-/// (`*`, `?`, `[`).
+/// Return `true` if the field contains at least one unquoted glob metachar:
+/// `*`, `?`, or a `[` that opens a closable bracket expression.
+///
+/// A lone `[` with no later `]` is a literal (the pattern parser emits it
+/// as `Literal('[')`), so it must NOT trigger a glob attempt — otherwise
+/// every `[ ... ]` test command pays a `read_dir` of the cwd plus a
+/// per-entry pattern match (measured 43s for a 50k-iteration `[ $i -lt N ]`
+/// loop in a 2000-entry directory). Mirrors bash's `glob_pattern_p`.
 fn has_unquoted_glob_chars(field: &ExpandedField) -> bool {
-    for (i, &b) in field.as_bytes().iter().enumerate() {
-        if !field.is_glob_protected(i) && matches!(b, b'*' | b'?' | b'[') {
-            return true;
+    let bytes = field.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if field.is_glob_protected(i) {
+            continue;
+        }
+        match b {
+            b'*' | b'?' => return true,
+            b'[' if bracket_has_close(bytes, i) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Given a `[` at byte offset `open` in `bytes`, return `true` if a `]`
+/// that can close the bracket expression follows. Follows the same
+/// convention as `pattern::parse_bracket`: a `]` immediately after the
+/// opening `[` (or after `[!`) is a literal member of the class and does
+/// not close it. Conservative in the safe direction — a `]` later
+/// swallowed by a `[:class:]` member may yield a false positive (a wasted
+/// glob attempt, which is exactly today's behavior for every `[`), never
+/// a false negative.
+///
+/// Byte-wise scanning is UTF-8 safe: `[`/`]`/`!` are ASCII and never
+/// appear inside multibyte sequences.
+fn bracket_has_close(bytes: &[u8], open: usize) -> bool {
+    let mut j = open + 1;
+    if bytes.get(j) == Some(&b'!') {
+        j += 1;
+    }
+    if bytes.get(j) == Some(&b']') {
+        j += 1;
+    }
+    j < bytes.len() && bytes[j..].contains(&b']')
+}
+
+/// `has_unquoted_glob_chars` for a plain pattern string (no quote mask):
+/// used by the per-component test in `expand_components`.
+fn str_has_glob_chars(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'*' | b'?' => return true,
+            b'[' if bracket_has_close(bytes, i) => return true,
+            _ => {}
         }
     }
     false
@@ -102,8 +152,9 @@ fn expand_components(dir: String, components: &[&str]) -> Vec<String> {
     let component = components[0];
     let rest = &components[1..];
 
-    // Determine whether the component has glob chars.
-    let is_glob = component.contains(['*', '?', '[']);
+    // Determine whether the component has glob chars. Like the field-level
+    // predicate, a `[` counts only when a closable `]` follows.
+    let is_glob = str_has_glob_chars(component);
 
     if is_glob {
         let search_dir = if dir.is_empty() { "." } else { &dir };
@@ -180,6 +231,10 @@ fn glob_in_dir(dir: &str, pattern: &str) -> Vec<String> {
 
     let skip_hidden = !pattern.starts_with('.');
 
+    // Compile the pattern once per directory walk instead of re-tokenizing
+    // it for every entry (2000-entry dir == 2000 full pattern parses).
+    let compiled = pattern::compile(pattern);
+
     let mut matches = Vec::new();
     for entry in read_dir.flatten() {
         let name = entry.file_name();
@@ -194,7 +249,7 @@ fn glob_in_dir(dir: &str, pattern: &str) -> Vec<String> {
             continue;
         }
 
-        if pattern::matches(pattern, &name_str) {
+        if compiled.matches(&name_str) {
             matches.push(name_str.into_owned());
         }
     }
@@ -329,6 +384,64 @@ mod tests {
         assert!(has_unquoted_glob_chars(&unquoted("*.rs")));
         assert!(has_unquoted_glob_chars(&unquoted("file?.txt")));
         assert!(has_unquoted_glob_chars(&unquoted("[abc]")));
+    }
+
+    // ── Lone `[` must not trigger globbing (the `[ ... ]` test-command
+    //    hot path: every `while [ $i -lt N ]` iteration hits this) ──
+
+    #[test]
+    fn lone_open_bracket_is_not_glob() {
+        assert!(!has_unquoted_glob_chars(&unquoted("[")));
+        assert!(!has_unquoted_glob_chars(&unquoted("a[")));
+        assert!(!has_unquoted_glob_chars(&unquoted("a[b")));
+        assert!(!has_unquoted_glob_chars(&unquoted("[!")));
+    }
+
+    #[test]
+    fn closable_bracket_still_globs() {
+        assert!(has_unquoted_glob_chars(&unquoted("[abc]")));
+        assert!(has_unquoted_glob_chars(&unquoted("a[bc]d")));
+        assert!(has_unquoted_glob_chars(&unquoted("[!abc]")));
+        // `[]a]` — the first `]` is a literal member, the second closes.
+        assert!(has_unquoted_glob_chars(&unquoted("[]a]")));
+        // POSIX class form.
+        assert!(has_unquoted_glob_chars(&unquoted("[[:alpha:]]")));
+    }
+
+    #[test]
+    fn unclosable_bracket_per_literal_member_rule_is_not_glob() {
+        // `[]` — the `]` right after `[` is a literal member, so nothing
+        // closes the class; parse_bracket agrees (Literal('[') token).
+        assert!(!has_unquoted_glob_chars(&unquoted("[]")));
+        // `[!]` — same, after the negation marker.
+        assert!(!has_unquoted_glob_chars(&unquoted("[!]")));
+    }
+
+    #[test]
+    fn quoted_bracket_pair_is_not_glob() {
+        assert!(!has_unquoted_glob_chars(&quoted_field("[abc]")));
+        assert!(!has_unquoted_glob_chars(&quoted_field("[")));
+    }
+
+    #[test]
+    fn unquoted_open_bracket_with_quoted_close_still_globs() {
+        // The `[` is glob-subject; the predicate scans for a byte-level
+        // `]` regardless of its quoting, matching what the matcher sees
+        // when it parses the raw field value.
+        let mut f = ExpandedField::new();
+        f.push_expanded("[a");
+        f.push_quoted("]");
+        assert!(has_unquoted_glob_chars(&f));
+    }
+
+    #[test]
+    fn str_has_glob_chars_component_rules() {
+        assert!(str_has_glob_chars("*.rs"));
+        assert!(str_has_glob_chars("file?"));
+        assert!(str_has_glob_chars("[abc]"));
+        assert!(!str_has_glob_chars("["));
+        assert!(!str_has_glob_chars("a[b"));
+        assert!(!str_has_glob_chars("plain"));
     }
 
     #[test]

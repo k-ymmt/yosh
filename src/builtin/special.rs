@@ -98,7 +98,7 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
         executor.exit_requested = Some(code);
         Ok(code)
     } else {
-        std::process::exit(code);
+        crate::exec::shell_exit(code);
     }
 }
 

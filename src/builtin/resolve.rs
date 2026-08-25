@@ -103,7 +103,7 @@ mod tests {
         let mut env = env_with_path("/bin:/usr/bin");
         env.functions.insert(
             "echo".to_string(),
-            FunctionDef {
+            Rc::new(FunctionDef {
                 name: "echo".to_string(),
                 body: Rc::new(CompoundCommand {
                     kind: CompoundCommandKind::BraceGroup { body: Vec::new() },
@@ -111,7 +111,7 @@ mod tests {
                     assignments: Vec::new(),
                 }),
                 redirects: Vec::new(),
-            },
+            }),
         );
         assert_eq!(
             resolve_command_kind(&mut env, "echo"),

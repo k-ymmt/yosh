@@ -7,7 +7,9 @@
 //!
 //! Pipeline:
 //!
-//! 1. `PluginManager::new()` builds a shared `wasmtime::Engine`.
+//! 1. `PluginManager::new()` is cheap; the shared `wasmtime::Engine` (and
+//!    its epoch tick thread) is built lazily on the first plugin load, so
+//!    plugin-free shells never pay for it.
 //! 2. For each enabled `plugins.toml` entry, `load_plugin` either uses the
 //!    `.cwasm` cache (if all 5 trust conditions hold) or precompiles in-memory.
 //! 3. Per-plugin `Store<HostContext>` is created once and reused for every
@@ -156,7 +158,13 @@ impl LoadedPlugin {
 
 /// Manages loaded plugins and dispatches commands/hooks.
 pub struct PluginManager {
-    engine: Engine,
+    /// Lazily-initialized wasmtime `Engine`. `None` until the first
+    /// plugin load: a shell with no plugins configured (the common case,
+    /// including every command-substitution child) must not pay for
+    /// engine construction or spawn the epoch tick thread — the Drop
+    /// join of an eagerly-spawned tick thread alone added ~50ms to every
+    /// clean shell exit.
+    engine: Option<Engine>,
     /// Stable string fingerprint of the engine config; folded into the
     /// `engine_config_hash` field of the `CacheKey` tuple.
     engine_fingerprint: String,
@@ -172,43 +180,55 @@ pub struct PluginManager {
     /// the same caps share one cached linker. See report §4.2 fix#2 and
     /// `docs/superpowers/specs/2026-05-09-plugin-real-linker-cache-design.md`.
     pub(super) linker_cache: std::collections::HashMap<u32, Linker<HostContext>>,
-    /// Background epoch-tick thread. `Some` while the manager is alive;
-    /// joined on `Drop`.
+    /// Background epoch-tick thread. Spawned together with the lazy
+    /// engine on first plugin load; joined on `Drop`.
     tick_thread: Option<TickThread>,
 }
 
 /// Background thread that increments the wasmtime epoch counter at a
-/// fixed interval (`TICK_MS`). One per `PluginManager`. The handle and
-/// stop flag are wrapped so `Drop for PluginManager` can request a
-/// clean shutdown.
+/// fixed interval (`TICK_MS`). One per `PluginManager`, spawned lazily
+/// with the engine. The worker waits on a `Condvar` with a `TICK_MS`
+/// timeout instead of sleeping, so `Drop` can wake it immediately —
+/// shutdown join returns in microseconds rather than up to `TICK_MS`.
 struct TickThread {
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Shared shutdown state: `Mutex<bool>` stop flag + the `Condvar`
+    /// the worker waits on. `Drop` sets the flag and notifies.
+    state: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl TickThread {
     fn spawn(engine: wasmtime::Engine) -> Self {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Condvar, Mutex};
         use std::thread;
         use std::time::Duration;
 
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_inner = stop.clone();
+        let state = Arc::new((Mutex::new(false), Condvar::new()));
+        let state_inner = Arc::clone(&state);
         let handle = thread::Builder::new()
             .name("yosh-plugin-epoch-tick".to_string())
             .spawn(move || {
-                while !stop_inner.load(Ordering::Acquire) {
-                    thread::sleep(Duration::from_millis(TICK_MS));
-                    // Cheap and safe to call concurrently with guest
-                    // execution; wasmtime is designed for this exact
-                    // pattern.
-                    engine.increment_epoch();
+                let (lock, cvar) = &*state_inner;
+                let mut stopped = lock.lock().expect("epoch-tick mutex poisoned");
+                while !*stopped {
+                    let (guard, timeout) = cvar
+                        .wait_timeout(stopped, Duration::from_millis(TICK_MS))
+                        .expect("epoch-tick mutex poisoned");
+                    stopped = guard;
+                    // Tick only on a real timeout — a notify means
+                    // shutdown (or a spurious wake, where skipping one
+                    // tick is harmless since the cadence is best-effort).
+                    if !*stopped && timeout.timed_out() {
+                        // Cheap and safe to call concurrently with guest
+                        // execution; wasmtime is designed for this exact
+                        // pattern.
+                        engine.increment_epoch();
+                    }
                 }
             })
             .expect("spawn yosh-plugin-epoch-tick thread");
         TickThread {
-            stop,
+            state,
             handle: Some(handle),
         }
     }
@@ -216,36 +236,32 @@ impl TickThread {
 
 impl Drop for TickThread {
     fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        {
+            let (lock, cvar) = &*self.state;
+            *lock.lock().expect("epoch-tick mutex poisoned") = true;
+            cvar.notify_all();
+        }
         if let Some(h) = self.handle.take() {
-            // The tick thread sleeps up to TICK_MS between flag checks,
-            // so worst-case join wait is ~TICK_MS. We do not impose a
-            // join timeout here because the loop is tight and bounded.
+            // The worker is woken by the notify above, so this join
+            // returns promptly instead of waiting out a sleep.
             let _ = h.join();
         }
     }
 }
 
 impl PluginManager {
+    /// Construct an empty manager. Deliberately cheap: no wasmtime
+    /// `Engine` and no tick thread are created until the first plugin
+    /// load (`ensure_engine`), so the no-plugins case — every plain
+    /// `yosh -c` invocation and every command-substitution child — pays
+    /// nothing here beyond an env-var parse.
     pub fn new() -> Self {
-        let mut config = wasmtime::Config::new();
-        config.wasm_component_model(true);
-        config.async_support(false);
-        config.consume_fuel(false);
-        config.epoch_interruption(true);
-        // Best-effort: enable system cache. If unavailable we just proceed
-        // without it. cwasm precompile is the durable cache; this is the
-        // lower-level wasmtime cranelift cache.
-        let _ = config.cache_config_load_default();
-
         // Stable fingerprint: covers the flags relevant to cwasm
         // compatibility. Any change to this string invalidates every
         // cached cwasm via `engine_config_hash`. The canonical literal
         // lives in `yosh_plugin_manager::precompile::ENGINE_FINGERPRINT`
         // so both sides cannot drift.
         let engine_fingerprint = yosh_plugin_manager::precompile::ENGINE_FINGERPRINT.to_string();
-
-        let engine = Engine::new(&config).expect("wasmtime Engine::new");
 
         // Resolve the pre-prompt timeout once. Invalid values warn and
         // fall back to the default. The pure parser stays unit-testable;
@@ -270,16 +286,49 @@ impl PluginManager {
             }
         };
 
-        let tick_thread = Some(TickThread::spawn(engine.clone()));
-
         PluginManager {
-            engine,
+            engine: None,
             engine_fingerprint,
             plugins: Vec::new(),
             pre_prompt_timeout_ms,
             linker_cache: std::collections::HashMap::new(),
-            tick_thread,
+            tick_thread: None,
         }
+    }
+
+    /// Build the wasmtime `Engine` with yosh's canonical config. Split
+    /// out of `ensure_engine` so tests can construct one directly.
+    fn build_engine() -> Engine {
+        let mut config = wasmtime::Config::new();
+        config.wasm_component_model(true);
+        config.async_support(false);
+        config.consume_fuel(false);
+        config.epoch_interruption(true);
+        // Best-effort: enable system cache. If unavailable we just proceed
+        // without it. cwasm precompile is the durable cache; this is the
+        // lower-level wasmtime cranelift cache.
+        let _ = config.cache_config_load_default();
+
+        Engine::new(&config).expect("wasmtime Engine::new")
+    }
+
+    /// Initialize the `Engine` and its epoch tick thread on first use
+    /// (called at the top of `load_one`). Idempotent.
+    fn ensure_engine(&mut self) {
+        if self.engine.is_none() {
+            let engine = Self::build_engine();
+            self.tick_thread = Some(TickThread::spawn(engine.clone()));
+            self.engine = Some(engine);
+        }
+    }
+
+    /// Engine accessor for code paths that only run during or after a
+    /// plugin load (`load_one` calls `ensure_engine` first; dispatch
+    /// paths operate on plugins that could only exist post-load).
+    fn engine(&self) -> &Engine {
+        self.engine
+            .as_ref()
+            .expect("engine initialized by ensure_engine before use")
     }
 
     /// Load plugins listed in the config file. Errors are printed to stderr
@@ -358,7 +407,7 @@ impl PluginManager {
         path: &Path,
     ) -> Result<&Linker<HostContext>, String> {
         if !self.linker_cache.contains_key(&caps) {
-            let l = linker::build_linker(&self.engine, caps)
+            let l = linker::build_linker(self.engine(), caps)
                 .map_err(|e| format!("{}: linker build failed: {}", path.display(), e))?;
             self.linker_cache.insert(caps, l);
         }
@@ -399,6 +448,11 @@ impl PluginManager {
         files_root: Option<&Path>,
         limits_cfg: limits::LimitsConfig,
     ) -> Result<(), String> {
+        // 0. First plugin load: bring up the wasmtime Engine and the
+        //    epoch tick thread. Everything below (component compile,
+        //    linkers, stores) needs the engine.
+        self.ensure_engine();
+
         // 1. Read the wasm bytes (needed for SHA verify and/or in-memory compile).
         let wasm_bytes = std::fs::read(path).map_err(|e| format!("{}: {}", path.display(), e))?;
 
@@ -444,7 +498,7 @@ impl PluginManager {
                         // for THIS wasm, on this same host with this same
                         // wasmtime version. That is the trust boundary
                         // Component::deserialize requires.
-                        unsafe { Component::deserialize(&self.engine, &cwasm_bytes) }.map_err(
+                        unsafe { Component::deserialize(self.engine(), &cwasm_bytes) }.map_err(
                             |e| format!("{}: cwasm deserialize failed: {}", cwasm.display(), e),
                         )?
                     }
@@ -455,7 +509,7 @@ impl PluginManager {
                             path.display(),
                             reason.as_str(),
                         );
-                        Component::new(&self.engine, &wasm_bytes).map_err(|e| {
+                        Component::new(self.engine(), &wasm_bytes).map_err(|e| {
                             format!("{}: component compile failed: {}", path.display(), e)
                         })?
                     }
@@ -467,7 +521,7 @@ impl PluginManager {
                      precompiling in memory (one-time; run 'yosh-plugin sync' to cache)",
                     path.display(),
                 );
-                Component::new(&self.engine, &wasm_bytes)
+                Component::new(self.engine(), &wasm_bytes)
                     .map_err(|e| format!("{}: component compile failed: {}", path.display(), e))?
             }
         };
@@ -505,7 +559,7 @@ impl PluginManager {
         .map_err(|e| format!("{}: bindings pre-init failed: {}", path.display(), e))?;
 
         let mut scratch_store = Store::new(
-            &self.engine,
+            self.engine(),
             HostContext::new_for_plugin(
                 "<probing>",
                 CAP_ALL,
@@ -579,7 +633,7 @@ impl PluginManager {
         host_ctx.files_root =
             files_root.map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
         host_ctx.settings_path = settings_path_for(&plugin_info.name);
-        let mut store = Store::new(&self.engine, host_ctx);
+        let mut store = Store::new(self.engine(), host_ctx);
         store.limiter(|ctx| &mut ctx.mem_limiter);
         // Default-effectively-never deadline. `call_pre_prompt` overrides
         // this with a tight bound on each invocation (Task 4); other
@@ -1260,37 +1314,56 @@ mod tests {
     }
 
     #[test]
-    fn tick_thread_stops_when_manager_drops() {
+    fn manager_without_plugins_has_no_engine_or_tick_thread() {
+        // The no-plugins fast path: `new()` must not build a wasmtime
+        // Engine or spawn the epoch tick thread. Eagerly doing so added
+        // ~50ms (tick-thread Drop join) to every clean shell exit and
+        // command-substitution child.
+        let mgr = PluginManager::new();
+        assert!(mgr.engine.is_none(), "engine must be lazy");
+        assert!(mgr.tick_thread.is_none(), "tick thread must be lazy");
+    }
+
+    #[test]
+    fn ensure_engine_spawns_engine_and_tick_thread_once() {
+        let mut mgr = PluginManager::new();
+        mgr.ensure_engine();
+        assert!(mgr.engine.is_some());
+        assert!(mgr.tick_thread.is_some());
+        // Idempotent: a second call must not replace either.
+        let state_before = std::sync::Arc::as_ptr(&mgr.tick_thread.as_ref().unwrap().state);
+        mgr.ensure_engine();
+        let state_after = std::sync::Arc::as_ptr(&mgr.tick_thread.as_ref().unwrap().state);
+        assert_eq!(state_before, state_after, "ensure_engine must be idempotent");
+    }
+
+    #[test]
+    fn tick_thread_stops_promptly_on_drop() {
         use std::time::Instant;
 
-        let manager = PluginManager::new();
-        // Capture a clone of the stop flag to observe post-drop state.
-        let stop_flag = manager
-            .tick_thread
-            .as_ref()
-            .expect("tick thread must be running while manager is alive")
-            .stop
-            .clone();
+        let tick = TickThread::spawn(PluginManager::build_engine());
+        // Capture the shared state to observe post-drop.
+        let state = std::sync::Arc::clone(&tick.state);
         assert!(
-            !stop_flag.load(std::sync::atomic::Ordering::Acquire),
-            "stop flag must be false while manager is alive"
+            !*state.0.lock().unwrap(),
+            "stop flag must be false while the thread is alive"
         );
 
         let t0 = Instant::now();
-        drop(manager);
+        drop(tick);
         let elapsed = t0.elapsed();
 
         assert!(
-            stop_flag.load(std::sync::atomic::Ordering::Acquire),
-            "stop flag must be true after PluginManager drops"
+            *state.0.lock().unwrap(),
+            "stop flag must be true after TickThread drops"
         );
-        // Drop must join within a generous bound (one tick + slack). If
-        // the tick thread sleeps for the full TICK_MS without checking
-        // the flag, worst case is ~TICK_MS. 500ms is generous.
+        // The Condvar notify wakes the worker immediately: the join must
+        // return well within one tick window, not after sleeping it out.
         assert!(
-            elapsed.as_millis() < 500,
-            "Drop took {:?} (>500ms); tick thread is not exiting promptly",
-            elapsed
+            elapsed.as_millis() < TICK_MS as u128,
+            "Drop took {:?} (>= {}ms tick); Condvar wake-up is not working",
+            elapsed,
+            TICK_MS
         );
     }
 }
