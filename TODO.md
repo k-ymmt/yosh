@@ -271,17 +271,6 @@
         (`src/env/shell_mode.rs`) exercises only the set_by_char/
         set_by_name delegation; the ordering invariant it names (monitor
         default before ops) lives in `Repl::new` and is untested there.
-- [ ] Interactive REPL busy-spins at ~100% CPU when its controlling PTY
-      master closes (terminal-emulator crash, or expectrl teardown after
-      a timed-out PTY test): the slave-side read returns EOF (0 bytes)
-      but crossterm's poll keeps reporting the fd ready, so the
-      `read_event` 50ms poll loop never blocks and never surfaces EOF.
-      Pre-existing (reproduced 2026-08-25 in plain emacs mode with no
-      vi involvement); surfaced when timed-out PTY tests leaked three
-      spinning yosh processes that pushed load to ~10 and slowed later
-      suites. Fix: treat a 0-byte tty read as EOF (exit like Ctrl+D) in
-      `CrosstermTerminal::read_event`, or handle it upstream in the
-      crossterm event source (`src/interactive/terminal.rs`).
 - [ ] Interactive trap latency at the idle prompt — pending signal traps
       (e.g. `trap 'echo hi' USR1`) fire only after the next command
       completes (`process_pending_signals` in the REPL loop), not while

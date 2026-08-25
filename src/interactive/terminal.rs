@@ -98,12 +98,75 @@ pub trait Terminal {
 /// Production terminal implementation backed by crossterm.
 pub struct CrosstermTerminal {
     stdout: Stdout,
+    /// Whether stdin was a tty at construction. When it is, crossterm
+    /// reads events from fd 0 and [`read_event`](Terminal::read_event)
+    /// can watch that fd directly for terminal hangup.
+    stdin_is_tty: bool,
 }
 
 impl Default for CrosstermTerminal {
     fn default() -> Self {
-        Self { stdout: stdout() }
+        Self {
+            stdout: stdout(),
+            // SAFETY: isatty is always safe to call on a constant fd.
+            stdin_is_tty: unsafe { libc::isatty(libc::STDIN_FILENO) } == 1,
+        }
     }
+}
+
+/// Result of waiting for the stdin tty to become readable.
+enum TtyWait {
+    /// Input bytes are buffered and ready to read.
+    Ready,
+    /// Nothing happened within the timeout (or the wait was interrupted
+    /// by a signal — the caller rechecks the pending-signal flag).
+    Timeout,
+    /// The terminal is gone: explicit `POLLHUP`/`POLLERR`, or the fd
+    /// reports readable with zero buffered bytes (EOF after the pty
+    /// master closed).
+    Hangup,
+}
+
+/// Wait up to `timeout_ms` for stdin to become readable, distinguishing
+/// real input from terminal hangup.
+///
+/// crossterm's own `event::poll` cannot make that distinction: after the
+/// controlling pty's master side closes, the slave fd selects as ready
+/// forever while `read` returns 0 bytes, so crossterm burns the whole
+/// poll window in a hard `select`/`read` spin and reports "no event" —
+/// the shell would busy-loop at 100% CPU instead of exiting.
+fn wait_tty_readable(timeout_ms: libc::c_int) -> io::Result<TtyWait> {
+    let mut pfd = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: pfd is a valid pollfd for the duration of the call.
+    let rc = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+    if rc < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+            return Ok(TtyWait::Timeout);
+        }
+        return Err(err);
+    }
+    if rc == 0 {
+        return Ok(TtyWait::Timeout);
+    }
+    if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+        return Ok(TtyWait::Hangup);
+    }
+    if pfd.revents & libc::POLLIN != 0 {
+        let mut avail: libc::c_int = 0;
+        // SAFETY: FIONREAD writes an int byte count for a valid fd.
+        let rc = unsafe { libc::ioctl(libc::STDIN_FILENO, libc::FIONREAD, &mut avail) };
+        if rc == 0 && avail == 0 {
+            // "Readable" with nothing buffered is how macOS reports a
+            // pty whose master is gone (no POLLHUP).
+            return Ok(TtyWait::Hangup);
+        }
+    }
+    Ok(TtyWait::Ready)
 }
 
 impl CrosstermTerminal {
@@ -118,13 +181,47 @@ impl Terminal for CrosstermTerminal {
         // Poll in short bursts so we can check the signal self-pipe between
         // calls.  This lets SIGHUP (and other termination signals) interrupt
         // the read loop even though crossterm itself retries on EINTR.
+        //
+        // Terminal hangup must be detected BEFORE handing control to
+        // crossterm: its internal tty read loop does not handle the EOF
+        // read (`Ok(0)`) that a pty slave returns once the master side
+        // closes, so any `event::poll` after that point — even with a
+        // zero timeout — spins forever inside crossterm at 100% CPU.
+        // (A dying terminal that emits input bytes in the same instant
+        // can still slip through this pre-check; that race is
+        // unavoidable while crossterm owns the fd.)
         loop {
-            if event::poll(Duration::from_millis(50))? {
+            if self.stdin_is_tty
+                && let TtyWait::Hangup = wait_tty_readable(0)?
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "terminal closed",
+                ));
+            }
+            // Deliver whatever crossterm has parsed or can parse from
+            // buffered bytes (also picks up SIGWINCH resize events).
+            if event::poll(Duration::from_millis(0))? {
                 return event::read();
             }
             // Check whether a pending signal should abort the read.
             if crate::signal::has_pending_exit_signal() {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "signal pending"));
+            }
+            if self.stdin_is_tty {
+                // Block on the tty fd ourselves; Ready and Timeout both
+                // loop back to the hangup pre-check and the zero-timeout
+                // poll above, which consumes any new bytes.
+                if let TtyWait::Hangup = wait_tty_readable(50)? {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "terminal closed",
+                    ));
+                }
+            } else if event::poll(Duration::from_millis(50))? {
+                // Non-tty stdin (crossterm reads /dev/tty instead):
+                // keep the historical burst-poll behavior.
+                return event::read();
             }
         }
     }
