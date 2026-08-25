@@ -53,6 +53,9 @@ impl Repl {
         crate::env::default_path::ensure_default_path(&mut executor.env);
         executor.env.mode.is_interactive = true;
         executor.env.mode.options.monitor = true;
+        // Interactive default editing mode is emacs (bash parity); an
+        // invocation `-o vi` below or a later `set -o vi` switches it.
+        executor.env.mode.options.emacs = true;
         // `$-` reports `s` only for an explicit `yosh -s` (bash agrees:
         // an interactive bash without -s has no `s` in $-; dash differs
         // and always reports it when reading stdin).

@@ -18,6 +18,13 @@ pub struct ShellOptions {
     /// `cmd_string`, invocation state reported in `$-`, not settable
     /// via `set`.
     pub stdin_reads: bool, // -s
+    /// emacs-style line editing (`set -o emacs`). Non-POSIX extension
+    /// (bash/ksh/zsh all provide it); mutually exclusive with `vi`.
+    /// No `$-` letter.
+    pub emacs: bool,
+    /// vi-style line editing (`set -o vi`, POSIX XCU sh). Mutually
+    /// exclusive with `emacs`. No `$-` letter.
+    pub vi: bool,
 }
 
 impl ShellOptions {
@@ -100,6 +107,23 @@ impl ShellOptions {
             "xtrace" => self.xtrace = on,
             "ignoreeof" => self.ignoreeof = on,
             "pipefail" => self.pipefail = on,
+            // Editing modes are mutually exclusive: enabling one disables
+            // the other (bash/ksh behavior). Turning one *off* leaves
+            // neither set; the line editor then falls back to emacs
+            // behavior (deviation from bash, which disables line editing
+            // entirely — yosh has no non-editing interactive mode).
+            "emacs" => {
+                self.emacs = on;
+                if on {
+                    self.vi = false;
+                }
+            }
+            "vi" => {
+                self.vi = on;
+                if on {
+                    self.emacs = false;
+                }
+            }
             _ => return Err(format!("unknown option: {}", name)),
         }
         Ok(())
@@ -129,6 +153,7 @@ impl ShellOptions {
     fn all_entries(&self) -> Vec<(&'static str, bool)> {
         let mut entries: Vec<(&'static str, bool)> = vec![
             ("allexport", self.allexport),
+            ("emacs", self.emacs),
             ("errexit", self.errexit),
             ("ignoreeof", self.ignoreeof),
             ("monitor", self.monitor),
@@ -139,6 +164,7 @@ impl ShellOptions {
             ("nounset", self.nounset),
             ("pipefail", self.pipefail),
             ("verbose", self.verbose),
+            ("vi", self.vi),
             ("xtrace", self.xtrace),
         ];
         entries.sort_by_key(|(name, _)| *name);
@@ -320,6 +346,42 @@ mod tests {
             opts.apply_invocation_op(&InvocationOp::Long("bogus".to_string(), true))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn test_editing_modes_mutually_exclusive() {
+        let mut opts = ShellOptions::default();
+        opts.set_by_name("vi", true).unwrap();
+        assert!(opts.vi);
+        assert!(!opts.emacs);
+
+        opts.set_by_name("emacs", true).unwrap();
+        assert!(opts.emacs);
+        assert!(!opts.vi);
+
+        opts.set_by_name("vi", true).unwrap();
+        assert!(opts.vi);
+        assert!(!opts.emacs);
+
+        // Turning the active mode off leaves neither set.
+        opts.set_by_name("vi", false).unwrap();
+        assert!(!opts.vi);
+        assert!(!opts.emacs);
+
+        // Turning one off never enables the other.
+        opts.set_by_name("emacs", true).unwrap();
+        opts.set_by_name("vi", false).unwrap();
+        assert!(opts.emacs);
+        assert!(!opts.vi);
+    }
+
+    #[test]
+    fn test_editing_modes_have_no_flag_letter() {
+        let mut opts = ShellOptions::default();
+        opts.set_by_name("vi", true).unwrap();
+        assert_eq!(opts.to_flag_string(), "");
+        opts.set_by_name("emacs", true).unwrap();
+        assert_eq!(opts.to_flag_string(), "");
     }
 
     #[test]
