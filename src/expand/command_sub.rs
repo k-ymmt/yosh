@@ -78,6 +78,10 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 utility_hash: env.utility_hash.clone(),
             };
             child_env.traps.reset_for_command_sub();
+            // The command-sub child is a fresh subshell: the parent's
+            // remembered reaped statuses and terminal table jobs are
+            // not its children.
+            child_env.process.jobs.reset_for_subshell();
             let mut executor = Executor::from_env(child_env);
 
             let status = executor.exec_program(program);

@@ -77,6 +77,10 @@ impl Executor {
                     }
                     let ignored = self.env.traps.ignored_signals();
                     self.env.traps.reset_for_subshell();
+                    // Pipeline elements are subshells: the parent's
+                    // remembered reaped statuses and terminal table jobs
+                    // are not their children.
+                    self.env.process.jobs.reset_for_subshell();
                     if self.env.mode.options.monitor {
                         signal::setup_foreground_child_signals(&ignored);
                         // A pipeline element is a subshell, not a

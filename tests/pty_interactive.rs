@@ -889,6 +889,14 @@ fn test_pty_wait_returns_status_after_notification_cleanup() {
     );
     wait_for_prompt(&mut s);
 
+    // `$!` must survive the notification cleanup (bash keeps the pid;
+    // regression: it was derived from the live table and became unset,
+    // making `wait $!` a bare wait that returned 0).
+    s.send("echo BANG-$!\r").unwrap();
+    s.expect(Regex(r"\r?\nBANG-[0-9]+"))
+        .expect("$! must still expand to the reaped background pid");
+    wait_for_prompt(&mut s);
+
     // A completed no-operand wait discards remembered statuses (bash).
     s.send("wait\r").unwrap();
     wait_for_prompt(&mut s);
@@ -898,6 +906,81 @@ fn test_pty_wait_returns_status_after_notification_cleanup() {
         "THIRD-127",
         "after a bare wait the pid must be forgotten (bash parity)",
     );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_subshell_forgets_parent_reaped_statuses() {
+    // Regression (2026-08-25 wrap-up review round 1 finding): the
+    // reaped-status map was cloned into forked subshells, so after the
+    // notification pass dropped job p, `(wait $p)` reported the
+    // parent's remembered status where bash/dash report "not a child"
+    // (127) — the pid was never the subshell's child. The parent's own
+    // memory must survive the subshell unchanged.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("sh -c 'exit 7' & p=$!\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("/bin/sleep 0.3\r").unwrap();
+    s.expect("Done").expect("background job must be notified");
+    wait_for_prompt(&mut s);
+
+    s.send("(wait $p; echo SUB-$?)\r").unwrap();
+    expect_output(
+        &mut s,
+        "SUB-127",
+        "a subshell must not inherit the parent's remembered statuses",
+    );
+    wait_for_prompt(&mut s);
+
+    s.send("echo CS-$(wait $p 2>/dev/null; echo $?)\r").unwrap();
+    expect_output(
+        &mut s,
+        "CS-127",
+        "a command-sub child must not inherit the remembered statuses",
+    );
+    wait_for_prompt(&mut s);
+
+    s.send("wait $p; echo MAIN-$?\r").unwrap();
+    expect_output(
+        &mut s,
+        "MAIN-7",
+        "the parent's remembered status must survive the subshells",
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_subshell_has_no_job_control() {
+    // Regression (2026-08-25 wrap-up review round 3 finding): the
+    // subshell child kept monitor mode on, so `(bg %1)` resolved the
+    // inherited job spec and sent SIGCONT to the PARENT's stopped job
+    // while the parent still recorded it as Stopped. bash refuses with
+    // "bg: no job control" (exit 1) and the job stays stopped.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("/bin/sleep 100\r").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    suspend_fg_job(&mut s);
+    wait_for_prompt(&mut s);
+
+    s.send("(bg %1); echo RC-$?\r").unwrap();
+    s.expect("no job control")
+        .expect("bg inside a subshell must be refused");
+    expect_output(&mut s, "RC-1", "subshell bg must exit nonzero");
+    wait_for_prompt(&mut s);
+
+    // The parent's job must still be stopped and controllable.
+    s.send("jobs\r").unwrap();
+    s.expect("Stopped")
+        .expect("the parent's job must remain stopped");
+    wait_for_prompt(&mut s);
+
+    s.send("kill -9 %1\r").unwrap();
     wait_for_prompt(&mut s);
     exit_shell(&mut s);
 }

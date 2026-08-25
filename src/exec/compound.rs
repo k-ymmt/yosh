@@ -101,6 +101,10 @@ impl Executor {
             Ok(ForkResult::Child) => {
                 let ignored = self.env.traps.ignored_signals();
                 self.env.traps.reset_for_subshell();
+                // A subshell has no children yet: the parent's remembered
+                // reaped statuses and its terminal table jobs must not be
+                // waitable here (bash: `(wait $p)` reports "not a child").
+                self.env.process.jobs.reset_for_subshell();
                 signal::reset_child_signals(&ignored);
                 let status = self.exec_body(body);
                 // POSIX §2.12: EXIT pseudo-signal handler runs on shell exit,

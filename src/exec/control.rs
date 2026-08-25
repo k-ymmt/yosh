@@ -201,6 +201,10 @@ impl Executor {
 
                 let ignored = self.env.traps.ignored_signals();
                 self.env.traps.reset_for_subshell();
+                // The async child is a fresh subshell: the parent's
+                // remembered reaped statuses and terminal table jobs
+                // are not its children.
+                self.env.process.jobs.reset_for_subshell();
                 if self.env.mode.options.monitor {
                     signal::setup_background_child_signals(&ignored);
                     // A background job is a subshell, not a job-controlling

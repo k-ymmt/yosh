@@ -149,15 +149,16 @@ impl Executor {
             // reaped, reported, and dropped the job — the retained
             // reaped-status map (POSIX XCU wait: known `$!` pids stay
             // waitable until consumed by a no-operand wait). The map is
-            // consulted only when the pid is absent from the table, so
-            // a recycled pid backing a live job cannot resolve to a
-            // stale status.
+            // consulted only when the pid is absent from the table —
+            // matched against every member pid, not just the leader, so
+            // a recycled pid backing any live process cannot resolve to
+            // a stale status.
             let table_status = self
                 .env
                 .process
                 .jobs
                 .all_jobs()
-                .find(|j| j.pgid == *pid)
+                .find(|j| j.pids.contains(pid))
                 .map(|j| j.status);
             match table_status {
                 Some(JobStatus::Done(code)) => {
@@ -256,7 +257,7 @@ impl Executor {
                             .process
                             .jobs
                             .all_jobs()
-                            .find(|j| j.pgid == *pid)
+                            .find(|j| j.pids.contains(pid))
                             .and_then(|j| match j.status {
                                 JobStatus::Done(code) => Some(code),
                                 JobStatus::Terminated(sig) => Some(128 + sig),
@@ -350,8 +351,20 @@ impl Executor {
         Ok(exit_status)
     }
 
+    /// True when this process is a forked child of the job-controlling
+    /// shell (subshell, async list, pipeline element, command sub) —
+    /// `shell_pid` backs `$$` and survives forks unchanged, so a
+    /// mismatch with the real pid identifies the fork. Job-control
+    /// builtins must refuse there: the inherited job table describes
+    /// the PARENT's jobs, and `(bg %1)` would SIGCONT a process the
+    /// parent still tracks as stopped (bash: "no job control", while
+    /// `$-` keeps `m` — the flag stays set, control is suppressed).
+    fn in_forked_subshell(&self) -> bool {
+        nix::unistd::getpid() != self.env.process.shell_pid
+    }
+
     pub(super) fn builtin_fg(&mut self, args: &[String]) -> Result<i32, ShellError> {
-        if !self.env.mode.options.monitor {
+        if !self.env.mode.options.monitor || self.in_forked_subshell() {
             return Err(ShellError::runtime(
                 RuntimeErrorKind::JobControlError,
                 "fg: no job control".to_string(),
@@ -457,7 +470,7 @@ impl Executor {
     }
 
     pub(super) fn builtin_bg(&mut self, args: &[String]) -> Result<i32, ShellError> {
-        if !self.env.mode.options.monitor {
+        if !self.env.mode.options.monitor || self.in_forked_subshell() {
             return Err(ShellError::runtime(
                 RuntimeErrorKind::JobControlError,
                 "bg: no job control".to_string(),
@@ -518,6 +531,9 @@ impl Executor {
             job.foreground = false;
             eprintln!("[{}]+ {} &", job.id, job.command);
         }
+        // bash: `$!` is the job most recently placed in the background,
+        // whether started with `&` or resumed with `bg`.
+        self.env.process.jobs.set_last_bg_pid(pgid);
 
         // Send SIGCONT
         nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGCONT).ok();
@@ -853,6 +869,31 @@ mod tests {
             .builtin_wait(&["88888".to_string()])
             .expect("repeated wait on a remembered pid must not error");
         assert_eq!(status, 7);
+    }
+
+    #[test]
+    fn wait_matches_non_leader_member_pid_in_table() {
+        use crate::env::jobs::JobStatus;
+        use nix::unistd::Pid;
+        let mut exec = Executor::new("yosh", vec![]);
+        let leader = Pid::from_raw(88890);
+        let member = Pid::from_raw(88891);
+        exec.env
+            .process
+            .jobs
+            .add_job(leader, vec![leader, member], "a | b", false);
+        exec.env
+            .process
+            .jobs
+            .update_status(member, JobStatus::Done(4));
+
+        // The already-done fast path must match member pids, not just the
+        // pgid leader — previously this fell through to waitpid/ECHILD and
+        // errored 127 ("not a child of this shell").
+        let status = exec
+            .builtin_wait(&["88891".to_string()])
+            .expect("wait on a member pid of a Done job must not error");
+        assert_eq!(status, 4);
     }
 
     #[test]
