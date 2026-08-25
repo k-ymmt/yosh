@@ -16,7 +16,9 @@ use super::kill_ring::KillRing;
 use super::spec_completion::{self, SpecStore};
 use super::terminal::{CursorStyle, Terminal};
 use super::undo::UndoManager;
-use super::vi::{self, EditMode, InsertAt, OpKind, ViCmd, ViEngine, ViMode, ViMotion, ViOutcome};
+use super::vi::{
+    self, EditMode, InsertAt, OpKind, SearchDir, ViCmd, ViEngine, ViMode, ViMotion, ViOutcome,
+};
 
 /// Return the highlight style covering char index `i`, advancing `span_idx`
 /// forward as needed.
@@ -151,6 +153,12 @@ pub struct LineEditor {
     /// Text entered during the most recent vi insert session, replayed
     /// by `.` for insert-entering commands.
     vi_last_insert: String,
+    /// Active `/` / `?` pattern input: keystrokes go to the pattern and
+    /// the render shows `/pattern` in place of the buffer.
+    vi_search_input: Option<(SearchDir, String)>,
+    /// Most recent executed search, for `n` / `N` and the empty-pattern
+    /// reuse rule.
+    vi_last_search: Option<(SearchDir, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +204,8 @@ impl LineEditor {
             vi_line_base: Vec::new(),
             vi_insert_start: None,
             vi_last_insert: String::new(),
+            vi_search_input: None,
+            vi_last_search: None,
         }
     }
 
@@ -236,6 +246,7 @@ impl LineEditor {
         self.pending_bell = false;
         self.vi_line_base.clear();
         self.vi_insert_start = None;
+        self.vi_search_input = None;
         if self.edit_mode == EditMode::Vi {
             // Base undo entry so `u` after the first insert session can
             // restore the empty line (vi undo is session-granular; the
@@ -932,12 +943,62 @@ impl LineEditor {
         }
     }
 
+    /// Redraw dispatcher: while vi `/` / `?` pattern input is active the
+    /// input line displays the search prompt and pattern in place of the
+    /// buffer (the buffer itself is untouched and reappears when the
+    /// search resolves or is cancelled).
+    #[allow(clippy::too_many_arguments)]
+    fn redraw<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        prompt_width: usize,
+        cont_prompt: &str,
+        spans: &[ColorSpan],
+        term_width: u16,
+        term_height: u16,
+    ) -> io::Result<()> {
+        if let Some((dir, pat)) = &self.vi_search_input {
+            let display: Vec<char> = std::iter::once(dir.prompt_char())
+                .chain(pat.chars())
+                .collect();
+            let saved_buf = std::mem::replace(&mut self.buf, display);
+            let saved_pos = self.pos;
+            let saved_suggestion = self.suggestion.take();
+            self.pos = self.buf.len();
+            self.invalidate_width_cache();
+            let result = self.redraw_content(
+                term,
+                prompt,
+                prompt_width,
+                cont_prompt,
+                &[],
+                term_width,
+                term_height,
+            );
+            self.buf = saved_buf;
+            self.pos = saved_pos;
+            self.suggestion = saved_suggestion;
+            self.invalidate_width_cache();
+            return result;
+        }
+        self.redraw_content(
+            term,
+            prompt,
+            prompt_width,
+            cont_prompt,
+            spans,
+            term_width,
+            term_height,
+        )
+    }
+
     /// Redraw the current buffer on screen, positioning the cursor correctly.
     /// Handles input that wraps past the terminal width. Buffers containing
     /// literal newlines are rendered as multiple logical lines, each
     /// continuation line prefixed with `cont_prompt`.
     #[allow(clippy::too_many_arguments)]
-    fn redraw<T: Terminal>(
+    fn redraw_content<T: Terminal>(
         &mut self,
         term: &mut T,
         prompt: &str,
@@ -1490,6 +1551,9 @@ impl LineEditor {
     /// Map a single key event to a [`KeyAction`], mutating the buffer as needed.
     fn handle_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
         if self.edit_mode == EditMode::Vi {
+            if self.vi_search_input.is_some() {
+                return self.handle_vi_search_key(key, history);
+            }
             match self.vi.mode {
                 ViMode::Command => return self.handle_vi_command_key(key, history),
                 ViMode::Insert => {
@@ -1653,6 +1717,7 @@ impl LineEditor {
                 | ViCmd::PutBefore
                 | ViCmd::Op(OpKind::Delete | OpKind::Change, _)
                 | ViCmd::OpLine(OpKind::Delete | OpKind::Change)
+                | ViCmd::InsertPrevBigword
         )
     }
 
@@ -1931,6 +1996,96 @@ impl LineEditor {
                 self.clamp_vi_command_pos();
                 KeyAction::Continue
             }
+            ViCmd::HistoryPrev => {
+                self.vi_history_step(true, count, history);
+                KeyAction::Continue
+            }
+            ViCmd::HistoryNext => {
+                self.vi_history_step(false, count, history);
+                KeyAction::Continue
+            }
+            ViCmd::HistoryGoto => {
+                // G: count 0 = oldest entry; count n = entry n (1-based,
+                // oldest first).
+                let len = history.entries().len();
+                let idx = if count == 0 {
+                    if len == 0 {
+                        self.pending_bell = true;
+                        return KeyAction::Continue;
+                    }
+                    0
+                } else {
+                    let idx = count as usize - 1;
+                    if idx >= len {
+                        self.pending_bell = true;
+                        return KeyAction::Continue;
+                    }
+                    idx
+                };
+                let current = self.buffer();
+                if let Some(line) = history.navigate_to(idx, &current).map(str::to_string) {
+                    self.vi_recall(line);
+                }
+                KeyAction::Continue
+            }
+            ViCmd::SearchStart(dir) => {
+                self.vi_search_input = Some((dir, String::new()));
+                self.suggestion = None;
+                KeyAction::Continue
+            }
+            ViCmd::SearchNext | ViCmd::SearchReverse => {
+                match self.vi_last_search.clone() {
+                    Some((dir, pattern)) => {
+                        let dir = if cmd == ViCmd::SearchReverse {
+                            dir.reversed()
+                        } else {
+                            dir
+                        };
+                        if !self.vi_history_search(dir, &pattern, history) {
+                            self.pending_bell = true;
+                        }
+                    }
+                    None => self.pending_bell = true,
+                }
+                KeyAction::Continue
+            }
+            ViCmd::InsertPrevBigword => {
+                // `_`: append a space plus the count-th (default last)
+                // bigword of the previous input line, then enter insert
+                // mode after it.
+                let Some(prev) = history.entries().last() else {
+                    self.pending_bell = true;
+                    return KeyAction::Continue;
+                };
+                let bigwords: Vec<&str> = prev.split_whitespace().collect();
+                let word = if count == 0 {
+                    bigwords.last().copied()
+                } else {
+                    bigwords.get(count as usize - 1).copied()
+                };
+                let Some(word) = word.map(str::to_string) else {
+                    self.pending_bell = true;
+                    return KeyAction::Continue;
+                };
+                self.undo.save(&self.buf, self.pos);
+                let ls = self.line_start(self.pos);
+                let le = self.line_end(self.pos);
+                let mut at = (self.pos + 1).min(le);
+                // "Append a <space> after the current character position";
+                // an empty line has no current character, so no space.
+                if le > ls {
+                    self.buf.insert(at, ' ');
+                    at += 1;
+                }
+                for c in word.chars() {
+                    self.buf.insert(at, c);
+                    at += 1;
+                }
+                self.pos = at;
+                self.invalidate_width_cache();
+                self.vi.mode = ViMode::Insert;
+                KeyAction::Continue
+            }
             ViCmd::Repeat => {
                 let Some(rec) = self.vi.last_change() else {
                     self.pending_bell = true;
@@ -1954,6 +2109,131 @@ impl LineEditor {
                 action
             }
         }
+    }
+
+    // ── vi history navigation and search ───────────────────────────────
+
+    /// Recall a history navigation result into the buffer, vi-style:
+    /// cursor on the first character (POSIX), baseline updated for `U`.
+    fn vi_recall(&mut self, line: String) {
+        self.buf = line.chars().collect();
+        self.pos = 0;
+        self.vi_line_base = self.buf.clone();
+        self.suggestion = None;
+        self.invalidate_width_cache();
+        self.clamp_vi_command_pos();
+    }
+
+    /// vi `k` / `j`: move within a multiline buffer first (matching the
+    /// emacs Up/Down behavior), then navigate history.
+    fn vi_history_step(&mut self, prev: bool, count: u32, history: &mut History) {
+        for _ in 0..count.max(1) {
+            if prev {
+                if self.cursor_line_index() > 0 {
+                    self.move_cursor_up();
+                } else if let Some(line) = history.navigate_up(&self.buffer()).map(str::to_string) {
+                    self.vi_recall(line);
+                } else {
+                    self.pending_bell = true;
+                    break;
+                }
+            } else if self.cursor_line_index() + 1 < self.line_count() {
+                self.move_cursor_down();
+            } else if let Some(line) = history.navigate_down().map(str::to_string) {
+                self.vi_recall(line);
+            } else {
+                self.pending_bell = true;
+                break;
+            }
+        }
+    }
+
+    /// Execute a `/` / `?` history search. Returns whether a matching
+    /// entry was recalled.
+    fn vi_history_search(&mut self, dir: SearchDir, pattern: &str, history: &mut History) -> bool {
+        // POSIX: sh patterns; a leading `^` anchors at the start of the
+        // line, otherwise the pattern matches anywhere.
+        let full_pattern = match pattern.strip_prefix('^') {
+            Some(rest) => format!("{}*", rest),
+            None => format!("*{}*", pattern),
+        };
+        let len = history.entries().len();
+        let found = match dir {
+            SearchDir::Older => {
+                let upper = history.cursor().unwrap_or(len);
+                history.entries()[..upper]
+                    .iter()
+                    .rposition(|e| crate::expand::pattern::matches(&full_pattern, e))
+            }
+            SearchDir::Newer => match history.cursor() {
+                None => None,
+                Some(cur) => history.entries()[cur + 1..]
+                    .iter()
+                    .position(|e| crate::expand::pattern::matches(&full_pattern, e))
+                    .map(|i| cur + 1 + i),
+            },
+        };
+        match found {
+            Some(idx) => {
+                let current = self.buffer();
+                if let Some(line) = history.navigate_to(idx, &current).map(str::to_string) {
+                    self.vi_recall(line);
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        }
+    }
+
+    /// Handle a key while `/` / `?` pattern input is active.
+    fn handle_vi_search_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('c') if ctrl => {
+                self.vi_search_input = None;
+                return KeyAction::Interrupt;
+            }
+            KeyCode::Esc => {
+                self.vi_search_input = None;
+            }
+            KeyCode::Backspace => {
+                if let Some((_, pat)) = &mut self.vi_search_input
+                    && pat.pop().is_none()
+                {
+                    // Backspacing past the start cancels the search.
+                    self.vi_search_input = None;
+                }
+            }
+            KeyCode::Enter => {
+                let (dir, pattern) = self.vi_search_input.take().expect("search input active");
+                // Empty pattern reuses the previous one (POSIX); the
+                // direction comes from the just-typed `/` or `?`.
+                let pattern = if pattern.is_empty() {
+                    match &self.vi_last_search {
+                        Some((_, p)) => p.clone(),
+                        None => {
+                            self.pending_bell = true;
+                            return KeyAction::Continue;
+                        }
+                    }
+                } else {
+                    pattern
+                };
+                if !self.vi_history_search(dir, &pattern, history) {
+                    self.pending_bell = true;
+                }
+                self.vi_last_search = Some((dir, pattern));
+            }
+            KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+                if let Some((_, pat)) = &mut self.vi_search_input {
+                    pat.push(c);
+                }
+            }
+            _ => {}
+        }
+        KeyAction::Continue
     }
 
     /// Replay the last insert session's text (for `.`), honoring `R`

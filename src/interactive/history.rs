@@ -154,6 +154,26 @@ impl History {
         }
     }
 
+    /// Current navigation cursor: `Some(idx)` while a history entry is
+    /// recalled, `None` at the (saved) edit line.
+    pub fn cursor(&self) -> Option<usize> {
+        self.cursor
+    }
+
+    /// Jump the navigation cursor straight to `idx` (vi `G` and `/`/`?`
+    /// searches). Saves the in-progress line the first time navigation
+    /// leaves the edit line, like `navigate_up` does.
+    pub fn navigate_to(&mut self, idx: usize, current_line: &str) -> Option<&str> {
+        if idx >= self.entries.len() {
+            return None;
+        }
+        if self.cursor.is_none() {
+            self.saved_line = current_line.to_string();
+        }
+        self.cursor = Some(idx);
+        Some(&self.entries[idx])
+    }
+
     pub fn reset_cursor(&mut self) {
         self.cursor = None;
         self.saved_line.clear();

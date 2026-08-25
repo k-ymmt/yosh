@@ -444,6 +444,144 @@ fn vi_dot_repeats_cw_with_text() {
     assert_eq!(line.as_deref(), Some("zz zz"));
 }
 
+// ── History navigation and search ──────────────────────────────────────
+
+/// Like `vi_read`, with pre-populated history entries (oldest first).
+fn vi_read_with_history(entries: &[&str], events: Vec<crossterm::event::Event>) -> Option<String> {
+    let mut ed = LineEditor::new();
+    ed.set_edit_mode(EditMode::Vi);
+    let mut history = History::new();
+    for e in entries {
+        history.add(e, 500, "");
+    }
+    let mut term = MockTerminal::new(events);
+    ed.read_line("$ ", &[], &mut history, &mut term)
+        .expect("read_line failed")
+}
+
+#[test]
+fn vi_k_recalls_previous_with_cursor_at_start() {
+    // k recalls "echo last"; x deletes the first char (cursor at start).
+    let line = vi_read_with_history(&["echo last"], seq![[esc()], chars("kx"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("cho last"));
+}
+
+#[test]
+fn vi_k_j_walk_history() {
+    let line = vi_read_with_history(&["one", "two"], seq![[esc()], chars("kkj"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("two"));
+}
+
+#[test]
+fn vi_capital_g_goes_to_oldest() {
+    let line = vi_read_with_history(&["first", "second"], seq![[esc()], chars("G"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("first"));
+}
+
+#[test]
+fn vi_count_g_goes_to_numbered_entry() {
+    let line = vi_read_with_history(&["first", "second"], seq![[esc()], chars("2G"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("second"));
+}
+
+#[test]
+fn vi_invalid_g_number_bells_and_keeps_buffer() {
+    let line = vi_read_with_history(
+        &["only"],
+        seq![chars("keep"), [esc()], chars("9G"), [enter()]],
+    );
+    assert_eq!(line.as_deref(), Some("keep"));
+}
+
+#[test]
+fn vi_slash_searches_backward() {
+    let line = vi_read_with_history(
+        &["echo alpha", "ls beta", "echo gamma"],
+        seq![[esc()], chars("/alpha"), [enter()], [enter()]],
+    );
+    assert_eq!(line.as_deref(), Some("echo alpha"));
+}
+
+#[test]
+fn vi_slash_caret_anchors_at_line_start() {
+    // ^ls must match only at the beginning: skips "echo ls-like".
+    let line = vi_read_with_history(
+        &["ls one", "echo ls-like"],
+        seq![[esc()], chars("/^ls"), [enter()], [enter()]],
+    );
+    assert_eq!(line.as_deref(), Some("ls one"));
+}
+
+#[test]
+fn vi_n_repeats_search_older() {
+    let line = vi_read_with_history(
+        &["echo alpha", "ls beta", "echo gamma"],
+        seq![[esc()], chars("/echo"), [enter()], chars("n"), [enter()]],
+    );
+    // /echo finds "echo gamma" (nearest older); n continues to "echo alpha".
+    assert_eq!(line.as_deref(), Some("echo alpha"));
+}
+
+#[test]
+fn vi_capital_n_reverses_search_direction() {
+    let line = vi_read_with_history(
+        &["echo alpha", "ls beta", "echo gamma"],
+        seq![
+            [esc()],
+            chars("/echo"),
+            [enter()],
+            chars("n"),
+            chars("N"),
+            [enter()]
+        ],
+    );
+    // gamma → alpha (n) → back to gamma (N).
+    assert_eq!(line.as_deref(), Some("echo gamma"));
+}
+
+#[test]
+fn vi_search_no_match_keeps_buffer() {
+    let line = vi_read_with_history(
+        &["one"],
+        seq![chars("keep"), [esc()], chars("/zzz"), [enter()], [enter()]],
+    );
+    assert_eq!(line.as_deref(), Some("keep"));
+}
+
+#[test]
+fn vi_search_esc_cancels_input() {
+    let line = vi_read_with_history(
+        &["one"],
+        seq![chars("keep"), [esc()], chars("/on"), [esc()], [enter()]],
+    );
+    assert_eq!(line.as_deref(), Some("keep"));
+}
+
+#[test]
+fn vi_underscore_appends_last_bigword_of_previous_line() {
+    let line = vi_read_with_history(
+        &["cp file1 file2"],
+        seq![chars("echo"), [esc()], chars("_"), [enter()]],
+    );
+    assert_eq!(line.as_deref(), Some("echo file2"));
+}
+
+#[test]
+fn vi_count_underscore_selects_bigword() {
+    let line = vi_read_with_history(
+        &["cp file1 file2"],
+        seq![chars("echo"), [esc()], chars("2_"), [enter()]],
+    );
+    assert_eq!(line.as_deref(), Some("echo file1"));
+}
+
+#[test]
+fn vi_undo_all_after_history_recall_restores_entry() {
+    // Recall, mangle, U restores the recalled entry.
+    let line = vi_read_with_history(&["echo hello"], seq![[esc()], chars("kxxxU"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("echo hello"));
+}
+
 #[test]
 fn emacs_mode_ignores_esc_and_vi_keys() {
     // Default mode is emacs: ESC is a no-op and 'x' is a plain char.

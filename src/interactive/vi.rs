@@ -115,6 +115,31 @@ pub enum InsertAt {
     LineEnd,
 }
 
+/// Direction of a `/` / `?` history search. `/` moves toward older
+/// entries, `?` toward newer ones.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SearchDir {
+    Older,
+    Newer,
+}
+
+impl SearchDir {
+    pub fn reversed(self) -> Self {
+        match self {
+            Self::Older => Self::Newer,
+            Self::Newer => Self::Older,
+        }
+    }
+
+    /// The prompt character echoed while the pattern is typed.
+    pub fn prompt_char(self) -> char {
+        match self {
+            Self::Older => '/',
+            Self::Newer => '?',
+        }
+    }
+}
+
 /// Semantic command produced by the command-mode key state machine.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViCmd {
@@ -147,6 +172,21 @@ pub enum ViCmd {
     UndoAll,
     /// `.` — count 0 means "no explicit count given".
     Repeat,
+    /// `k` / `-` (and Up)
+    HistoryPrev,
+    /// `j` / `+` (and Down)
+    HistoryNext,
+    /// `G` — count 0 means "no number given" (oldest entry).
+    HistoryGoto,
+    /// `/` / `?` — begin pattern input for a history search.
+    SearchStart(SearchDir),
+    /// `n`
+    SearchNext,
+    /// `N`
+    SearchReverse,
+    /// `_` — append the count-th (default last) bigword of the previous
+    /// input line and enter insert mode. Count 0 = "no count given".
+    InsertPrevBigword,
     Submit,
     Eof,
     Interrupt,
@@ -271,6 +311,14 @@ impl ViEngine {
                 let n = self.take_count();
                 return ViOutcome::Cmd(ViCmd::Move(ViMotion::CharForward), n);
             }
+            KeyCode::Up => {
+                let n = self.take_count();
+                return ViOutcome::Cmd(ViCmd::HistoryPrev, n);
+            }
+            KeyCode::Down => {
+                let n = self.take_count();
+                return ViOutcome::Cmd(ViCmd::HistoryNext, n);
+            }
             _ => {}
         }
 
@@ -314,11 +362,23 @@ impl ViEngine {
             return ViOutcome::Pending;
         }
 
-        // `.`: distinguish "no count" (repeat with the recorded count)
-        // from an explicit count (which also becomes the new default).
-        if ch == '.' {
-            let n = self.count.take().unwrap_or(0);
-            return ViOutcome::Cmd(ViCmd::Repeat, n);
+        // Commands that need to distinguish "no count given" from an
+        // explicit count carry a 0 sentinel: `.` (repeat with recorded
+        // count), `G` (oldest entry), `_` (last bigword).
+        match ch {
+            '.' => {
+                let n = self.count.take().unwrap_or(0);
+                return ViOutcome::Cmd(ViCmd::Repeat, n);
+            }
+            'G' => {
+                let n = self.count.take().unwrap_or(0);
+                return ViOutcome::Cmd(ViCmd::HistoryGoto, n);
+            }
+            '_' => {
+                let n = self.count.take().unwrap_or(0);
+                return ViOutcome::Cmd(ViCmd::InsertPrevBigword, n);
+            }
+            _ => {}
         }
 
         let n = self.take_count();
@@ -396,6 +456,12 @@ impl ViEngine {
             'P' => ViCmd::PutBefore,
             'u' => ViCmd::Undo,
             'U' => ViCmd::UndoAll,
+            'k' | '-' => ViCmd::HistoryPrev,
+            'j' | '+' => ViCmd::HistoryNext,
+            '/' => ViCmd::SearchStart(SearchDir::Older),
+            '?' => ViCmd::SearchStart(SearchDir::Newer),
+            'n' => ViCmd::SearchNext,
+            'N' => ViCmd::SearchReverse,
             _ => ViCmd::Bell,
         };
         ViOutcome::Cmd(cmd, n)
