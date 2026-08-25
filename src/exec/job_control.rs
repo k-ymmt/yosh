@@ -684,7 +684,7 @@ impl Executor {
     }
 
     /// Display pending job notifications and clean up completed jobs.
-    pub fn display_job_notifications(&mut self) {
+    pub(crate) fn display_job_notifications(&mut self) {
         let pending = self.env.process.jobs.pending_notifications();
         for id in &pending {
             if let Some(line) = self.env.process.jobs.format_job(*id) {

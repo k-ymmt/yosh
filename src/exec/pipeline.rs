@@ -11,7 +11,7 @@ use super::Executor;
 
 impl Executor {
     /// Execute a pipeline.
-    pub fn exec_pipeline(&mut self, pipeline: &Pipeline) -> i32 {
+    pub(crate) fn exec_pipeline(&mut self, pipeline: &Pipeline) -> i32 {
         let status = if pipeline.commands.len() == 1 {
             self.exec_command(&pipeline.commands[0])
         } else {

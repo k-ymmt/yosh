@@ -9,7 +9,7 @@ use crate::signal;
 
 impl Executor {
     /// Dispatch a `Command` to the appropriate execution path.
-    pub fn exec_command(&mut self, cmd: &Command) -> i32 {
+    pub(crate) fn exec_command(&mut self, cmd: &Command) -> i32 {
         // POSIX XCU set: "-n ... This option is ignored by interactive
         // shells" — without the guard, `yosh -n` at a terminal wedges the
         // REPL (every command including `set +n` and `exit` becomes a
@@ -74,7 +74,7 @@ impl Executor {
     }
 
     /// Execute an AND-OR list.
-    pub fn exec_and_or(&mut self, and_or: &AndOrList) -> i32 {
+    pub(crate) fn exec_and_or(&mut self, and_or: &AndOrList) -> i32 {
         let has_rest = !and_or.rest.is_empty();
 
         // POSIX §2.15 set: the final status is exempt from `set -e` when the
@@ -278,7 +278,7 @@ impl Executor {
     }
 
     /// Execute a complete command (list of AND-OR lists with separators).
-    pub fn exec_complete_command(&mut self, cmd: &CompleteCommand) -> i32 {
+    pub(crate) fn exec_complete_command(&mut self, cmd: &CompleteCommand) -> i32 {
         // noexec (set -n) stubs the whole complete command here, above
         // the AND-OR machinery: returning 0 from exec_command alone is
         // not enough — a trailing `! cmd` would negate the stub 0 into
@@ -328,6 +328,12 @@ impl Executor {
     }
 
     /// Execute a program (sequence of complete commands).
+    ///
+    /// Stays `pub` (unlike the other `exec_*` AST-walking methods, which
+    /// are `pub(crate)`): `benches/exec_bench.rs` and `src/bin/yosh-dhat.rs`
+    /// are separate crates that drive the executor through this method.
+    /// `yosh-dhat` additionally relies on the public lifecycle methods
+    /// (`execute_exit_trap` et al.) staying `pub`.
     pub fn exec_program(&mut self, program: &Program) -> i32 {
         let mut status = 0;
         for cmd in &program.commands {
