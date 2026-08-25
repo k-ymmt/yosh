@@ -271,6 +271,17 @@
         (`src/env/shell_mode.rs`) exercises only the set_by_char/
         set_by_name delegation; the ordering invariant it names (monitor
         default before ops) lives in `Repl::new` and is untested there.
+- [ ] Interactive REPL busy-spins at ~100% CPU when its controlling PTY
+      master closes (terminal-emulator crash, or expectrl teardown after
+      a timed-out PTY test): the slave-side read returns EOF (0 bytes)
+      but crossterm's poll keeps reporting the fd ready, so the
+      `read_event` 50ms poll loop never blocks and never surfaces EOF.
+      Pre-existing (reproduced 2026-08-25 in plain emacs mode with no
+      vi involvement); surfaced when timed-out PTY tests leaked three
+      spinning yosh processes that pushed load to ~10 and slowed later
+      suites. Fix: treat a 0-byte tty read as EOF (exit like Ctrl+D) in
+      `CrosstermTerminal::read_event`, or handle it upstream in the
+      crossterm event source (`src/interactive/terminal.rs`).
 - [ ] Interactive trap latency at the idle prompt — pending signal traps
       (e.g. `trap 'echo hi' USR1`) fire only after the next command
       completes (`process_pending_signals` in the REPL loop), not while
@@ -311,6 +322,30 @@
         are unavailable in vi insert mode. Ctrl bindings all remain.
         Revisit only if a user wants real-Alt distinction via the kitty
         keyboard protocol (`src/interactive/line_editor.rs::handle_key`).
+  - [ ] Multiline dd/cc/yy semantics: the line variants operate on the
+        cursor's logical line *text* only — the count is ignored and the
+        '\n' separators stay, so `2dd` on `a\nb\nc` empties one line
+        instead of deleting two lines. POSIX's single-line model doesn't
+        cover this; full-vi behavior would delete count lines including
+        separators. Wrap-up review 2026-08-25 deferral
+        (`src/interactive/line_editor.rs::execute_vi_cmd_arm`, OpLine).
+  - [ ] Counts on insert-entry commands (`3a x <ESC>` → `xxx`) and on
+        `n`/`N` are accepted but ignored. POSIX XCU does not give these
+        commands a count, so this is a full-vi nicety, not a conformance
+        gap. Wrap-up review 2026-08-25 deferral
+        (`src/interactive/line_editor.rs`).
+  - [ ] `~` (and the pre-existing emacs Alt+u/l/c word-case ops) keep
+        only the first scalar of a multi-char Unicode case mapping:
+        `ß` toggles to `S`, dropping the second `S`. In-place single-cell
+        replacement can't grow; fixing it means splicing. Wrap-up review
+        2026-08-25 deferral (`src/interactive/line_editor.rs`).
+  - [ ] `v` spawns the external editor directly from the line editor in
+        the shell's own process group: a Ctrl+C typed inside the editor
+        also lands in yosh's self-pipe, so a pending INT trap can fire
+        after the next submitted command. A real fix routes the editor
+        through the executor's foreground-job machinery (like `fc`).
+        Wrap-up review 2026-08-25 deferral
+        (`src/interactive/line_editor.rs::vi_edit_in_editor`).
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
 - [ ] Right-aligned prompt (`PS1_RIGHT`) — starship-style right-side prompt display based on terminal width (`src/interactive/line_editor.rs`)
