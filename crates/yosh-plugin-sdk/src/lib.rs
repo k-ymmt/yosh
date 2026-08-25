@@ -379,7 +379,8 @@ pub fn exists(path: &str) -> bool {
 /// Write `data` to `path`, creating or truncating the file.
 ///
 /// Requires the `files:write` capability. The capability has no
-/// per-path allowlist; see the crate-level "files:write sandbox" note.
+/// per-path allowlist; see the crate-level
+/// [`files:write` sandbox](crate#fileswrite-sandbox) note.
 ///
 /// # Errors
 ///
@@ -409,7 +410,7 @@ pub fn write_string(path: &str, s: &str) -> Result<(), ErrorCode> {
 /// Append `data` to `path`, creating the file if it does not exist.
 ///
 /// Requires the `files:write` capability. See the crate-level
-/// "files:write sandbox" note.
+/// [`files:write` sandbox](crate#fileswrite-sandbox) note.
 ///
 /// # Errors
 ///
@@ -475,7 +476,8 @@ pub fn create_dir_all(path: &str) -> Result<(), ErrorCode> {
 ///
 /// Requires the `files:write` capability. The capability grants
 /// destructive access to any path the host process can reach; see
-/// the crate-level "files:write sandbox" note.
+/// the crate-level [`files:write` sandbox](crate#fileswrite-sandbox)
+/// note.
 ///
 /// # Errors
 ///
@@ -509,7 +511,8 @@ pub fn remove_dir(path: &str) -> Result<(), ErrorCode> {
 ///
 /// Requires the `files:write` capability. The capability grants
 /// recursive destructive access to any path the host process can
-/// reach; see the crate-level "files:write sandbox" note.
+/// reach; see the crate-level
+/// [`files:write` sandbox](crate#fileswrite-sandbox) note.
 ///
 /// # Errors
 ///
@@ -530,17 +533,45 @@ pub fn remove_dir_all(path: &str) -> Result<(), ErrorCode> {
 /// environment. Stdin is `/dev/null`.
 ///
 /// Returns the captured stdout/stderr and exit code on a normal
-/// process exit.
+/// process exit. A child terminated by a signal (other than the
+/// timeout kill, which is [`ErrorCode::Timeout`]) reports the
+/// sentinel exit code `-1`, not `128+N`.
 ///
 /// # Errors
 ///
-/// - `Err(ErrorCode::Denied)` — the `commands:exec` capability isn't granted.
-/// - `Err(ErrorCode::PatternNotAllowed)` — the argv is not matched by any
+/// - [`ErrorCode::Denied`] — the `commands:exec` capability isn't granted.
+/// - [`ErrorCode::PatternNotAllowed`] — the argv is not matched by any
 ///   entry in the plugin's `allowed_commands` allowlist.
-/// - `Err(ErrorCode::Timeout)` — the 1000ms host-enforced cap was hit.
-/// - `Err(ErrorCode::NotFound)` — `program` was not found on PATH.
-/// - `Err(ErrorCode::InvalidArgument)` — `program` is an empty string.
+/// - [`ErrorCode::Timeout`] — the 1000ms host-enforced cap was hit.
+/// - [`ErrorCode::NotFound`] — the OS reported ENOENT for the spawn:
+///   PATH lookup failed, an explicit path does not exist, or the
+///   script's shebang interpreter is missing.
+/// - [`ErrorCode::InvalidArgument`] — `program` is an empty string.
+/// - [`ErrorCode::IoFailed`] — the spawn or wait failed for any other
+///   reason (e.g. an allowlisted path exists but is not executable).
 pub fn exec(program: &str, args: &[&str]) -> Result<ExecOutput, ErrorCode> {
     let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     host_commands::exec(program, &args_owned)
+}
+
+/// Run an external command and return its stdout as a `String` plus the
+/// exit code. Convenience wrapper over [`exec`], mirroring the
+/// [`read_to_string`] / [`read_file`] pairing.
+///
+/// Stdout is decoded with [`String::from_utf8_lossy`], so invalid UTF-8
+/// bytes become U+FFFD instead of failing. Stderr is discarded; use
+/// [`exec`] to inspect it or the raw bytes. The exit code carries
+/// [`exec`]'s signal-termination sentinel (`-1`) semantics.
+///
+/// Requires the `commands:exec` capability.
+///
+/// # Errors
+///
+/// Same as [`exec`].
+pub fn exec_to_string(program: &str, args: &[&str]) -> Result<(String, i32), ErrorCode> {
+    let out = exec(program, args)?;
+    Ok((
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.exit_code,
+    ))
 }
