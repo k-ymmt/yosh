@@ -63,6 +63,29 @@
       code when a user targets one. Wrap-up review 2026-08-25 round 3
       residual (`src/signal.rs`, `src/env/jobs/terminal.rs`,
       `src/exec/redirect.rs`).
+- [ ] Async double-fork hides grandchild stops from job control —
+      `cmd &` forks a subshell which forks+execs the command, so the
+      job table tracks the wrapper subshell: when the grandchild stops
+      (e.g. a backgrounded `yosh &` REPL self-stopping with SIGTTIN in
+      its startup foreground-wait loop), `jobs` still reports Running
+      and `bg %1` fails with "job not stopped". `fg` works because it
+      operates on the whole pgrp (SIGCONT + terminal handoff). A fix
+      wants bash's optimization — exec the command directly in the
+      async child when the payload is a single external simple command
+      — or pgrp-wide WUNTRACED status probing. Wrap-up review
+      2026-08-25 round 2 finding, pre-existing
+      (`src/exec/control.rs::exec_async`, `src/env/jobs/`).
+- [ ] `wait_until_foreground` untestable-order residuals — the two
+      backgrounded-REPL PTY tests pin the stop and the fg recovery but
+      not (a) the spin-detector reset semantics (a regression that
+      counts every iteration — including genuine SIGCONT-terminated
+      stop cycles — toward the 64 bound passes both tests; only 64+
+      `bg` re-stop cycles would expose it) nor (b) `builtin_fg`'s
+      give_terminal-before-SIGCONT order deterministically (the
+      wake-before-handoff race depends on scheduling; reverting the
+      order still usually passes). Wrap-up review 2026-08-25 round 3
+      acknowledged test gaps (`src/signal.rs`,
+      `src/exec/job_control.rs`, `tests/pty_interactive.rs`).
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
 - [ ] `suspend` builtin — not implemented
 - [ ] Pipeline command display in `jobs` output uses placeholder format — improve to reconstruct shell syntax
