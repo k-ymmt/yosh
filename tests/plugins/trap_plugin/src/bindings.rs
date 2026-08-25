@@ -471,13 +471,21 @@ pub mod yosh {
             static __FORCE_SECTION_REF: fn() = super::super::super::__link_custom_section_describing_imports;
             use super::super::super::_rt;
             pub type ErrorCode = super::super::super::yosh::plugin::types::ErrorCode;
+            /// Lightweight stat. Extended in the future by adding new
+            /// functions, never by changing this record's shape.
             #[repr(C)]
             #[derive(Clone, Copy)]
             pub struct FileStat {
                 pub is_file: bool,
                 pub is_dir: bool,
+                /// Effectively always `false` today: the host follows
+                /// symlinks before reading metadata. Detecting a symlink
+                /// needs a future `symlink-metadata` import (or `read-dir`
+                /// on the parent, whose entries do not follow links).
                 pub is_symlink: bool,
                 pub size: u64,
+                /// mtime as seconds since UNIX epoch. -1 if unavailable or
+                /// the mtime predates the epoch.
                 pub mtime_secs: i64,
             }
             impl ::core::fmt::Debug for FileStat {
@@ -496,6 +504,7 @@ pub mod yosh {
             }
             #[derive(Clone)]
             pub struct DirEntry {
+                /// Basename only, not the full path.
                 pub name: _rt::String,
                 pub is_file: bool,
                 pub is_dir: bool,
@@ -515,6 +524,7 @@ pub mod yosh {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
+            /// Read group — gated by CAP_FILES_READ
             pub fn read_file(path: &str) -> Result<_rt::Vec<u8>, ErrorCode> {
                 unsafe {
                     #[repr(align(1))]
@@ -684,6 +694,7 @@ pub mod yosh {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
+            /// Write group — gated by CAP_FILES_WRITE
             pub fn write_file(path: &str, data: &[u8]) -> Result<(), ErrorCode> {
                 unsafe {
                     #[repr(align(1))]

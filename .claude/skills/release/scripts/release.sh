@@ -466,6 +466,14 @@ EOF
 phase_publish_wit() {
   local wit="crates/yosh-plugin-api/wit/yosh-plugin.wit"
   local sha_file="crates/yosh-plugin-api/.last-published-wit.sha256"
+  # The canonical WIT is mirrored verbatim in three more places; build.rs
+  # byte-comparison checks fail if the version rewrite touches only the
+  # canonical copy.
+  local wit_mirrors=(
+    "wit/yosh-plugin.wit"
+    "crates/yosh-plugin-sdk/wit/yosh-plugin.wit"
+    "crates/yosh-plugin-manager/wit/yosh-plugin.wit"
+  )
 
   # 1. wkg available?
   command -v wkg >/dev/null \
@@ -507,10 +515,22 @@ phase_publish_wit() {
     return 0
   fi
 
-  # 8. Rewrite WIT package version to match the crate version.
+  # 8. Rewrite WIT package version to match the crate version, then sync
+  # the mirror copies so the byte-comparison build.rs checks keep passing.
   # `-i.bak + rm` is portable between BSD sed (macOS) and GNU sed (Linux).
   sed -i.bak "s|^package yosh:plugin@.*|package yosh:plugin@${crate_ver};|" "$wit"
   rm -f "${wit}.bak"
+  # Only sync mirrors whose directory exists (all of them, in the real
+  # repo — the guard keeps the test harness's minimal fake repos, which
+  # materialize just the canonical copy, working). Track what was synced
+  # so the amend below stages exactly those paths.
+  local mirror
+  local synced_mirrors=()
+  for mirror in "${wit_mirrors[@]}"; do
+    [[ -d "$(dirname "$mirror")" ]] || continue
+    cp "$wit" "$mirror" || fail "failed to sync WIT mirror $mirror"
+    synced_mirrors+=("$mirror")
+  done
 
   # 9. Build the WIT directory into a .wasm package, then publish.
   # `wkg wit publish` does not exist; the supported flow is
@@ -537,7 +557,9 @@ phase_publish_wit() {
 
   # 11. Amend the bump commit so the WIT/SHA changes are part of the
   # release tag that phase_push will create.
-  git add "$wit" "$sha_file" \
+  # ${arr[@]+...} expansion stays safe under `set -u` when no mirror
+  # was synced (minimal fake repos in the test harness).
+  git add "$wit" ${synced_mirrors[@]+"${synced_mirrors[@]}"} "$sha_file" \
     || fail "git add failed for WIT/SHA files"
   git commit --amend --no-edit \
     || fail "git commit --amend failed — recover manually"

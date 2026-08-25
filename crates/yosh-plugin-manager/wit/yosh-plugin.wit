@@ -69,25 +69,36 @@ interface io {
 interface files {
     use types.{error-code};
 
+    /// Lightweight stat. Extended in the future by adding new
+    /// functions, never by changing this record's shape.
     record file-stat {
         is-file: bool,
         is-dir: bool,
+        /// Effectively always `false` today: the host follows
+        /// symlinks before reading metadata. Detecting a symlink
+        /// needs a future `symlink-metadata` import (or `read-dir`
+        /// on the parent, whose entries do not follow links).
         is-symlink: bool,
         size: u64,
+        /// mtime as seconds since UNIX epoch. -1 if unavailable or
+        /// the mtime predates the epoch.
         mtime-secs: s64,
     }
 
     record dir-entry {
+        /// Basename only, not the full path.
         name: string,
         is-file: bool,
         is-dir: bool,
         is-symlink: bool,
     }
 
+    // Read group — gated by CAP_FILES_READ
     read-file: func(path: string) -> result<list<u8>, error-code>;
     read-dir:  func(path: string) -> result<list<dir-entry>, error-code>;
     metadata:  func(path: string) -> result<file-stat, error-code>;
 
+    // Write group — gated by CAP_FILES_WRITE
     write-file:  func(path: string, data: list<u8>) -> result<_, error-code>;
     append-file: func(path: string, data: list<u8>) -> result<_, error-code>;
     create-dir:  func(path: string, recursive: bool) -> result<_, error-code>;
