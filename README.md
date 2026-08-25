@@ -19,6 +19,10 @@ both kept cleanly separate from the standard shell language.
     plus common external commands like `git`)
   - Fuzzy history search and interactive selectors
   - Kill ring, undo, and Emacs-style keybindings
+  - POSIX vi line editing (`set -o vi` / `set -o emacs`), with the
+    full XCU command-mode set: motions, operators, counts, `.` repeat,
+    history `/`-search, pathname expansion (`=` `\` `*`), `@letter`
+    macros, and `v` external editing; mode shown via cursor shape
 - **Plugin system.** Plugins are WebAssembly Components run in
   [wasmtime](https://wasmtime.dev/), with capability-gated access to
   shell state, sandboxed by default. Author plugins in Rust with

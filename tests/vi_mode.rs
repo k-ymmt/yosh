@@ -7,7 +7,7 @@ use yosh::interactive::line_editor::LineEditor;
 use yosh::interactive::vi::EditMode;
 
 mod helpers;
-use helpers::mock_terminal::{MockTerminal, chars, ctrl, key};
+use helpers::mock_terminal::{MockTerminal, alt, chars, ctrl, key};
 
 /// Run a vi-mode read over the given events and return the submitted line
 /// (None = EOF).
@@ -689,6 +689,15 @@ fn vi_ctrl_v_inserts_literal_tab() {
         [enter()]
     ]);
     assert_eq!(line.as_deref(), Some("a\t"));
+}
+
+#[test]
+fn vi_alt_char_acts_as_esc_prefix() {
+    // A fast ESC-then-key sequence reaches the editor as Alt+key
+    // (terminal ESC-prefix encoding): Alt+h must behave exactly like
+    // ESC followed by h.
+    let line = vi_read(seq![chars("abc"), [alt('h')], chars("x"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("ac"));
 }
 
 #[test]

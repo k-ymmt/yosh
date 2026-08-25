@@ -341,6 +341,15 @@ impl ViEngine {
 
         let ch = match key.code {
             KeyCode::Char(c) if !alt => c,
+            // A fast ESC-then-key arrives as Alt+key (terminal ESC
+            // prefix encoding). ESC cancels pending input, then the key
+            // acts as a fresh command — matching what typing them
+            // slowly does.
+            KeyCode::Char(c) => {
+                self.count = None;
+                self.pending = Pending::None;
+                c
+            }
             KeyCode::Backspace => 'h',
             _ => return ViOutcome::Cmd(ViCmd::Bell, 1),
         };

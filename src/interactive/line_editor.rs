@@ -911,6 +911,7 @@ impl LineEditor {
                             self.clear_lingering_suggestion(term, prompt, prompt_width, "> ", &[])?;
                             self.move_below_render(term, prompt_width)?;
                             term.move_to_column(0)?;
+                            self.reset_cursor_style(term);
                             term.write_str("\r\n")?;
                             term.flush()?;
                             return Ok(Some(self.buffer()));
@@ -923,6 +924,7 @@ impl LineEditor {
                             self.clear_lingering_suggestion(term, prompt, prompt_width, "> ", &[])?;
                             self.move_below_render(term, prompt_width)?;
                             term.move_to_column(0)?;
+                            self.reset_cursor_style(term);
                             term.write_str("\r\n")?;
                             term.flush()?;
                             self.clear();
@@ -1603,36 +1605,9 @@ impl LineEditor {
             match self.vi.mode {
                 ViMode::Command => return self.handle_vi_command_key(key, history),
                 ViMode::Insert => {
-                    if key.code == KeyCode::Esc {
-                        // Capture the session's inserted text for `.`
-                        // (approximation: from the insert entry point to
-                        // the cursor; cursor movement inside the session
-                        // degrades it gracefully).
-                        if let Some(start) = self.vi_insert_start.take() {
-                            if start <= self.pos {
-                                self.vi_last_insert = self.buf[start..self.pos].iter().collect();
-                            } else {
-                                self.vi_last_insert.clear();
-                            }
-                        }
-                        // Enter command mode. vi leaves the cursor on the
-                        // last inserted character (one left of the insert
-                        // point), clamped within the logical line. No undo
-                        // boundary save here: vi undo is session-granular
-                        // and the pre-session state was saved on entry.
-                        self.last_was_insert = false;
-                        self.vi.mode = ViMode::Command;
-                        self.vi.replace_overwrite = false;
-                        let ls = vi::line_start(&self.buf, self.pos);
-                        if self.pos > ls {
-                            self.pos -= 1;
-                        }
-                        self.clamp_vi_command_pos();
-                        self.suggestion = None;
-                        return KeyAction::Continue;
-                    }
                     // Ctrl+V literal-next (POSIX vi insert mode): the next
-                    // key is inserted verbatim, control keys included.
+                    // key is inserted verbatim, ESC and control keys
+                    // included — so it must run before the ESC handling.
                     if self.vi_literal_next {
                         self.vi_literal_next = false;
                         if let Some(ch) = Self::literal_char_for(key) {
@@ -1648,6 +1623,26 @@ impl LineEditor {
                     {
                         self.vi_literal_next = true;
                         return KeyAction::Continue;
+                    }
+                    if key.code == KeyCode::Esc {
+                        self.vi_leave_insert_mode();
+                        return KeyAction::Continue;
+                    }
+                    // A fast ESC-then-key sequence arrives as Alt+key
+                    // (terminal ESC-prefix encoding): leave insert mode
+                    // and run the key as a command-mode command, exactly
+                    // like typing them slowly. This shadows the emacs
+                    // Alt-chords (Alt+f/b/d…) in vi insert mode — vi ESC
+                    // correctness wins; the Ctrl bindings all remain.
+                    if let KeyCode::Char(c) = key.code
+                        && key.modifiers.contains(KeyModifiers::ALT)
+                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        self.vi_leave_insert_mode();
+                        return self.handle_vi_command_key(
+                            KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                            history,
+                        );
                     }
                     // `R` replace mode: a plain character overwrites the
                     // character under the cursor instead of shifting it
@@ -1743,6 +1738,34 @@ impl LineEditor {
     }
 
     // ── vi command mode ────────────────────────────────────────────────
+
+    /// Leave vi insert mode (ESC): capture the session's inserted text
+    /// for `.` (approximation: from the insert entry point to the
+    /// cursor; cursor movement inside the session degrades it
+    /// gracefully), then enter command mode. vi leaves the cursor on
+    /// the last inserted character (one left of the insert point),
+    /// clamped within the logical line. No undo boundary save here: vi
+    /// undo is session-granular and the pre-session state was saved on
+    /// entry.
+    fn vi_leave_insert_mode(&mut self) {
+        if let Some(start) = self.vi_insert_start.take() {
+            if start <= self.pos {
+                self.vi_last_insert = self.buf[start..self.pos].iter().collect();
+            } else {
+                self.vi_last_insert.clear();
+            }
+        }
+        self.last_was_insert = false;
+        self.vi.mode = ViMode::Command;
+        self.vi.replace_overwrite = false;
+        self.vi_literal_next = false;
+        let ls = vi::line_start(&self.buf, self.pos);
+        if self.pos > ls {
+            self.pos -= 1;
+        }
+        self.clamp_vi_command_pos();
+        self.suggestion = None;
+    }
 
     /// Clamp the cursor onto a character of its logical line: command-mode
     /// cursors rest *on* a character, never past the line end (except on
@@ -2947,6 +2970,7 @@ impl LineEditor {
                                 )?;
                                 self.move_below_render(term, prompt_width)?;
                                 term.move_to_column(0)?;
+                                self.reset_cursor_style(term);
                                 term.write_str("\r\n")?;
                                 term.flush()?;
                                 return Ok(Some(self.buffer()));
@@ -2969,6 +2993,7 @@ impl LineEditor {
                             )?;
                             self.move_below_render(term, prompt_width)?;
                             term.move_to_column(0)?;
+                            self.reset_cursor_style(term);
                             term.write_str("\r\n")?;
                             term.flush()?;
                             self.clear();
@@ -3036,6 +3061,7 @@ impl LineEditor {
                                 // Execute the edited line (POSIX v).
                                 history.reset_cursor();
                                 term.move_to_column(0)?;
+                                self.reset_cursor_style(term);
                                 term.write_str("\r\n")?;
                                 term.flush()?;
                                 return Ok(Some(self.buffer()));

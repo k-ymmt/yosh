@@ -241,11 +241,12 @@
         exits with the rc file's status, and the EXIT trap fired at
         startup is skipped on the real exit
         (`src/interactive/mod.rs::{new,run}`).
-  - [ ] `-o vi` / `-o nolog` — POSIX `set -o` option names not in
-        `ShellOptions::set_by_name`, so `yosh -o vi ...` exits 2
-        (`yosh: unknown option: vi`); runtime `set -o vi` fails the
-        same way. vi line-editing mode itself is unimplemented
-        (`src/env/shell_mode.rs`).
+  - [ ] `-o nolog` — POSIX `set -o` option name not in
+        `ShellOptions::set_by_name`, so `yosh -o nolog ...` exits 2;
+        the behavior (don't enter function definitions into history)
+        is also unimplemented (`src/env/shell_mode.rs`,
+        `src/interactive/mod.rs`). `-o vi` landed 2026-08-25 with the
+        full vi line-editing implementation.
   - [ ] Attached `-oNAME` (`yosh -oerrexit`) is accepted at invocation
         but `set -oerrexit` is rejected by the builtin's char-cluster
         walk (`unknown option: -o`); bash rejects both attached forms.
@@ -278,6 +279,38 @@
       `read_event` poll loop plus executor access from the line editor
       (`src/interactive/terminal.rs`, `src/interactive/mod.rs`).
 - [ ] `set -x` does not emit bash-style structural headers for `for` / `case` (yosh matches dash here; POSIX leaves the header format implementation-defined). Empirical survey 2026-05-28 confirmed compound bodies and pipeline members are already traced via `exec_simple_command`; the assignment-only gap was closed in the 2026-05-28 assignment-trace work. Adding bash parity for the headers requires Word→source rendering plus an xtrace argument-quoting algorithm; the latter also affects existing simple-command trace output (`echo "a b" c` traces as `+ echo a b c` not `+ echo 'a b' c`). Tracked together because both want the same quoting helper. See `docs/superpowers/specs/2026-05-28-set-x-assignment-trace-design.md` §5 for the closed assignment portion (`src/exec/compound.rs`, `src/exec/simple.rs`).
+- [ ] vi editing mode residuals (core landed 2026-08-25: full POSIX XCU
+      command set — motions/operators/counts, x X r R ~ s S C D Y p P,
+      u/U/., k j G / ? n N _, = \ * # @letter v, Ctrl+V; DECSCUSR
+      cursor-shape mode indicator; `set -o vi`/`set -o emacs` mutual
+      exclusion with interactive emacs default):
+  - [ ] `=` `\` `*` glob the raw bigword: no tilde expansion or
+        quote-aware word extraction (POSIX prescribes wordexp for `=`).
+        Same class as the completion engine's quote handling
+        (`src/interactive/line_editor.rs::vi_expand_bigword`).
+  - [ ] `v` resolves VISUAL/EDITOR from the inherited process
+        environment, not ShellEnv exports — same std::env-vs-ShellEnv
+        class as the selector NO_COLOR item above
+        (`src/interactive/line_editor.rs::vi_edit_in_editor`).
+  - [ ] `set +o vi` with neither editing option set falls back to emacs
+        behavior; bash instead disables line editing entirely. Deviation
+        noted in `src/env/shell_mode.rs::set_by_name`; revisit only if a
+        non-editing interactive mode is ever wanted.
+  - [ ] vi `u` walks the undo stack (repeated u goes further back,
+        readline-style) instead of full-vi's undo/redo toggle; POSIX
+        only requires undoing the last change, and bash behaves the
+        same. `.` insert-text capture is an approximation (entry point
+        to cursor) that degrades if the cursor moves mid-session
+        (`src/interactive/line_editor.rs`).
+  - [ ] `@letter` alias macros resolve only in the completion-enabled
+        read path (the production REPL path); the plain `read_line`
+        test path ignores them (`src/interactive/line_editor.rs`).
+  - [ ] vi insert mode interprets Alt+char as ESC-then-command (fast
+        ESC+key arrives as Alt+key in terminal encoding; bash vi mode
+        behaves the same), so the emacs Alt-chords (Alt+f/b/d/u/l/c/t)
+        are unavailable in vi insert mode. Ctrl bindings all remain.
+        Revisit only if a user wants real-Alt distinction via the kitty
+        keyboard protocol (`src/interactive/line_editor.rs::handle_key`).
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
 - [ ] Right-aligned prompt (`PS1_RIGHT`) — starship-style right-side prompt display based on terminal width (`src/interactive/line_editor.rs`)

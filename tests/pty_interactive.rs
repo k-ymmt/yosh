@@ -118,6 +118,58 @@ fn test_pty_echo_command() {
 }
 
 #[test]
+fn test_pty_vi_mode_basic_editing() {
+    // set -o vi takes effect at the next prompt; ESC h x fixes a typo
+    // in command mode and Enter executes the corrected line.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("set -o vi\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    s.send("echo viXok").unwrap();
+    s.send("\x1b").unwrap(); // ESC → command mode, cursor on 'k'
+    s.send("hhx").unwrap(); // back onto 'X', delete it
+    s.send("\r").unwrap();
+    expect_output(&mut s, "viok", "vi-mode edited output not found");
+    wait_for_prompt(&mut s);
+
+    // set -o reports the mutual exclusion: vi on, emacs off.
+    s.send("set -o | grep -E '^(vi|emacs)' | tr '\\n' ' '; echo END\r")
+        .unwrap();
+    expect_output(
+        &mut s,
+        "emacs        off vi           on",
+        "set -o vi state not reported",
+    );
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_vi_mode_dollar_and_history_k() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("set -o vi\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    s.send("echo seed_line\r").unwrap();
+    expect_output(&mut s, "seed_line", "seed output not found");
+    wait_for_prompt(&mut s);
+
+    // k recalls the seed command in command mode; Enter re-executes.
+    s.send("\x1b").unwrap();
+    s.send("k").unwrap();
+    s.send("\r").unwrap();
+    expect_output(&mut s, "seed_line", "vi history recall failed");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_ctrl_d_exits() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
