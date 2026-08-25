@@ -6,6 +6,19 @@ use crossterm::{
 };
 use std::io::{self, Stdout, Write, stdout};
 
+/// Text-cursor shape, used by the vi editing mode to distinguish
+/// insert mode (bar) from command mode (block). Emitted as DECSCUSR
+/// escapes; terminals without DECSCUSR support ignore them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CursorStyle {
+    /// Terminal / user default (`ESC [ 0 SP q`).
+    Default,
+    /// Steady block (`ESC [ 2 SP q`) — vi command mode.
+    Block,
+    /// Steady bar (`ESC [ 6 SP q`) — vi insert mode.
+    Bar,
+}
+
 /// Abstraction over terminal I/O for testability.
 pub trait Terminal {
     /// Read one terminal event (blocking).
@@ -74,6 +87,12 @@ pub trait Terminal {
 
     /// Flush output.
     fn flush(&mut self) -> io::Result<()>;
+
+    /// Set the text-cursor shape (DECSCUSR). Default implementation is
+    /// a no-op so test/mock terminals need not care.
+    fn set_cursor_style(&mut self, _style: CursorStyle) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Production terminal implementation backed by crossterm.
@@ -236,5 +255,15 @@ impl Terminal for CrosstermTerminal {
 
     fn flush(&mut self) -> io::Result<()> {
         self.stdout.flush()
+    }
+
+    fn set_cursor_style(&mut self, style: CursorStyle) -> io::Result<()> {
+        let seq = match style {
+            CursorStyle::Default => "\x1b[0 q",
+            CursorStyle::Block => "\x1b[2 q",
+            CursorStyle::Bar => "\x1b[6 q",
+        };
+        write!(self.stdout, "{}", seq)?;
+        Ok(())
     }
 }

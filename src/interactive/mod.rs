@@ -16,6 +16,7 @@ pub mod selector;
 pub mod spec_completion;
 pub mod terminal;
 pub mod undo;
+pub mod vi;
 
 use std::io::{self, Write};
 
@@ -233,6 +234,16 @@ impl Repl {
 
             self.spec_store
                 .set_exec_env(self.executor.env.vars.environ().to_vec());
+
+            // Sync the editing flavor each prompt so `set -o vi` /
+            // `set -o emacs` take effect at the next read. Neither set
+            // (e.g. `set +o vi`) falls back to emacs behavior.
+            self.line_editor
+                .set_edit_mode(if self.executor.env.mode.options.vi {
+                    vi::EditMode::Vi
+                } else {
+                    vi::EditMode::Emacs
+                });
 
             // Take history and aliases out of the environment for the
             // duration of the read: the lazy PS2 closure below borrows the

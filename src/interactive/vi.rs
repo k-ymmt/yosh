@@ -1,0 +1,738 @@
+// src/interactive/vi.rs
+
+//! POSIX sh vi line editing (POSIX XCU `sh`, "vi Line Editing Command
+//! Mode" / "vi Line Editing Insert Mode").
+//!
+//! This module holds the mode types, the command-mode key state machine
+//! ([`ViEngine`]), and the motion-target math as pure functions over
+//! `(&[char], pos)` so they can be unit-tested without a terminal.
+//! Buffer mutation lives in `LineEditor::execute_vi_cmd`.
+//!
+//! Word vs bigword follow the vi utility definitions: a *word* is a
+//! maximal run of alphanumerics/underscores or a maximal run of other
+//! non-blank characters; a *bigword* is a maximal run of non-blanks.
+//! Line-scoped motions (`0 ^ $ | f F t T h l`) operate on the current
+//! logical line of the (possibly multiline) buffer; word motions may
+//! cross newlines, which vi's single-line model never encounters.
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+/// Line-editing flavor selected by `set -o emacs` / `set -o vi`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum EditMode {
+    #[default]
+    Emacs,
+    Vi,
+}
+
+/// vi submode. Reads always start in insert mode; ESC enters command
+/// mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ViMode {
+    #[default]
+    Insert,
+    Command,
+}
+
+/// Direction/kind of a pending `f`/`F`/`t`/`T` character search.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FindKind {
+    /// `f` — to the count-th occurrence after the cursor.
+    Find,
+    /// `F` — to the count-th occurrence before the cursor.
+    FindBack,
+    /// `t` — to just before the count-th occurrence after the cursor.
+    To,
+    /// `T` — to just after the count-th occurrence before the cursor.
+    ToBack,
+}
+
+impl FindKind {
+    fn reversed(self) -> Self {
+        match self {
+            Self::Find => Self::FindBack,
+            Self::FindBack => Self::Find,
+            Self::To => Self::ToBack,
+            Self::ToBack => Self::To,
+        }
+    }
+}
+
+/// A cursor motion (also the object of `d`/`c`/`y` operators).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViMotion {
+    /// `l` / `<space>`
+    CharForward,
+    /// `h`
+    CharBack,
+    /// `w` / `W`
+    WordForward { big: bool },
+    /// `e` / `E`
+    WordEnd { big: bool },
+    /// `b` / `B`
+    WordBack { big: bool },
+    /// `0`
+    LineStart,
+    /// `^`
+    FirstNonBlank,
+    /// `$`
+    LineEnd,
+    /// `|` — column `count` (1-based)
+    Column,
+    /// `f c` / `F c` / `t c` / `T c` (and `;` / `,` after the engine
+    /// substitutes the remembered kind/char)
+    FindChar(FindKind, char),
+}
+
+/// Where an insert-entry command places the cursor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InsertAt {
+    /// `i`
+    Here,
+    /// `a`
+    AfterChar,
+    /// `I`
+    FirstNonBlank,
+    /// `A`
+    LineEnd,
+}
+
+/// Semantic command produced by the command-mode key state machine.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViCmd {
+    Move(ViMotion),
+    EnterInsert(InsertAt),
+    /// `R` — insert mode with overwrite until ESC.
+    ReplaceMode,
+    /// `x`
+    DeleteChar,
+    /// `X`
+    DeleteCharBack,
+    /// `r c`
+    ReplaceChar(char),
+    /// `~`
+    ToggleCase,
+    Submit,
+    Eof,
+    Interrupt,
+    ClearScreen,
+    FuzzySearch,
+    /// Invalid or unsupported input — alert (terminal bell), no change.
+    Bell,
+}
+
+/// Resolution result: either a command with its effective count, or
+/// "waiting for more input" (count digits, char argument).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViOutcome {
+    Cmd(ViCmd, u32),
+    Pending,
+}
+
+/// What the previous key(s) left the state machine waiting for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum Pending {
+    #[default]
+    None,
+    /// `f`/`F`/`t`/`T` seen — waiting for the target character.
+    FindChar(FindKind),
+    /// `r` seen — waiting for the replacement character.
+    ReplaceChar,
+}
+
+/// Command-mode key state machine. Holds only key-resolution state
+/// (pending count / pending char argument / find memory); buffer state
+/// stays in `LineEditor`.
+#[derive(Debug, Default)]
+pub struct ViEngine {
+    pub mode: ViMode,
+    /// When true, insert mode overwrites (entered via `R`).
+    pub replace_overwrite: bool,
+    count: Option<u32>,
+    pending: Pending,
+    /// Most recent `f`/`F`/`t`/`T` for `;` / `,`.
+    last_find: Option<(FindKind, char)>,
+}
+
+impl ViEngine {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reset per-read state: a fresh read starts in insert mode with no
+    /// pending input. Find memory (`;`/`,`) survives across reads like
+    /// the emacs kill ring does.
+    pub fn reset_for_read(&mut self) {
+        self.mode = ViMode::Insert;
+        self.replace_overwrite = false;
+        self.count = None;
+        self.pending = Pending::None;
+    }
+
+    /// Take the accumulated count (default 1).
+    fn take_count(&mut self) -> u32 {
+        self.count.take().unwrap_or(1).max(1)
+    }
+
+    /// Resolve one command-mode key event.
+    pub fn resolve_command_key(&mut self, key: KeyEvent) -> ViOutcome {
+        let mods = key.modifiers;
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        let alt = mods.contains(KeyModifiers::ALT);
+
+        // Control keys act regardless of pending state (and clear it):
+        // interrupt/EOF/redraw mirror their insert-mode meaning.
+        if ctrl && !alt {
+            self.count = None;
+            self.pending = Pending::None;
+            return match key.code {
+                KeyCode::Char('c') => ViOutcome::Cmd(ViCmd::Interrupt, 1),
+                KeyCode::Char('d') => ViOutcome::Cmd(ViCmd::Eof, 1),
+                KeyCode::Char('l') => ViOutcome::Cmd(ViCmd::ClearScreen, 1),
+                KeyCode::Char('r') => ViOutcome::Cmd(ViCmd::FuzzySearch, 1),
+                // Ctrl+J: raw-mode LF, treated as Enter (see Keymap).
+                KeyCode::Char('j') => ViOutcome::Cmd(ViCmd::Submit, 1),
+                _ => ViOutcome::Cmd(ViCmd::Bell, 1),
+            };
+        }
+
+        match key.code {
+            KeyCode::Enter => {
+                self.count = None;
+                self.pending = Pending::None;
+                return ViOutcome::Cmd(ViCmd::Submit, 1);
+            }
+            KeyCode::Esc => {
+                // Cancel any pending count / char argument.
+                let had_pending = self.count.is_some() || self.pending != Pending::None;
+                self.count = None;
+                self.pending = Pending::None;
+                return if had_pending {
+                    ViOutcome::Pending
+                } else {
+                    ViOutcome::Cmd(ViCmd::Bell, 1)
+                };
+            }
+            // Arrow keys keep their intuitive meaning in command mode.
+            KeyCode::Left => {
+                let n = self.take_count();
+                return ViOutcome::Cmd(ViCmd::Move(ViMotion::CharBack), n);
+            }
+            KeyCode::Right => {
+                let n = self.take_count();
+                return ViOutcome::Cmd(ViCmd::Move(ViMotion::CharForward), n);
+            }
+            _ => {}
+        }
+
+        let ch = match key.code {
+            KeyCode::Char(c) if !alt => c,
+            KeyCode::Backspace => 'h',
+            _ => return ViOutcome::Cmd(ViCmd::Bell, 1),
+        };
+
+        // A pending char argument consumes the next character verbatim.
+        match self.pending {
+            Pending::FindChar(kind) => {
+                self.pending = Pending::None;
+                let n = self.take_count();
+                self.last_find = Some((kind, ch));
+                return ViOutcome::Cmd(ViCmd::Move(ViMotion::FindChar(kind, ch)), n);
+            }
+            Pending::ReplaceChar => {
+                self.pending = Pending::None;
+                let n = self.take_count();
+                return ViOutcome::Cmd(ViCmd::ReplaceChar(ch), n);
+            }
+            Pending::None => {}
+        }
+
+        // Count digits. `0` is the line-start motion unless a count is
+        // already in progress.
+        if let Some(d) = ch.to_digit(10)
+            && (d != 0 || self.count.is_some())
+        {
+            let cur = self.count.unwrap_or(0);
+            self.count = Some(cur.saturating_mul(10).saturating_add(d));
+            return ViOutcome::Pending;
+        }
+
+        let n = self.take_count();
+        let cmd = match ch {
+            'l' | ' ' => ViCmd::Move(ViMotion::CharForward),
+            'h' => ViCmd::Move(ViMotion::CharBack),
+            'w' => ViCmd::Move(ViMotion::WordForward { big: false }),
+            'W' => ViCmd::Move(ViMotion::WordForward { big: true }),
+            'e' => ViCmd::Move(ViMotion::WordEnd { big: false }),
+            'E' => ViCmd::Move(ViMotion::WordEnd { big: true }),
+            'b' => ViCmd::Move(ViMotion::WordBack { big: false }),
+            'B' => ViCmd::Move(ViMotion::WordBack { big: true }),
+            '0' => ViCmd::Move(ViMotion::LineStart),
+            '^' => ViCmd::Move(ViMotion::FirstNonBlank),
+            '$' => ViCmd::Move(ViMotion::LineEnd),
+            '|' => ViCmd::Move(ViMotion::Column),
+            'f' => {
+                self.pending = Pending::FindChar(FindKind::Find);
+                self.count = Some(n);
+                return ViOutcome::Pending;
+            }
+            'F' => {
+                self.pending = Pending::FindChar(FindKind::FindBack);
+                self.count = Some(n);
+                return ViOutcome::Pending;
+            }
+            't' => {
+                self.pending = Pending::FindChar(FindKind::To);
+                self.count = Some(n);
+                return ViOutcome::Pending;
+            }
+            'T' => {
+                self.pending = Pending::FindChar(FindKind::ToBack);
+                self.count = Some(n);
+                return ViOutcome::Pending;
+            }
+            ';' => match self.last_find {
+                Some((kind, c)) => ViCmd::Move(ViMotion::FindChar(kind, c)),
+                None => ViCmd::Bell,
+            },
+            ',' => match self.last_find {
+                Some((kind, c)) => ViCmd::Move(ViMotion::FindChar(kind.reversed(), c)),
+                None => ViCmd::Bell,
+            },
+            'i' => ViCmd::EnterInsert(InsertAt::Here),
+            'I' => ViCmd::EnterInsert(InsertAt::FirstNonBlank),
+            'a' => ViCmd::EnterInsert(InsertAt::AfterChar),
+            'A' => ViCmd::EnterInsert(InsertAt::LineEnd),
+            'R' => ViCmd::ReplaceMode,
+            'x' => ViCmd::DeleteChar,
+            'X' => ViCmd::DeleteCharBack,
+            'r' => {
+                self.pending = Pending::ReplaceChar;
+                self.count = Some(n);
+                return ViOutcome::Pending;
+            }
+            '~' => ViCmd::ToggleCase,
+            _ => ViCmd::Bell,
+        };
+        ViOutcome::Cmd(cmd, n)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Motion-target math (pure functions over the buffer)
+// ---------------------------------------------------------------------------
+
+/// Start of the logical line containing `pos`.
+pub fn line_start(buf: &[char], pos: usize) -> usize {
+    buf[..pos]
+        .iter()
+        .rposition(|&c| c == '\n')
+        .map(|i| i + 1)
+        .unwrap_or(0)
+}
+
+/// End (exclusive; index of `'\n'` or `buf.len()`) of the logical line
+/// containing `pos`.
+pub fn line_end(buf: &[char], pos: usize) -> usize {
+    buf[pos..]
+        .iter()
+        .position(|&c| c == '\n')
+        .map(|i| pos + i)
+        .unwrap_or(buf.len())
+}
+
+fn is_blank(c: char) -> bool {
+    c == ' ' || c == '\t'
+}
+
+/// vi character class: 0 = blank (incl. newline), 1 = word char
+/// (alphanumeric or underscore), 2 = other punctuation. Bigwords
+/// collapse classes 1 and 2.
+fn char_class(c: char, big: bool) -> u8 {
+    if is_blank(c) || c == '\n' {
+        0
+    } else if big || c.is_alphanumeric() || c == '_' {
+        1
+    } else {
+        2
+    }
+}
+
+/// One `w` step: start of the next word. `None` when the cursor cannot
+/// advance (already in the last word's trailing position / at end).
+fn next_word_start(buf: &[char], pos: usize, big: bool) -> Option<usize> {
+    let len = buf.len();
+    if pos >= len {
+        return None;
+    }
+    let mut i = pos;
+    let c0 = char_class(buf[i], big);
+    if c0 != 0 {
+        while i < len && char_class(buf[i], big) == c0 {
+            i += 1;
+        }
+    }
+    while i < len && char_class(buf[i], big) == 0 {
+        i += 1;
+    }
+    if i == pos { None } else { Some(i) }
+}
+
+/// One `e` step: end of the current word, or of the next word when the
+/// cursor already sits on a word end.
+fn word_end_after(buf: &[char], pos: usize, big: bool) -> Option<usize> {
+    let len = buf.len();
+    let mut i = pos.checked_add(1)?;
+    if i >= len {
+        return None;
+    }
+    while i < len && char_class(buf[i], big) == 0 {
+        i += 1;
+    }
+    if i >= len {
+        return None;
+    }
+    let c = char_class(buf[i], big);
+    while i + 1 < len && char_class(buf[i + 1], big) == c {
+        i += 1;
+    }
+    Some(i)
+}
+
+/// One `b` step: start of the current word, or of the previous word
+/// when the cursor already sits on a word start.
+fn prev_word_start(buf: &[char], pos: usize, big: bool) -> Option<usize> {
+    if pos == 0 {
+        return None;
+    }
+    let mut i = pos - 1;
+    while char_class(buf[i], big) == 0 {
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    }
+    let c = char_class(buf[i], big);
+    while i > 0 && char_class(buf[i - 1], big) == c {
+        i -= 1;
+    }
+    Some(i)
+}
+
+/// Index of the first non-blank character of the cursor's logical line
+/// (line start when the line is all blank).
+fn first_non_blank(buf: &[char], pos: usize) -> usize {
+    let ls = line_start(buf, pos);
+    let le = line_end(buf, pos);
+    buf[ls..le]
+        .iter()
+        .position(|&c| !is_blank(c))
+        .map(|i| ls + i)
+        .unwrap_or(ls)
+}
+
+/// Index of the count-th occurrence of `target` for `f`/`F`/`t`/`T`,
+/// scoped to the cursor's logical line.
+fn find_char_index(
+    buf: &[char],
+    pos: usize,
+    kind: FindKind,
+    target: char,
+    count: u32,
+) -> Option<usize> {
+    let ls = line_start(buf, pos);
+    let le = line_end(buf, pos);
+    match kind {
+        FindKind::Find | FindKind::To => {
+            let mut i = pos;
+            for _ in 0..count.max(1) {
+                i = buf[i + 1..le].iter().position(|&c| c == target)? + i + 1;
+            }
+            Some(i)
+        }
+        FindKind::FindBack | FindKind::ToBack => {
+            let mut i = pos;
+            for _ in 0..count.max(1) {
+                if i <= ls {
+                    return None;
+                }
+                i = buf[ls..i].iter().rposition(|&c| c == target)? + ls;
+            }
+            Some(i)
+        }
+    }
+}
+
+/// Cursor destination for a plain (non-operator) motion. `None` = the
+/// motion cannot move the cursor (alert). Forward motions cap at the
+/// last character; command-mode cursors rest *on* a character, so the
+/// destination never equals a non-empty buffer's length.
+pub fn motion_move(buf: &[char], pos: usize, motion: ViMotion, count: u32) -> Option<usize> {
+    let count = count.max(1) as usize;
+    let ls = line_start(buf, pos);
+    let le = line_end(buf, pos);
+    let line_last = if le > ls { le - 1 } else { ls };
+    match motion {
+        ViMotion::CharForward => {
+            if pos >= line_last {
+                return None;
+            }
+            Some((pos + count).min(line_last))
+        }
+        ViMotion::CharBack => {
+            if pos <= ls {
+                return None;
+            }
+            Some(pos.saturating_sub(count).max(ls))
+        }
+        ViMotion::WordForward { big } => {
+            let mut p = pos;
+            for step in 0..count {
+                match next_word_start(buf, p, big) {
+                    Some(np) if np < buf.len() => p = np,
+                    // Landing exactly at (or past) buffer end caps the
+                    // cursor at the last character.
+                    _ => {
+                        if step == 0 && pos + 1 >= buf.len() {
+                            return None;
+                        }
+                        p = buf.len().saturating_sub(1);
+                        break;
+                    }
+                }
+            }
+            if p == pos { None } else { Some(p) }
+        }
+        ViMotion::WordEnd { big } => {
+            let mut p = pos;
+            for step in 0..count {
+                match word_end_after(buf, p, big) {
+                    Some(np) => p = np,
+                    None => {
+                        if step == 0 {
+                            return None;
+                        }
+                        break;
+                    }
+                }
+            }
+            Some(p)
+        }
+        ViMotion::WordBack { big } => {
+            let mut p = pos;
+            for step in 0..count {
+                match prev_word_start(buf, p, big) {
+                    Some(np) => p = np,
+                    None => {
+                        if step == 0 {
+                            return None;
+                        }
+                        break;
+                    }
+                }
+            }
+            Some(p)
+        }
+        ViMotion::LineStart => Some(ls),
+        ViMotion::FirstNonBlank => Some(first_non_blank(buf, pos)),
+        ViMotion::LineEnd => Some(line_last),
+        ViMotion::Column => Some((ls + count - 1).min(line_last)),
+        ViMotion::FindChar(kind, target) => {
+            let idx = find_char_index(buf, pos, kind, target, count as u32)?;
+            match kind {
+                FindKind::Find | FindKind::FindBack => Some(idx),
+                FindKind::To => Some(idx.saturating_sub(1)),
+                FindKind::ToBack => Some(idx + 1),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chars(s: &str) -> Vec<char> {
+        s.chars().collect()
+    }
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn word_motions_basic() {
+        let b = chars("echo hello world");
+        assert_eq!(
+            motion_move(&b, 0, ViMotion::WordForward { big: false }, 1),
+            Some(5)
+        );
+        assert_eq!(
+            motion_move(&b, 0, ViMotion::WordForward { big: false }, 2),
+            Some(11)
+        );
+        assert_eq!(
+            motion_move(&b, 5, ViMotion::WordBack { big: false }, 1),
+            Some(0)
+        );
+        assert_eq!(
+            motion_move(&b, 0, ViMotion::WordEnd { big: false }, 1),
+            Some(3)
+        );
+        // e at word end jumps to the next word's end.
+        assert_eq!(
+            motion_move(&b, 3, ViMotion::WordEnd { big: false }, 1),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn word_vs_bigword_punctuation() {
+        let b = chars("a=b c");
+        // word: 'a' / '=' / 'b' are three words.
+        assert_eq!(
+            motion_move(&b, 0, ViMotion::WordForward { big: false }, 1),
+            Some(1)
+        );
+        // bigword: 'a=b' is one bigword.
+        assert_eq!(
+            motion_move(&b, 0, ViMotion::WordForward { big: true }, 1),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn word_forward_caps_at_last_char() {
+        let b = chars("echo hi");
+        // w from inside the last word: caps at last character.
+        assert_eq!(
+            motion_move(&b, 5, ViMotion::WordForward { big: false }, 1),
+            Some(6)
+        );
+        // Already at the last character: alert.
+        assert_eq!(
+            motion_move(&b, 6, ViMotion::WordForward { big: false }, 1),
+            None
+        );
+    }
+
+    #[test]
+    fn line_scoped_motions() {
+        let b = chars("  echo hi");
+        assert_eq!(motion_move(&b, 5, ViMotion::LineStart, 1), Some(0));
+        assert_eq!(motion_move(&b, 5, ViMotion::FirstNonBlank, 1), Some(2));
+        assert_eq!(motion_move(&b, 0, ViMotion::LineEnd, 1), Some(8));
+        assert_eq!(motion_move(&b, 5, ViMotion::Column, 3), Some(2));
+        assert_eq!(motion_move(&b, 0, ViMotion::Column, 100), Some(8));
+    }
+
+    #[test]
+    fn char_motions_stay_in_logical_line() {
+        let b = chars("ab\ncd");
+        // l on 'b' (index 1): line end, alert.
+        assert_eq!(motion_move(&b, 1, ViMotion::CharForward, 1), None);
+        // h on 'c' (index 3): line start, alert.
+        assert_eq!(motion_move(&b, 3, ViMotion::CharBack, 1), None);
+        assert_eq!(motion_move(&b, 3, ViMotion::LineEnd, 1), Some(4));
+        assert_eq!(motion_move(&b, 3, ViMotion::LineStart, 1), Some(3));
+    }
+
+    #[test]
+    fn find_char_motions() {
+        let b = chars("echo hello");
+        let f = |pos, kind, c, n| motion_move(&b, pos, ViMotion::FindChar(kind, c), n);
+        assert_eq!(f(0, FindKind::Find, 'l', 1), Some(7));
+        assert_eq!(f(0, FindKind::Find, 'l', 2), Some(8));
+        assert_eq!(f(0, FindKind::To, 'l', 1), Some(6));
+        assert_eq!(f(9, FindKind::FindBack, 'e', 1), Some(6));
+        assert_eq!(f(9, FindKind::ToBack, 'e', 1), Some(7));
+        assert_eq!(f(0, FindKind::Find, 'z', 1), None);
+    }
+
+    #[test]
+    fn engine_counts_and_zero() {
+        let mut e = ViEngine::new();
+        e.mode = ViMode::Command;
+        assert_eq!(e.resolve_command_key(key('2')), ViOutcome::Pending);
+        assert_eq!(e.resolve_command_key(key('3')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('l')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::CharForward), 23)
+        );
+        // Bare 0 is the line-start motion...
+        assert_eq!(
+            e.resolve_command_key(key('0')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::LineStart), 1)
+        );
+        // ...but 0 after a digit is part of the count.
+        assert_eq!(e.resolve_command_key(key('1')), ViOutcome::Pending);
+        assert_eq!(e.resolve_command_key(key('0')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('h')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::CharBack), 10)
+        );
+    }
+
+    #[test]
+    fn engine_find_char_and_semicolon_memory() {
+        let mut e = ViEngine::new();
+        e.mode = ViMode::Command;
+        assert_eq!(e.resolve_command_key(key('f')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('x')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::FindChar(FindKind::Find, 'x')), 1)
+        );
+        assert_eq!(
+            e.resolve_command_key(key(';')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::FindChar(FindKind::Find, 'x')), 1)
+        );
+        assert_eq!(
+            e.resolve_command_key(key(',')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::FindChar(FindKind::FindBack, 'x')), 1)
+        );
+        // Count before f applies to the find.
+        assert_eq!(e.resolve_command_key(key('2')), ViOutcome::Pending);
+        assert_eq!(e.resolve_command_key(key('t')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('y')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::FindChar(FindKind::To, 'y')), 2)
+        );
+    }
+
+    #[test]
+    fn engine_replace_char_pending() {
+        let mut e = ViEngine::new();
+        e.mode = ViMode::Command;
+        assert_eq!(e.resolve_command_key(key('r')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('Z')),
+            ViOutcome::Cmd(ViCmd::ReplaceChar('Z'), 1)
+        );
+    }
+
+    #[test]
+    fn engine_esc_cancels_pending() {
+        let mut e = ViEngine::new();
+        e.mode = ViMode::Command;
+        assert_eq!(e.resolve_command_key(key('3')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            ViOutcome::Pending
+        );
+        // Count was discarded.
+        assert_eq!(
+            e.resolve_command_key(key('l')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::CharForward), 1)
+        );
+    }
+
+    #[test]
+    fn engine_semicolon_without_find_bells() {
+        let mut e = ViEngine::new();
+        e.mode = ViMode::Command;
+        assert_eq!(
+            e.resolve_command_key(key(';')),
+            ViOutcome::Cmd(ViCmd::Bell, 1)
+        );
+    }
+}

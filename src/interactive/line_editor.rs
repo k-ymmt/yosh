@@ -1,4 +1,4 @@
-use crossterm::event::{Event, KeyEvent};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::io;
 use unicode_width::UnicodeWidthChar;
 
@@ -14,8 +14,9 @@ use super::history::History;
 use super::keymap::{BufferState, Keymap};
 use super::kill_ring::KillRing;
 use super::spec_completion::{self, SpecStore};
-use super::terminal::Terminal;
+use super::terminal::{CursorStyle, Terminal};
 use super::undo::UndoManager;
+use super::vi::{self, EditMode, InsertAt, ViCmd, ViEngine, ViMode, ViMotion, ViOutcome};
 
 /// Return the highlight style covering char index `i`, advancing `span_idx`
 /// forward as needed.
@@ -128,6 +129,19 @@ pub struct LineEditor {
     /// scrolls minimally to keep the cursor row visible when the render
     /// is taller than the terminal.
     viewport_top: usize,
+    /// Active editing flavor (`set -o emacs` / `set -o vi`), synced by
+    /// the REPL before each read.
+    edit_mode: EditMode,
+    /// vi command-mode key state machine (unused while `edit_mode` is
+    /// `Emacs`).
+    vi: ViEngine,
+    /// Terminal alert requested by an invalid vi command; emitted (as
+    /// BEL) and cleared by the read loop before the next redraw.
+    pending_bell: bool,
+    /// Cursor shape last emitted to the terminal, so the read loop only
+    /// writes DECSCUSR on actual mode transitions. `None` = never set
+    /// (or already reset to the terminal default).
+    last_cursor_style: Option<CursorStyle>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,7 +180,17 @@ impl LineEditor {
             preferred_col: None,
             prev_render_multiline: false,
             viewport_top: 0,
+            edit_mode: EditMode::Emacs,
+            vi: ViEngine::new(),
+            pending_bell: false,
+            last_cursor_style: None,
         }
+    }
+
+    /// Select the editing flavor for subsequent reads (`set -o emacs` /
+    /// `set -o vi`). Takes effect at the start of the next read.
+    pub fn set_edit_mode(&mut self, mode: EditMode) {
+        self.edit_mode = mode;
     }
 
     /// Return the current buffer contents as a `String`.
@@ -196,6 +220,8 @@ impl LineEditor {
         self.last_was_insert = false;
         self.undo.clear();
         self.cont_prompt_cache = None;
+        self.vi.reset_for_read();
+        self.pending_bell = false;
         self.invalidate_width_cache();
         self.invalidate_render_state();
     }
@@ -764,6 +790,7 @@ impl LineEditor {
         self.clear();
         term.enable_raw_mode()?;
         let result = self.read_line_loop(prompt, upper_lines, history, term);
+        self.reset_cursor_style(term);
         let _ = term.disable_raw_mode();
         result
     }
@@ -806,6 +833,7 @@ impl LineEditor {
     ) -> io::Result<Option<String>> {
         let prompt_width = display_width(prompt);
         loop {
+            self.sync_cursor_style(term)?;
             term.flush()?;
             match term.read_event()? {
                 Event::Key(key_event) => {
@@ -865,6 +893,7 @@ impl LineEditor {
                         }
                         KeyAction::TabComplete | KeyAction::Continue => {}
                     }
+                    self.flush_pending_bell(term)?;
                     self.update_suggestion(history);
                     let (tw, th) = term.size().unwrap_or((80, 24));
                     self.redraw(term, prompt, prompt_width, "> ", &[], tw, th)?;
@@ -1440,6 +1469,47 @@ impl LineEditor {
 
     /// Map a single key event to a [`KeyAction`], mutating the buffer as needed.
     fn handle_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
+        if self.edit_mode == EditMode::Vi {
+            match self.vi.mode {
+                ViMode::Command => return self.handle_vi_command_key(key, history),
+                ViMode::Insert => {
+                    if key.code == KeyCode::Esc {
+                        // Finalize the insert run for undo grouping, then
+                        // enter command mode. vi leaves the cursor on the
+                        // last inserted character (one left of the insert
+                        // point), clamped within the logical line.
+                        if self.last_was_insert {
+                            self.undo.save(&self.buf, self.pos);
+                            self.last_was_insert = false;
+                        }
+                        self.vi.mode = ViMode::Command;
+                        self.vi.replace_overwrite = false;
+                        let ls = vi::line_start(&self.buf, self.pos);
+                        if self.pos > ls {
+                            self.pos -= 1;
+                        }
+                        self.clamp_vi_command_pos();
+                        self.suggestion = None;
+                        return KeyAction::Continue;
+                    }
+                    // `R` replace mode: a plain character overwrites the
+                    // character under the cursor instead of shifting it
+                    // right. Delete first, then fall through to the normal
+                    // insert path (which handles undo bookkeeping).
+                    if self.vi.replace_overwrite
+                        && let KeyCode::Char(_) = key.code
+                        && !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && self.pos < self.line_end(self.pos)
+                    {
+                        self.delete();
+                    }
+                    // Everything else keeps the regular (emacs-flavored)
+                    // insert-mode bindings: fall through.
+                }
+            }
+        }
         let state = BufferState {
             is_empty: self.is_empty(),
             at_end: self.pos == self.buf.len(),
@@ -1505,6 +1575,186 @@ impl LineEditor {
         self.last_action = action;
 
         key_action
+    }
+
+    // ── vi command mode ────────────────────────────────────────────────
+
+    /// Clamp the cursor onto a character of its logical line: command-mode
+    /// cursors rest *on* a character, never past the line end (except on
+    /// an empty line).
+    fn clamp_vi_command_pos(&mut self) {
+        let ls = self.line_start(self.pos);
+        let le = self.line_end(self.pos);
+        if self.pos >= le && le > ls {
+            self.pos = le - 1;
+        }
+    }
+
+    fn handle_vi_command_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
+        match self.vi.resolve_command_key(key) {
+            ViOutcome::Pending => KeyAction::Continue,
+            ViOutcome::Cmd(cmd, count) => self.execute_vi_cmd(cmd, count, history),
+        }
+    }
+
+    fn execute_vi_cmd(&mut self, cmd: ViCmd, count: u32, _history: &mut History) -> KeyAction {
+        match cmd {
+            ViCmd::Bell => {
+                self.pending_bell = true;
+                KeyAction::Continue
+            }
+            ViCmd::Submit => KeyAction::Submit,
+            ViCmd::Eof => {
+                // Like the insert-mode Ctrl+D: EOF only on an empty line.
+                if self.is_empty() {
+                    KeyAction::Eof
+                } else {
+                    self.pending_bell = true;
+                    KeyAction::Continue
+                }
+            }
+            ViCmd::Interrupt => KeyAction::Interrupt,
+            ViCmd::ClearScreen => KeyAction::ClearScreen,
+            ViCmd::FuzzySearch => KeyAction::FuzzySearch,
+            ViCmd::Move(motion) => {
+                match vi::motion_move(&self.buf, self.pos, motion, count) {
+                    Some(p) => self.pos = p,
+                    None => self.pending_bell = true,
+                }
+                KeyAction::Continue
+            }
+            ViCmd::EnterInsert(at) => {
+                self.vi.mode = ViMode::Insert;
+                let le = self.line_end(self.pos);
+                match at {
+                    InsertAt::Here => {}
+                    InsertAt::AfterChar => {
+                        if self.pos < le {
+                            self.pos += 1;
+                        }
+                    }
+                    InsertAt::FirstNonBlank => {
+                        if let Some(p) =
+                            vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                        {
+                            self.pos = p;
+                        }
+                    }
+                    InsertAt::LineEnd => self.pos = le,
+                }
+                KeyAction::Continue
+            }
+            ViCmd::ReplaceMode => {
+                self.vi.mode = ViMode::Insert;
+                self.vi.replace_overwrite = true;
+                KeyAction::Continue
+            }
+            ViCmd::DeleteChar => {
+                let le = self.line_end(self.pos);
+                if self.pos >= le {
+                    self.pending_bell = true;
+                    return KeyAction::Continue;
+                }
+                self.undo.save(&self.buf, self.pos);
+                let end = (self.pos + count as usize).min(le);
+                let killed: String = self.buf[self.pos..end].iter().collect();
+                self.kill_ring.kill(&killed, false);
+                self.buf.drain(self.pos..end);
+                self.invalidate_width_cache();
+                self.clamp_vi_command_pos();
+                KeyAction::Continue
+            }
+            ViCmd::DeleteCharBack => {
+                let ls = self.line_start(self.pos);
+                if self.pos <= ls {
+                    self.pending_bell = true;
+                    return KeyAction::Continue;
+                }
+                self.undo.save(&self.buf, self.pos);
+                let start = self.pos.saturating_sub(count as usize).max(ls);
+                let killed: String = self.buf[start..self.pos].iter().collect();
+                self.kill_ring.kill(&killed, false);
+                self.buf.drain(start..self.pos);
+                self.pos = start;
+                self.invalidate_width_cache();
+                self.clamp_vi_command_pos();
+                KeyAction::Continue
+            }
+            ViCmd::ReplaceChar(c) => {
+                let le = self.line_end(self.pos);
+                if self.pos >= le {
+                    self.pending_bell = true;
+                    return KeyAction::Continue;
+                }
+                self.undo.save(&self.buf, self.pos);
+                let end = (self.pos + count as usize).min(le);
+                for i in self.pos..end {
+                    self.buf[i] = c;
+                }
+                self.pos = end - 1;
+                self.invalidate_width_cache();
+                KeyAction::Continue
+            }
+            ViCmd::ToggleCase => {
+                let le = self.line_end(self.pos);
+                if self.pos >= le {
+                    self.pending_bell = true;
+                    return KeyAction::Continue;
+                }
+                self.undo.save(&self.buf, self.pos);
+                let end = (self.pos + count as usize).min(le);
+                for i in self.pos..end {
+                    let ch = self.buf[i];
+                    self.buf[i] = if ch.is_uppercase() {
+                        ch.to_lowercase().next().unwrap_or(ch)
+                    } else if ch.is_lowercase() {
+                        ch.to_uppercase().next().unwrap_or(ch)
+                    } else {
+                        ch
+                    };
+                }
+                // Cursor advances past the last toggled character, capped
+                // at the line's last character.
+                self.pos = end.min(le - 1);
+                self.invalidate_width_cache();
+                KeyAction::Continue
+            }
+        }
+    }
+
+    /// Emit the cursor shape matching the current vi submode when it
+    /// changed since the last emit. No-op in emacs mode (the user's
+    /// terminal default is left untouched).
+    fn sync_cursor_style<T: Terminal>(&mut self, term: &mut T) -> io::Result<()> {
+        if self.edit_mode != EditMode::Vi {
+            return Ok(());
+        }
+        let want = match self.vi.mode {
+            ViMode::Insert => CursorStyle::Bar,
+            ViMode::Command => CursorStyle::Block,
+        };
+        if self.last_cursor_style != Some(want) {
+            term.set_cursor_style(want)?;
+            self.last_cursor_style = Some(want);
+        }
+        Ok(())
+    }
+
+    /// Restore the terminal-default cursor shape if a vi read changed it.
+    fn reset_cursor_style<T: Terminal>(&mut self, term: &mut T) {
+        if self.last_cursor_style.take().is_some() {
+            let _ = term.set_cursor_style(CursorStyle::Default);
+            let _ = term.flush();
+        }
+    }
+
+    /// Emit (and clear) a pending vi alert as a terminal BEL.
+    fn flush_pending_bell<T: Terminal>(&mut self, term: &mut T) -> io::Result<()> {
+        if self.pending_bell {
+            self.pending_bell = false;
+            term.write_str("\x07")?;
+        }
+        Ok(())
     }
 
     fn execute_action(
@@ -1781,6 +2031,7 @@ impl LineEditor {
             cont_prompt,
             is_incomplete,
         );
+        self.reset_cursor_style(term);
         let _ = term.disable_raw_mode();
         result
     }
@@ -1803,6 +2054,7 @@ impl LineEditor {
     ) -> io::Result<Option<String>> {
         let prompt_width = display_width(prompt);
         loop {
+            self.sync_cursor_style(term)?;
             term.flush()?;
             match term.read_event()? {
                 Event::Key(key_event) => {
@@ -1821,6 +2073,13 @@ impl LineEditor {
                                 // unrelated older entry.
                                 history.reset_cursor();
                                 self.insert_char('\n');
+                                // A continuation line conventionally starts
+                                // in insert mode, whichever vi submode the
+                                // Enter was pressed in.
+                                if self.edit_mode == EditMode::Vi {
+                                    self.vi.mode = ViMode::Insert;
+                                    self.vi.replace_overwrite = false;
+                                }
                             } else {
                                 history.reset_cursor();
                                 term.reset_style()?;
@@ -1903,6 +2162,7 @@ impl LineEditor {
                         }
                         KeyAction::Continue => {}
                     }
+                    self.flush_pending_bell(term)?;
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
                     let (tw, th) = term.size().unwrap_or((80, 24));
