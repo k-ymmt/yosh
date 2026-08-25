@@ -43,6 +43,36 @@
 
 ## Job Control: Known Limitations
 
+- [ ] Reaped-and-notified background jobs forget their exit status —
+      the interactive notification pass deletes a Done job from the
+      job table after displaying it, so `sh -c 'exit 7' & p=$!`, two
+      prompts later `wait $p` prints `wait: pid N is not a child of
+      this shell` and returns 127 where bash returns 7. POSIX XCU wait
+      requires known `$!` pids to stay waitable until consumed or a
+      later async list. Fix needs a retained pid→status map (or
+      keeping Done jobs until waited) fed by the notification reaper
+      and consulted by `builtin_wait`'s already-done/ECHILD paths.
+      Wrap-up review 2026-08-25 round 3 finding, pre-existing
+      (`src/env/jobs/notification.rs`, `src/exec/job_control.rs`).
+- [ ] Backgrounded interactive startup (`yosh -m &`, or plain `yosh &`
+      with tty stdin from a job-controlling parent) bypasses the
+      ownership gate: `Repl::new` unconditionally ignores SIGTTOU and
+      calls `take_terminal`, stealing the terminal from the parent
+      instead of stopping until foregrounded. The classic fix is the
+      glibc-manual startup loop: while not foreground
+      (`tcgetpgrp != getpgrp`), `kill(0, SIGTTIN)` to stop, then
+      proceed with job-control init once continued in the foreground.
+      Wrap-up review 2026-08-25 round 3 finding, pre-existing
+      (`src/interactive/mod.rs::Repl::new`).
+- [ ] Internal high fds (self-pipe at 10/11, controlling-terminal fd
+      at ≥100) remain user-clobberable because yosh accepts
+      multi-digit IO_NUMBER redirections — `exec 10>/dev/null` breaks
+      self-pipe signal delivery, `exec 100>/dev/null` the terminal
+      handoffs. bash has the same exposure class for its internal fds;
+      a real fix would re-dup internal fds away in the redirection
+      code when a user targets one. Wrap-up review 2026-08-25 round 3
+      residual (`src/signal.rs`, `src/env/jobs/terminal.rs`,
+      `src/exec/redirect.rs`).
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
 - [ ] `suspend` builtin — not implemented
 - [ ] Pipeline command display in `jobs` output uses placeholder format — improve to reconstruct shell syntax
@@ -161,6 +191,21 @@
         walk (`unknown option: -o`); bash rejects both attached forms.
         Decide whether the builtin should share the invocation scanner
         (`src/builtin/special.rs::builtin_set`, `src/main.rs`).
+  - [ ] Non-REPL monitor shells never capture a shell-termios snapshot,
+        and `exec/terminal_state.rs` still probes fd 0 while the
+        terminal handoffs now use the /dev/tty fd — so a `yosh -i -m
+        -c ... </dev/null` whose child runs `stty raw </dev/tty` and
+        self-stops leaves the terminal raw (capture returns None for
+        the /dev/null stdin; nothing is restored after the stop).
+        Wrap-up review 2026-08-25 round 2 finding, deferred: fixing it
+        means switching `terminal_state.rs` to `jobs::terminal_fd()`
+        (adjusting its stdin-redirected unit tests) and capturing the
+        snapshot wherever the monitor gate enables job control
+        (invocation and runtime `set -m`), i.e. deciding the snapshot
+        lifecycle for non-REPL shells. Same family as the "full
+        Repl::new terminal setup remains REPL-only" residual above
+        (`src/exec/terminal_state.rs`, `src/main.rs::run_string`,
+        `src/builtin/special.rs`).
   - [ ] `tests/invocation.rs` hand-rolls pid-named temp dirs in three
         tests (leaks the dir if an assertion panics before cleanup);
         switch to `tempfile::tempdir()` next time the file is touched.
