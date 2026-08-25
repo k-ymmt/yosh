@@ -16,7 +16,7 @@ use super::kill_ring::KillRing;
 use super::spec_completion::{self, SpecStore};
 use super::terminal::{CursorStyle, Terminal};
 use super::undo::UndoManager;
-use super::vi::{self, EditMode, InsertAt, ViCmd, ViEngine, ViMode, ViMotion, ViOutcome};
+use super::vi::{self, EditMode, InsertAt, OpKind, ViCmd, ViEngine, ViMode, ViMotion, ViOutcome};
 
 /// Return the highlight style covering char index `i`, advancing `span_idx`
 /// forward as needed.
@@ -142,6 +142,15 @@ pub struct LineEditor {
     /// writes DECSCUSR on actual mode transitions. `None` = never set
     /// (or already reset to the terminal default).
     last_cursor_style: Option<CursorStyle>,
+    /// vi `U` baseline: the buffer content the current line started
+    /// from (empty at read start; updated on history recall).
+    vi_line_base: Vec<char>,
+    /// Cursor position when the current vi insert session began via a
+    /// command-mode command; used to capture the inserted text for `.`.
+    vi_insert_start: Option<usize>,
+    /// Text entered during the most recent vi insert session, replayed
+    /// by `.` for insert-entering commands.
+    vi_last_insert: String,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +193,9 @@ impl LineEditor {
             vi: ViEngine::new(),
             pending_bell: false,
             last_cursor_style: None,
+            vi_line_base: Vec::new(),
+            vi_insert_start: None,
+            vi_last_insert: String::new(),
         }
     }
 
@@ -222,6 +234,14 @@ impl LineEditor {
         self.cont_prompt_cache = None;
         self.vi.reset_for_read();
         self.pending_bell = false;
+        self.vi_line_base.clear();
+        self.vi_insert_start = None;
+        if self.edit_mode == EditMode::Vi {
+            // Base undo entry so `u` after the first insert session can
+            // restore the empty line (vi undo is session-granular; the
+            // per-run emacs saves are suppressed in vi insert mode).
+            self.undo.save(&[], 0);
+        }
         self.invalidate_width_cache();
         self.invalidate_render_state();
     }
@@ -1474,14 +1494,23 @@ impl LineEditor {
                 ViMode::Command => return self.handle_vi_command_key(key, history),
                 ViMode::Insert => {
                     if key.code == KeyCode::Esc {
-                        // Finalize the insert run for undo grouping, then
-                        // enter command mode. vi leaves the cursor on the
-                        // last inserted character (one left of the insert
-                        // point), clamped within the logical line.
-                        if self.last_was_insert {
-                            self.undo.save(&self.buf, self.pos);
-                            self.last_was_insert = false;
+                        // Capture the session's inserted text for `.`
+                        // (approximation: from the insert entry point to
+                        // the cursor; cursor movement inside the session
+                        // degrades it gracefully).
+                        if let Some(start) = self.vi_insert_start.take() {
+                            if start <= self.pos {
+                                self.vi_last_insert = self.buf[start..self.pos].iter().collect();
+                            } else {
+                                self.vi_last_insert.clear();
+                            }
                         }
+                        // Enter command mode. vi leaves the cursor on the
+                        // last inserted character (one left of the insert
+                        // point), clamped within the logical line. No undo
+                        // boundary save here: vi undo is session-granular
+                        // and the pre-session state was saved on entry.
+                        self.last_was_insert = false;
                         self.vi.mode = ViMode::Command;
                         self.vi.replace_overwrite = false;
                         let ls = vi::line_start(&self.buf, self.pos);
@@ -1527,13 +1556,21 @@ impl LineEditor {
         // - Insert group boundary: when transitioning from insert to non-insert, save once
         // - Destructive ops: always save pre-op state (once)
         // - Insert start: save when first insert after non-insert
-        if self.last_was_insert && !matches!(action, EditAction::InsertChar(_)) {
+        //
+        // vi insert mode suppresses the per-run insert saves: vi undo is
+        // session-granular — the pre-session state was saved when insert
+        // mode was entered (command-mode entry or the read-start base) —
+        // so plain typing must not create intermediate entries. The
+        // destructive emacs bindings still save (unconditionally, since
+        // the boundary save is suppressed too).
+        let vi_insert = self.edit_mode == EditMode::Vi;
+        if self.last_was_insert && !matches!(action, EditAction::InsertChar(_)) && !vi_insert {
             // Finalize the insert group — save current state as group boundary
             self.undo.save(&self.buf, self.pos);
         }
         match action {
             EditAction::InsertChar(_) => {
-                if !self.last_was_insert {
+                if !self.last_was_insert && !vi_insert {
                     self.undo.save(&self.buf, self.pos);
                 }
             }
@@ -1551,7 +1588,7 @@ impl LineEditor {
             | EditAction::UpcaseWord
             | EditAction::DowncaseWord
             | EditAction::CapitalizeWord
-                if !self.last_was_insert =>
+                if !self.last_was_insert || vi_insert =>
             {
                 // Not transitioning from insert — save pre-op state directly.
                 // (When last_was_insert, the boundary save above already
@@ -1597,7 +1634,57 @@ impl LineEditor {
         }
     }
 
-    fn execute_vi_cmd(&mut self, cmd: ViCmd, count: u32, _history: &mut History) -> KeyAction {
+    fn execute_vi_cmd(&mut self, cmd: ViCmd, count: u32, history: &mut History) -> KeyAction {
+        self.execute_vi_cmd_inner(cmd, count, history, false)
+    }
+
+    /// True for commands `.` repeats (buffer-modifying, non-motion).
+    fn vi_cmd_recordable(cmd: ViCmd) -> bool {
+        matches!(
+            cmd,
+            ViCmd::EnterInsert(_)
+                | ViCmd::ReplaceMode
+                | ViCmd::DeleteChar
+                | ViCmd::DeleteCharBack
+                | ViCmd::ReplaceChar(_)
+                | ViCmd::ToggleCase
+                | ViCmd::SubstChar
+                | ViCmd::PutAfter
+                | ViCmd::PutBefore
+                | ViCmd::Op(OpKind::Delete | OpKind::Change, _)
+                | ViCmd::OpLine(OpKind::Delete | OpKind::Change)
+        )
+    }
+
+    fn execute_vi_cmd_inner(
+        &mut self,
+        cmd: ViCmd,
+        count: u32,
+        history: &mut History,
+        replaying: bool,
+    ) -> KeyAction {
+        let mode_before = self.vi.mode;
+        let gen_before = self.buf_generation;
+        let action = self.execute_vi_cmd_arm(cmd, count, history);
+        if !replaying {
+            // Entering insert mode starts a new insert session (for the
+            // `.` text capture).
+            if mode_before == ViMode::Command && self.vi.mode == ViMode::Insert {
+                self.vi_insert_start = Some(self.pos);
+            }
+            // Record buffer-modifying commands for `.` — only when they
+            // actually did something (a belled no-op must not overwrite
+            // the last change).
+            if Self::vi_cmd_recordable(cmd)
+                && (self.buf_generation != gen_before || self.vi.mode == ViMode::Insert)
+            {
+                self.vi.record_change(cmd, count);
+            }
+        }
+        action
+    }
+
+    fn execute_vi_cmd_arm(&mut self, cmd: ViCmd, count: u32, history: &mut History) -> KeyAction {
         match cmd {
             ViCmd::Bell => {
                 self.pending_bell = true;
@@ -1624,6 +1711,8 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::EnterInsert(at) => {
+                // Pre-session state for session-granular vi undo.
+                self.undo.save(&self.buf, self.pos);
                 self.vi.mode = ViMode::Insert;
                 let le = self.line_end(self.pos);
                 match at {
@@ -1645,6 +1734,7 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::ReplaceMode => {
+                self.undo.save(&self.buf, self.pos);
                 self.vi.mode = ViMode::Insert;
                 self.vi.replace_overwrite = true;
                 KeyAction::Continue
@@ -1719,7 +1809,170 @@ impl LineEditor {
                 self.invalidate_width_cache();
                 KeyAction::Continue
             }
+            ViCmd::Op(op, motion) => {
+                // cw / cW act like ce / cE on a non-blank character
+                // (vi/readline tradition; POSIX is silent on it).
+                let motion = match (op, motion) {
+                    (OpKind::Change, ViMotion::WordForward { big })
+                        if self.pos < self.buf.len()
+                            && !matches!(self.buf[self.pos], ' ' | '\t' | '\n') =>
+                    {
+                        ViMotion::WordEnd { big }
+                    }
+                    _ => motion,
+                };
+                match vi::motion_range(&self.buf, self.pos, motion, count) {
+                    Some((start, end)) if start < end => {
+                        let text: String = self.buf[start..end].iter().collect();
+                        self.kill_ring.kill(&text, false);
+                        match op {
+                            OpKind::Yank => {
+                                // POSIX: the cursor does not move.
+                            }
+                            OpKind::Delete | OpKind::Change => {
+                                self.undo.save(&self.buf, self.pos);
+                                self.buf.drain(start..end);
+                                self.pos = start;
+                                self.invalidate_width_cache();
+                                if op == OpKind::Change {
+                                    self.vi.mode = ViMode::Insert;
+                                } else {
+                                    self.clamp_vi_command_pos();
+                                }
+                            }
+                        }
+                        KeyAction::Continue
+                    }
+                    _ => {
+                        self.pending_bell = true;
+                        KeyAction::Continue
+                    }
+                }
+            }
+            ViCmd::OpLine(op) => {
+                let ls = self.line_start(self.pos);
+                let le = self.line_end(self.pos);
+                let text: String = self.buf[ls..le].iter().collect();
+                if !text.is_empty() {
+                    self.kill_ring.kill(&text, false);
+                }
+                match op {
+                    OpKind::Yank => {}
+                    OpKind::Delete | OpKind::Change => {
+                        self.undo.save(&self.buf, self.pos);
+                        self.buf.drain(ls..le);
+                        self.pos = ls;
+                        self.invalidate_width_cache();
+                        if op == OpKind::Change {
+                            self.vi.mode = ViMode::Insert;
+                        }
+                    }
+                }
+                KeyAction::Continue
+            }
+            ViCmd::SubstChar => {
+                self.undo.save(&self.buf, self.pos);
+                let le = self.line_end(self.pos);
+                if self.pos < le {
+                    let end = (self.pos + count as usize).min(le);
+                    let text: String = self.buf[self.pos..end].iter().collect();
+                    self.kill_ring.kill(&text, false);
+                    self.buf.drain(self.pos..end);
+                    self.invalidate_width_cache();
+                }
+                self.vi.mode = ViMode::Insert;
+                KeyAction::Continue
+            }
+            ViCmd::PutAfter | ViCmd::PutBefore => {
+                let text = self.kill_ring.yank().map(str::to_string);
+                let Some(text) = text.filter(|t| !t.is_empty()) else {
+                    self.pending_bell = true;
+                    return KeyAction::Continue;
+                };
+                self.undo.save(&self.buf, self.pos);
+                let le = self.line_end(self.pos);
+                let at = if cmd == ViCmd::PutAfter {
+                    (self.pos + 1).min(le)
+                } else {
+                    self.pos
+                };
+                let chars: Vec<char> = text.chars().collect();
+                let mut insert_pos = at;
+                for _ in 0..count.max(1) {
+                    for &c in &chars {
+                        self.buf.insert(insert_pos, c);
+                        insert_pos += 1;
+                    }
+                }
+                // Cursor lands on the last put character.
+                self.pos = insert_pos - 1;
+                self.invalidate_width_cache();
+                KeyAction::Continue
+            }
+            ViCmd::Undo => {
+                match self.undo.undo() {
+                    Some((buf, pos)) => {
+                        self.buf = buf;
+                        self.pos = pos;
+                        self.invalidate_width_cache();
+                        self.clamp_vi_command_pos();
+                    }
+                    None => self.pending_bell = true,
+                }
+                KeyAction::Continue
+            }
+            ViCmd::UndoAll => {
+                // U restores the line the edit started from (empty, or
+                // the recalled history entry); u can undo the U itself.
+                self.undo.save(&self.buf, self.pos);
+                self.buf = self.vi_line_base.clone();
+                self.pos = 0;
+                self.invalidate_width_cache();
+                self.clamp_vi_command_pos();
+                KeyAction::Continue
+            }
+            ViCmd::Repeat => {
+                let Some(rec) = self.vi.last_change() else {
+                    self.pending_bell = true;
+                    return KeyAction::Continue;
+                };
+                // count 0 = bare `.`: reuse the recorded count. An
+                // explicit count becomes the new default (POSIX).
+                let effective = if count > 0 {
+                    self.vi.set_last_change_count(count);
+                    count
+                } else {
+                    rec.count
+                };
+                let action = self.execute_vi_cmd_inner(rec.cmd, effective, history, true);
+                // Insert-entering commands replay the recorded text and
+                // return to command mode, as if the user retyped it and
+                // pressed ESC.
+                if self.vi.mode == ViMode::Insert {
+                    self.vi_replay_insert();
+                }
+                action
+            }
         }
+    }
+
+    /// Replay the last insert session's text (for `.`), honoring `R`
+    /// overwrite semantics, then leave insert mode like ESC does.
+    fn vi_replay_insert(&mut self) {
+        let text: Vec<char> = self.vi_last_insert.chars().collect();
+        for ch in text {
+            if self.vi.replace_overwrite && self.pos < self.line_end(self.pos) {
+                self.delete();
+            }
+            self.insert_char(ch);
+        }
+        self.vi.mode = ViMode::Command;
+        self.vi.replace_overwrite = false;
+        let ls = self.line_start(self.pos);
+        if self.pos > ls {
+            self.pos -= 1;
+        }
+        self.clamp_vi_command_pos();
     }
 
     /// Emit the cursor shape matching the current vi submode when it
