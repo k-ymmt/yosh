@@ -170,6 +170,32 @@ fn test_pty_vi_mode_dollar_and_history_k() {
 }
 
 #[test]
+fn test_pty_vi_mode_hash_stashes_in_history() {
+    // vi `#` comments the line out and records it in history (the
+    // ParseStatus::Empty comment branch); `k` recalls it, `x` removes
+    // the '#', and Enter executes the original command.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("set -o vi\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    s.send("echo stashed").unwrap();
+    s.send("\x1b").unwrap(); // ESC -> command mode
+    s.send("#").unwrap(); // comment + submit + record in history
+    wait_for_prompt(&mut s);
+
+    s.send("\x1b").unwrap();
+    s.send("k").unwrap(); // recall "#echo stashed", cursor on '#'
+    s.send("x").unwrap(); // delete the '#'
+    s.send("\r").unwrap();
+    expect_output(&mut s, "stashed", "vi # history stash round-trip failed");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_ctrl_d_exits() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);

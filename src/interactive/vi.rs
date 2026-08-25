@@ -244,6 +244,11 @@ pub struct ChangeRecord {
     pub count: u32,
 }
 
+/// Upper bound on accumulated counts (readline-style sanity cap): a
+/// count beyond this cannot do anything useful on a command line and
+/// only serves to stall the editor.
+const COUNT_CAP: u32 = 1_000_000;
+
 /// Command-mode key state machine. Holds only key-resolution state
 /// (pending count / pending char argument / find memory); buffer state
 /// stays in `LineEditor`.
@@ -384,12 +389,13 @@ impl ViEngine {
         }
 
         // Count digits. `0` is the line-start motion unless a count is
-        // already in progress.
+        // already in progress. Counts are capped so an absurd repeat
+        // (e.g. `999999999999p`) cannot stall the editor.
         if let Some(d) = ch.to_digit(10)
             && (d != 0 || self.count.is_some())
         {
             let cur = self.count.unwrap_or(0);
-            self.count = Some(cur.saturating_mul(10).saturating_add(d));
+            self.count = Some(cur.saturating_mul(10).saturating_add(d).min(COUNT_CAP));
             return ViOutcome::Pending;
         }
 
@@ -518,13 +524,17 @@ impl ViEngine {
             && (d != 0 || count_after.is_some())
         {
             let cur = count_after.unwrap_or(0);
-            self.pending = Pending::Op(op, Some(cur.saturating_mul(10).saturating_add(d)));
+            self.pending = Pending::Op(
+                op,
+                Some(cur.saturating_mul(10).saturating_add(d).min(COUNT_CAP)),
+            );
             return ViOutcome::Pending;
         }
         self.pending = Pending::None;
         let total = self
             .take_count()
-            .saturating_mul(count_after.unwrap_or(1).max(1));
+            .saturating_mul(count_after.unwrap_or(1).max(1))
+            .min(COUNT_CAP);
 
         // Doubled operator char = whole-line variant.
         if ch == op.cmd_char() {
@@ -716,6 +726,11 @@ fn find_char_index(
         FindKind::Find | FindKind::To => {
             let mut i = pos;
             for _ in 0..count.max(1) {
+                // An empty line (or cursor at/after line end) has no
+                // "after the cursor" region to search.
+                if i + 1 > le {
+                    return None;
+                }
                 i = buf[i + 1..le].iter().position(|&c| c == target)? + i + 1;
             }
             Some(i)
@@ -1262,6 +1277,33 @@ mod tests {
         assert_eq!(
             e.resolve_command_key(key('v')),
             ViOutcome::Cmd(ViCmd::EditInEditor, 2)
+        );
+    }
+
+    #[test]
+    fn engine_count_is_capped() {
+        let mut e = ViEngine::new();
+        e.mode = ViMode::Command;
+        for _ in 0..13 {
+            assert_eq!(e.resolve_command_key(key('9')), ViOutcome::Pending);
+        }
+        assert_eq!(
+            e.resolve_command_key(key('l')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::CharForward), 1_000_000)
+        );
+        // Operator-side accumulation and the multiplied total cap too.
+        assert_eq!(e.resolve_command_key(key('9')), ViOutcome::Pending);
+        assert_eq!(e.resolve_command_key(key('9')), ViOutcome::Pending);
+        assert_eq!(e.resolve_command_key(key('d')), ViOutcome::Pending);
+        for _ in 0..13 {
+            assert_eq!(e.resolve_command_key(key('9')), ViOutcome::Pending);
+        }
+        assert_eq!(
+            e.resolve_command_key(key('w')),
+            ViOutcome::Cmd(
+                ViCmd::Op(OpKind::Delete, ViMotion::WordForward { big: false }),
+                1_000_000
+            )
         );
     }
 

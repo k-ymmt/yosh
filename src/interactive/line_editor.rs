@@ -163,6 +163,11 @@ pub struct LineEditor {
     /// Synthetic key events queued by `@letter` alias macros, consumed
     /// before reading from the terminal.
     pending_events: VecDeque<KeyEvent>,
+    /// Remaining `@letter` expansions allowed before the next real
+    /// terminal read. A recursive macro (`alias _a='@a'`) would
+    /// otherwise refill the queue forever without ever reaching the
+    /// terminal (and its Ctrl+C).
+    vi_macro_budget: u32,
     /// vi insert-mode Ctrl+V: the next key is inserted literally.
     vi_literal_next: bool,
 }
@@ -213,6 +218,7 @@ impl LineEditor {
             vi_search_input: None,
             vi_last_search: None,
             pending_events: VecDeque::new(),
+            vi_macro_budget: 0,
             vi_literal_next: false,
         }
     }
@@ -1628,6 +1634,15 @@ impl LineEditor {
                         self.vi_leave_insert_mode();
                         return KeyAction::Continue;
                     }
+                    // POSIX vi insert-mode Ctrl+W: word-erase bounded by
+                    // the current logical line's start (the emacs
+                    // backward-kill crosses '\n' and would join lines).
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('w')
+                    {
+                        self.vi_insert_werase();
+                        return KeyAction::Continue;
+                    }
                     // A fast ESC-then-key sequence arrives as Alt+key
                     // (terminal ESC-prefix encoding): leave insert mode
                     // and run the key as a command-mode command, exactly
@@ -1680,12 +1695,12 @@ impl LineEditor {
         // - Destructive ops: always save pre-op state (once)
         // - Insert start: save when first insert after non-insert
         //
-        // vi insert mode suppresses the per-run insert saves: vi undo is
+        // vi insert mode suppresses ALL of these saves: vi undo is
         // session-granular — the pre-session state was saved when insert
         // mode was entered (command-mode entry or the read-start base) —
-        // so plain typing must not create intermediate entries. The
-        // destructive emacs bindings still save (unconditionally, since
-        // the boundary save is suppressed too).
+        // so nothing typed or edited inside the session (plain chars,
+        // Backspace, the Ctrl kills) may create intermediate entries;
+        // `u` after ESC must restore the whole pre-session state.
         let vi_insert = self.edit_mode == EditMode::Vi;
         if self.last_was_insert && !matches!(action, EditAction::InsertChar(_)) && !vi_insert {
             // Finalize the insert group — save current state as group boundary
@@ -1711,7 +1726,7 @@ impl LineEditor {
             | EditAction::UpcaseWord
             | EditAction::DowncaseWord
             | EditAction::CapitalizeWord
-                if !self.last_was_insert || vi_insert =>
+                if !self.last_was_insert && !vi_insert =>
             {
                 // Not transitioning from insert — save pre-op state directly.
                 // (When last_was_insert, the boundary save above already
@@ -1738,6 +1753,29 @@ impl LineEditor {
     }
 
     // ── vi command mode ────────────────────────────────────────────────
+
+    /// POSIX vi insert-mode Ctrl+W: delete back to the preceding word
+    /// boundary — "the closer of the beginning of the line or the first
+    /// non-blank after a blank" — never crossing the logical line start.
+    fn vi_insert_werase(&mut self) {
+        let is_blank = |c: char| c == ' ' || c == '\t';
+        let ls = self.line_start(self.pos);
+        let mut start = self.pos;
+        while start > ls && is_blank(self.buf[start - 1]) {
+            start -= 1;
+        }
+        while start > ls && !is_blank(self.buf[start - 1]) {
+            start -= 1;
+        }
+        if start == self.pos {
+            return;
+        }
+        let killed: String = self.buf[start..self.pos].iter().collect();
+        self.kill_ring.kill(&killed, false);
+        self.buf.drain(start..self.pos);
+        self.pos = start;
+        self.invalidate_width_cache();
+    }
 
     /// Leave vi insert mode (ESC): capture the session's inserted text
     /// for `.` (approximation: from the insert entry point to the
@@ -1781,7 +1819,15 @@ impl LineEditor {
     fn handle_vi_command_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
         match self.vi.resolve_command_key(key) {
             ViOutcome::Pending => KeyAction::Continue,
-            ViOutcome::Cmd(cmd, count) => self.execute_vi_cmd(cmd, count, history),
+            ViOutcome::Cmd(cmd, count) => {
+                let action = self.execute_vi_cmd(cmd, count, history);
+                // vi commands end any emacs-side action run: a Ctrl kill
+                // after a vi command must not append to the previous
+                // kill, and stale yank-pop state must not survive.
+                self.last_action = EditAction::Noop;
+                self.yank_state = None;
+                action
+            }
         }
     }
 
@@ -2049,16 +2095,24 @@ impl LineEditor {
                     self.pos
                 };
                 let chars: Vec<char> = text.chars().collect();
+                // Bound the total inserted text (count × kill length) so a
+                // huge count cannot balloon the buffer.
+                let reps = (count.max(1) as usize)
+                    .min(1_000_000 / chars.len().max(1))
+                    .max(1);
                 let mut insert_pos = at;
-                for _ in 0..count.max(1) {
+                for _ in 0..reps {
                     for &c in &chars {
                         self.buf.insert(insert_pos, c);
                         insert_pos += 1;
                     }
                 }
-                // Cursor lands on the last put character.
+                // Cursor lands on the last put character, clamped onto an
+                // editable cell (put text ending in '\n' would otherwise
+                // park the cursor on the separator).
                 self.pos = insert_pos - 1;
                 self.invalidate_width_cache();
+                self.clamp_vi_command_pos();
                 KeyAction::Continue
             }
             ViCmd::Undo => {
@@ -2155,15 +2209,12 @@ impl LineEditor {
                     return KeyAction::Continue;
                 };
                 self.undo.save(&self.buf, self.pos);
-                let ls = self.line_start(self.pos);
                 let le = self.line_end(self.pos);
                 let mut at = (self.pos + 1).min(le);
-                // "Append a <space> after the current character position";
-                // an empty line has no current character, so no space.
-                if le > ls {
-                    self.buf.insert(at, ' ');
-                    at += 1;
-                }
+                // POSIX: "Append a <space> after the current character
+                // position" — unconditionally, empty line included.
+                self.buf.insert(at, ' ');
+                at += 1;
                 for c in word.chars() {
                     self.buf.insert(at, c);
                     at += 1;
@@ -2290,6 +2341,10 @@ impl LineEditor {
             if prev {
                 if self.cursor_line_index() > 0 {
                     self.move_cursor_up();
+                    // The column-preserving move may land on the '\n' of
+                    // a shorter line; command-mode cursors rest on a
+                    // character.
+                    self.clamp_vi_command_pos();
                 } else if let Some(line) = history.navigate_up(&self.buffer()).map(str::to_string) {
                     self.vi_recall(line);
                 } else {
@@ -2298,6 +2353,7 @@ impl LineEditor {
                 }
             } else if self.cursor_line_index() + 1 < self.line_count() {
                 self.move_cursor_down();
+                self.clamp_vi_command_pos();
             } else if let Some(line) = history.navigate_down().map(str::to_string) {
                 self.vi_recall(line);
             } else {
@@ -2311,10 +2367,20 @@ impl LineEditor {
     /// entry was recalled.
     fn vi_history_search(&mut self, dir: SearchDir, pattern: &str, history: &mut History) -> bool {
         // POSIX: sh patterns; a leading `^` anchors at the start of the
-        // line, otherwise the pattern matches anywhere.
+        // line, otherwise the pattern matches anywhere. A trailing odd
+        // backslash would escape the appended `*`; double it so it stays
+        // a literal backslash.
+        let escape_tail = |p: &str| {
+            let trailing = p.chars().rev().take_while(|&c| c == '\\').count();
+            if trailing % 2 == 1 {
+                format!("{}\\", p)
+            } else {
+                p.to_string()
+            }
+        };
         let full_pattern = match pattern.strip_prefix('^') {
-            Some(rest) => format!("{}*", rest),
-            None => format!("*{}*", pattern),
+            Some(rest) => format!("{}*", escape_tail(rest)),
+            None => format!("*{}*", escape_tail(pattern)),
         };
         let len = history.entries().len();
         let found = match dir {
@@ -2410,6 +2476,7 @@ impl LineEditor {
             KeyCode::Esc => Some('\x1b'),
             KeyCode::Tab => Some('\t'),
             KeyCode::Enter => Some('\n'),
+            KeyCode::Backspace => Some('\x7f'),
             _ => None,
         }
     }
@@ -2522,6 +2589,9 @@ impl LineEditor {
         if let Some(k) = self.pending_events.pop_front() {
             return Ok(Event::Key(k));
         }
+        // Reading from the terminal replenishes the alias-macro budget:
+        // the recursion cap is per keystroke, not per read session.
+        self.vi_macro_budget = 64;
         term.read_event()
     }
 
@@ -2586,9 +2656,45 @@ impl LineEditor {
                 }
             }
         };
+        // O_EXCL via create_new: refuses to follow a pre-planted symlink
+        // at a predictable path and never overwrites an existing file.
         let mut path = std::env::temp_dir();
-        path.push(format!("yosh-vi-{}.sh", std::process::id()));
-        std::fs::write(&path, format!("{}\n", content))?;
+        let mut created = None;
+        for attempt in 0..64u32 {
+            let mut candidate = path.clone();
+            let uniq = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0);
+            candidate.push(format!(
+                "yosh-vi-{}-{}-{}.sh",
+                std::process::id(),
+                uniq,
+                attempt
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(f) => {
+                    created = Some((candidate, f));
+                    break;
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        let Some((tmp_path, mut file)) = created else {
+            self.pending_bell = true;
+            return Ok(false);
+        };
+        path = tmp_path;
+        {
+            use std::io::Write as _;
+            writeln!(file, "{}", content)?;
+        }
+        drop(file);
 
         term.reset_style()?;
         term.disable_raw_mode()?;
@@ -2948,13 +3054,27 @@ impl LineEditor {
                                 // would let a later Up replace it with an
                                 // unrelated older entry.
                                 history.reset_cursor();
-                                self.insert_char('\n');
-                                // A continuation line conventionally starts
-                                // in insert mode, whichever vi submode the
-                                // Enter was pressed in.
+                                // vi Enter executes the whole buffer
+                                // regardless of cursor position, so the
+                                // continuation line starts after the end
+                                // of what was submitted — not at a
+                                // mid-buffer command-mode cursor. The
+                                // continuation conventionally starts in
+                                // insert mode, whichever submode Enter
+                                // was pressed in.
                                 if self.edit_mode == EditMode::Vi {
+                                    // The continuation is a fresh insert
+                                    // session: save the pre-continuation
+                                    // state for `u` and start the `.`
+                                    // text capture at the new line.
+                                    self.undo.save(&self.buf, self.pos);
+                                    self.pos = self.buf.len();
                                     self.vi.mode = ViMode::Insert;
                                     self.vi.replace_overwrite = false;
+                                    self.insert_char('\n');
+                                    self.vi_insert_start = Some(self.pos);
+                                } else {
+                                    self.insert_char('\n');
                                 }
                             } else {
                                 history.reset_cursor();
@@ -3044,12 +3164,17 @@ impl LineEditor {
                         }
                         KeyAction::ViAliasMacro(c) => {
                             // POSIX @letter: run alias `_letter`'s value as
-                            // editor input; no effect if unset. The queue
-                            // cap breaks alias-macro recursion.
+                            // editor input; no effect if unset. The
+                            // per-keystroke expansion budget (see
+                            // next_event) breaks recursive macros like
+                            // `alias _a='@a'`; the size cap bounds a
+                            // single expansion burst.
                             let name = format!("_{}", c);
                             if let Some(value) = cmd_ctx.aliases.get(&name)
+                                && self.vi_macro_budget > 0
                                 && self.pending_events.len() + value.chars().count() <= 4096
                             {
+                                self.vi_macro_budget -= 1;
                                 for ev in Self::key_events_for_text(value) {
                                     self.pending_events.push_back(ev);
                                 }
