@@ -182,7 +182,11 @@ fn main() {
     // dispatch above; in clusters or later positions it is the POSIX
     // locate-utilities no-op.
     let mut idx = 1;
-    let mut force_interactive = false;
+    // Tri-state interactive override: None = unspecified (tty
+    // auto-detection), Some(true) = -i forces interactive, Some(false)
+    // = +i forces non-interactive even on a terminal (bash agrees:
+    // `bash +i` at a tty reads stdin as a script, no REPL).
+    let mut force_interactive: Option<bool> = None;
     let mut cmd_mode = false;
     let mut read_stdin = false;
     let mut invocation_ops: Vec<env::InvocationOp> = Vec::new();
@@ -214,7 +218,7 @@ fn main() {
             match c {
                 'c' if on => cmd_mode = true,
                 's' if on => read_stdin = true,
-                'i' => force_interactive = on,
+                'i' => force_interactive = Some(on),
                 'o' => {
                     // Option name: rest of the cluster (`-opipefail`) or
                     // the next argument (`-o pipefail`).
@@ -273,7 +277,7 @@ fn main() {
             // -s alongside -c still shows `s` in $- (bash agrees),
             // though commands come from the string.
             (true, read_stdin),
-            force_interactive,
+            force_interactive == Some(true),
             &invocation_ops,
         );
         process::exit(status);
@@ -309,7 +313,7 @@ fn main() {
             &args[idx],
             args[idx].clone(),
             positional,
-            force_interactive,
+            force_interactive == Some(true),
             &invocation_ops,
         );
         process::exit(status);
@@ -341,20 +345,26 @@ fn invocation_usage_error(msg: &str) -> ! {
 fn run_stdin(
     shell_name: String,
     positional: Vec<String>,
-    force_interactive: bool,
+    force_interactive: Option<bool>,
     explicit_s: bool,
     invocation_ops: &[env::InvocationOp],
 ) -> ! {
-    if nix::unistd::isatty(std::io::stdin()).unwrap_or(false) {
+    let stdin_tty = nix::unistd::isatty(std::io::stdin()).unwrap_or(false);
+    // Interactive iff stdin is a terminal, unless -i forces it on or
+    // +i forces it off. The REPL (line editor, prompts) additionally
+    // needs a real terminal, so `-i` with a non-tty stdin falls
+    // through to the script path with interactive semantics instead.
+    if force_interactive.unwrap_or(stdin_tty) && stdin_tty {
         let mut repl = interactive::Repl::new(shell_name, positional, explicit_s, invocation_ops);
         process::exit(repl.run());
     } else {
-        // stdin is a pipe — read as script (bytes, so non-UTF-8 input is
-        // preserved via the byteenc escape encoding). With -i the shell
-        // still reads the whole stream but runs with interactive
-        // semantics ($- reports i, untrapped TERM/QUIT/INT ignored,
-        // shell errors do not exit); the line editor and prompts need a
-        // terminal and are not engaged.
+        // stdin is a pipe, or +i forced the REPL off — read the whole
+        // stream as a script (bytes, so non-UTF-8 input is preserved
+        // via the byteenc escape encoding). With -i the shell still
+        // reads the whole stream but runs with interactive semantics
+        // ($- reports i, untrapped TERM/QUIT/INT ignored, shell errors
+        // do not exit); the line editor and prompts need a terminal
+        // and are not engaged.
         let mut raw = Vec::new();
         io::stdin().read_to_end(&mut raw).unwrap_or_else(|e| {
             eprintln!("yosh: {}", e);
@@ -366,7 +376,7 @@ fn run_stdin(
             shell_name,
             positional,
             (false, explicit_s),
-            force_interactive,
+            force_interactive == Some(true),
             invocation_ops,
         );
         process::exit(status);
@@ -415,23 +425,12 @@ fn run_string(
         .mode
         .options
         .apply_invocation_ops(invocation_ops);
-    if executor.env.mode.options.monitor {
-        // Invocation -m: mirror the runtime `set -m` transition in
-        // builtin_set (job-control signal setup paired with the flag),
-        // but only when the shell actually owns its controlling
-        // terminal. Otherwise a background `yosh -m -c ...` would
-        // either be stopped by SIGTTOU on the terminal handoffs (with
-        // SIG_DFL) or steal the terminal from the invoking shell (with
-        // SIG_IGN). bash likewise disables job control — dropping `m`
-        // from `$-` — when it cannot get the terminal.
-        let stdin_fd = std::io::stdin();
-        let owns_terminal = nix::unistd::isatty(&stdin_fd).unwrap_or(false)
-            && nix::unistd::tcgetpgrp(&stdin_fd).ok() == Some(nix::unistd::getpgrp());
-        if owns_terminal {
-            signal::init_job_control_signals();
-        } else {
-            executor.env.mode.options.monitor = false;
-        }
+    // Invocation -m: enable job control only when the shell owns its
+    // controlling terminal; otherwise drop `m` (and its `$-` letter).
+    // The gate and rationale live in signal::try_enable_monitor_mode,
+    // shared with the runtime `set -m` builtin transition.
+    if executor.env.mode.options.monitor && !signal::try_enable_monitor_mode() {
+        executor.env.mode.options.monitor = false;
     }
     executor.load_plugins();
     executor.env.mode.options.cmd_string = cmd_string;

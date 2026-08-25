@@ -400,19 +400,87 @@ fn dash_sc_reports_both_c_and_s_in_dollar_dash() {
     );
 }
 
+/// Run yosh detached from any controlling terminal (`setsid` in the
+/// forked child) with piped stdio, feeding `stdin`; returns (stdout,
+/// exit code). The monitor-mode ownership gate probes stderr and
+/// `/dev/tty` — not just stdin — so piped stdio alone does not
+/// simulate "no terminal" when the test harness itself runs on one.
+fn run_detached_with_stdin(args: &[&str], stdin: &str) -> (String, i32) {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = yosh_bin();
+    cmd.args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: setsid(2) is async-signal-safe and allocation-free; the
+    // forked child is never a process-group leader, so it cannot fail
+    // with EPERM in practice.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
 #[test]
 fn dash_m_without_terminal_disables_monitor() {
     // A shell that does not own a controlling terminal cannot do job
     // control; -m is dropped (and with it the `m` in $-), matching
     // bash. Prevents a background `yosh -m -c ...` from stealing the
     // invoking shell's terminal or being stopped by SIGTTOU.
-    let (out, code) = run_with_stdin(&["-m", "-s"], "echo m-$-\n");
+    let (out, code) = run_detached_with_stdin(&["-m", "-s"], "echo m-$-\n");
     assert_eq!(code, 0);
     let flags = out.trim().strip_prefix("m-").unwrap().to_string();
     assert!(
         !flags.contains('m'),
         "monitor must be disabled without a terminal, got {out:?}"
     );
+}
+
+#[test]
+fn runtime_set_m_without_terminal_stays_off() {
+    // Runtime `set -m` shares the invocation -m terminal-ownership
+    // gate: without a controlling terminal the monitor flag reverts,
+    // `m` stays out of $-, and `set` itself still succeeds — matching
+    // `yosh -m ...` so the two spellings cannot diverge.
+    let (out, code) = run_detached_with_stdin(&["-s"], "set -m\necho rc-$?-m-$-\n");
+    assert_eq!(code, 0);
+    let trimmed = out.trim();
+    let rest = trimmed.strip_prefix("rc-0-m-").unwrap_or_else(|| {
+        panic!("set -m must succeed even without a terminal, got {out:?}")
+    });
+    assert!(
+        !rest.contains('m'),
+        "monitor must stay off without a terminal, got {out:?}"
+    );
+}
+
+#[test]
+fn plus_i_cancels_dash_i_and_last_one_wins() {
+    let (out, code) = run_with_stdin(&["-i", "+i"], "echo flags-$-\n");
+    assert_eq!(code, 0);
+    let flags = out.trim().strip_prefix("flags-").unwrap().to_string();
+    assert!(!flags.contains('i'), "+i must cancel -i, got {out:?}");
+
+    let (out, code) = run_with_stdin(&["+i", "-i"], "echo flags-$-\n");
+    assert_eq!(code, 0);
+    let flags = out.trim().strip_prefix("flags-").unwrap().to_string();
+    assert!(flags.contains('i'), "-i after +i must win, got {out:?}");
 }
 
 #[test]

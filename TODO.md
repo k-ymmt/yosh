@@ -121,14 +121,22 @@
       fixes landed 2026-08-25 — interactive `-n` ignore incl. command
       subs, `-h`-with-operand POSIX no-op, `--long` error naming,
       byteenc-decoded usage errors, `s` in `$-`, `+m` REPL signal
-      state, `-m` terminal-ownership gate; remaining acknowledged
-      items):
-  - [ ] `+i` cannot force non-interactive on a tty — `force_interactive`
-        is a one-way bool and `run_stdin` dispatches on `isatty` alone,
-        so `yosh +i` at a terminal still starts the REPL. `+i` today
-        only cancels an earlier `-i` on the non-tty paths. Needs a
-        tri-state (unspecified/-i/+i) threaded into `run_stdin`
-        (`src/main.rs`).
+      state, `-m` terminal-ownership gate; 2026-08-25 follow-up landed:
+      `+i` tri-state, shared `set -m`/`-m` ownership gate probing the
+      controlling terminal (stderr → /dev/tty), `wait` no longer
+      misreads self-pipe SIGCHLD as 128+20, PTY tests for `+m`/`+i`/
+      `-m -c`/redirected-stdin `-m`; remaining acknowledged items):
+  - [ ] DEVIATION (decided 2026-08-25): runtime `set -m` without
+        controlling-terminal ownership keeps monitor off and `m` out
+        of `$-`, symmetric with invocation `-m`. bash/dash instead set
+        the flag (`m` appears in `$-`) while internally suppressing
+        the terminal handoffs (empirical: `echo 'set -m; echo $-' |
+        bash` → has m; `bash -m -c 'echo $-'` → no m). Matching bash
+        would need a separate "job control active" state distinct from
+        the `monitor` option flag, gated per tcsetpgrp handoff
+        (`src/env/jobs/terminal.rs`, `src/exec/{simple,pipeline}.rs`).
+        Revisit only if a real script depends on `$-` reporting `m`
+        after a gated `set -m`.
   - [ ] Piped/redirected `yosh -h` (sole argument, non-tty stdin) still
         prints help instead of the POSIX locate-utilities no-op +
         reading commands from stdin (`echo 'echo hi' | bash -h` prints
@@ -153,21 +161,6 @@
         walk (`unknown option: -o`); bash rejects both attached forms.
         Decide whether the builtin should share the invocation scanner
         (`src/builtin/special.rs::builtin_set`, `src/main.rs`).
-  - [ ] Runtime `set -m` (builtin transition) calls
-        `init_job_control_signals()` without the terminal-ownership
-        check the invocation `-m` path now performs — a background
-        non-interactive shell running `set -m` can still steal the tty
-        from the invoking shell, and `yosh -c 'set -m; ...'` diverges
-        from `yosh -m -c ...` in both behavior and `$-`. Hoist the
-        ownership gate into one shared monitor-transition helper. Also:
-        the gate probes stdin, so a foreground `yosh -m script <input`
-        silently loses job control — probe the controlling terminal
-        (stderr or /dev/tty) instead (`src/builtin/special.rs`,
-        `src/main.rs::run_string`).
-  - [ ] PTY regression tests deferred: `yosh +m` (child SIGTSTP
-        disposition default, `$-` without `m`, later `set -m` restores
-        termios from the still-captured snapshot) and foreground
-        `yosh -m -c` job-control setup (`tests/pty_interactive.rs`).
   - [ ] `tests/invocation.rs` hand-rolls pid-named temp dirs in three
         tests (leaks the dir if an assertion panics before cleanup);
         switch to `tempfile::tempdir()` next time the file is touched.

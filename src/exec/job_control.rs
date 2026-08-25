@@ -169,8 +169,10 @@ impl Executor {
                         break;
                     }
                     Ok(WaitStatus::StillAlive) => {
-                        // Poll self-pipe with a short timeout so we also notice
-                        // SIGCHLD (which is not written to the self-pipe).
+                        // Poll the self-pipe with a short timeout so a signal
+                        // arriving mid-wait is noticed promptly. In monitor
+                        // mode SIGCHLD is registered on the self-pipe too, so
+                        // a child exit also wakes this poll.
                         let pipe_fd = signal::self_pipe_read_fd();
                         let mut fds = [nix::poll::PollFd::new(
                             unsafe { std::os::fd::BorrowedFd::borrow_raw(pipe_fd) },
@@ -189,8 +191,25 @@ impl Executor {
                                     // directly (process_pending_signals would
                                     // find an empty pipe and do nothing).
                                     self.run_signal_traps(&signals);
-                                    last_status = 128 + *signals.last().unwrap();
-                                    return Ok(last_status);
+                                    // An untrapped SIGCHLD is the child-exit
+                                    // notification itself, not an interruption
+                                    // of wait — fall through and re-poll
+                                    // waitpid, which now reaps the exited
+                                    // child. Only a real signal — or a SIGCHLD
+                                    // the user set a trap for (POSIX §wait:
+                                    // "a signal for which a trap has been
+                                    // set") — interrupts wait with 128+sig.
+                                    let chld_trapped = matches!(
+                                        self.env.traps.get_signal_trap(libc::SIGCHLD),
+                                        Some(crate::env::TrapAction::Command(_))
+                                    );
+                                    if let Some(&sig) = signals
+                                        .iter()
+                                        .rfind(|&&s| s != libc::SIGCHLD || chld_trapped)
+                                    {
+                                        last_status = 128 + sig;
+                                        return Ok(last_status);
+                                    }
                                 }
                             }
                             Err(nix::errno::Errno::EINTR) => {

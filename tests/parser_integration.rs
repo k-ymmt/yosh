@@ -1016,16 +1016,37 @@ fn test_set_no_args_displays_vars() {
 }
 
 #[test]
-fn test_set_monitor_toggle_flag() {
-    // Scripts start with monitor off; set -m enables it, set +m disables it
-    let out = yosh_exec(
+fn test_set_monitor_gated_without_terminal() {
+    // Scripts start with monitor off, and runtime `set -m` shares the
+    // invocation `-m` terminal-ownership gate: without a controlling
+    // terminal (setsid below makes that deterministic even when the
+    // test harness runs on one), monitor stays off and `m` stays out
+    // of $-, matching `yosh -m -c ...`. The tty path — where `set -m`
+    // really enables job control — is covered by the PTY tests
+    // (`test_pty_set_minus_m_reenables_job_control`,
+    // `test_pty_plus_m_repl_starts_without_job_control`).
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yosh"));
+    cmd.args([
+        "-c",
         r#"case "$-" in *m*) echo "m=on";; *) echo "m=off";; esac
 set -m
 case "$-" in *m*) echo "m=on";; *) echo "m=off";; esac
 set +m
 case "$-" in *m*) echo "m=on";; *) echo "m=off";; esac"#,
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "m=off\nm=on\nm=off\n");
+    ]);
+    // SAFETY: setsid(2) is async-signal-safe and allocation-free; the
+    // forked child is never a process-group leader.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let out = cmd.output().expect("failed to execute yosh");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "m=off\nm=off\nm=off\n");
 }
 
 #[test]

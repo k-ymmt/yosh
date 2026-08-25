@@ -5,8 +5,8 @@ use std::time::Duration;
 use expectrl::{Eof, Expect, Regex, session::OsSession};
 
 use helpers::pty::{
-    TIMEOUT, read_until_prompt, spawn_yosh, strip_ansi, wait_for_prompt, wait_for_ps2,
-    wait_for_raw_mode,
+    TIMEOUT, read_until_prompt, spawn_yosh, spawn_yosh_with_args, strip_ansi, wait_for_prompt,
+    wait_for_ps2, wait_for_raw_mode,
 };
 
 /// Wait for command output (a line following a newline, not the input echo).
@@ -829,6 +829,141 @@ fn test_pty_set_minus_m_reenables_job_control() {
     wait_for_prompt(&mut s);
 
     exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_wait_reaps_background_job() {
+    // Regression: in monitor mode SIGCHLD is registered on the
+    // self-pipe, and `wait` used to misread the drained SIGCHLD (the
+    // child-exit notification itself) as an interrupting signal,
+    // returning 128+SIGCHLD (148 on macOS) instead of the job's real
+    // exit status.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("/bin/sleep 0 & wait $!; echo RC-$?\r").unwrap();
+    expect_output(&mut s, "RC-0", "wait must return the job's exit status");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_plus_m_repl_starts_without_job_control() {
+    // Invocation `+m` on an interactive shell: monitor is off from
+    // startup — `$-` has `i` but no `m`, and children keep SIG_DFL for
+    // SIGTSTP because init_job_control_signals never ran (so there is
+    // no SIG_IGN disposition to leak across fork+exec).
+    let (mut s, _tmpdir) = spawn_yosh_with_args(&["+m"]);
+    wait_for_prompt(&mut s);
+
+    s.send("echo flags-$-\r").unwrap();
+    // Trailing-newline anchor so `flags-i` cannot match as a prefix of
+    // a wrong `flags-im`.
+    s.expect(Regex(r"\r?\nflags-i\r?\n"))
+        .expect("+m REPL must report i without m in $-");
+    wait_for_prompt(&mut s);
+
+    // Child SIGTSTP disposition: a background /bin/sh that sends
+    // itself SIGTSTP must actually stop (SIG_DFL) and never reach its
+    // echo. The marker is quote-split in the typed command so the
+    // contiguous string can only appear as real (buggy) output.
+    s.send("/bin/sh -c 'kill -TSTP $$; echo TSTP-\"IGNORED\"' &\r")
+        .unwrap();
+    wait_for_prompt(&mut s);
+    s.send("sleep 0.4; echo probe-\"done\"\r").unwrap();
+    let m = s
+        .expect(Regex(r"probe-done"))
+        .expect("probe command did not complete");
+    let before = String::from_utf8_lossy(m.before()).to_string();
+    assert!(
+        !before.contains("TSTP-IGNORED"),
+        "+m child inherited SIG_IGN for SIGTSTP: {:?}",
+        before
+    );
+    wait_for_prompt(&mut s);
+    // SIGKILL removes the stopped child without needing SIGCONT first.
+    s.send("kill -9 $!\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    // A later `set -m` re-enables job control using the termios
+    // snapshot captured at startup (captured even under +m): after a
+    // foreground job that switched the terminal to raw mode is
+    // suspended, the shell must restore cooked mode from it.
+    s.send("set -m\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("stty raw; sleep 30\r").unwrap();
+    wait_for_raw_mode(&s);
+    suspend_fg_job(&mut s);
+    wait_for_prompt(&mut s);
+    s.send("stty -a\r").unwrap();
+    s.expect(Regex(r"[^\-]icanon"))
+        .expect("terminal was not restored from the +m-captured termios snapshot");
+    wait_for_prompt(&mut s);
+
+    s.send("kill -9 %1\r").unwrap();
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_dash_m_c_foreground_job_control_setup() {
+    // Foreground `yosh -m -c ...` on a terminal: the ownership gate
+    // passes, so `m` lands in $- and the job-control terminal handoffs
+    // (tcsetpgrp around external foreground children and pipelines,
+    // background forks into their own process groups) must complete
+    // without the shell or its children being stopped by SIGTTOU.
+    let (mut s, _tmpdir) = spawn_yosh_with_args(&[
+        "-m",
+        "-c",
+        "echo flags-$-; /bin/echo pipe-ok | /bin/cat; /bin/sleep 0 & wait $!; echo rc=$?",
+    ]);
+    s.expect(Regex(r"flags-[a-z]*m"))
+        .expect("-m at a terminal must keep m in $-");
+    s.expect("pipe-ok")
+        .expect("external pipeline must run under -m -c");
+    s.expect("rc=0")
+        .expect("background job + wait must complete under -m -c");
+    let _ = s.expect(Eof);
+}
+
+#[test]
+fn test_pty_dash_m_with_redirected_stdin_keeps_job_control() {
+    // Regression: the -m ownership gate used to probe stdin, so a
+    // foreground `yosh -m ... <file` silently lost job control. The
+    // gate now probes the controlling terminal (stderr / /dev/tty):
+    // with stdin redirected to /dev/null but the shell foreground on
+    // its tty, `m` must stay in $-.
+    let bin = env!("CARGO_BIN_EXE_yosh");
+    let tmpdir = helpers::TempDir::new();
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(format!("exec '{}' -m -c 'echo flags-$-' </dev/null", bin));
+    cmd.env("TERM", "dumb");
+    cmd.env("HOME", tmpdir.path());
+    let mut s = expectrl::Session::spawn(cmd).expect("failed to spawn sh wrapper");
+    s.set_expect_timeout(Some(TIMEOUT));
+    s.expect(Regex(r"flags-[a-z]*m"))
+        .expect("redirected stdin must not disable job control for a foreground -m shell");
+    let _ = s.expect(Eof);
+}
+
+#[test]
+fn test_pty_plus_i_forces_non_interactive_on_tty() {
+    // `yosh +i` at a terminal must NOT start the REPL: the stream is
+    // read to EOF and run as a script (bash agrees). The kernel's
+    // cooked-mode echo shows the literal typed text (`:$-:`); the
+    // executed output line carries the expanded flags, which must
+    // contain neither `i` nor `m`. The character class below excludes
+    // exactly those two letters, so a wrongly-interactive shell can
+    // never satisfy the expect.
+    let (mut s, _tmpdir) = spawn_yosh_with_args(&["+i"]);
+    // No prompt/raw-mode sync: the non-interactive path leaves the
+    // terminal in canonical mode. Send one script line, then EOF.
+    s.send("echo :$-:\r").unwrap();
+    s.send("\x04").unwrap();
+    s.expect(Regex(r":[a-hj-ln-z]*:"))
+        .expect("+i must run the stream as a non-interactive script");
+    let _ = s.expect(Eof);
 }
 
 #[test]

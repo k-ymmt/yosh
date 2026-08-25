@@ -29,7 +29,14 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
             if was_monitor && !is_monitor {
                 crate::signal::reset_job_control_signals();
             } else if !was_monitor && is_monitor {
-                crate::signal::init_job_control_signals();
+                // Runtime `set -m` shares the invocation `-m`
+                // terminal-ownership gate: without the controlling
+                // terminal, monitor stays off (and `m` stays out of
+                // `$-`), matching `yosh -m ...` and bash. `set`
+                // itself still succeeds.
+                if !crate::signal::try_enable_monitor_mode() {
+                    executor.env.mode.options.monitor = false;
+                }
             }
             return ret;
         }

@@ -346,6 +346,42 @@ pub fn init_job_control_signals() {
     }
 }
 
+/// Whether this shell owns its controlling terminal: the terminal's
+/// foreground process group is the shell's own. Probes the controlling
+/// terminal itself — stderr when it is a tty, `/dev/tty` otherwise —
+/// rather than stdin, so a foreground `yosh -m script <input` with
+/// redirected stdin still detects ownership (bash's job-control probe
+/// likewise uses fd 2 / the tty, never stdin).
+fn owns_controlling_terminal() -> bool {
+    let pgrp = nix::unistd::getpgrp();
+    let stderr = std::io::stderr();
+    if nix::unistd::isatty(&stderr).unwrap_or(false) {
+        return nix::unistd::tcgetpgrp(&stderr).ok() == Some(pgrp);
+    }
+    match std::fs::File::open("/dev/tty") {
+        Ok(tty) => nix::unistd::tcgetpgrp(&tty).ok() == Some(pgrp),
+        Err(_) => false,
+    }
+}
+
+/// Shared monitor-mode enable transition for invocation `-m`
+/// (`run_string`) and the runtime `set -m` builtin: job-control signal
+/// setup runs only when the shell actually owns its controlling
+/// terminal. Otherwise a background shell would either be stopped by
+/// SIGTTOU on the terminal handoffs (with SIG_DFL) or steal the
+/// terminal from the invoking shell (with SIG_IGN). bash likewise
+/// disables job control — dropping `m` from `$-` — when it cannot get
+/// the terminal. Returns whether monitor mode was actually enabled;
+/// on `false` the caller must clear its `monitor` flag.
+pub fn try_enable_monitor_mode() -> bool {
+    if owns_controlling_terminal() {
+        init_job_control_signals();
+        true
+    } else {
+        false
+    }
+}
+
 /// Reset job control signals to defaults.
 /// Called when `set +m` disables monitor mode at runtime.
 pub fn reset_job_control_signals() {

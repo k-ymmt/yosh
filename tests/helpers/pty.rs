@@ -35,6 +35,23 @@ pub fn spawn_yosh() -> (OsSession, TempDir) {
     (session, tmpdir)
 }
 
+/// Variant of [`spawn_yosh`] that passes invocation arguments (e.g.
+/// `+m`, `-m -c '...'`). Used by tests that exercise invocation-option
+/// behavior on a real terminal.
+pub fn spawn_yosh_with_args(args: &[&str]) -> (OsSession, TempDir) {
+    let bin = env!("CARGO_BIN_EXE_yosh");
+    let tmpdir = TempDir::new();
+
+    let mut cmd = Command::new(bin);
+    cmd.args(args);
+    cmd.env("TERM", "dumb");
+    cmd.env("HOME", tmpdir.path());
+
+    let mut session = Session::spawn(cmd).expect("failed to spawn yosh");
+    session.set_expect_timeout(Some(TIMEOUT));
+    (session, tmpdir)
+}
+
 /// Variant of [`spawn_yosh`] that allows the caller to override or remove
 /// environment variables before exec. Used by tests that need to start with
 /// `PS1` absent from the environment, an explicit `FCEDIT` value, etc.
