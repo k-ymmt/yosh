@@ -107,6 +107,7 @@ enum Commands {
     /// Update installed plugins to latest version
     Update {
         /// Only update the named plugin
+        #[arg(value_name = "PLUGIN")]
         name: Option<String>,
     },
     /// List installed plugins
