@@ -309,7 +309,9 @@ impl Executor {
             if !falling_through {
                 let mut matched = false;
                 for pattern in &item.patterns {
-                    let pat = match crate::expand::expand_word_to_string(&mut self.env, pattern) {
+                    // expand_word_to_pattern (not _to_string): quoted glob
+                    // metacharacters must match literally (POSIX §2.13.1).
+                    let pat = match crate::expand::expand_word_to_pattern(&mut self.env, pattern) {
                         Ok(p) => p,
                         Err(e) => {
                             self.env.exec.last_exit_status = 1;

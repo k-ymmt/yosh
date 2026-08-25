@@ -204,9 +204,10 @@ fn expand_param_to_fields(
                 // POSIX §2.6.2: attempting to assign a positional or special
                 // parameter with ${name=word} is an error.
                 if param::is_unassignable_param(name) {
-                    eprintln!("yosh: {}: cannot assign in this way", name);
-                    env.exec.last_exit_status = 1;
-                    env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
+                    param::expansion_error(
+                        env,
+                        format_args!("{}: cannot assign in this way", name),
+                    );
                     return Ok(());
                 }
                 let mut sub = vec![ExpandedField::new()];

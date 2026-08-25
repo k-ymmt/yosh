@@ -5,6 +5,7 @@ pub mod param;
 pub mod pathname;
 pub mod pattern;
 
+mod dollar;
 mod heredoc;
 mod pipeline;
 mod scan;
@@ -12,7 +13,6 @@ mod tilde;
 
 pub use heredoc::expand_body as expand_heredoc_body;
 use pipeline::expand_word_to_fields;
-pub(crate) use scan::skip_balanced_parens;
 pub(crate) use tilde::expand_tilde_prefix;
 
 use crate::env::ShellEnv;
@@ -245,6 +245,33 @@ pub fn expand_word_to_string(env: &mut ShellEnv, word: &Word) -> crate::error::R
             result.push_str(f.scalar_join_sep.as_deref().unwrap_or(" "));
         }
         result.push_str(&f.into_string());
+    }
+    Ok(result)
+}
+
+/// Expand a `Word` to a single pattern `String` for `case` matching and
+/// the `${x%pat}` / `${x#pat}` strip forms (no field splitting, no glob).
+///
+/// Like `expand_word_to_string`, but glob metacharacters that originate
+/// from quoted text (glob-protected bytes in the `ExpandedField` masks)
+/// are backslash-escaped so the pattern matcher treats them literally —
+/// POSIX §2.6.2 / §2.13.1: quoting prevents pattern characters from being
+/// treated as such. The matcher (`pattern::matches`) already honors `\x`
+/// escapes. Metachar bytes are ASCII, so byte-indexed mask lookups are
+/// UTF-8 safe.
+pub fn expand_word_to_pattern(env: &mut ShellEnv, word: &Word) -> crate::error::Result<String> {
+    let fields = expand_word_to_fields(env, word)?;
+    let mut result = String::new();
+    for (i, f) in fields.iter().enumerate() {
+        if i > 0 {
+            result.push_str(f.scalar_join_sep.as_deref().unwrap_or(" "));
+        }
+        for (bi, ch) in f.value.char_indices() {
+            if matches!(ch, '*' | '?' | '[' | '\\') && f.is_glob_protected(bi) {
+                result.push('\\');
+            }
+            result.push(ch);
+        }
     }
     Ok(result)
 }
@@ -718,5 +745,65 @@ mod tests {
     fn expand_dquoted_arithmetic() {
         let mut env = make_env();
         assert_eq!(expand_dquoted(&mut env, "$((1+2))"), "3");
+    }
+
+    // ── expand_word_to_pattern: quoted metachars match literally (H2) ──
+
+    #[test]
+    fn pattern_quoted_star_is_escaped() {
+        let mut env = make_env();
+        let word = Word {
+            parts: vec![WordPart::DoubleQuoted(vec![WordPart::Literal(
+                "a*".to_string(),
+            )])],
+        };
+        assert_eq!(expand_word_to_pattern(&mut env, &word).unwrap(), "a\\*");
+    }
+
+    #[test]
+    fn pattern_literal_star_stays_glob() {
+        let mut env = make_env();
+        let word = Word::literal("a*");
+        assert_eq!(expand_word_to_pattern(&mut env, &word).unwrap(), "a*");
+    }
+
+    #[test]
+    fn pattern_quoted_expansion_is_escaped() {
+        let mut env = make_env();
+        env.vars.set("p", "*?[").unwrap();
+        // "$p" — quoted parameter expansion: all metachars protected
+        let word = Word {
+            parts: vec![WordPart::DoubleQuoted(vec![WordPart::Parameter(
+                ParamExpr::Simple("p".to_string()),
+            )])],
+        };
+        assert_eq!(
+            expand_word_to_pattern(&mut env, &word).unwrap(),
+            "\\*\\?\\["
+        );
+    }
+
+    #[test]
+    fn pattern_unquoted_expansion_stays_glob() {
+        let mut env = make_env();
+        env.vars.set("p", "*").unwrap();
+        let word = Word {
+            parts: vec![WordPart::Parameter(ParamExpr::Simple("p".to_string()))],
+        };
+        assert_eq!(expand_word_to_pattern(&mut env, &word).unwrap(), "*");
+    }
+
+    #[test]
+    fn pattern_multibyte_offsets_stay_aligned() {
+        let mut env = make_env();
+        // Quoted multibyte text followed by a quoted star: the mask is
+        // byte-indexed, so the star's byte offset must be checked, not
+        // its char offset.
+        let word = Word {
+            parts: vec![WordPart::DoubleQuoted(vec![WordPart::Literal(
+                "日本*".to_string(),
+            )])],
+        };
+        assert_eq!(expand_word_to_pattern(&mut env, &word).unwrap(), "日本\\*");
     }
 }

@@ -493,8 +493,15 @@ fn run_string(
                 executor.verbose_print(consumed_text.trim_end_matches('\n'));
                 status = executor.exec_complete_command(&cmd);
                 // Check for flow control (exit handled by std::process::exit in builtin)
-                if executor.env.exec.flow_control.is_some() {
-                    break;
+                match executor.env.exec.flow_control {
+                    // A fatal expansion error (nounset, ${x:?}, …) exits a
+                    // non-interactive shell; an interactive shell aborts
+                    // the current command line only and keeps reading.
+                    Some(env::FlowControl::ExpansionError) if executor.env.mode.is_interactive => {
+                        executor.env.exec.flow_control = None;
+                    }
+                    Some(_) => break,
+                    None => {}
                 }
                 // POSIX §2.8.1 shell errors request exit via exit_requested.
                 if let Some(code) = executor.exit_requested {

@@ -1096,8 +1096,9 @@ fn exec_external_absolute(
 /// command and must not count, so `false; x=$((1+1))` yields `$?` = 0
 /// (bash agrees; POSIX leaves it implementation-defined). An arithmetic
 /// expansion that itself embeds `$(cmd)` DOES count — the arithmetic
-/// evaluator (`expand::arith::expand_vars`) runs the substitution and
-/// updates `last_exit_status`, so mirror its trigger (`$` followed by `(`).
+/// evaluator (via `expand::dollar::expand_string`) runs the substitution
+/// and updates `last_exit_status`, so mirror its trigger (`$` followed by
+/// `(`).
 fn word_has_command_sub(word: &Word) -> bool {
     word.parts.iter().any(part_has_command_sub)
 }
@@ -1110,9 +1111,9 @@ fn part_has_command_sub(part: &WordPart) -> bool {
         | WordPart::DollarSingleQuoted(_)
         | WordPart::Tilde(_) => false,
         WordPart::CommandSub(_) => true,
-        // ArithSub carries the raw expression text; `$(` is exactly what
-        // the arithmetic evaluator dispatches to command substitution.
-        WordPart::ArithSub(expr) => expr.contains("$("),
+        // ArithSub carries the raw expression text; `$(` and backticks are
+        // what the arithmetic evaluator dispatches to command substitution.
+        WordPart::ArithSub(expr) => expr.contains("$(") || expr.contains('`'),
         WordPart::DoubleQuoted(parts) => parts.iter().any(part_has_command_sub),
         WordPart::Parameter(p) => param_has_command_sub(p),
     }
@@ -1154,6 +1155,14 @@ mod tests {
         // `$(( $(cmd) + 1 ))` runs the substitution and updates $?.
         assert!(part_has_command_sub(&WordPart::ArithSub(
             " $(exit 5) + 1".to_string()
+        )));
+    }
+
+    #[test]
+    fn arith_sub_with_backtick_command_sub_counts() {
+        // `` $(( `cmd` + 1 )) `` also runs a substitution and updates $?.
+        assert!(part_has_command_sub(&WordPart::ArithSub(
+            " `echo 2` + 1".to_string()
         )));
     }
 

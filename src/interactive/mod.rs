@@ -376,6 +376,12 @@ impl Repl {
                     for cmd in &commands {
                         let status = self.executor.exec_complete_command(cmd);
                         self.executor.env.exec.last_exit_status = status;
+                        // The REPL is the top level: any flow-control signal
+                        // still pending here (ExpansionError from a nounset /
+                        // ${x:?} failure, or a stray return/break/continue)
+                        // has aborted the current command and must not leak
+                        // into the next one.
+                        self.executor.env.exec.flow_control = None;
                         if self.executor.exit_requested.is_some() {
                             break;
                         }

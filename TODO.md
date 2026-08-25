@@ -130,7 +130,7 @@
       redirect targets were fixed via `ExpandedField::scalar_join_sep`
       (2026-08-25); heredocs deliberately left bash-matching. Revisit
       if a real script depends on the dash behavior
-      (`src/expand/heredoc.rs`, `src/expand/param.rs::expand_special`).
+      (`src/expand/dollar.rs`, `src/expand/param.rs::expand_special`).
 - [ ] DEVIATION (decided 2026-08-25): scalar-context `$@` (`x=$@`)
       joins with a space, matching bash; dash joins with IFS[0]. POSIX
       leaves unquoted `$@` in non-splitting contexts unspecified.

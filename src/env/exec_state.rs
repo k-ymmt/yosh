@@ -4,6 +4,12 @@ pub enum FlowControl {
     Break(usize),
     Continue(usize),
     Return(i32),
+    /// Fatal expansion error (POSIX §2.8.1): nounset violation, `${x:?}`,
+    /// `${1=w}` assignment error, … Unlike `Return`, this is NOT consumed
+    /// by a function-call boundary — it propagates to the top level, where
+    /// a non-interactive shell exits with status 1 and an interactive
+    /// shell aborts the current command line only.
+    ExpansionError,
 }
 
 /// Execution-related state.

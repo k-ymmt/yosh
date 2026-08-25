@@ -1,10 +1,16 @@
 use crate::env::ShellEnv;
 
+/// Maximum depth of recursive variable-as-expression evaluation
+/// (`x=y; y=1; $((x))`). Prevents infinite loops like `x=x`.
+const MAX_RECURSION_DEPTH: u32 = 64;
+
 /// Evaluate an arithmetic expression and return the result as a string.
-/// Expands `$VAR`, `${VAR}`, and `$(cmd)` first, then parses and evaluates the expression.
+/// Expands `$VAR`, `${VAR}`, `$(cmd)`, `` `cmd` ``, and nested `$((...))`
+/// first (via the shared dollar-scanner), then parses and evaluates.
 pub fn evaluate(env: &mut ShellEnv, expr: &str) -> Result<String, String> {
-    // Step 1: expand $VAR, ${VAR}, and $(cmd) references
-    let expanded = expand_vars(env, expr);
+    // Step 1: expand dollar references (arith policy: empty results
+    // substitute "0"; see `DollarMode::Arith`).
+    let expanded = super::dollar::expand_string(env, expr, super::dollar::DollarMode::Arith);
 
     // Step 2: parse and evaluate
     let bytes = expanded.as_bytes();
@@ -12,73 +18,18 @@ pub fn evaluate(env: &mut ShellEnv, expr: &str) -> Result<String, String> {
         input: bytes,
         pos: 0,
         env,
+        depth: 0,
     };
 
     // Callers print the diagnostic (heredoc expansion directly, word
     // expansion via the ShellError path in `exec_command`).
-    parser.expr().map(|val| val.to_string())
-}
-
-/// Look up a variable name in the arithmetic context.
-/// Handles positional parameters (all-digit names), special parameters
-/// (single char: #, ?, -, !, $), and regular variable names.
-/// Returns "0" for unset values (arithmetic context default).
-fn arith_var_lookup(env: &ShellEnv, name: &str) -> String {
-    // All-digit name → positional parameter (or $0 for shell name)
-    if !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
-        let n: usize = name.parse().unwrap_or(0);
-        let val = if n == 0 {
-            env.shell_name.clone()
-        } else {
-            env.vars
-                .positional_params()
-                .get(n - 1)
-                .cloned()
-                .unwrap_or_default()
-        };
-        return if val.is_empty() || val.parse::<i64>().is_err() {
-            "0".to_string()
-        } else {
-            val
-        };
-    }
-
-    // Single-char special parameters
-    if name.len() == 1 {
-        match name.as_bytes()[0] {
-            b'#' => return env.vars.positional_params().len().to_string(),
-            b'?' => return env.exec.last_exit_status.to_string(),
-            b'-' => {
-                let s = env.mode.flag_string();
-                return if s.is_empty() { "0".to_string() } else { s };
-            }
-            b'!' => {
-                return env
-                    .process
-                    .jobs
-                    .last_bg_pid()
-                    .map(|p| p.as_raw().to_string())
-                    .unwrap_or_else(|| "0".to_string());
-            }
-            b'$' => return env.process.shell_pid.as_raw().to_string(),
-            _ => {}
-        }
-    }
-
-    // LINENO is a computed pseudo-variable backed by `env.exec.lineno`,
-    // not a real `VarStore` entry (see `ExecState::lineno`).
-    if name == "LINENO" {
-        return env.exec.lineno.to_string();
-    }
-
-    // Regular variable
-    env.vars.get(name).unwrap_or("0").to_string()
+    parser.eval_full().map(|val| val.to_string())
 }
 
 /// Look up a bare identifier (`name` in `$((name))`, without a leading
 /// `$`) for the tokenizer's variable-reference path. Intercepts `LINENO`
-/// the same way as `arith_var_lookup`; unset regular variables default
-/// to "0".
+/// as a computed pseudo-variable (see `ExecState::lineno`); unset regular
+/// variables default to "0".
 fn arith_name_lookup(env: &ShellEnv, name: &str) -> String {
     if name == "LINENO" {
         return env.exec.lineno.to_string();
@@ -86,92 +37,57 @@ fn arith_name_lookup(env: &ShellEnv, name: &str) -> String {
     env.vars.get(name).unwrap_or("0").to_string()
 }
 
-/// Replace `$VAR`, `${VAR}`, and `$(cmd)` in an arithmetic expression with their values.
-/// Unset variables default to "0".
-fn expand_vars(env: &mut ShellEnv, expr: &str) -> String {
-    let bytes = expr.as_bytes();
-    let mut result = String::new();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'$' && i + 1 < bytes.len() {
-            if bytes[i + 1] == b'(' {
-                // $(cmd) — command substitution inside arithmetic
-                i += 2; // skip '$('
-                let start = i;
-                i = crate::expand::skip_balanced_parens(bytes, i);
-                let cmd_str = &expr[start..i];
-                if i < bytes.len() {
-                    i += 1; // skip closing ')'
-                }
-                if let Ok(program) = crate::parser::Parser::new(cmd_str).parse_program() {
-                    let output = crate::expand::command_sub::execute(env, &program);
-                    let trimmed = output.trim();
-                    // Default to "0" if the output is empty
-                    result.push_str(if trimmed.is_empty() { "0" } else { trimmed });
-                } else {
-                    result.push('0');
-                }
-            } else if bytes[i + 1] == b'{' {
-                // ${VAR}
-                i += 2;
-                let start = i;
-                while i < bytes.len() && bytes[i] != b'}' {
-                    i += 1;
-                }
-                let name = &expr[start..i];
-                if i < bytes.len() {
-                    i += 1; // consume '}'
-                }
-                let val = arith_var_lookup(env, name);
-                result.push_str(&val);
-            } else if bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_' {
-                // $VAR
-                i += 1;
-                let start = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                    i += 1;
-                }
-                let name = &expr[start..i];
-                let val = arith_var_lookup(env, name);
-                result.push_str(&val);
-            } else if bytes[i + 1].is_ascii_digit() {
-                // $0, $1, ..., $9
-                i += 1;
-                let buf = [bytes[i]];
-                let name = std::str::from_utf8(&buf).unwrap();
-                let val = arith_var_lookup(env, name);
-                result.push_str(&val);
-                i += 1;
-            } else if b"#?-!$".contains(&bytes[i + 1]) {
-                // $#, $?, $-, $!, $$
-                i += 1;
-                let buf = [bytes[i]];
-                let name = std::str::from_utf8(&buf).unwrap();
-                let val = arith_var_lookup(env, name);
-                result.push_str(&val);
-                i += 1;
-            } else {
-                result.push(bytes[i] as char);
-                i += 1;
-            }
-        } else {
-            result.push(bytes[i] as char);
-            i += 1;
-        }
-    }
-
-    result
-}
-
 /// Recursive-descent arithmetic parser with access to shell environment.
 struct ArithParser<'a> {
     input: &'a [u8],
     pos: usize,
     env: &'a mut ShellEnv,
+    /// Recursive variable-as-expression evaluation depth (see
+    /// `eval_var_value`).
+    depth: u32,
 }
 
 impl<'a> ArithParser<'a> {
+    /// Parse a complete expression and require it to consume all input.
+    /// Trailing garbage (`$((1 2))`) is a syntax error, matching bash/dash.
+    fn eval_full(&mut self) -> Result<i64, String> {
+        let val = self.expr()?;
+        self.skip_whitespace();
+        if self.pos < self.input.len() {
+            let rest = String::from_utf8_lossy(&self.input[self.pos..]);
+            return Err(format!(
+                "syntax error: unexpected token '{}'",
+                rest.trim_end()
+            ));
+        }
+        Ok(val)
+    }
+
+    /// Evaluate a variable's raw string value as an operand. A plain
+    /// integer parses directly; empty/blank is 0 (matches bash: `x=""`
+    /// gives `$((x))` == 0); anything else is recursively evaluated as an
+    /// arithmetic expression (`x=1+2; $((x))` == 3, matching bash/dash),
+    /// with a depth cap so self-referential values (`x=x`) terminate.
+    fn eval_var_value(&mut self, name: &str, raw: &str) -> Result<i64, String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(0);
+        }
+        if let Ok(v) = trimmed.parse::<i64>() {
+            return Ok(v);
+        }
+        if self.depth >= MAX_RECURSION_DEPTH {
+            return Err(format!("{}: expression recursion level exceeded", name));
+        }
+        let mut sub = ArithParser {
+            input: trimmed.as_bytes(),
+            pos: 0,
+            env: self.env,
+            depth: self.depth + 1,
+        };
+        sub.eval_full()
+    }
+
     fn skip_whitespace(&mut self) {
         while self.pos < self.input.len() && self.input[self.pos].is_ascii_whitespace() {
             self.pos += 1;
@@ -580,7 +496,9 @@ impl<'a> ArithParser<'a> {
         if let Some(compound_op) = self.try_compound_assign_op() {
             let rhs = self.ternary()?;
             let cur = arith_name_lookup(self.env, &name);
-            let cur_val = cur.trim().parse::<i64>().unwrap_or(0);
+            // Recursively evaluate the current value (`x=1+2; $((x+=1))`
+            // is 4 in bash), same as the plain lookup path below.
+            let cur_val = self.eval_var_value(&name, &cur)?;
             let val = match compound_op {
                 CompoundOp::Add => cur_val.wrapping_add(rhs),
                 CompoundOp::Sub => cur_val.wrapping_sub(rhs),
@@ -632,10 +550,10 @@ impl<'a> ArithParser<'a> {
             return Ok(val);
         }
 
-        // Variable lookup
+        // Variable lookup: the value is itself evaluated as an arithmetic
+        // expression (POSIX §2.6.4 / C rules; `x=1+2; $((x))` is 3).
         let raw = arith_name_lookup(self.env, &name);
-        let val = raw.trim().parse::<i64>().unwrap_or(0);
-        Ok(val)
+        self.eval_var_value(&name, &raw)
     }
 
     /// Try to match a compound assignment operator at current position.
@@ -908,5 +826,81 @@ mod tests {
         let mut e = env();
         // No positional params set; $1 should default to 0
         assert_eq!(evaluate(&mut e, "$1 + 5"), Ok("5".to_string()));
+    }
+
+    // ── Unified dollar-scanner: full ${...} operator support ──
+
+    #[test]
+    fn test_braced_default_operator() {
+        let mut e = env();
+        assert_eq!(evaluate(&mut e, "${x:-3} + 1"), Ok("4".to_string()));
+    }
+
+    #[test]
+    fn test_braced_length_operator() {
+        let mut e = env();
+        e.vars.set("a", "hello").unwrap();
+        assert_eq!(evaluate(&mut e, "${#a}+1"), Ok("6".to_string()));
+    }
+
+    #[test]
+    fn test_nested_arith_expansion() {
+        let mut e = env();
+        assert_eq!(evaluate(&mut e, "$((1+1)) + 1"), Ok("3".to_string()));
+    }
+
+    // ── Trailing-garbage detection (audit M5) ──
+
+    #[test]
+    fn test_trailing_garbage_is_syntax_error() {
+        let mut e = env();
+        let err = evaluate(&mut e, "1 2").unwrap_err();
+        assert!(err.contains("syntax error"), "got: {err}");
+    }
+
+    #[test]
+    fn test_trailing_whitespace_ok() {
+        assert_eq!(evaluate(&mut env(), " 1 + 2  \n"), Ok("3".to_string()));
+    }
+
+    // ── Recursive variable-as-expression evaluation (audit M5) ──
+
+    #[test]
+    fn test_var_value_evaluated_recursively() {
+        let mut e = env();
+        e.vars.set("x", "1+2").unwrap();
+        assert_eq!(evaluate(&mut e, "x"), Ok("3".to_string()));
+        assert_eq!(evaluate(&mut e, "x + 1"), Ok("4".to_string()));
+    }
+
+    #[test]
+    fn test_var_value_chain() {
+        let mut e = env();
+        e.vars.set("x", "y").unwrap();
+        e.vars.set("y", "5").unwrap();
+        assert_eq!(evaluate(&mut e, "x"), Ok("5".to_string()));
+    }
+
+    #[test]
+    fn test_self_referential_var_errors_not_hangs() {
+        let mut e = env();
+        e.vars.set("x", "x").unwrap();
+        let err = evaluate(&mut e, "x").unwrap_err();
+        assert!(err.contains("recursion"), "got: {err}");
+    }
+
+    #[test]
+    fn test_empty_var_value_is_zero() {
+        let mut e = env();
+        e.vars.set("x", "").unwrap();
+        assert_eq!(evaluate(&mut e, "x"), Ok("0".to_string()));
+    }
+
+    #[test]
+    fn test_compound_assign_recursive_current_value() {
+        let mut e = env();
+        e.vars.set("x", "1+2").unwrap();
+        assert_eq!(evaluate(&mut e, "x += 1"), Ok("4".to_string()));
+        assert_eq!(e.vars.get("x"), Some("4"));
     }
 }

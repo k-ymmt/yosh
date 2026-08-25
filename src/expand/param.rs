@@ -1,6 +1,17 @@
-use super::{expand_word_to_string, pattern};
+use super::{expand_word_to_pattern, expand_word_to_string, pattern};
 use crate::env::ShellEnv;
 use crate::parser::ast::{ParamExpr, SpecialParam};
+
+/// Report a fatal expansion error (POSIX §2.8.1): print the diagnostic,
+/// set `$?` to 1, and raise `FlowControl::ExpansionError` so the current
+/// command is aborted, function-call boundaries do not swallow it, and a
+/// non-interactive shell exits with status 1 (interactive shells abort
+/// the current command line only).
+pub(super) fn expansion_error(env: &mut ShellEnv, msg: std::fmt::Arguments<'_>) {
+    eprintln!("yosh: {msg}");
+    env.exec.last_exit_status = 1;
+    env.exec.flow_control = Some(crate::env::FlowControl::ExpansionError);
+}
 
 /// Expand a `ParamExpr` to a String.
 pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<String> {
@@ -10,9 +21,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             Some(val) => Ok(val),
             None => {
                 if env.mode.options.nounset {
-                    eprintln!("yosh: {}: parameter not set", name);
-                    env.exec.last_exit_status = 1;
-                    env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
+                    expansion_error(env, format_args!("{}: parameter not set", name));
                 }
                 Ok(String::new())
             }
@@ -27,9 +36,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                         // POSIX set -u: an unset positional parameter is an
                         // expansion error, same as an unset variable.
                         if env.mode.options.nounset {
-                            eprintln!("yosh: {}: parameter not set", n);
-                            env.exec.last_exit_status = 1;
-                            env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
+                            expansion_error(env, format_args!("{}: parameter not set", n));
                         }
                         Ok(String::new())
                     }
@@ -48,9 +55,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                 && matches!(sp, SpecialParam::Bang)
                 && env.process.jobs.last_bg_pid().is_none()
             {
-                eprintln!("yosh: !: parameter not set");
-                env.exec.last_exit_status = 1;
-                env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
+                expansion_error(env, format_args!("!: parameter not set"));
                 return Ok(String::new());
             }
             Ok(expand_special(env, sp))
@@ -94,9 +99,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                 // POSIX §2.6.2: attempting to assign a positional or special
                 // parameter with ${name=word} is an error.
                 if is_unassignable_param(name) {
-                    eprintln!("yosh: {}: cannot assign in this way", name);
-                    env.exec.last_exit_status = 1;
-                    env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
+                    expansion_error(env, format_args!("{}: cannot assign in this way", name));
                     return Ok(String::new());
                 }
                 let new_val = match word.as_ref() {
@@ -131,12 +134,11 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             if is_unset_or_null {
                 let msg = match word.as_ref() {
                     Some(w) => expand_word_to_string(env, w)?,
-                    None => format!("{}: parameter null or not set", name),
+                    None => "parameter null or not set".to_string(),
                 };
-                eprintln!("yosh: {}", msg);
-                // POSIX: non-interactive shell shall exit with non-zero status
-                env.exec.last_exit_status = 1;
-                env.exec.flow_control = Some(crate::env::FlowControl::Return(1));
+                // POSIX: non-interactive shell shall exit with non-zero
+                // status. Every other shell prefixes the variable name.
+                expansion_error(env, format_args!("{}: {}", name, msg));
                 Ok(String::new())
             } else {
                 Ok(val.unwrap_or_default())
@@ -163,31 +165,36 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             }
         }
 
+        // The four strip forms expand their pattern via
+        // `expand_word_to_pattern` so quoted glob metacharacters match
+        // literally (POSIX §2.6.2: "the quoting shall prevent the pattern
+        // characters from being treated as pattern characters").
+
         // ── ${name%pattern} — remove shortest suffix ─────────────────────
         ParamExpr::StripShortSuffix(name, pattern_word) => {
             let value = lookup_var(env, name).unwrap_or_default();
-            let pat = expand_word_to_string(env, pattern_word)?;
+            let pat = expand_word_to_pattern(env, pattern_word)?;
             Ok(strip_suffix(&value, &pat, false))
         }
 
         // ── ${name%%pattern} — remove longest suffix ──────────────────────
         ParamExpr::StripLongSuffix(name, pattern_word) => {
             let value = lookup_var(env, name).unwrap_or_default();
-            let pat = expand_word_to_string(env, pattern_word)?;
+            let pat = expand_word_to_pattern(env, pattern_word)?;
             Ok(strip_suffix(&value, &pat, true))
         }
 
         // ── ${name#pattern} — remove shortest prefix ─────────────────────
         ParamExpr::StripShortPrefix(name, pattern_word) => {
             let value = lookup_var(env, name).unwrap_or_default();
-            let pat = expand_word_to_string(env, pattern_word)?;
+            let pat = expand_word_to_pattern(env, pattern_word)?;
             Ok(strip_prefix(&value, &pat, false))
         }
 
         // ── ${name##pattern} — remove longest prefix ──────────────────────
         ParamExpr::StripLongPrefix(name, pattern_word) => {
             let value = lookup_var(env, name).unwrap_or_default();
-            let pat = expand_word_to_string(env, pattern_word)?;
+            let pat = expand_word_to_pattern(env, pattern_word)?;
             Ok(strip_prefix(&value, &pat, true))
         }
     }

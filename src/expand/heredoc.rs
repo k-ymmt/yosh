@@ -3,27 +3,30 @@
 //! Heredoc expansion is a distinct pipeline from word expansion: there is no
 //! field splitting, no pathname expansion, and no tilde expansion. Quoted
 //! heredocs (`<<'EOF'`) suppress all expansion; unquoted heredocs perform
-//! parameter, arithmetic, and command substitution only.
+//! parameter, arithmetic, and command substitution only — via the shared
+//! dollar-scanner in `expand::dollar`.
 
-use super::scan::{skip_balanced_braces, skip_balanced_double_parens, skip_balanced_parens};
-use super::tilde::expand_tilde_user;
-use super::{arith, command_sub, param};
+use super::dollar::{DollarMode, expand_string};
 use crate::env::ShellEnv;
-use crate::parser::ast::{ParamExpr, WordPart};
+use crate::parser::ast::WordPart;
 
 /// Expand a here-document body.
 /// If `quoted` is true (delimiter was quoted), body is literal — no expansion.
 /// If `quoted` is false, parameter expansion, command substitution, and arithmetic
 /// expansion are performed (same as double-quote context, but `"` is not special).
 pub fn expand_body(env: &mut ShellEnv, parts: &[WordPart], quoted: bool) -> String {
-    // First, get the raw body text
+    // Lexer::read_heredoc_body always stores the body as a single
+    // `WordPart::Literal`; other variants cannot occur.
     let mut raw_body = String::new();
     for part in parts {
         match part {
             WordPart::Literal(s) => raw_body.push_str(s),
-            _ => {
-                // If parts already contain expansion nodes (from lexer), expand them
-                expand_part(env, part, &mut raw_body);
+            other => {
+                debug_assert!(
+                    false,
+                    "heredoc body must consist of Literal parts, got {:?}",
+                    other
+                );
             }
         }
     }
@@ -32,208 +35,8 @@ pub fn expand_body(env: &mut ShellEnv, parts: &[WordPart], quoted: bool) -> Stri
         // Quoted delimiter: no expansion, return literal body
         raw_body
     } else {
-        // Unquoted delimiter: expand $VAR, $(cmd), $((expr)) in the body text.
-        // The lexer stores the body as a single Literal string, so we need to
-        // process it character by character for dollar expansions.
-        expand_string(env, &raw_body)
-    }
-}
-
-/// Expand dollar references ($VAR, ${VAR}, $(cmd), $((expr))) in a raw string.
-/// Used for unquoted here-document bodies where the lexer stored everything as literal text.
-fn expand_string(env: &mut ShellEnv, s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut result = String::new();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'$' && i + 1 < bytes.len() {
-            i += 1;
-            match bytes[i] {
-                b'{' => {
-                    // ${...} — find matching } (quote-aware)
-                    i += 1;
-                    let start = i;
-                    i = skip_balanced_braces(bytes, i);
-                    let inner = &s[start..i];
-                    if i < bytes.len() {
-                        i += 1;
-                    } // skip }
-                    // Re-lex the full `${...}` so conditional (`${x:-w}`),
-                    // length (`${#x}`), and strip forms all apply. Quoting
-                    // inside the braces follows normal word rules per POSIX
-                    // §2.7.4. Fall back to a plain lookup if the lexer
-                    // rejects the expression.
-                    result.push_str(&expand_braced_param(env, inner));
-                }
-                b'(' => {
-                    if i + 1 < bytes.len() && bytes[i + 1] == b'(' {
-                        // $((...)) — arithmetic
-                        i += 2;
-                        let start = i;
-                        i = skip_balanced_double_parens(bytes, i);
-                        let expr = &s[start..i];
-                        if i + 1 < bytes.len() {
-                            i += 2;
-                        } // skip ))
-                        match arith::evaluate(env, expr) {
-                            Ok(val) => result.push_str(&val),
-                            Err(msg) => {
-                                eprintln!("yosh: arithmetic: {}", msg);
-                                env.exec.last_exit_status = 1;
-                                result.push('0');
-                            }
-                        }
-                    } else {
-                        // $(...) — command substitution
-                        i += 1;
-                        let start = i;
-                        i = skip_balanced_parens(bytes, i);
-                        let cmd_str = &s[start..i];
-                        if i < bytes.len() {
-                            i += 1;
-                        } // skip )
-                        // Parse and execute
-                        if let Ok(program) = crate::parser::Parser::new(cmd_str).parse_program() {
-                            result.push_str(&command_sub::execute(env, &program));
-                        }
-                    }
-                }
-                b'@' | b'*' | b'#' | b'?' | b'-' | b'$' | b'!' | b'0' => {
-                    let sp = match bytes[i] {
-                        b'@' => crate::parser::ast::SpecialParam::At,
-                        b'*' => crate::parser::ast::SpecialParam::Star,
-                        b'#' => crate::parser::ast::SpecialParam::Hash,
-                        b'?' => crate::parser::ast::SpecialParam::Question,
-                        b'-' => crate::parser::ast::SpecialParam::Dash,
-                        b'$' => crate::parser::ast::SpecialParam::Dollar,
-                        b'!' => crate::parser::ast::SpecialParam::Bang,
-                        b'0' => crate::parser::ast::SpecialParam::Zero,
-                        _ => unreachable!(),
-                    };
-                    result
-                        .push_str(&param::expand(env, &ParamExpr::Special(sp)).unwrap_or_default());
-                    i += 1;
-                }
-                ch if (b'1'..=b'9').contains(&ch) => {
-                    let n = (ch - b'0') as usize;
-                    result.push_str(
-                        &param::expand(env, &ParamExpr::Positional(n)).unwrap_or_default(),
-                    );
-                    i += 1;
-                }
-                ch if ch.is_ascii_alphabetic() || ch == b'_' => {
-                    let start = i;
-                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-                    {
-                        i += 1;
-                    }
-                    let name = &s[start..i];
-                    // Route through param::expand so set -u (nounset)
-                    // applies to heredoc bodies too.
-                    result.push_str(
-                        &param::expand(env, &ParamExpr::Simple(name.to_string()))
-                            .unwrap_or_default(),
-                    );
-                }
-                _ => {
-                    result.push('$');
-                    // Don't advance — the current byte is not part of the expansion
-                }
-            }
-        } else if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            // Backslash in heredoc: only escapes $, `, \, newline
-            let next = bytes[i + 1];
-            match next {
-                b'$' | b'`' | b'\\' => {
-                    result.push(next as char);
-                    i += 2;
-                }
-                b'\n' => {
-                    // Line continuation
-                    i += 2;
-                }
-                _ => {
-                    result.push('\\');
-                    i += 1;
-                }
-            }
-        } else if bytes[i] == b'`' {
-            // Backtick command substitution
-            i += 1;
-            let start = i;
-            while i < bytes.len() && bytes[i] != b'`' {
-                if bytes[i] == b'\\' {
-                    i += 1;
-                }
-                i += 1;
-            }
-            let cmd_str = &s[start..i];
-            if i < bytes.len() {
-                i += 1;
-            } // skip closing `
-            if let Ok(program) = crate::parser::Parser::new(cmd_str).parse_program() {
-                result.push_str(&command_sub::execute(env, &program));
-            }
-        } else {
-            // Copy the full (possibly multi-byte) character — indexing by
-            // byte and casting through `as char` would decode UTF-8 bytes
-            // as Latin-1 and corrupt non-ASCII text.
-            let ch = s[i..].chars().next().expect("i is on a char boundary");
-            result.push(ch);
-            i += ch.len_utf8();
-        }
-    }
-    result
-}
-
-/// Expand the inside of a heredoc `${...}` by re-lexing it as a full
-/// parameter expansion. `inner` is the text between the braces.
-fn expand_braced_param(env: &mut ShellEnv, inner: &str) -> String {
-    let input = format!("${{{}}}", inner);
-    let mut lexer = crate::lexer::Lexer::new(&input);
-    if let Ok(tok) = lexer.next_token()
-        && let crate::lexer::token::Token::Word(word) = tok.token
-        && let [WordPart::Parameter(p)] = word.parts.as_slice()
-    {
-        return param::expand(env, p).unwrap_or_default();
-    }
-    env.vars.get(inner).unwrap_or("").to_string()
-}
-
-fn expand_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
-    match part {
-        WordPart::Literal(s) => out.push_str(s),
-        WordPart::EscapedLiteral(s) => out.push_str(s),
-        WordPart::Parameter(p) => {
-            let expanded = param::expand(env, p).unwrap_or_default();
-            out.push_str(&expanded);
-        }
-        WordPart::CommandSub(program) => {
-            let output = command_sub::execute(env, program);
-            out.push_str(&output);
-        }
-        WordPart::ArithSub(expr) => match arith::evaluate(env, expr) {
-            Ok(val) => out.push_str(&val),
-            Err(msg) => {
-                eprintln!("yosh: arithmetic: {}", msg);
-                env.exec.last_exit_status = 1;
-                out.push('0');
-            }
-        },
-        WordPart::SingleQuoted(s) | WordPart::DollarSingleQuoted(s) => out.push_str(s),
-        WordPart::DoubleQuoted(parts) => {
-            for p in parts {
-                expand_part(env, p, out);
-            }
-        }
-        WordPart::Tilde(None) => {
-            let home = env.vars.get("HOME").map(|s| s.to_string());
-            out.push_str(&home.unwrap_or_else(|| "~".to_string()));
-        }
-        WordPart::Tilde(Some(user)) => {
-            out.push_str(&expand_tilde_user(user));
-        }
+        // Unquoted delimiter: expand $VAR, $(cmd), `cmd`, $((expr)).
+        expand_string(env, &raw_body, DollarMode::Heredoc)
     }
 }
 
@@ -241,7 +44,7 @@ fn expand_part(env: &mut ShellEnv, part: &WordPart, out: &mut String) {
 mod tests {
     use super::*;
     use crate::env::ShellEnv;
-    use crate::parser::ast::{ParamExpr, WordPart};
+    use crate::parser::ast::WordPart;
 
     fn make_env() -> ShellEnv {
         ShellEnv::new("yosh", vec![])
@@ -266,11 +69,9 @@ mod tests {
     fn test_expand_heredoc_body_unquoted_expands() {
         let mut env = make_env();
         env.vars.set("FOO", "bar").unwrap();
-        let parts = vec![
-            WordPart::Literal("value is ".to_string()),
-            WordPart::Parameter(ParamExpr::Simple("FOO".to_string())),
-            WordPart::Literal("\n".to_string()),
-        ];
+        // The lexer stores the body as a single Literal; the dollar
+        // scanner performs the expansion.
+        let parts = vec![WordPart::Literal("value is $FOO\n".to_string())];
         assert_eq!(expand_body(&mut env, &parts, false), "value is bar\n");
     }
 }

@@ -3,6 +3,53 @@
 //! Used by `expand::heredoc` (after PR-B) and `expand::arith` for parenthesis-,
 //! brace-, and double-paren depth tracking inside string bodies.
 
+/// If `bytes[i]` begins a quoted run or a backslash escape, return
+/// `Some(j)` where `j` is the index just past it; otherwise `None`.
+///
+/// - `'...'`: scans to the closing quote (or end of input).
+/// - `"..."`: scans to the closing quote, honoring `\x` escapes inside
+///   (or end of input).
+/// - `\x`: skips the escaped byte (a trailing `\` skips just itself).
+///
+/// Unterminated quotes consume the rest of the input, preserving the
+/// historical contract of the three balanced scanners below.
+fn skip_quoted_or_escaped(bytes: &[u8], i: usize) -> Option<usize> {
+    match bytes[i] {
+        b'\'' => {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'\'' {
+                j += 1;
+            }
+            if j < bytes.len() {
+                j += 1;
+            }
+            Some(j)
+        }
+        b'"' => {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'"' {
+                if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            if j < bytes.len() {
+                j += 1;
+            }
+            Some(j)
+        }
+        b'\\' => {
+            if i + 1 < bytes.len() {
+                Some(i + 2)
+            } else {
+                Some(i + 1)
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Skip forward from `start` in `bytes`, tracking parenthesis depth (starting at 1),
 /// while respecting single/double quotes and backslash escapes.
 /// Returns the index of the byte where depth reaches 0 (the closing `)`).
@@ -11,36 +58,11 @@ pub fn skip_balanced_parens(bytes: &[u8], start: usize) -> usize {
     let mut i = start;
     let mut depth: usize = 1;
     while i < bytes.len() && depth > 0 {
+        if let Some(next) = skip_quoted_or_escaped(bytes, i) {
+            i = next;
+            continue;
+        }
         match bytes[i] {
-            b'\'' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'\'' {
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            b'"' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            b'\\' => {
-                if i + 1 < bytes.len() {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
             b'(' => {
                 depth += 1;
                 i += 1;
@@ -67,36 +89,11 @@ pub fn skip_balanced_braces(bytes: &[u8], start: usize) -> usize {
     let mut i = start;
     let mut depth: usize = 1;
     while i < bytes.len() && depth > 0 {
+        if let Some(next) = skip_quoted_or_escaped(bytes, i) {
+            i = next;
+            continue;
+        }
         match bytes[i] {
-            b'\'' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'\'' {
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            b'"' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            b'\\' => {
-                if i + 1 < bytes.len() {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
             b'{' => {
                 depth += 1;
                 i += 1;
@@ -123,36 +120,11 @@ pub fn skip_balanced_double_parens(bytes: &[u8], start: usize) -> usize {
     let mut i = start;
     let mut depth: usize = 1;
     while i + 1 < bytes.len() && depth > 0 {
+        if let Some(next) = skip_quoted_or_escaped(bytes, i) {
+            i = next;
+            continue;
+        }
         match bytes[i] {
-            b'\'' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'\'' {
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            b'"' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            b'\\' => {
-                if i + 1 < bytes.len() {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
             b'(' => {
                 depth += 1;
                 i += 1;
