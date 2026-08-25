@@ -36,6 +36,45 @@ pub(super) fn scan_parameter(
 }
 
 // -----------------------------------------------------------------------
+// scan_dollar_name – shared $NAME / special-parameter scan
+// -----------------------------------------------------------------------
+
+/// When the character after the `$` at `pos` starts a plain name
+/// (`$NAME`) or is a positional/special parameter (`$0`..`$9`, `$@`,
+/// `$*`, `$#`, `$?`, `$-`, `$$`, `$!`), push a Variable span and return
+/// the position after it. Returns `None` for everything else (`$'`,
+/// `$(`, `${`, bare `$`) — those cases are dispatched by the caller,
+/// whose handling differs between normal mode (mode stack) and the
+/// inline double-quote scanner.
+pub(super) fn scan_dollar_name(ctx: &mut ScanCtx<'_>, pos: usize) -> Option<usize> {
+    let next = *ctx.input.get(pos + 1)?;
+    if next.is_ascii_alphabetic() || next == '_' {
+        // $NAME
+        let mut end = pos + 1;
+        while end < ctx.input.len()
+            && (ctx.input[end].is_ascii_alphanumeric() || ctx.input[end] == '_')
+        {
+            end += 1;
+        }
+        ctx.spans.push(ColorSpan {
+            start: pos,
+            end,
+            style: HighlightStyle::Variable,
+        });
+        Some(end)
+    } else if next.is_ascii_digit() || matches!(next, '@' | '*' | '#' | '?' | '-' | '$' | '!') {
+        ctx.spans.push(ColorSpan {
+            start: pos,
+            end: pos + 2,
+            style: HighlightStyle::Variable,
+        });
+        Some(pos + 2)
+    } else {
+        None
+    }
+}
+
+// -----------------------------------------------------------------------
 // scan_dollar – handle $... in Normal mode
 // -----------------------------------------------------------------------
 
@@ -80,41 +119,20 @@ pub(super) fn scan_dollar(ctx: &mut ScanCtx<'_>, _env: &CheckerEnv<'_>, pos: usi
             ctx.state.command_position = false;
             pos + 2 // skip ${
         }
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {
-            // $NAME
-            let var_start = pos;
-            let mut end = pos + 1;
-            while end < ctx.input.len()
-                && (ctx.input[end].is_ascii_alphanumeric() || ctx.input[end] == '_')
-            {
-                end += 1;
+        _ => match scan_dollar_name(ctx, pos) {
+            Some(end) => {
+                // $NAME or a positional/special parameter.
+                ctx.state.word_start = false;
+                ctx.state.command_position = false;
+                end
             }
-            ctx.spans.push(ColorSpan {
-                start: var_start,
-                end,
-                style: HighlightStyle::Variable,
-            });
-            ctx.state.word_start = false;
-            ctx.state.command_position = false;
-            end
-        }
-        Some(c) if c.is_ascii_digit() || matches!(c, '@' | '*' | '#' | '?' | '-' | '$' | '!') => {
-            // $0 .. $9, $@, $*, $#, $?, $-, $$, $!
-            ctx.spans.push(ColorSpan {
-                start: pos,
-                end: pos + 2,
-                style: HighlightStyle::Variable,
-            });
-            ctx.state.word_start = false;
-            ctx.state.command_position = false;
-            pos + 2
-        }
-        _ => {
-            // Bare $ at end of input or before something unexpected – treat as
-            // default text.
-            ctx.state.word_start = false;
-            pos + 1
-        }
+            None => {
+                // Bare $ at end of input or before something unexpected –
+                // treat as default text.
+                ctx.state.word_start = false;
+                pos + 1
+            }
+        },
     }
 }
 

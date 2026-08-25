@@ -244,6 +244,50 @@ pub struct ChangeRecord {
     pub count: u32,
 }
 
+/// One entry of the motion-key table shared by plain command-mode
+/// motions and `d`/`c`/`y` operator motions.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MotionKey {
+    /// Plain motion; the accumulated count applies as usual.
+    Simple(ViMotion),
+    /// `0` / `^` / `$` — POSIX: "a count shall be ignored" for these
+    /// motions under an operator (plain moves keep the count, which
+    /// `motion_move` ignores anyway for line-scoped targets).
+    CountIgnored(ViMotion),
+    /// `f` / `F` / `t` / `T` — waits for the target character.
+    Find(FindKind),
+    /// `;` / `,` — repeat the remembered find (reversed for `,`).
+    Repeat { rev: bool },
+}
+
+/// The single motion-key table: which character maps to which motion
+/// (or find/repeat behavior). Count policy and operator pairing are
+/// applied by [`ViEngine::apply_motion_key`].
+fn motion_key(ch: char) -> Option<MotionKey> {
+    use MotionKey::*;
+    Some(match ch {
+        'l' | ' ' => Simple(ViMotion::CharForward),
+        'h' => Simple(ViMotion::CharBack),
+        'w' => Simple(ViMotion::WordForward { big: false }),
+        'W' => Simple(ViMotion::WordForward { big: true }),
+        'e' => Simple(ViMotion::WordEnd { big: false }),
+        'E' => Simple(ViMotion::WordEnd { big: true }),
+        'b' => Simple(ViMotion::WordBack { big: false }),
+        'B' => Simple(ViMotion::WordBack { big: true }),
+        '0' => CountIgnored(ViMotion::LineStart),
+        '^' => CountIgnored(ViMotion::FirstNonBlank),
+        '$' => CountIgnored(ViMotion::LineEnd),
+        '|' => Simple(ViMotion::Column),
+        'f' => Find(FindKind::Find),
+        'F' => Find(FindKind::FindBack),
+        't' => Find(FindKind::To),
+        'T' => Find(FindKind::ToBack),
+        ';' => Repeat { rev: false },
+        ',' => Repeat { rev: true },
+        _ => return None,
+    })
+}
+
 /// Upper bound on accumulated counts (readline-style sanity cap): a
 /// count beyond this cannot do anything useful on a command line and
 /// only serves to stall the editor.
@@ -423,47 +467,10 @@ impl ViEngine {
         }
 
         let n = self.take_count();
+        if let Some(mk) = motion_key(ch) {
+            return self.apply_motion_key(mk, n, None);
+        }
         let cmd = match ch {
-            'l' | ' ' => ViCmd::Move(ViMotion::CharForward),
-            'h' => ViCmd::Move(ViMotion::CharBack),
-            'w' => ViCmd::Move(ViMotion::WordForward { big: false }),
-            'W' => ViCmd::Move(ViMotion::WordForward { big: true }),
-            'e' => ViCmd::Move(ViMotion::WordEnd { big: false }),
-            'E' => ViCmd::Move(ViMotion::WordEnd { big: true }),
-            'b' => ViCmd::Move(ViMotion::WordBack { big: false }),
-            'B' => ViCmd::Move(ViMotion::WordBack { big: true }),
-            '0' => ViCmd::Move(ViMotion::LineStart),
-            '^' => ViCmd::Move(ViMotion::FirstNonBlank),
-            '$' => ViCmd::Move(ViMotion::LineEnd),
-            '|' => ViCmd::Move(ViMotion::Column),
-            'f' => {
-                self.pending = Pending::FindChar(FindKind::Find, None);
-                self.count = Some(n);
-                return ViOutcome::Pending;
-            }
-            'F' => {
-                self.pending = Pending::FindChar(FindKind::FindBack, None);
-                self.count = Some(n);
-                return ViOutcome::Pending;
-            }
-            't' => {
-                self.pending = Pending::FindChar(FindKind::To, None);
-                self.count = Some(n);
-                return ViOutcome::Pending;
-            }
-            'T' => {
-                self.pending = Pending::FindChar(FindKind::ToBack, None);
-                self.count = Some(n);
-                return ViOutcome::Pending;
-            }
-            ';' => match self.last_find {
-                Some((kind, c)) => ViCmd::Move(ViMotion::FindChar(kind, c)),
-                None => ViCmd::Bell,
-            },
-            ',' => match self.last_find {
-                Some((kind, c)) => ViCmd::Move(ViMotion::FindChar(kind.reversed(), c)),
-                None => ViCmd::Bell,
-            },
             'i' => ViCmd::EnterInsert(InsertAt::Here),
             'I' => ViCmd::EnterInsert(InsertAt::FirstNonBlank),
             'a' => ViCmd::EnterInsert(InsertAt::AfterChar),
@@ -541,42 +548,38 @@ impl ViEngine {
             return ViOutcome::Cmd(ViCmd::OpLine(op), total);
         }
 
-        let motion = match ch {
-            'l' | ' ' => ViMotion::CharForward,
-            'h' => ViMotion::CharBack,
-            'w' => ViMotion::WordForward { big: false },
-            'W' => ViMotion::WordForward { big: true },
-            'e' => ViMotion::WordEnd { big: false },
-            'E' => ViMotion::WordEnd { big: true },
-            'b' => ViMotion::WordBack { big: false },
-            'B' => ViMotion::WordBack { big: true },
-            // POSIX: a count shall be ignored for the motions 0 ^ $.
-            '0' => return ViOutcome::Cmd(ViCmd::Op(op, ViMotion::LineStart), 1),
-            '^' => return ViOutcome::Cmd(ViCmd::Op(op, ViMotion::FirstNonBlank), 1),
-            '$' => return ViOutcome::Cmd(ViCmd::Op(op, ViMotion::LineEnd), 1),
-            '|' => ViMotion::Column,
-            'f' | 'F' | 't' | 'T' => {
-                let kind = match ch {
-                    'f' => FindKind::Find,
-                    'F' => FindKind::FindBack,
-                    't' => FindKind::To,
-                    _ => FindKind::ToBack,
-                };
-                self.pending = Pending::FindChar(kind, Some(op));
-                self.count = Some(total);
-                return ViOutcome::Pending;
-            }
-            ';' => match self.last_find {
-                Some((kind, c)) => ViMotion::FindChar(kind, c),
-                None => return ViOutcome::Cmd(ViCmd::Bell, 1),
-            },
-            ',' => match self.last_find {
-                Some((kind, c)) => ViMotion::FindChar(kind.reversed(), c),
-                None => return ViOutcome::Cmd(ViCmd::Bell, 1),
-            },
-            _ => return ViOutcome::Cmd(ViCmd::Bell, 1),
+        match motion_key(ch) {
+            Some(mk) => self.apply_motion_key(mk, total, Some(op)),
+            None => ViOutcome::Cmd(ViCmd::Bell, 1),
+        }
+    }
+
+    /// Apply one motion-table entry with the caller's count/operator
+    /// policy: a plain motion (`op == None`) yields `Move`, an
+    /// operator-pending one yields `Op`.
+    fn apply_motion_key(&mut self, mk: MotionKey, total: u32, op: Option<OpKind>) -> ViOutcome {
+        let wrap = |motion: ViMotion, n: u32| match op {
+            Some(op) => ViOutcome::Cmd(ViCmd::Op(op, motion), n),
+            None => ViOutcome::Cmd(ViCmd::Move(motion), n),
         };
-        ViOutcome::Cmd(ViCmd::Op(op, motion), total)
+        match mk {
+            MotionKey::Simple(motion) => wrap(motion, total),
+            // POSIX: a count shall be ignored for the motions 0 ^ $
+            // under an operator.
+            MotionKey::CountIgnored(motion) => wrap(motion, if op.is_some() { 1 } else { total }),
+            MotionKey::Find(kind) => {
+                self.pending = Pending::FindChar(kind, op);
+                self.count = Some(total);
+                ViOutcome::Pending
+            }
+            MotionKey::Repeat { rev } => match self.last_find {
+                Some((kind, c)) => {
+                    let kind = if rev { kind.reversed() } else { kind };
+                    wrap(ViMotion::FindChar(kind, c), total)
+                }
+                None => ViOutcome::Cmd(ViCmd::Bell, if op.is_some() { 1 } else { total }),
+            },
+        }
     }
 
     /// Record the most recent buffer-modifying command for `.`.
@@ -621,7 +624,8 @@ pub fn line_end(buf: &[char], pos: usize) -> usize {
         .unwrap_or(buf.len())
 }
 
-fn is_blank(c: char) -> bool {
+/// vi blank: space or tab (newline is a line separator, not a blank).
+pub fn is_blank(c: char) -> bool {
     c == ' ' || c == '\t'
 }
 

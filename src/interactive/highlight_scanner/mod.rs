@@ -1,3 +1,26 @@
+//! Incremental syntax-highlight scanner for the interactive line editor.
+//!
+//! This is a DELIBERATE second tokenizer, not an accidental duplicate of
+//! `src/lexer`. The two have incompatible contracts:
+//!
+//! * **Error-tolerant** — it must produce useful spans for every prefix
+//!   of a command line as it is being typed (unclosed quotes, dangling
+//!   `$`, half-written operators) and can never fail; the lexer reports
+//!   syntax errors instead.
+//! * **Incremental** — it checkpoints scanner state per character
+//!   (`HighlightCache`) so a keystroke only rescans from the first
+//!   changed position, and it resumes across PS2 continuation lines
+//!   from the accumulated-input state.
+//! * **Char-indexed** — spans are `[char index)` ranges into the
+//!   editor's `Vec<char>` buffer, matching how the renderer addresses
+//!   cells; the lexer is byte-oriented over full source strings.
+//!
+//! Unifying it with the lexer would force error recovery, resumable
+//! mid-token state, and char-index bookkeeping into the parser-facing
+//! lexer for no production benefit — keep them separate. Shared
+//! *tables* (the keyword list) are referenced from the lexer instead of
+//! copied; see `helpers::is_keyword`.
+
 use super::command_checker::{CheckerEnv, CommandChecker};
 use super::highlight::ColorSpan;
 
@@ -312,6 +335,23 @@ mod tests {
         assert_span(&spans, 2, 6, 7, HighlightStyle::Operator);
         assert_span(&spans, 3, 8, 12, HighlightStyle::CommandValid);
         assert_span(&spans, 4, 13, 14, HighlightStyle::Default);
+    }
+
+    #[test]
+    fn test_scan_case_fallthrough_operator() {
+        // `;&` is one operator span, not `;` followed by a stray `&`.
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "a) echo x ;&");
+        let op = spans
+            .iter()
+            .find(|s| s.start == 10)
+            .expect("span at `;&`");
+        assert_eq!(
+            (op.start, op.end, op.style),
+            (10, 12, HighlightStyle::Operator),
+            "all spans: {:?}",
+            spans
+        );
     }
 
     #[test]

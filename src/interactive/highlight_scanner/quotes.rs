@@ -5,6 +5,7 @@
 use super::super::command_checker::CheckerEnv;
 use super::super::highlight::{ColorSpan, HighlightStyle};
 use super::ctx::ScanCtx;
+use super::expansion;
 
 pub(super) fn scan_single_quote(
     ctx: &mut ScanCtx<'_>,
@@ -108,34 +109,6 @@ pub(super) fn scan_double_quote(
                     None
                 };
                 match next {
-                    Some(c) if c.is_ascii_alphabetic() || c == '_' => {
-                        let var_start = p;
-                        let mut end = p + 1;
-                        while end < ctx.input.len()
-                            && (ctx.input[end].is_ascii_alphanumeric() || ctx.input[end] == '_')
-                        {
-                            end += 1;
-                        }
-                        ctx.spans.push(ColorSpan {
-                            start: var_start,
-                            end,
-                            style: HighlightStyle::Variable,
-                        });
-                        p = end;
-                        text_start = p;
-                    }
-                    Some(c)
-                        if c.is_ascii_digit()
-                            || matches!(c, '@' | '*' | '#' | '?' | '-' | '$' | '!') =>
-                    {
-                        ctx.spans.push(ColorSpan {
-                            start: p,
-                            end: p + 2,
-                            style: HighlightStyle::Variable,
-                        });
-                        p += 2;
-                        text_start = p;
-                    }
                     Some('{') => {
                         // ${...} inside double quote — scan to closing }
                         let brace_start = p;
@@ -199,11 +172,18 @@ pub(super) fn scan_double_quote(
                             text_start = p;
                         }
                     }
-                    _ => {
-                        // Bare $
-                        p += 1;
-                        text_start = p - 1; // include $ in next string span
-                    }
+                    _ => match expansion::scan_dollar_name(ctx, p) {
+                        Some(end) => {
+                            // $NAME or a positional/special parameter.
+                            p = end;
+                            text_start = p;
+                        }
+                        None => {
+                            // Bare $
+                            p += 1;
+                            text_start = p - 1; // include $ in next string span
+                        }
+                    },
                 }
             }
             '`' => {

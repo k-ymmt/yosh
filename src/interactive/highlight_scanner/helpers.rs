@@ -4,16 +4,13 @@
 //! categories: keywords, operators, redirect starts, valid name characters,
 //! and word boundaries.
 
-pub(super) const KEYWORDS: &[&str] = &[
-    "if", "then", "else", "elif", "fi", "for", "do", "done", "while", "until", "case", "esac",
-    "in", "!", "{", "}",
-];
-
 /// Keywords after which the *next* word is also in command position.
 pub(super) const COMMAND_POSITION_KEYWORDS: &[&str] = &["then", "else", "elif", "do", "!", "time"];
 
+/// The keyword set is exactly the lexer's POSIX reserved-word list —
+/// referenced from there so the two can never drift apart.
 pub(super) fn is_keyword(word: &str) -> bool {
-    KEYWORDS.contains(&word)
+    crate::lexer::reserved::is_posix_reserved_word(word)
 }
 
 pub(super) fn is_operator_char(ch: char) -> bool {

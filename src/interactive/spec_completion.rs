@@ -385,21 +385,12 @@ fn find_flag<'a>(level: Level<'a>, name: &str) -> Option<&'a FlagSpec> {
 /// characters wrapping a word are stripped; a leading `!` word is
 /// skipped. Returns `None` when the cursor word is itself the command.
 pub fn command_words(buf: &str, word_start: usize) -> Option<(String, Vec<String>)> {
-    let bytes = buf.as_bytes();
     let end = word_start.min(buf.len());
-    let mut seg_start = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
 
-    // Find the start of the current pipeline segment
-    for (i, &ch) in bytes.iter().enumerate().take(end) {
-        match ch {
-            b'\'' if !in_double => in_single = !in_single,
-            b'"' if !in_single => in_double = !in_double,
-            b'|' | b';' | b'&' | b'(' if !in_single && !in_double => seg_start = i + 1,
-            _ => {}
-        }
-    }
+    // Find the start of the current pipeline segment (shared delimiter
+    // definition — `)`, `<`, `>` end a segment too, so the command word
+    // never resolves against a closed subshell or a redirection target).
+    let seg_start = super::completion::segment_start(buf, end);
 
     // Parse words, treating quoted strings as single tokens
     let segment = &buf[seg_start..end];
@@ -641,21 +632,9 @@ pub fn try_complete(
 /// verbatim on insertion).
 fn complete_path_word(word: &str, ctx: &CompletionContext) -> (Vec<String>, String) {
     let (dir_part, prefix) = completion::split_path(word, &ctx.home);
-    let resolved_dir = if dir_part.is_empty() {
-        ctx.cwd.clone()
-    } else if dir_part.starts_with('/') {
-        dir_part.clone()
-    } else {
-        let mut path = std::path::PathBuf::from(&ctx.cwd);
-        path.push(&dir_part);
-        path.to_string_lossy().into_owned()
-    };
+    let resolved_dir = completion::resolve_dir(&dir_part, &ctx.cwd);
     let candidates = completion::generate_candidates(&resolved_dir, prefix, ctx.show_dotfiles);
-    let dir_prefix = match word.rfind('/') {
-        Some(pos) => word[..=pos].to_string(),
-        None => String::new(),
-    };
-    (candidates, dir_prefix)
+    (candidates, completion::dir_prefix_of(word))
 }
 
 /// Generate candidates for one source, prepend the already-filtered
@@ -1108,6 +1087,31 @@ name = \"add\"
         let (cmd, args) = command_words("! git lo", 6).unwrap();
         assert_eq!(cmd, "git");
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn words_after_subshell_close() {
+        // "(cd /tmp) git ch|" — word_start = 14: the closed subshell is a
+        // finished segment; the command word is git, not cd.
+        let (cmd, args) = command_words("(cd /tmp) git ch", 14).unwrap();
+        assert_eq!(cmd, "git");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn words_after_redirect_is_none() {
+        // "git add > /tmp/fi|" — word_start = 10: the redirect target is
+        // not a git argument; with no command in its segment the caller
+        // falls back to plain path completion.
+        assert!(command_words("git add > /tmp/fi", 10).is_none());
+    }
+
+    #[test]
+    fn words_segment_delimiters_inside_quotes_do_not_split() {
+        // "git commit -m 'a > b' |" — word_start = 22
+        let (cmd, args) = command_words("git commit -m 'a > b' ", 22).unwrap();
+        assert_eq!(cmd, "git");
+        assert_eq!(args, vec!["commit", "-m", "a > b"]);
     }
 
     // ── resolve ──────────────────────────────────────────────────────

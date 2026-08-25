@@ -70,16 +70,6 @@ impl History {
         &self.entries
     }
 
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     /// Return the suffix of the most recent history entry that starts with `prefix`.
     /// Returns `None` if `prefix` is empty, no entry matches, or only exact matches exist.
     pub fn suggest(&self, prefix: &str) -> Option<String> {
@@ -319,7 +309,7 @@ mod tests {
     fn test_add_empty_line_skipped() {
         let mut h = History::new();
         h.add("", 500, "");
-        assert_eq!(h.len(), 0);
+        assert_eq!(h.entries().len(), 0);
     }
 
     #[test]
@@ -396,7 +386,7 @@ mod tests {
     fn test_load_nonexistent_file() {
         let mut h = History::new();
         h.load(std::path::Path::new("/nonexistent/path/history"));
-        assert_eq!(h.len(), 0);
+        assert_eq!(h.entries().len(), 0);
     }
 
     #[test]

@@ -56,6 +56,8 @@ pub(super) fn scan_normal(ctx: &mut ScanCtx<'_>, env: &CheckerEnv<'_>, pos: usiz
             end += 1; // &&
         } else if ch == ';' && end < ctx.input.len() && ctx.input[end] == ';' {
             end += 1; // ;;
+        } else if ch == ';' && end < ctx.input.len() && ctx.input[end] == '&' {
+            end += 1; // ;& (case fallthrough)
         }
 
         ctx.spans.push(ColorSpan {

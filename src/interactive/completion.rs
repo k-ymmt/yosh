@@ -51,9 +51,7 @@ pub fn extract_completion_word(buf: &str, cursor: usize) -> (usize, &str) {
                 }
                 in_double_quote = !in_double_quote;
             }
-            b' ' | b'\t' | b'\n' | b'|' | b';' | b'&' | b'<' | b'>' | b'(' | b')'
-                if !in_single_quote && !in_double_quote =>
-            {
+            ch if is_unquoted_delimiter(ch) && !in_single_quote && !in_double_quote => {
                 word_start = i + 1;
             }
             _ => {}
@@ -64,11 +62,43 @@ pub fn extract_completion_word(buf: &str, cursor: usize) -> (usize, &str) {
     (word_start, &buf[word_start..end])
 }
 
-fn is_unquoted_delimiter(ch: u8) -> bool {
+/// Unquoted bytes that delimit a completion word: whitespace plus the
+/// shell operator characters. The single source of truth for the
+/// completion-side word/segment splitting (see also
+/// [`is_segment_delimiter`] and [`segment_start`]).
+pub fn is_unquoted_delimiter(ch: u8) -> bool {
     matches!(
         ch,
         b' ' | b'\t' | b'\n' | b'|' | b';' | b'&' | b'<' | b'>' | b'(' | b')'
     )
+}
+
+/// Unquoted operator bytes that end a pipeline segment for command-word
+/// resolution — the non-whitespace subset of [`is_unquoted_delimiter`]
+/// (whitespace separates words *within* a segment).
+pub fn is_segment_delimiter(ch: u8) -> bool {
+    matches!(ch, b'|' | b';' | b'&' | b'<' | b'>' | b'(' | b')')
+}
+
+/// Byte index just after the last unquoted segment delimiter in
+/// `buf[..end]` (0 when there is none): the start of the pipeline
+/// segment containing `end`. Tracks single/double quotes so delimiters
+/// inside quotes do not split.
+pub fn segment_start(buf: &str, end: usize) -> usize {
+    let bytes = buf.as_bytes();
+    let end = end.min(buf.len());
+    let mut seg_start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    for (i, &ch) in bytes.iter().enumerate().take(end) {
+        match ch {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            ch if is_segment_delimiter(ch) && !in_single && !in_double => seg_start = i + 1,
+            _ => {}
+        }
+    }
+    seg_start
 }
 
 /// Returns `true` if `word_start` is at command position in `buf`.
@@ -80,6 +110,10 @@ fn is_unquoted_delimiter(ch: u8) -> bool {
 ///
 /// Scans backward from `word_start`, skipping whitespace, and checks
 /// the last non-whitespace character.
+///
+/// The character set here is deliberately *not* [`is_segment_delimiter`]:
+/// `!` precedes a command without ending a segment, while after `)`,
+/// `<`, or `>` the next word is a filename/operand, not a command.
 pub fn is_command_position(buf: &str, word_start: usize) -> bool {
     let before_raw = &buf[..word_start];
     let before = before_raw.trim_end();
@@ -139,23 +173,59 @@ pub fn split_path<'a>(word: &'a str, home: &str) -> (String, &'a str) {
 
 /// Compute the longest common prefix of all candidate strings.
 ///
-/// Returns an empty string if the list is empty or there is no common prefix.
+/// Returns an empty string if the list is empty or there is no common
+/// prefix. Compares whole characters, never bytes: two candidates can
+/// share a UTF-8 leading byte without sharing a character (e.g.
+/// `日本.txt` / `本日.txt` both start with 0xE6), and a byte-indexed
+/// prefix would slice mid-character and panic.
 pub fn longest_common_prefix(candidates: &[String]) -> String {
-    if candidates.is_empty() {
+    let Some(first) = candidates.first() else {
         return String::new();
-    }
-    let first = &candidates[0];
-    let mut len = first.len();
-    for c in &candidates[1..] {
-        len = len.min(c.len());
-        for (i, (a, b)) in first.bytes().zip(c.bytes()).enumerate() {
-            if a != b {
-                len = len.min(i);
+    };
+    let mut prefix: Vec<char> = first.chars().collect();
+    for item in &candidates[1..] {
+        let mut common = 0;
+        for (a, b) in prefix.iter().zip(item.chars()) {
+            if *a != b {
                 break;
             }
+            common += 1;
         }
+        prefix.truncate(common);
     }
-    first[..len].to_string()
+    prefix.into_iter().collect()
+}
+
+/// Resolve the directory to scan for a completion word's `dir_part`
+/// (from [`split_path`]): empty means the CWD itself, an absolute path
+/// is kept as-is, and a relative path is joined onto `cwd`.
+pub fn resolve_dir(dir_part: &str, cwd: &str) -> String {
+    if dir_part.is_empty() {
+        cwd.to_string()
+    } else if dir_part.starts_with('/') {
+        dir_part.to_string()
+    } else {
+        let mut path = PathBuf::from(cwd);
+        path.push(dir_part);
+        path.to_string_lossy().into_owned()
+    }
+}
+
+/// The directory prefix of `word` exactly as the user typed it (up to
+/// and including the last `/`, no tilde expansion), with a single
+/// leading quote character stripped first — mirroring [`split_path`] so
+/// quoted words (`'sub/xy`, or the value part of `--file='sub/xy`)
+/// reconstruct their replacement text consistently.
+pub fn dir_prefix_of(word: &str) -> String {
+    let stripped = if word.starts_with('\'') || word.starts_with('"') {
+        &word[1..]
+    } else {
+        word
+    };
+    match stripped.rfind('/') {
+        Some(pos) => stripped[..=pos].to_string(),
+        None => String::new(),
+    }
 }
 
 /// Scan a directory and return sorted completion candidates matching `prefix`.
@@ -232,41 +302,17 @@ pub fn complete(buf: &str, cursor: usize, ctx: &CompletionContext) -> Completion
     let (word_start, word) = extract_completion_word(buf, cursor);
     let (dir_part, prefix) = split_path(word, &ctx.home);
 
-    // Resolve the actual directory to scan.
-    let resolved_dir = if dir_part.is_empty() {
-        ctx.cwd.clone()
-    } else if dir_part.starts_with('/') {
-        dir_part.clone()
-    } else {
-        // Relative path: join with CWD.
-        let mut path = PathBuf::from(&ctx.cwd);
-        path.push(&dir_part);
-        path.to_string_lossy().into_owned()
-    };
-
+    let resolved_dir = resolve_dir(&dir_part, &ctx.cwd);
     let candidates = generate_candidates(&resolved_dir, prefix, ctx.show_dotfiles);
     let common_prefix = longest_common_prefix(&candidates);
-
-    // Compute the dir_prefix as the user typed it (before tilde expansion),
-    // so the caller can reconstruct the replacement text.
-    let user_dir_prefix = if word.starts_with('\'') || word.starts_with('"') {
-        let stripped = &word[1..];
-        match stripped.rfind('/') {
-            Some(pos) => stripped[..=pos].to_string(),
-            None => String::new(),
-        }
-    } else {
-        match word.rfind('/') {
-            Some(pos) => word[..=pos].to_string(),
-            None => String::new(),
-        }
-    };
 
     CompletionResult {
         candidates,
         common_prefix,
         word_start,
-        dir_prefix: user_dir_prefix,
+        // The dir_prefix as the user typed it (before tilde expansion),
+        // so the caller can reconstruct the replacement text.
+        dir_prefix: dir_prefix_of(word),
     }
 }
 
@@ -457,6 +503,27 @@ mod tests {
             "hello".to_string(),
         ];
         assert_eq!(longest_common_prefix(&candidates), "hello");
+    }
+
+    #[test]
+    fn test_lcp_multibyte_shared_leading_byte_only() {
+        // 日 and 本 share the UTF-8 leading byte 0xE6 but are different
+        // characters: the common prefix must be empty, not a panic on a
+        // non-char-boundary slice.
+        let candidates = vec!["日本.txt".to_string(), "本日.txt".to_string()];
+        assert_eq!(longest_common_prefix(&candidates), "");
+    }
+
+    #[test]
+    fn test_lcp_multibyte_common_prefix() {
+        let candidates = vec!["日本語A.txt".to_string(), "日本語B.txt".to_string()];
+        assert_eq!(longest_common_prefix(&candidates), "日本語");
+    }
+
+    #[test]
+    fn test_lcp_mixed_ascii_and_multibyte() {
+        let candidates = vec!["fooあ".to_string(), "fooい".to_string()];
+        assert_eq!(longest_common_prefix(&candidates), "foo");
     }
 
     // ── generate_candidates ─────────────────────────────────────────

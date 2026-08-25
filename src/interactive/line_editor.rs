@@ -330,26 +330,6 @@ impl LineEditor {
         }
     }
 
-    /// Return the char index of the start of the logical line containing
-    /// `pos` (the position just after the previous `'\n'`, or 0).
-    fn line_start(&self, pos: usize) -> usize {
-        self.buf[..pos]
-            .iter()
-            .rposition(|&c| c == '\n')
-            .map(|i| i + 1)
-            .unwrap_or(0)
-    }
-
-    /// Return the char index of the end of the logical line containing
-    /// `pos` (the position of the next `'\n'`, or `buf.len()`).
-    fn line_end(&self, pos: usize) -> usize {
-        self.buf[pos..]
-            .iter()
-            .position(|&c| c == '\n')
-            .map(|i| pos + i)
-            .unwrap_or(self.buf.len())
-    }
-
     /// Return the 0-based index of the logical line the cursor is on.
     pub fn cursor_line_index(&self) -> usize {
         self.buf[..self.pos].iter().filter(|&&c| c == '\n').count()
@@ -368,7 +348,7 @@ impl LineEditor {
     /// clamps the cursor visually but does not shrink the target column
     /// for subsequent moves.
     pub fn move_cursor_up(&mut self) {
-        let cur_start = self.line_start(self.pos);
+        let cur_start = vi::line_start(&self.buf, self.pos);
         if cur_start == 0 {
             return;
         }
@@ -378,7 +358,7 @@ impl LineEditor {
             .sum();
         let target = *self.preferred_col.get_or_insert(visual);
         let prev_end = cur_start - 1; // index of the '\n'
-        let prev_start = self.line_start(prev_end);
+        let prev_start = vi::line_start(&self.buf, prev_end);
         self.pos = Self::pos_at_column(&self.buf, prev_start, prev_end, target);
     }
 
@@ -386,18 +366,18 @@ impl LineEditor {
     /// column as closely as possible. Does nothing on the last line.
     /// Uses the same preferred-column stickiness as [`move_cursor_up`].
     pub fn move_cursor_down(&mut self) {
-        let cur_end = self.line_end(self.pos);
+        let cur_end = vi::line_end(&self.buf, self.pos);
         if cur_end == self.buf.len() {
             return;
         }
-        let cur_start = self.line_start(self.pos);
+        let cur_start = vi::line_start(&self.buf, self.pos);
         let visual: usize = self.buf[cur_start..self.pos]
             .iter()
             .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
             .sum();
         let target = *self.preferred_col.get_or_insert(visual);
         let next_start = cur_end + 1;
-        let next_end = self.line_end(next_start);
+        let next_end = vi::line_end(&self.buf, next_start);
         self.pos = Self::pos_at_column(&self.buf, next_start, next_end, target);
     }
 
@@ -420,13 +400,13 @@ impl LineEditor {
     /// Move the cursor to the beginning of the current logical line.
     /// (For a single-line buffer this is position 0, as before.)
     pub fn move_to_start(&mut self) {
-        self.pos = self.line_start(self.pos);
+        self.pos = vi::line_start(&self.buf, self.pos);
     }
 
     /// Move the cursor to the end of the current logical line.
     /// (For a single-line buffer this is the end of the buffer, as before.)
     pub fn move_to_end(&mut self) {
-        self.pos = self.line_end(self.pos);
+        self.pos = vi::line_end(&self.buf, self.pos);
     }
 
     /// Returns true if `ch` is a word character (alphanumeric or underscore).
@@ -459,7 +439,7 @@ impl LineEditor {
     /// is already at the line end and a newline follows, kill the newline
     /// (emacs `C-k` behavior). Returns the killed text.
     pub fn kill_to_end(&mut self) -> String {
-        let end = self.line_end(self.pos);
+        let end = vi::line_end(&self.buf, self.pos);
         if self.pos == end && end < self.buf.len() {
             self.buf.remove(self.pos);
             self.invalidate_width_cache();
@@ -474,7 +454,7 @@ impl LineEditor {
     /// Kill from the start of the current logical line to the cursor
     /// (readline `unix-line-discard`). Returns the killed text.
     pub fn kill_to_start(&mut self) -> String {
-        let start = self.line_start(self.pos);
+        let start = vi::line_start(&self.buf, self.pos);
         let killed: String = self.buf[start..self.pos].iter().collect();
         self.buf.drain(start..self.pos);
         self.pos = start;
@@ -599,61 +579,42 @@ impl LineEditor {
         self.invalidate_width_cache();
     }
 
-    /// Convert the next word to uppercase (Alt+U).
-    pub fn upcase_word(&mut self) {
-        let len = self.buf.len();
-        while self.pos < len && !Self::is_word_char(self.buf[self.pos]) {
-            self.pos += 1;
-        }
-        while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
-            self.buf[self.pos] = self.buf[self.pos]
-                .to_uppercase()
-                .next()
-                .unwrap_or(self.buf[self.pos]);
-            self.pos += 1;
-        }
-        self.invalidate_width_cache();
-    }
-
-    /// Convert the next word to lowercase (Alt+L).
-    pub fn downcase_word(&mut self) {
-        let len = self.buf.len();
-        while self.pos < len && !Self::is_word_char(self.buf[self.pos]) {
-            self.pos += 1;
-        }
-        while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
-            self.buf[self.pos] = self.buf[self.pos]
-                .to_lowercase()
-                .next()
-                .unwrap_or(self.buf[self.pos]);
-            self.pos += 1;
-        }
-        self.invalidate_width_cache();
-    }
-
-    /// Capitalize the next word: first char uppercase, rest lowercase (Alt+C).
-    pub fn capitalize_word(&mut self) {
+    /// Shared body of the case-mapping word commands (Alt+U/L/C): skip
+    /// to the next word, apply `f(char, is_first_char_of_word)` to each
+    /// of its characters, and leave the cursor just past it.
+    fn map_word<F: Fn(char, bool) -> char>(&mut self, f: F) {
         let len = self.buf.len();
         while self.pos < len && !Self::is_word_char(self.buf[self.pos]) {
             self.pos += 1;
         }
         let mut first = true;
         while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
-            if first {
-                self.buf[self.pos] = self.buf[self.pos]
-                    .to_uppercase()
-                    .next()
-                    .unwrap_or(self.buf[self.pos]);
-                first = false;
-            } else {
-                self.buf[self.pos] = self.buf[self.pos]
-                    .to_lowercase()
-                    .next()
-                    .unwrap_or(self.buf[self.pos]);
-            }
+            self.buf[self.pos] = f(self.buf[self.pos], first);
+            first = false;
             self.pos += 1;
         }
         self.invalidate_width_cache();
+    }
+
+    /// Convert the next word to uppercase (Alt+U).
+    pub fn upcase_word(&mut self) {
+        self.map_word(|c, _| c.to_uppercase().next().unwrap_or(c));
+    }
+
+    /// Convert the next word to lowercase (Alt+L).
+    pub fn downcase_word(&mut self) {
+        self.map_word(|c, _| c.to_lowercase().next().unwrap_or(c));
+    }
+
+    /// Capitalize the next word: first char uppercase, rest lowercase (Alt+C).
+    pub fn capitalize_word(&mut self) {
+        self.map_word(|c, first| {
+            if first {
+                c.to_uppercase().next().unwrap_or(c)
+            } else {
+                c.to_lowercase().next().unwrap_or(c)
+            }
+        });
     }
 
     /// Insert text at the current cursor position. Returns (start, len) for yank tracking.
@@ -677,12 +638,6 @@ impl LineEditor {
             self.pos = start;
         }
         self.invalidate_width_cache();
-    }
-
-    /// Return the current suggestion text, if any.
-    #[allow(dead_code)]
-    pub fn suggestion(&self) -> Option<&str> {
-        self.suggestion.as_deref()
     }
 
     /// Accept the full autosuggestion, appending it to the buffer.
@@ -811,26 +766,6 @@ impl std::fmt::Display for LineEditor {
 // Terminal I/O support (crossterm)
 // ---------------------------------------------------------------------------
 
-/// Longest common prefix of a non-empty list of strings (empty string
-/// for an empty list).
-fn longest_common_prefix(items: &[String]) -> String {
-    let Some(first) = items.first() else {
-        return String::new();
-    };
-    let mut prefix: Vec<char> = first.chars().collect();
-    for item in &items[1..] {
-        let mut common = 0;
-        for (a, b) in prefix.iter().zip(item.chars()) {
-            if *a != b {
-                break;
-            }
-            common += 1;
-        }
-        prefix.truncate(common);
-    }
-    prefix.into_iter().collect()
-}
-
 /// Result of processing a single key event.
 enum KeyAction {
     Continue,
@@ -882,7 +817,7 @@ impl LineEditor {
         spans: &[ColorSpan],
     ) -> io::Result<()> {
         if self.suggestion.take().is_some() {
-            let (tw, th) = term.size().unwrap_or((80, 24));
+            let (tw, th) = Self::term_size(term);
             self.redraw(term, prompt, prompt_width, cont_prompt, spans, tw, th)?;
         }
         Ok(())
@@ -895,6 +830,50 @@ impl LineEditor {
         if self.prev_total_rows > self.prev_cursor_row {
             term.move_down((self.prev_total_rows - self.prev_cursor_row) as u16)?;
         }
+        Ok(())
+    }
+
+    /// Terminal size with the conventional 80x24 fallback.
+    fn term_size<T: Terminal>(term: &T) -> (u16, u16) {
+        term.size().unwrap_or((80, 24))
+    }
+
+    /// End-of-read screen sequence shared by Submit/Interrupt (and the
+    /// like): move below the rendered input, return to column 0, restore
+    /// the cursor shape, and start a fresh output line.
+    fn finish_line<T: Terminal>(&mut self, term: &mut T, prompt_width: usize) -> io::Result<()> {
+        self.move_below_render(term, prompt_width)?;
+        term.move_to_column(0)?;
+        self.reset_cursor_style(term);
+        term.write_str("\r\n")?;
+        term.flush()?;
+        Ok(())
+    }
+
+    /// Repaint the prompt block (upper display lines plus the last prompt
+    /// line) after a full-screen UI or external program disturbed the
+    /// display, then reset the render bookkeeping so the next redraw does
+    /// a full repaint. `clear_screen` clears the whole screen (Ctrl+L);
+    /// otherwise only the current line is cleared.
+    fn repaint_prompt<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        upper_lines: &[String],
+        clear_screen: bool,
+    ) -> io::Result<()> {
+        if clear_screen {
+            term.clear_all()?;
+        } else {
+            term.move_to_column(0)?;
+            term.clear_current_line()?;
+        }
+        for line in upper_lines {
+            term.write_str(line)?;
+            term.write_str("\r\n")?;
+        }
+        term.write_str(prompt)?;
+        self.invalidate_render_state();
         Ok(())
     }
 
@@ -915,11 +894,7 @@ impl LineEditor {
                         KeyAction::Submit => {
                             history.reset_cursor();
                             self.clear_lingering_suggestion(term, prompt, prompt_width, "> ", &[])?;
-                            self.move_below_render(term, prompt_width)?;
-                            term.move_to_column(0)?;
-                            self.reset_cursor_style(term);
-                            term.write_str("\r\n")?;
-                            term.flush()?;
+                            self.finish_line(term, prompt_width)?;
                             return Ok(Some(self.buffer()));
                         }
                         KeyAction::Eof => {
@@ -928,11 +903,7 @@ impl LineEditor {
                         KeyAction::Interrupt => {
                             history.reset_cursor();
                             self.clear_lingering_suggestion(term, prompt, prompt_width, "> ", &[])?;
-                            self.move_below_render(term, prompt_width)?;
-                            term.move_to_column(0)?;
-                            self.reset_cursor_style(term);
-                            term.write_str("\r\n")?;
-                            term.flush()?;
+                            self.finish_line(term, prompt_width)?;
                             self.clear();
                             return Ok(Some(String::new()));
                         }
@@ -945,27 +916,14 @@ impl LineEditor {
                                 self.invalidate_width_cache();
                             }
                             term.enable_raw_mode()?;
-                            term.move_to_column(0)?;
-                            term.clear_current_line()?;
-                            for line in upper_lines {
-                                term.write_str(line)?;
-                                term.write_str("\r\n")?;
-                            }
-                            term.write_str(prompt)?;
                             // The screen was repainted outside of redraw's own
                             // bookkeeping; force a full repaint next time so
                             // the diff-based partial repaint doesn't assume a
                             // stale on-screen state.
-                            self.invalidate_render_state();
+                            self.repaint_prompt(term, prompt, upper_lines, false)?;
                         }
                         KeyAction::ClearScreen => {
-                            term.clear_all()?;
-                            for line in upper_lines {
-                                term.write_str(line)?;
-                                term.write_str("\r\n")?;
-                            }
-                            term.write_str(prompt)?;
-                            self.invalidate_render_state();
+                            self.repaint_prompt(term, prompt, upper_lines, true)?;
                         }
                         KeyAction::ViListExpansions(items) => {
                             self.print_vi_expansions(term, prompt, upper_lines, &items)?;
@@ -980,7 +938,7 @@ impl LineEditor {
                     }
                     self.flush_pending_bell(term)?;
                     self.update_suggestion(history);
-                    let (tw, th) = term.size().unwrap_or((80, 24));
+                    let (tw, th) = Self::term_size(term);
                     self.redraw(term, prompt, prompt_width, "> ", &[], tw, th)?;
                 }
                 Event::Resize(_cols, _rows) => {
@@ -988,13 +946,36 @@ impl LineEditor {
                     // row/column math from the previous render; force a full
                     // repaint.
                     self.invalidate_render_state();
-                    let (tw, th) = term.size().unwrap_or((80, 24));
+                    let (tw, th) = Self::term_size(term);
                     self.update_suggestion(history);
                     self.redraw(term, prompt, prompt_width, "> ", &[], tw, th)?;
                 }
                 _ => {}
             }
         }
+    }
+
+    /// Move the cursor up to the first content row and clear every row of
+    /// the previous render, leaving the cursor at column 0 of the first
+    /// row. The cursor sits on `prev_cursor_row` (not necessarily the
+    /// last rendered row — e.g. after moving left across a wrap
+    /// boundary). Shared by both full-repaint paths.
+    fn clear_prev_render<T: Terminal>(&mut self, term: &mut T) -> io::Result<()> {
+        if self.prev_cursor_row > 0 {
+            term.move_up(self.prev_cursor_row as u16)?;
+        }
+        term.move_to_column(0)?;
+        for i in 0..=self.prev_total_rows {
+            if i > 0 {
+                term.move_down(1)?;
+            }
+            term.clear_current_line()?;
+        }
+        if self.prev_total_rows > 0 {
+            term.move_up(self.prev_total_rows as u16)?;
+        }
+        term.move_to_column(0)?;
+        Ok(())
     }
 
     /// Redraw dispatcher: while vi `/` / `?` pattern input is active the
@@ -1230,28 +1211,9 @@ impl LineEditor {
             }
         } else {
             // ---- Full clear + repaint (original behavior) ----
-            // Move cursor up to the first content row. The cursor sits on
-            // `prev_cursor_row` (not necessarily the last rendered row —
-            // e.g. after moving left across a wrap boundary).
-            if self.prev_cursor_row > 0 {
-                term.move_up(self.prev_cursor_row as u16)?;
-            }
-            term.move_to_column(0)?;
-
-            // Clear all rows from previous render
-            for i in 0..=self.prev_total_rows {
-                if i > 0 {
-                    term.move_down(1)?;
-                }
-                term.clear_current_line()?;
-            }
-            // Move back up to start
-            if self.prev_total_rows > 0 {
-                term.move_up(self.prev_total_rows as u16)?;
-            }
+            self.clear_prev_render(term)?;
 
             // Repaint the prompt
-            term.move_to_column(0)?;
             term.write_str(prompt)?;
 
             // Write the buffer with or without highlighting
@@ -1367,7 +1329,7 @@ impl LineEditor {
         // The cursor's display line/offset must be computed against buffer
         // lines only, before suggestion cells are appended.
         let cursor_line = self.cursor_line_index();
-        let cursor_ofs = self.pos - self.line_start(self.pos);
+        let cursor_ofs = self.pos - vi::line_start(&self.buf, self.pos);
 
         let suggestion_active = self.suggestion.is_some() && self.pos == self.buf.len();
         if suggestion_active {
@@ -1496,20 +1458,7 @@ impl LineEditor {
 
         // ---- Clear every row of the previous render (its bookkeeping is
         // viewport-relative, so all rows are on screen) ----
-        if self.prev_cursor_row > 0 {
-            term.move_up(self.prev_cursor_row as u16)?;
-        }
-        term.move_to_column(0)?;
-        for i in 0..=self.prev_total_rows {
-            if i > 0 {
-                term.move_down(1)?;
-            }
-            term.clear_current_line()?;
-        }
-        if self.prev_total_rows > 0 {
-            term.move_up(self.prev_total_rows as u16)?;
-        }
-        term.move_to_column(0)?;
+        self.clear_prev_render(term)?;
 
         // ---- Paint the visible rows ----
         let mut span_idx = 0;
@@ -1617,7 +1566,9 @@ impl LineEditor {
                     if self.vi_literal_next {
                         self.vi_literal_next = false;
                         if let Some(ch) = Self::literal_char_for(key) {
-                            if self.vi.replace_overwrite && self.pos < self.line_end(self.pos) {
+                            if self.vi.replace_overwrite
+                                && self.pos < vi::line_end(&self.buf, self.pos)
+                            {
                                 self.delete();
                             }
                             self.insert_char(ch);
@@ -1668,7 +1619,7 @@ impl LineEditor {
                         && !key
                             .modifiers
                             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                        && self.pos < self.line_end(self.pos)
+                        && self.pos < vi::line_end(&self.buf, self.pos)
                     {
                         self.delete();
                     }
@@ -1758,13 +1709,12 @@ impl LineEditor {
     /// boundary — "the closer of the beginning of the line or the first
     /// non-blank after a blank" — never crossing the logical line start.
     fn vi_insert_werase(&mut self) {
-        let is_blank = |c: char| c == ' ' || c == '\t';
-        let ls = self.line_start(self.pos);
+        let ls = vi::line_start(&self.buf, self.pos);
         let mut start = self.pos;
-        while start > ls && is_blank(self.buf[start - 1]) {
+        while start > ls && vi::is_blank(self.buf[start - 1]) {
             start -= 1;
         }
-        while start > ls && !is_blank(self.buf[start - 1]) {
+        while start > ls && !vi::is_blank(self.buf[start - 1]) {
             start -= 1;
         }
         if start == self.pos {
@@ -1809,8 +1759,8 @@ impl LineEditor {
     /// cursors rest *on* a character, never past the line end (except on
     /// an empty line).
     fn clamp_vi_command_pos(&mut self) {
-        let ls = self.line_start(self.pos);
-        let le = self.line_end(self.pos);
+        let ls = vi::line_start(&self.buf, self.pos);
+        let le = vi::line_end(&self.buf, self.pos);
         if self.pos >= le && le > ls {
             self.pos = le - 1;
         }
@@ -1882,20 +1832,37 @@ impl LineEditor {
         action
     }
 
+    /// Request a terminal alert and continue the read loop — the shared
+    /// tail of every invalid/no-op vi command arm.
+    fn bell(&mut self) -> KeyAction {
+        self.pending_bell = true;
+        KeyAction::Continue
+    }
+
+    /// Shared preamble of the count-ranged single-line commands (`x`,
+    /// `r`, `~`): alert when the cursor is at/past the line end,
+    /// otherwise save the undo state and return the `[pos, end)` range
+    /// the count covers, clipped to the line end.
+    fn count_range_on_line(&mut self, count: u32) -> Option<(usize, usize)> {
+        let le = vi::line_end(&self.buf, self.pos);
+        if self.pos >= le {
+            self.pending_bell = true;
+            return None;
+        }
+        self.undo.save(&self.buf, self.pos);
+        Some((self.pos, (self.pos + count as usize).min(le)))
+    }
+
     fn execute_vi_cmd_arm(&mut self, cmd: ViCmd, count: u32, history: &mut History) -> KeyAction {
         match cmd {
-            ViCmd::Bell => {
-                self.pending_bell = true;
-                KeyAction::Continue
-            }
+            ViCmd::Bell => self.bell(),
             ViCmd::Submit => KeyAction::Submit,
             ViCmd::Eof => {
                 // Like the insert-mode Ctrl+D: EOF only on an empty line.
                 if self.is_empty() {
                     KeyAction::Eof
                 } else {
-                    self.pending_bell = true;
-                    KeyAction::Continue
+                    self.bell()
                 }
             }
             ViCmd::Interrupt => KeyAction::Interrupt,
@@ -1912,7 +1879,7 @@ impl LineEditor {
                 // Pre-session state for session-granular vi undo.
                 self.undo.save(&self.buf, self.pos);
                 self.vi.mode = ViMode::Insert;
-                let le = self.line_end(self.pos);
+                let le = vi::line_end(&self.buf, self.pos);
                 match at {
                     InsertAt::Here => {}
                     InsertAt::AfterChar => {
@@ -1938,25 +1905,23 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::DeleteChar => {
-                let le = self.line_end(self.pos);
-                if self.pos >= le {
-                    self.pending_bell = true;
+                let Some((start, end)) = self.count_range_on_line(count) else {
                     return KeyAction::Continue;
-                }
-                self.undo.save(&self.buf, self.pos);
-                let end = (self.pos + count as usize).min(le);
-                let killed: String = self.buf[self.pos..end].iter().collect();
+                };
+                let killed: String = self.buf[start..end].iter().collect();
                 self.kill_ring.kill(&killed, false);
-                self.buf.drain(self.pos..end);
+                self.buf.drain(start..end);
                 self.invalidate_width_cache();
                 self.clamp_vi_command_pos();
                 KeyAction::Continue
             }
             ViCmd::DeleteCharBack => {
-                let ls = self.line_start(self.pos);
+                // Mirror of DeleteChar toward the line start; the range
+                // preamble differs (bounded by `ls`, cursor lands on
+                // `start`), so it does not share count_range_on_line.
+                let ls = vi::line_start(&self.buf, self.pos);
                 if self.pos <= ls {
-                    self.pending_bell = true;
-                    return KeyAction::Continue;
+                    return self.bell();
                 }
                 self.undo.save(&self.buf, self.pos);
                 let start = self.pos.saturating_sub(count as usize).max(ls);
@@ -1969,14 +1934,10 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::ReplaceChar(c) => {
-                let le = self.line_end(self.pos);
-                if self.pos >= le {
-                    self.pending_bell = true;
+                let Some((start, end)) = self.count_range_on_line(count) else {
                     return KeyAction::Continue;
-                }
-                self.undo.save(&self.buf, self.pos);
-                let end = (self.pos + count as usize).min(le);
-                for i in self.pos..end {
+                };
+                for i in start..end {
                     self.buf[i] = c;
                 }
                 self.pos = end - 1;
@@ -1984,14 +1945,10 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::ToggleCase => {
-                let le = self.line_end(self.pos);
-                if self.pos >= le {
-                    self.pending_bell = true;
+                let Some((start, end)) = self.count_range_on_line(count) else {
                     return KeyAction::Continue;
-                }
-                self.undo.save(&self.buf, self.pos);
-                let end = (self.pos + count as usize).min(le);
-                for i in self.pos..end {
+                };
+                for i in start..end {
                     let ch = self.buf[i];
                     self.buf[i] = if ch.is_uppercase() {
                         ch.to_lowercase().next().unwrap_or(ch)
@@ -2002,7 +1959,9 @@ impl LineEditor {
                     };
                 }
                 // Cursor advances past the last toggled character, capped
-                // at the line's last character.
+                // at the line's last character (the buffer length is
+                // unchanged, so the line end is where it was).
+                let le = vi::line_end(&self.buf, self.pos);
                 self.pos = end.min(le - 1);
                 self.invalidate_width_cache();
                 KeyAction::Continue
@@ -2041,15 +2000,12 @@ impl LineEditor {
                         }
                         KeyAction::Continue
                     }
-                    _ => {
-                        self.pending_bell = true;
-                        KeyAction::Continue
-                    }
+                    _ => self.bell(),
                 }
             }
             ViCmd::OpLine(op) => {
-                let ls = self.line_start(self.pos);
-                let le = self.line_end(self.pos);
+                let ls = vi::line_start(&self.buf, self.pos);
+                let le = vi::line_end(&self.buf, self.pos);
                 let text: String = self.buf[ls..le].iter().collect();
                 if !text.is_empty() {
                     self.kill_ring.kill(&text, false);
@@ -2070,7 +2026,7 @@ impl LineEditor {
             }
             ViCmd::SubstChar => {
                 self.undo.save(&self.buf, self.pos);
-                let le = self.line_end(self.pos);
+                let le = vi::line_end(&self.buf, self.pos);
                 if self.pos < le {
                     let end = (self.pos + count as usize).min(le);
                     let text: String = self.buf[self.pos..end].iter().collect();
@@ -2084,11 +2040,10 @@ impl LineEditor {
             ViCmd::PutAfter | ViCmd::PutBefore => {
                 let text = self.kill_ring.yank().map(str::to_string);
                 let Some(text) = text.filter(|t| !t.is_empty()) else {
-                    self.pending_bell = true;
-                    return KeyAction::Continue;
+                    return self.bell();
                 };
                 self.undo.save(&self.buf, self.pos);
-                let le = self.line_end(self.pos);
+                let le = vi::line_end(&self.buf, self.pos);
                 let at = if cmd == ViCmd::PutAfter {
                     (self.pos + 1).min(le)
                 } else {
@@ -2151,15 +2106,13 @@ impl LineEditor {
                 let len = history.entries().len();
                 let idx = if count == 0 {
                     if len == 0 {
-                        self.pending_bell = true;
-                        return KeyAction::Continue;
+                        return self.bell();
                     }
                     0
                 } else {
                     let idx = count as usize - 1;
                     if idx >= len {
-                        self.pending_bell = true;
-                        return KeyAction::Continue;
+                        return self.bell();
                     }
                     idx
                 };
@@ -2195,8 +2148,7 @@ impl LineEditor {
                 // bigword of the previous input line, then enter insert
                 // mode after it.
                 let Some(prev) = history.entries().last() else {
-                    self.pending_bell = true;
-                    return KeyAction::Continue;
+                    return self.bell();
                 };
                 let bigwords: Vec<&str> = prev.split_whitespace().collect();
                 let word = if count == 0 {
@@ -2205,11 +2157,10 @@ impl LineEditor {
                     bigwords.get(count as usize - 1).copied()
                 };
                 let Some(word) = word.map(str::to_string) else {
-                    self.pending_bell = true;
-                    return KeyAction::Continue;
+                    return self.bell();
                 };
                 self.undo.save(&self.buf, self.pos);
-                let le = self.line_end(self.pos);
+                let le = vi::line_end(&self.buf, self.pos);
                 let mut at = (self.pos + 1).min(le);
                 // POSIX: "Append a <space> after the current character
                 // position" — unconditionally, empty line included.
@@ -2224,57 +2175,47 @@ impl LineEditor {
                 self.vi.mode = ViMode::Insert;
                 KeyAction::Continue
             }
-            ViCmd::ExpandList => match self.vi_expand_bigword() {
-                Some((_, mut matches)) => {
-                    // POSIX: directories are marked with a trailing '/'.
-                    for m in &mut matches {
-                        if !m.ends_with('/') && std::path::Path::new(&m).is_dir() {
-                            m.push('/');
-                        }
-                    }
-                    KeyAction::ViListExpansions(matches)
-                }
-                None => {
-                    self.pending_bell = true;
-                    KeyAction::Continue
-                }
-            },
-            ViCmd::CompleteUnique => match self.vi_expand_bigword() {
-                Some(((start, end), matches)) => {
-                    // Largest unique match: the longest common prefix of
-                    // all matches; a single match additionally gets '/'
-                    // (directory) or a space (file) appended.
-                    let mut replacement = longest_common_prefix(&matches);
-                    if matches.len() == 1 {
-                        if std::path::Path::new(&replacement).is_dir() {
-                            if !replacement.ends_with('/') {
-                                replacement.push('/');
+            ViCmd::ExpandList | ViCmd::CompleteUnique | ViCmd::ExpandAll => {
+                let Some(((start, end), mut matches)) = self.vi_expand_bigword() else {
+                    return self.bell();
+                };
+                match cmd {
+                    ViCmd::ExpandList => {
+                        // POSIX: directories are marked with a trailing '/'.
+                        for m in &mut matches {
+                            if !m.ends_with('/') && std::path::Path::new(&m).is_dir() {
+                                m.push('/');
                             }
-                        } else {
-                            replacement.push(' ');
                         }
+                        KeyAction::ViListExpansions(matches)
                     }
-                    self.vi_replace_range(start, end, &replacement);
-                    self.vi.mode = ViMode::Insert;
-                    KeyAction::Continue
+                    ViCmd::CompleteUnique => {
+                        // Largest unique match: the longest common prefix of
+                        // all matches; a single match additionally gets '/'
+                        // (directory) or a space (file) appended.
+                        let mut replacement = completion::longest_common_prefix(&matches);
+                        if matches.len() == 1 {
+                            if std::path::Path::new(&replacement).is_dir() {
+                                if !replacement.ends_with('/') {
+                                    replacement.push('/');
+                                }
+                            } else {
+                                replacement.push(' ');
+                            }
+                        }
+                        self.vi_replace_range(start, end, &replacement);
+                        self.vi.mode = ViMode::Insert;
+                        KeyAction::Continue
+                    }
+                    _ => {
+                        // ExpandAll
+                        let replacement = matches.join(" ");
+                        self.vi_replace_range(start, end, &replacement);
+                        self.vi.mode = ViMode::Insert;
+                        KeyAction::Continue
+                    }
                 }
-                None => {
-                    self.pending_bell = true;
-                    KeyAction::Continue
-                }
-            },
-            ViCmd::ExpandAll => match self.vi_expand_bigword() {
-                Some(((start, end), matches)) => {
-                    let replacement = matches.join(" ");
-                    self.vi_replace_range(start, end, &replacement);
-                    self.vi.mode = ViMode::Insert;
-                    KeyAction::Continue
-                }
-                None => {
-                    self.pending_bell = true;
-                    KeyAction::Continue
-                }
-            },
+            }
             ViCmd::CommentSubmit => {
                 // Insert '#' at the start of every logical line and
                 // submit: the input is recorded in history but executes
@@ -2298,8 +2239,7 @@ impl LineEditor {
             ViCmd::EditInEditor => KeyAction::ViEditInEditor(count),
             ViCmd::Repeat => {
                 let Some(rec) = self.vi.last_change() else {
-                    self.pending_bell = true;
-                    return KeyAction::Continue;
+                    return self.bell();
                 };
                 // count 0 = bare `.`: reuse the recorded count. An
                 // explicit count becomes the new default (POSIX).
@@ -2486,25 +2426,24 @@ impl LineEditor {
     /// The bigword containing (or immediately before) the cursor on the
     /// current logical line, as a char range.
     fn vi_bigword_at_cursor(&self) -> Option<(usize, usize)> {
-        let is_blank = |c: char| c == ' ' || c == '\t';
-        let ls = self.line_start(self.pos);
-        let le = self.line_end(self.pos);
+        let ls = vi::line_start(&self.buf, self.pos);
+        let le = vi::line_end(&self.buf, self.pos);
         if ls == le {
             return None;
         }
         let mut p = self.pos.min(le - 1);
-        while p > ls && is_blank(self.buf[p]) {
+        while p > ls && vi::is_blank(self.buf[p]) {
             p -= 1;
         }
-        if is_blank(self.buf[p]) {
+        if vi::is_blank(self.buf[p]) {
             return None;
         }
         let mut start = p;
-        while start > ls && !is_blank(self.buf[start - 1]) {
+        while start > ls && !vi::is_blank(self.buf[start - 1]) {
             start -= 1;
         }
         let mut end = p + 1;
-        while end < le && !is_blank(self.buf[end]) {
+        while end < le && !vi::is_blank(self.buf[end]) {
             end += 1;
         }
         Some((start, end))
@@ -2543,14 +2482,14 @@ impl LineEditor {
     fn vi_replay_insert(&mut self) {
         let text: Vec<char> = self.vi_last_insert.chars().collect();
         for ch in text {
-            if self.vi.replace_overwrite && self.pos < self.line_end(self.pos) {
+            if self.vi.replace_overwrite && self.pos < vi::line_end(&self.buf, self.pos) {
                 self.delete();
             }
             self.insert_char(ch);
         }
         self.vi.mode = ViMode::Command;
         self.vi.replace_overwrite = false;
-        let ls = self.line_start(self.pos);
+        let ls = vi::line_start(&self.buf, self.pos);
         if self.pos > ls {
             self.pos -= 1;
         }
@@ -3088,11 +3027,7 @@ impl LineEditor {
                                     &cont,
                                     &spans,
                                 )?;
-                                self.move_below_render(term, prompt_width)?;
-                                term.move_to_column(0)?;
-                                self.reset_cursor_style(term);
-                                term.write_str("\r\n")?;
-                                term.flush()?;
+                                self.finish_line(term, prompt_width)?;
                                 return Ok(Some(self.buffer()));
                             }
                         }
@@ -3111,11 +3046,7 @@ impl LineEditor {
                                 &cont,
                                 &spans,
                             )?;
-                            self.move_below_render(term, prompt_width)?;
-                            term.move_to_column(0)?;
-                            self.reset_cursor_style(term);
-                            term.write_str("\r\n")?;
-                            term.flush()?;
+                            self.finish_line(term, prompt_width)?;
                             self.clear();
                             return Ok(Some(String::new()));
                         }
@@ -3129,14 +3060,7 @@ impl LineEditor {
                                 self.invalidate_width_cache();
                             }
                             term.enable_raw_mode()?;
-                            term.move_to_column(0)?;
-                            term.clear_current_line()?;
-                            for line in upper_lines {
-                                term.write_str(line)?;
-                                term.write_str("\r\n")?;
-                            }
-                            term.write_str(prompt)?;
-                            self.invalidate_render_state();
+                            self.repaint_prompt(term, prompt, upper_lines, false)?;
                         }
                         KeyAction::TabComplete => {
                             term.reset_style()?;
@@ -3150,13 +3074,7 @@ impl LineEditor {
                             )?;
                         }
                         KeyAction::ClearScreen => {
-                            term.clear_all()?;
-                            for line in upper_lines {
-                                term.write_str(line)?;
-                                term.write_str("\r\n")?;
-                            }
-                            term.write_str(prompt)?;
-                            self.invalidate_render_state();
+                            self.repaint_prompt(term, prompt, upper_lines, true)?;
                         }
                         KeyAction::ViListExpansions(items) => {
                             term.reset_style()?;
@@ -3193,27 +3111,20 @@ impl LineEditor {
                             }
                             // Editor failed or was aborted: repaint the
                             // prompt line and continue editing.
-                            term.move_to_column(0)?;
-                            term.clear_current_line()?;
-                            for line in upper_lines {
-                                term.write_str(line)?;
-                                term.write_str("\r\n")?;
-                            }
-                            term.write_str(prompt)?;
-                            self.invalidate_render_state();
+                            self.repaint_prompt(term, prompt, upper_lines, false)?;
                         }
                         KeyAction::Continue => {}
                     }
                     self.flush_pending_bell(term)?;
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
-                    let (tw, th) = term.size().unwrap_or((80, 24));
+                    let (tw, th) = Self::term_size(term);
                     let cont = self.resolve_cont_prompt(cont_prompt);
                     self.redraw(term, prompt, prompt_width, &cont, &spans, tw, th)?;
                 }
                 Event::Resize(_cols, _rows) => {
                     self.invalidate_render_state();
-                    let (tw, th) = term.size().unwrap_or((80, 24));
+                    let (tw, th) = Self::term_size(term);
                     self.update_suggestion(history);
                     let spans = scanner.scan(accumulated, &self.buf, checker_env);
                     let cont = self.resolve_cont_prompt(cont_prompt);
@@ -3316,14 +3227,7 @@ impl LineEditor {
                 self.replace_word(word_start, &replacement);
             }
             term.enable_raw_mode()?;
-            term.move_to_column(0)?;
-            term.clear_current_line()?;
-            for line in upper_lines {
-                term.write_str(line)?;
-                term.write_str("\r\n")?;
-            }
-            term.write_str(prompt)?;
-            self.invalidate_render_state();
+            self.repaint_prompt(term, prompt, upper_lines, false)?;
         }
 
         Ok(())

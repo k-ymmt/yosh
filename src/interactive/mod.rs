@@ -357,20 +357,7 @@ impl Repl {
             // Try to parse
             match classify_parse(&input_buffer, &self.executor.env.aliases) {
                 ParseStatus::Complete(commands) => {
-                    let histsize: usize = self
-                        .executor
-                        .env
-                        .vars
-                        .get("HISTSIZE")
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(500);
-                    let histcontrol = self
-                        .executor
-                        .env
-                        .vars
-                        .get("HISTCONTROL")
-                        .unwrap_or("ignoreboth")
-                        .to_string();
+                    let (histsize, histcontrol) = history_settings(&self.executor.env);
                     let cmd_text = input_buffer.trim_end().to_string();
 
                     for cmd in &commands {
@@ -415,20 +402,7 @@ impl Repl {
                     // whose whole point is stashing the line in history).
                     let cmd_text = input_buffer.trim_end().to_string();
                     if cmd_text.trim_start().starts_with('#') {
-                        let histsize: usize = self
-                            .executor
-                            .env
-                            .vars
-                            .get("HISTSIZE")
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(500);
-                        let histcontrol = self
-                            .executor
-                            .env
-                            .vars
-                            .get("HISTCONTROL")
-                            .unwrap_or("ignoreboth")
-                            .to_string();
+                        let (histsize, histcontrol) = history_settings(&self.executor.env);
                         self.executor
                             .env
                             .history
@@ -482,6 +456,22 @@ impl Repl {
 
         self.executor.env.exec.last_exit_status
     }
+}
+
+/// The HISTSIZE / HISTCONTROL pair `History::add` wants, with the REPL
+/// defaults applied when the variables are unset or unparsable.
+fn history_settings(env: &crate::env::ShellEnv) -> (usize, String) {
+    let histsize: usize = env
+        .vars
+        .get("HISTSIZE")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    let histcontrol = env
+        .vars
+        .get("HISTCONTROL")
+        .unwrap_or("ignoreboth")
+        .to_string();
+    (histsize, histcontrol)
 }
 
 /// POSIX-strict `fc` history exclusion: the fc rationale says the fc
