@@ -397,11 +397,17 @@ impl Executor {
             }
         }
 
+        // Give the terminal to the job BEFORE waking it (glibc-manual
+        // order). The reverse order races with a job that re-checks
+        // terminal ownership on SIGCONT — a backgrounded yosh in its
+        // wait_until_foreground startup loop would observe itself still
+        // background and immediately self-stop again, leaving fg to
+        // report a freshly re-stopped job (2026-08-25 wrap-up review
+        // round 1 finding).
+        jobs::give_terminal(pgid).ok();
+
         // Send SIGCONT to resume if stopped
         nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGCONT).ok();
-
-        // Give terminal to the job
-        jobs::give_terminal(pgid).ok();
 
         // Wait for the job
         let result = self.wait_for_foreground_job(job_id);

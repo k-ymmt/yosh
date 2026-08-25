@@ -1148,6 +1148,69 @@ fn test_pty_backgrounded_repl_stops_until_foregrounded() {
 }
 
 #[test]
+fn test_pty_backgrounded_repl_with_blocked_ttin_still_stops() {
+    // Regression (2026-08-25 wrap-up review round 1): the signal mask
+    // survives exec, so a parent can hand yosh SIGTTIN blocked. The
+    // startup foreground-wait loop's killpg then only made SIGTTIN
+    // pending — the shell never stopped and busy-spun at 100% CPU
+    // until foregrounded. The loop now unblocks SIGTTIN after the
+    // killpg so the self-stop is delivered regardless of the
+    // inherited mask.
+    let bin = env!("CARGO_BIN_EXE_yosh");
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send(&format!(
+        "perl -MPOSIX -e 'sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGTTIN)); exec $ARGV[0]' '{}' &\r",
+        bin
+    ))
+    .unwrap();
+    wait_for_prompt(&mut s);
+    s.send("echo BG-$!\r").unwrap();
+    let m = s
+        .expect(Regex(r"\r?\nBG-[0-9]+"))
+        .expect("could not read the background job's pid");
+    let matched = String::from_utf8_lossy(m.get(0).expect("regex match has group 0")).to_string();
+    let bg_pgid: String = matched
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    assert!(!bg_pgid.is_empty(), "no pid in {:?}", matched);
+    wait_for_prompt(&mut s);
+
+    // With the unblock in place some process in the job's pgrp reaches
+    // stopped state; the pre-fix behavior spins in R forever.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let ps = std::process::Command::new("ps")
+            .args(["-ax", "-o", "pgid=,stat="])
+            .output()
+            .expect("ps failed");
+        let table = String::from_utf8_lossy(&ps.stdout).to_string();
+        let stopped = table.lines().any(|l| {
+            let mut cols = l.split_whitespace();
+            cols.next() == Some(bg_pgid.as_str())
+                && cols.next().is_some_and(|stat| stat.starts_with('T'))
+        });
+        if stopped {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "blocked-SIGTTIN background REPL never stopped (busy spin?) in pgrp {}",
+            bg_pgid
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // Cleanup: SIGKILL removes the stopped job without a SIGCONT.
+    s.send("kill -9 %1\r").unwrap();
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_plus_i_forces_non_interactive_on_tty() {
     // `yosh +i` at a terminal must NOT start the REPL: the stream is
     // read to EOF and run as a script (bash agrees). The kernel's

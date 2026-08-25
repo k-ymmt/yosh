@@ -378,6 +378,18 @@ pub fn try_enable_monitor_mode() -> bool {
     }
 }
 
+/// Set by [`cont_flag_handler`] while [`wait_until_foreground`] runs:
+/// distinguishes a genuine stop/continue cycle (the parent resumed us
+/// with SIGCONT) from a *discarded* self-stop — POSIX discards stop
+/// signals sent to an orphaned process group, and no SIGCONT ever
+/// follows a discarded stop.
+static WAIT_FG_CONT_SEEN: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn cont_flag_handler(_sig: libc::c_int) {
+    // AtomicBool::store is async-signal-safe.
+    WAIT_FG_CONT_SEEN.store(true, Ordering::Release);
+}
+
 /// Interactive-startup foreground wait (the glibc-manual "Initializing
 /// the Shell" loop): a REPL launched in the background of a
 /// job-controlling parent (`yosh &`) must not run its startup
@@ -386,20 +398,52 @@ pub fn try_enable_monitor_mode() -> bool {
 /// foregrounds it (`fg` hands the terminal over and delivers SIGCONT),
 /// then returns `true` so the caller can finish job-control init as
 /// the real foreground process group. Returns `false` when the shell
-/// has no controlling terminal at all (tcgetpgrp fails): the caller
+/// has no controlling terminal at all (tcgetpgrp fails), or when the
+/// self-stop is being discarded (orphaned process group): the caller
 /// must run without monitor mode, mirroring [`try_enable_monitor_mode`].
 pub fn wait_until_foreground() -> bool {
+    // The SIGCONT flag handler is installed only for the duration of
+    // the wait loop; the entry disposition is restored on every exit.
+    let flag_cont = SigAction::new(
+        SigHandler::Handler(cont_flag_handler),
+        SaFlags::SA_RESTART,
+        SigSet::empty(),
+    );
+    // SAFETY: installing an async-signal-safe flag handler (atomic
+    // store only); the previous disposition is restored below.
+    let old_cont =
+        unsafe { sigaction(Signal::SIGCONT, &flag_cont) }.expect("sigaction(SIGCONT) failed");
+    let result = wait_until_foreground_loop();
+    // SAFETY: restoring the disposition captured above.
+    unsafe { sigaction(Signal::SIGCONT, &old_cont) }.expect("sigaction(SIGCONT, restore) failed");
+    result
+}
+
+/// The check/self-stop loop of [`wait_until_foreground`]; assumes the
+/// caller has the SIGCONT flag handler installed.
+fn wait_until_foreground_loop() -> bool {
     // Probe the same fd the terminal handoffs use (/dev/tty with an
     // fd-0 fallback) so the wait can never pass for a terminal that
     // `take_terminal` would not actually target.
     // SAFETY: terminal_fd() is either the leaked /dev/tty fd or fd 0;
     // both live for the process lifetime.
     let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(crate::env::jobs::terminal_fd()) };
-    loop {
+    // Bounded spin detector, not `loop`: SIGTTIN cannot stop an
+    // orphaned process group (POSIX discards stop signals for them),
+    // so a backgrounded shell whose parent died would spin here
+    // forever; running without job control beats burning a core. Only
+    // consecutive SIGCONT-less iterations count toward the bound — a
+    // genuine stop always ends with the parent's SIGCONT, so any
+    // number of legitimate `bg` re-stop cycles resets the counter
+    // (bash loops here unboundedly; the bound only cuts the discarded
+    // case loose).
+    let mut spins = 0;
+    while spins < 64 {
         match nix::unistd::tcgetpgrp(fd) {
             Err(_) => return false,
             Ok(pg) if pg == nix::unistd::getpgrp() => return true,
             Ok(_) => {
+                WAIT_FG_CONT_SEEN.store(false, Ordering::Release);
                 // SIGTTIN is forced to SIG_DFL around the self-stop
                 // and restored afterwards (bash does the same): a
                 // background child inherits SIG_IGN for it from a
@@ -410,16 +454,49 @@ pub fn wait_until_foreground() -> bool {
                 // SIGTTIN; no handler code is involved.
                 let old = unsafe { sigaction(Signal::SIGTTIN, &dfl) }
                     .expect("sigaction(SIGTTIN, SIG_DFL) failed");
-                // Stops the whole process group here until continued;
-                // on SIGCONT the loop re-checks foreground ownership
-                // (a `bg` leaves us background and we stop again).
+                // Stops the whole process group until continued; on
+                // SIGCONT the loop re-checks foreground ownership (a
+                // `bg` leaves us background and we stop again). If
+                // SIGTTIN is blocked it only becomes pending here.
                 let _ = nix::sys::signal::killpg(nix::unistd::getpgrp(), Signal::SIGTTIN);
+                // The signal mask survives exec, so a parent may have
+                // handed us SIGTTIN blocked — killpg above then left
+                // it pending instead of stopping us. Unblock it now
+                // (delivering the stop) and restore the mask after;
+                // pending standard signals collapse, so at most one
+                // stop is delivered per iteration either way.
+                let mut ttin = SigSet::empty();
+                ttin.add(Signal::SIGTTIN);
+                let mut prev_mask = SigSet::empty();
+                if nix::sys::signal::sigprocmask(
+                    nix::sys::signal::SigmaskHow::SIG_UNBLOCK,
+                    Some(&ttin),
+                    Some(&mut prev_mask),
+                )
+                .is_ok()
+                {
+                    let _ = nix::sys::signal::sigprocmask(
+                        nix::sys::signal::SigmaskHow::SIG_SETMASK,
+                        Some(&prev_mask),
+                        None,
+                    );
+                }
                 // SAFETY: restoring the disposition captured above.
                 unsafe { sigaction(Signal::SIGTTIN, &old) }
                     .expect("sigaction(SIGTTIN, restore) failed");
+                // A delivered stop always ends with the parent's
+                // SIGCONT (observed by the flag handler); a discarded
+                // one never sees a SIGCONT. Only SIGCONT-less
+                // iterations count toward the bound.
+                if WAIT_FG_CONT_SEEN.load(Ordering::Acquire) {
+                    spins = 0;
+                } else {
+                    spins += 1;
+                }
             }
         }
     }
+    false
 }
 
 /// Reset job control signals to defaults.
