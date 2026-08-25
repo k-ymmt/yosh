@@ -67,11 +67,22 @@ impl Repl {
             .options
             .apply_invocation_ops(invocation_ops);
         if executor.env.mode.options.monitor {
-            signal::init_job_control_signals();
-            // Ensure shell has terminal
-            crate::env::jobs::take_terminal(executor.env.process.shell_pgid).ok();
+            // A REPL launched in the background of a job-controlling
+            // parent (`yosh &`) stops inside wait_until_foreground
+            // (SIGTTIN) until the user foregrounds it, instead of
+            // letting the take_terminal below steal the terminal from
+            // the parent. With no controlling terminal at all, job
+            // control is disabled, matching run_string's invocation
+            // `-m` ownership gate.
+            if signal::wait_until_foreground() {
+                signal::init_job_control_signals();
+                // Ensure shell has terminal
+                crate::env::jobs::take_terminal(executor.env.process.shell_pgid).ok();
+            } else {
+                executor.env.mode.options.monitor = false;
+            }
         }
-        // With invocation `+m` the two calls above are skipped: leaving
+        // With invocation `+m` the monitor block above is skipped: leaving
         // SIGTSTP/SIGTTIN/SIGTTOU at SIG_DFL matches the state the
         // runtime `set +m` path produces via reset_job_control_signals,
         // so Ctrl-Z suspends the whole shell normally and children do

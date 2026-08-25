@@ -1060,6 +1060,94 @@ fn test_pty_dash_m_with_redirected_stdin_keeps_job_control() {
 }
 
 #[test]
+fn test_pty_backgrounded_repl_stops_until_foregrounded() {
+    // Regression (2026-08-25 wrap-up review round 3): an interactive
+    // yosh launched in the background of a job-controlling shell
+    // (`yosh &` with tty stdin) used to run its startup take_terminal
+    // unconditionally, stealing the terminal from the parent. The
+    // glibc-manual startup loop now stops the background shell with
+    // SIGTTIN until `fg` moves it to the foreground. The parent
+    // backgrounds children with SIGTTIN set to SIG_IGN, so this also
+    // exercises the loop's forced-SIG_DFL self-stop.
+    let bin = env!("CARGO_BIN_EXE_yosh");
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send(&format!("'{}' &\r", bin)).unwrap();
+    wait_for_prompt(&mut s);
+    s.send("echo BG-$!\r").unwrap();
+    let m = s
+        .expect(Regex(r"\r?\nBG-[0-9]+"))
+        .expect("could not read the background job's pid");
+    let matched = String::from_utf8_lossy(m.get(0).expect("regex match has group 0")).to_string();
+    let bg_pgid: String = matched
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    assert!(!bg_pgid.is_empty(), "no pid in {:?}", matched);
+    wait_for_prompt(&mut s);
+
+    // The background REPL must stop itself (SIGTTIN) instead of racing
+    // the outer shell for terminal reads. `yosh cmd &` double-forks
+    // (async subshell, then fork+exec), so the stopped grandchild is
+    // invisible to the outer shell's `jobs`; every member of the job
+    // shares the job's pgid though, so observe the stop from outside
+    // the PTY: some process in that pgrp must reach state T.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let ps = std::process::Command::new("ps")
+            .args(["-ax", "-o", "pgid=,stat="])
+            .output()
+            .expect("ps failed");
+        let table = String::from_utf8_lossy(&ps.stdout).to_string();
+        let stopped = table.lines().any(|l| {
+            let mut cols = l.split_whitespace();
+            cols.next() == Some(bg_pgid.as_str())
+                && cols.next().is_some_and(|stat| stat.starts_with('T'))
+        });
+        if stopped {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no process in pgrp {} reached stopped state (SIGTTIN self-stop missing)",
+            bg_pgid
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // The outer shell must still own the terminal: a typed command runs
+    // in the outer shell (quote-split marker so the echoed input cannot
+    // satisfy the match).
+    s.send("echo outer-\"alive\"\r").unwrap();
+    expect_output(
+        &mut s,
+        "outer-alive",
+        "outer shell lost the terminal to the background REPL",
+    );
+    wait_for_prompt(&mut s);
+
+    // Foregrounding the stopped REPL completes its startup: it becomes
+    // a working interactive shell with monitor mode ($- has i and m).
+    s.send("fg\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("echo inner-$-\r").unwrap();
+    expect_output(
+        &mut s,
+        "inner-im",
+        "foregrounded REPL must run interactively with monitor mode",
+    );
+    wait_for_prompt(&mut s);
+
+    // Inner exits; the outer shell's fg wait returns and reclaims the
+    // terminal for its own prompt.
+    s.send("exit\r").unwrap();
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_plus_i_forces_non_interactive_on_tty() {
     // `yosh +i` at a terminal must NOT start the REPL: the stream is
     // read to EOF and run as a script (bash agrees). The kernel's

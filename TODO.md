@@ -54,16 +54,6 @@
       and consulted by `builtin_wait`'s already-done/ECHILD paths.
       Wrap-up review 2026-08-25 round 3 finding, pre-existing
       (`src/env/jobs/notification.rs`, `src/exec/job_control.rs`).
-- [ ] Backgrounded interactive startup (`yosh -m &`, or plain `yosh &`
-      with tty stdin from a job-controlling parent) bypasses the
-      ownership gate: `Repl::new` unconditionally ignores SIGTTOU and
-      calls `take_terminal`, stealing the terminal from the parent
-      instead of stopping until foregrounded. The classic fix is the
-      glibc-manual startup loop: while not foreground
-      (`tcgetpgrp != getpgrp`), `kill(0, SIGTTIN)` to stop, then
-      proceed with job-control init once continued in the foreground.
-      Wrap-up review 2026-08-25 round 3 finding, pre-existing
-      (`src/interactive/mod.rs::Repl::new`).
 - [ ] Internal high fds (self-pipe at 10/11, controlling-terminal fd
       at ≥100) remain user-clobberable because yosh accepts
       multi-digit IO_NUMBER redirections — `exec 10>/dev/null` breaks

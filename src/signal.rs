@@ -378,6 +378,50 @@ pub fn try_enable_monitor_mode() -> bool {
     }
 }
 
+/// Interactive-startup foreground wait (the glibc-manual "Initializing
+/// the Shell" loop): a REPL launched in the background of a
+/// job-controlling parent (`yosh &`) must not run its startup
+/// `take_terminal` — that would steal the terminal from the parent.
+/// Instead the shell stops itself with SIGTTIN until the user
+/// foregrounds it (`fg` hands the terminal over and delivers SIGCONT),
+/// then returns `true` so the caller can finish job-control init as
+/// the real foreground process group. Returns `false` when the shell
+/// has no controlling terminal at all (tcgetpgrp fails): the caller
+/// must run without monitor mode, mirroring [`try_enable_monitor_mode`].
+pub fn wait_until_foreground() -> bool {
+    // Probe the same fd the terminal handoffs use (/dev/tty with an
+    // fd-0 fallback) so the wait can never pass for a terminal that
+    // `take_terminal` would not actually target.
+    // SAFETY: terminal_fd() is either the leaked /dev/tty fd or fd 0;
+    // both live for the process lifetime.
+    let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(crate::env::jobs::terminal_fd()) };
+    loop {
+        match nix::unistd::tcgetpgrp(fd) {
+            Err(_) => return false,
+            Ok(pg) if pg == nix::unistd::getpgrp() => return true,
+            Ok(_) => {
+                // SIGTTIN is forced to SIG_DFL around the self-stop
+                // and restored afterwards (bash does the same): a
+                // background child inherits SIG_IGN for it from a
+                // job-controlling parent, which would otherwise turn
+                // this stop into a busy spin.
+                let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+                // SAFETY: installing/restoring plain dispositions for
+                // SIGTTIN; no handler code is involved.
+                let old = unsafe { sigaction(Signal::SIGTTIN, &dfl) }
+                    .expect("sigaction(SIGTTIN, SIG_DFL) failed");
+                // Stops the whole process group here until continued;
+                // on SIGCONT the loop re-checks foreground ownership
+                // (a `bg` leaves us background and we stop again).
+                let _ = nix::sys::signal::killpg(nix::unistd::getpgrp(), Signal::SIGTTIN);
+                // SAFETY: restoring the disposition captured above.
+                unsafe { sigaction(Signal::SIGTTIN, &old) }
+                    .expect("sigaction(SIGTTIN, restore) failed");
+            }
+        }
+    }
+}
+
 /// Reset job control signals to defaults.
 /// Called when `set +m` disables monitor mode at runtime.
 pub fn reset_job_control_signals() {
