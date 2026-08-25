@@ -357,8 +357,14 @@
 
 ## Future: Release Skill Enhancements
 
-- [ ] `phase_push` remote tag upsert — currently only checks local tag existence; if the same tag already exists on origin, `git push origin <tag>` rejects. Add `git ls-remote --exit-code --tags origin <tag>` check before pushing (`.claude/skills/release/scripts/release.sh`)
 - [ ] `test_plugin/Cargo.toml` version lag risk — `tests/plugins/test_plugin` is a workspace member but not in the `phase_bump` manifests list (not publishable). Currently safe because it depends on workspace crates only via `path =`; breaks if it ever adds `version = "..."` pins (`.claude/skills/release/scripts/release.sh`)
-- [ ] `phase_publish` root-crate branch — the `if [[ "$crate" == "yosh" ]]` special case (bare `cargo publish` for root vs `cargo publish -p` for members) can be simplified to uniform `cmd=(cargo publish -p "$crate")` since cargo accepts `-p` on root crates too (`.claude/skills/release/scripts/release.sh`)
+- [ ] `test_publish_wit.sh` — 2 tests fail because `phase_publish_wit`
+      gained a `wasm-tools strip` step after the tests were written: the
+      `wkg` stub logs the call but never creates the `-o` output wasm, so
+      the real `wasm-tools strip` fails with "No such file or directory"
+      and the first-publish / stale-SHA tests exit 1 (observed
+      2026-08-25, pre-existing). Fix: make the stub write a dummy file
+      at the `-o` path and add a `wasm-tools` stub alongside `wkg`
+      (`.claude/skills/release/tests/test_publish_wit.sh`)
 - [ ] `release.sh test` wall-time variance observation — after per-test-binary parallelization (2026-04-23), 3 back-to-back runs measured 95 s / 162 s / 178 s (±22 %, exceeds nominal ±20 % stability threshold). Root cause: `cargo test --no-run --workspace` incremental-check time varies with filesystem cache state (run 1 benefits from peak warmth). Not a correctness issue. If CI-based benchmarking is added, introduce a warm-up run before timed measurements to reduce first-run bias (`.claude/skills/release/scripts/release.sh`).
 - [ ] `release.sh test` critical path is e2e (~86 s of a ~90 s warm-run parallel window) — the 2026-05-22 "~40 min" slowness was fixed by the 2026-07-11 per-job precompile change; measured 2026-07-19 with the new per-job instrumentation: 207 s semi-warm / 90 s fully warm. Remaining (low-priority) optimization: shard `e2e/run_tests.sh` (~700 sequential tests, each spawns perl+yosh) into N parallel buckets to shrink the window toward the next-longest job (`pty_posix`, ~58 s incl. lock wait). Only worth doing if the suite grows enough that the per-job table (printed at end of every run) shows e2e drifting past ~2-3 min (`.claude/skills/release/scripts/release.sh`, `e2e/run_tests.sh`).

@@ -551,21 +551,59 @@ phase_push() {
   [[ -n "$ver" ]] || fail "could not read version from Cargo.toml"
   local tag="v${ver}"
 
+  # phase_push's contract is "release == HEAD": the tag must end up at
+  # HEAD on origin. Probe the remote before mutating it at all, so a
+  # same-name-different-commit tag fails without first advancing
+  # origin/main, and a rerun after a partial push stays idempotent.
+  # Both patterns: the exact ref alone omits the peeled '^{}' line an
+  # annotated tag needs for commit comparison.
+  local head_sha remote_ref
+  head_sha="$(git rev-parse HEAD)" || fail "git rev-parse HEAD failed"
+  remote_ref="$(git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}")" \
+    || fail "git ls-remote origin failed — check network/auth then rerun 'release.sh push'"
+
+  local tag_already_on_remote=0
+  if [[ -n "$remote_ref" ]]; then
+    local remote_sha
+    # Annotated tags list a peeled '^{}' line holding the commit; prefer
+    # it. Lightweight tags have a single line already at the commit.
+    remote_sha="$(printf '%s\n' "$remote_ref" | awk '/\^\{\}$/ {sha=$1} END {if (sha == "") exit 1; print sha}')" \
+      || remote_sha="$(printf '%s\n' "$remote_ref" | awk 'NR==1 {print $1}')"
+    [[ "$remote_sha" == "$head_sha" ]] \
+      || fail "tag ${tag} exists on origin at ${remote_sha} but HEAD is ${head_sha} — delete the remote tag or bump the version, then rerun 'release.sh push'"
+    tag_already_on_remote=1
+  fi
+
+  # Create (or repoint) the local tag at HEAD. A leftover local tag from
+  # an earlier failed attempt may sit on a commit that a rebase has since
+  # replaced; -f keeps it in sync with what is actually being released.
+  if [[ $tag_already_on_remote -eq 0 ]]; then
+    local local_sha=""
+    if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+      local_sha="$(git rev-parse "refs/tags/${tag}^{commit}")"
+    fi
+    if [[ "$local_sha" == "$head_sha" ]]; then
+      echo "yosh-release: tag ${tag} already at HEAD locally, skipping tag creation" >&2
+    else
+      [[ -n "$local_sha" ]] \
+        && echo "yosh-release: local tag ${tag} was at ${local_sha}, repointing to HEAD" >&2
+      echo "yosh-release: creating tag ${tag}..." >&2
+      git tag -f "${tag}" \
+        || fail "git tag ${tag} failed — create manually and rerun 'git push origin ${tag}'"
+    fi
+  fi
+
   echo "yosh-release: pushing main to origin..." >&2
   git push origin main \
     || fail "git push origin main failed — resolve remote divergence then rerun 'release.sh push'"
 
-  if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-    echo "yosh-release: tag ${tag} already exists locally, skipping tag creation" >&2
+  if [[ $tag_already_on_remote -eq 1 ]]; then
+    echo "yosh-release: tag ${tag} already on origin at the same commit, skipping tag push" >&2
   else
-    echo "yosh-release: creating tag ${tag}..." >&2
-    git tag "${tag}" \
-      || fail "git tag ${tag} failed — create manually and rerun 'git push origin ${tag}'"
+    echo "yosh-release: pushing tag ${tag}..." >&2
+    git push origin "${tag}" \
+      || fail "git push origin ${tag} failed — rerun 'git push origin ${tag}' manually"
   fi
-
-  echo "yosh-release: pushing tag ${tag}..." >&2
-  git push origin "${tag}" \
-    || fail "git push origin ${tag} failed — rerun 'git push origin ${tag}' manually"
 
   echo "yosh-release: push complete (main + ${tag})" >&2
 }
