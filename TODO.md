@@ -52,6 +52,36 @@
       "originally-async" marker on Job first. Deliberately left out of
       the 2026-08-25 reaped-status-map fix; revisit if a real script
       hits it (`src/exec/job_control.rs::wait_for_foreground_job`).
+- [ ] DEVIATION (decided 2026-08-25): non-interactive `cmd & p=$!;
+      wait; wait $p` returns the status (7) where bash returns 127 —
+      the completed bare `wait` clears the reaped-status map but does
+      not consume terminal jobs still in the live table. dash agrees
+      with yosh (returns 7), and POSIX requires known pids to stay
+      waitable while only *permitting* discard after a no-operand
+      wait, so this is bash-specific consumption. Revisit only if a
+      real script depends on bash's 127
+      (`src/exec/job_control.rs::builtin_wait`).
+- [ ] Bare `wait` with only Stopped jobs returns 0 immediately and
+      clears the reaped-status map prematurely (a remembered `wait $q`
+      then reports 127 although the bare wait never waited for the
+      stopped job to terminate). Wrap-up review 2026-08-25 round 1
+      minor finding (`src/exec/job_control.rs::builtin_wait`).
+- [ ] The reaped-status map records the job's single aggregate status
+      for every member pid of a multi-pid job, so `wait <member-pid>`
+      after cleanup reports the aggregate rather than that member's
+      own status. Same root cause as the existing
+      `JobTable::update_status` per-process status tracking item
+      (Code Quality section); fixing that fixes this
+      (`src/env/jobs/notification.rs::cleanup_notified`).
+- [ ] `reset_for_subshell` keeps Running (and Stopped) parent jobs in
+      the forked child's table so `$(jobs)` matches bash's special
+      case, but plain `(jobs)` therefore also lists them where bash
+      and dash print nothing (both empirically 2026-08-25; bash keeps
+      m in `$-` there too — fg/bg in forked children are refused via
+      the `in_forked_subshell` shell_pid guard instead). Cosmetic
+      divergence; revisit if scripts parse `(jobs)` output
+      (`src/env/jobs/mod.rs::reset_for_subshell`,
+      `src/exec/job_control.rs`).
 - [ ] Internal high fds (self-pipe at 10/11, controlling-terminal fd
       at ≥100) remain user-clobberable because yosh accepts
       multi-digit IO_NUMBER redirections — `exec 10>/dev/null` breaks
@@ -89,6 +119,18 @@
 - [ ] Pipeline command display in `jobs` output uses placeholder format — improve to reconstruct shell syntax
 - [ ] Task 7 (`fg` job-termios replay) has no direct PTY assertion — Task 9/10 verify end-state only (Task 6 shell-restore). On macOS/BSD, `/bin/cat`'s `read()` inherits `SIG_DFL` for SIGCONT and BSD does not auto-restart `read()` without `SA_RESTART`, so cat exits with EINTR immediately after `fg`. Linux auto-restarts `read()` on terminals for `SIG_DFL` signals, masking this asymmetry. Revisit by using a sleep/read-loop helper that retries on EINTR, or by reading `tcgetattr` directly via the PTY master between `fg\r` and cat's exit (the diagnosis details currently live in the `DEVIATION` comment of `test_pty_termios_preserved_across_suspend_fg` in `tests/pty_interactive.rs`).
 - [ ] `JobTable.shell_tmodes` is a one-time startup snapshot — `stty` invoked at the interactive prompt modifies the real terminal but not the cached snapshot, so the post-foreground shell-restore overwrites user-applied `stty` changes (`src/interactive/mod.rs` + `src/env/jobs/mod.rs`). Matches glibc manual behavior; revisit if user reports surface.
+
+## Parameter Expansion: Known Limitations
+
+- [ ] Braced special parameters with modifiers treat the parameter as
+      unset — `lookup_var` (`src/expand/param.rs`) resolves LINENO,
+      positionals, and variables but not `!`/`?`/`$`/`#`/`-`/`*`/`@`,
+      so `${!:-empty}` prints `empty` even while `$!` expands to a live
+      pid (bash prints the pid); `${?:-x}`, `${-:-x}` etc. are affected
+      the same way. Discovered during the 2026-08-25 wrap-up review
+      round 3 verification, pre-existing. Fix wants special-param
+      resolution in `lookup_var` (or a pre-lookup in the modifier
+      arms), minding `${name=word}`'s unassignable guard and `${#…}`.
 
 ## History: Known Limitations
 
