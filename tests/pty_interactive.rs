@@ -841,10 +841,122 @@ fn test_pty_wait_reaps_background_job() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
-    s.send("/bin/sleep 0 & wait $!; echo RC-$?\r").unwrap();
+    // 0.3s keeps the child alive past wait's first WNOHANG waitpid, so
+    // the exit is delivered through the self-pipe poll branch under
+    // review (a zero-length sleep can be reaped by the first waitpid
+    // and never exercise the fixed path).
+    s.send("/bin/sleep 0.3 & wait $!; echo RC-$?\r").unwrap();
     expect_output(&mut s, "RC-0", "wait must return the job's exit status");
     wait_for_prompt(&mut s);
     exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_wait_with_chld_trap_returns_child_status() {
+    // With a CHLD trap set, `wait $!` still returns the awaited
+    // child's exit status: the trap action runs, but the child-exit
+    // SIGCHLD does not interrupt wait with 128+SIGCHLD (bash/dash
+    // agree, verified empirically 2026-08-25).
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("trap 'echo TRAP-\"RAN\"' CHLD\r").unwrap();
+    wait_for_prompt(&mut s);
+    // 0.3s keeps the child alive past wait's first WNOHANG waitpid so
+    // the exit usually arrives via the self-pipe poll branch under
+    // review. Whether the trap output lands before or after RC-0 is
+    // inherently racy (the exit can also be reaped by a waitpid that
+    // beats the poll, deferring the trap to the next REPL iteration),
+    // so only RC-0 is order-anchored; the trap must have run by the
+    // next prompt either way.
+    s.send("/bin/sleep 0.3 & wait $!; echo RC-$?\r").unwrap();
+    let m = s
+        .expect(Regex(r"\r?\nRC-0"))
+        .expect("wait must return the child's status despite the CHLD trap");
+    let before = String::from_utf8_lossy(m.before()).to_string();
+    if !before.contains("TRAP-RAN") {
+        s.expect("TRAP-RAN")
+            .expect("the CHLD trap action must run");
+    }
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_wait_survives_trap_reaping_target() {
+    // Regression (2026-08-25 wrap-up review round 2): a CHLD trap that
+    // itself waits for — and reaps — the pid the outer `wait` is
+    // blocked on used to make the outer wait's retry hit ECHILD and
+    // report "not a child of this shell" (exit 127). The jobs table
+    // already holds the reaped status; wait must return it.
+    let (mut s, _tmpdir) = spawn_yosh_with_args(&[
+        "-m",
+        "-c",
+        "trap 'trap - CHLD; wait $q; echo INNER-$?' CHLD; \
+         /bin/sleep 0.1 & p=$!; /bin/sleep 0.4 & q=$!; \
+         wait $q; echo OUTER-$?",
+    ]);
+    s.expect("INNER-0")
+        .expect("inner wait in the CHLD trap must reap the job");
+    s.expect("OUTER-0")
+        .expect("outer wait must return the reaped status, not 127");
+    let _ = s.expect(Eof);
+}
+
+#[test]
+fn test_pty_dash_m_redirected_stdin_child_reads_tty() {
+    // Regression (2026-08-25 wrap-up review): the terminal handoff
+    // used a hardcoded fd 0, while the -m ownership gate probes
+    // /dev/tty — so a foreground `yosh -m script </dev/null` enabled
+    // monitor mode but handed the terminal to nobody (tcsetpgrp on
+    // /dev/null fails ENOTTY), and the foreground child was stopped
+    // by SIGTTIN on its first tty read. Both now resolve the same
+    // /dev/tty fd, so the child must be able to read the terminal.
+    let bin = env!("CARGO_BIN_EXE_yosh");
+    let tmpdir = helpers::TempDir::new();
+    let script = std::path::Path::new(tmpdir.path()).join("read_tty.sh");
+    // The leading exec clobbers every user-addressable fd: the cached
+    // controlling-terminal fd must live above that range (≥10) or the
+    // handoff silently targets /dev/null afterwards (2026-08-25
+    // wrap-up review round 2).
+    std::fs::write(
+        &script,
+        "exec 3>/dev/null 4>/dev/null 5>/dev/null 6>/dev/null 7>/dev/null 8>/dev/null 9>/dev/null\n\
+         /bin/cat /dev/tty\n\
+         echo cat-status=$?\n",
+    )
+    .unwrap();
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg("-c").arg(format!(
+        "exec '{}' -m '{}' </dev/null",
+        bin,
+        script.display()
+    ));
+    cmd.env("TERM", "dumb");
+    cmd.env("HOME", tmpdir.path());
+    let mut s = expectrl::Session::spawn(cmd).expect("failed to spawn sh wrapper");
+    s.set_expect_timeout(Some(TIMEOUT));
+    // Typed line + Ctrl-D queue in the PTY line discipline; cat reads
+    // the line, then EOF, then the script reports cat's status. A cat
+    // stopped by SIGTTIN never reaches cat-status=0 (the old behavior
+    // reported Stopped(SIGTTIN) and cat-status=149).
+    s.send("hello-tty\r").unwrap();
+    s.send("\x04").unwrap();
+    let m = s
+        .expect("cat-status=0")
+        .expect("cat must exit 0, not be stopped by SIGTTIN");
+    let before = String::from_utf8_lossy(m.before()).to_string();
+    assert!(
+        before.contains("hello-tty"),
+        "cat did not read the typed line from the terminal: {:?}",
+        before
+    );
+    assert!(
+        !before.contains("Stopped"),
+        "child was stopped instead of owning the terminal: {:?}",
+        before
+    );
+    let _ = s.expect(Eof);
 }
 
 #[test]

@@ -73,6 +73,12 @@ fn parse_options(args: &[String]) -> Result<JobsOpts, String> {
 impl Executor {
     /// POSIX wait builtin: wait for background jobs.
     pub(super) fn builtin_wait(&mut self, args: &[String]) -> Result<i32, ShellError> {
+        // POSIX XCU wait: with no operands, wait for all known process
+        // IDs and exit ZERO regardless of the children's statuses
+        // (bash/dash agree). Child statuses only propagate when a pid
+        // or job-spec operand is given. A >128 trapped-signal
+        // interruption still overrides this via its early return.
+        let no_operands = args.is_empty();
         let target_pids: Vec<Pid> = if args.is_empty() {
             self.env
                 .process
@@ -126,7 +132,9 @@ impl Executor {
         };
 
         if target_pids.is_empty() {
-            return Ok(self.env.exec.last_exit_status);
+            // No operands and nothing running: POSIX no-operand wait
+            // exits 0 (previously leaked $?, so `false; wait` was 1).
+            return Ok(0);
         }
 
         let mut last_status = 0;
@@ -191,21 +199,19 @@ impl Executor {
                                     // directly (process_pending_signals would
                                     // find an empty pipe and do nothing).
                                     self.run_signal_traps(&signals);
-                                    // An untrapped SIGCHLD is the child-exit
-                                    // notification itself, not an interruption
-                                    // of wait — fall through and re-poll
-                                    // waitpid, which now reaps the exited
-                                    // child. Only a real signal — or a SIGCHLD
-                                    // the user set a trap for (POSIX §wait:
-                                    // "a signal for which a trap has been
-                                    // set") — interrupts wait with 128+sig.
-                                    let chld_trapped = matches!(
-                                        self.env.traps.get_signal_trap(libc::SIGCHLD),
-                                        Some(crate::env::TrapAction::Command(_))
-                                    );
-                                    if let Some(&sig) = signals
-                                        .iter()
-                                        .rfind(|&&s| s != libc::SIGCHLD || chld_trapped)
+                                    // SIGCHLD is the child-exit notification
+                                    // itself, not an interruption of wait —
+                                    // fall through and re-poll waitpid, which
+                                    // now reaps the exited child. This holds
+                                    // even when the user trapped CHLD: the
+                                    // trap action ran above, and bash/dash
+                                    // both return the child's status from
+                                    // `trap 'echo T' CHLD; cmd & wait $!`
+                                    // rather than 128+SIGCHLD (empirical,
+                                    // 2026-08-25). Only other signals
+                                    // interrupt wait with 128+sig.
+                                    if let Some(&sig) =
+                                        signals.iter().rfind(|&&s| s != libc::SIGCHLD)
                                     {
                                         last_status = 128 + sig;
                                         return Ok(last_status);
@@ -221,6 +227,25 @@ impl Executor {
                         }
                     }
                     Err(nix::errno::Errno::ECHILD) => {
+                        // A trap action run mid-wait (e.g. a CHLD trap
+                        // calling `wait` itself) may have already reaped
+                        // this pid and recorded its status in the jobs
+                        // table — report that status instead of an error.
+                        let reaped = self
+                            .env
+                            .process
+                            .jobs
+                            .all_jobs()
+                            .find(|j| j.pgid == *pid)
+                            .and_then(|j| match j.status {
+                                JobStatus::Done(code) => Some(code),
+                                JobStatus::Terminated(sig) => Some(128 + sig),
+                                _ => None,
+                            });
+                        if let Some(s) = reaped {
+                            last_status = s;
+                            break;
+                        }
                         let err = ShellError::runtime(
                             RuntimeErrorKind::CommandNotFound,
                             format!("wait: pid {} is not a child of this shell", pid),
@@ -234,7 +259,7 @@ impl Executor {
             }
         }
 
-        Ok(last_status)
+        Ok(if no_operands { 0 } else { last_status })
     }
 
     pub(super) fn builtin_jobs(&mut self, args: &[String]) -> Result<i32, ShellError> {

@@ -347,21 +347,17 @@ pub fn init_job_control_signals() {
 }
 
 /// Whether this shell owns its controlling terminal: the terminal's
-/// foreground process group is the shell's own. Probes the controlling
-/// terminal itself — stderr when it is a tty, `/dev/tty` otherwise —
-/// rather than stdin, so a foreground `yosh -m script <input` with
-/// redirected stdin still detects ownership (bash's job-control probe
-/// likewise uses fd 2 / the tty, never stdin).
+/// foreground process group is the shell's own. Probes the same fd
+/// the terminal handoffs use (`jobs::terminal_fd()`, `/dev/tty` with
+/// an fd-0 fallback) rather than stdin, so a foreground
+/// `yosh -m script <input` with redirected stdin still detects
+/// ownership, and the gate can never authorize a terminal that
+/// `give_terminal`/`take_terminal` would not actually target.
 fn owns_controlling_terminal() -> bool {
-    let pgrp = nix::unistd::getpgrp();
-    let stderr = std::io::stderr();
-    if nix::unistd::isatty(&stderr).unwrap_or(false) {
-        return nix::unistd::tcgetpgrp(&stderr).ok() == Some(pgrp);
-    }
-    match std::fs::File::open("/dev/tty") {
-        Ok(tty) => nix::unistd::tcgetpgrp(&tty).ok() == Some(pgrp),
-        Err(_) => false,
-    }
+    // SAFETY: terminal_fd() is either the leaked /dev/tty fd or fd 0;
+    // both live for the process lifetime.
+    let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(crate::env::jobs::terminal_fd()) };
+    nix::unistd::tcgetpgrp(fd).ok() == Some(nix::unistd::getpgrp())
 }
 
 /// Shared monitor-mode enable transition for invocation `-m`

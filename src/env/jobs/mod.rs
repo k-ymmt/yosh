@@ -10,6 +10,7 @@ mod terminal;
 pub use model::{Job, JobId, JobStatus};
 pub use spec::JobSpecError;
 pub use terminal::{give_terminal, take_terminal};
+pub(crate) use terminal::terminal_fd;
 
 // ---------------------------------------------------------------------------
 // JobTable

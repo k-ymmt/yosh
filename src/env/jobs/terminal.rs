@@ -8,20 +8,75 @@
 use nix::unistd::Pid;
 use std::os::fd::BorrowedFd;
 use std::os::unix::io::RawFd;
+use std::sync::OnceLock;
 
-const TERMINAL_FD: RawFd = 0;
+/// Fd of the controlling terminal, resolved once per process.
+///
+/// `/dev/tty` names the controlling terminal regardless of stdio
+/// redirections, so terminal handoffs and the monitor-mode ownership
+/// gate target the same terminal even when stdin is `</dev/null`
+/// (historically this was a hardcoded fd 0, which made a foreground
+/// `yosh -m script </dev/null` hand the terminal to nobody and let the
+/// child be stopped by SIGTTIN on its first tty read). Falls back to
+/// fd 0 when `/dev/tty` cannot be opened — with no controlling
+/// terminal, tcsetpgrp/tcgetpgrp fail exactly as before and every
+/// call site already handles the error. O_CLOEXEC keeps the fd out of
+/// exec'd programs; forked children inherit it for their pre-exec
+/// `give_terminal` call.
+pub(crate) fn terminal_fd() -> RawFd {
+    static FD: OnceLock<RawFd> = OnceLock::new();
+    *FD.get_or_init(|| {
+        use std::os::fd::IntoRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_CLOEXEC)
+            .open("/dev/tty")
+        {
+            Ok(f) => {
+                // into_raw_fd: deliberately leaked — the controlling
+                // terminal fd lives for the process lifetime. Move it
+                // out of the fd range scripts realistically address: a
+                // low fd would be clobbered by a script's
+                // `exec 3>/dev/null`, silently breaking every later
+                // terminal handoff. yosh accepts multi-digit
+                // IO_NUMBERs (like bash), so no floor is unreachable —
+                // 100 clears the single-digit POSIX range and the
+                // self-pipe's 10/11 with margin (bash parks its own
+                // internal fds high for the same reason).
+                // F_DUPFD_CLOEXEC keeps the dup out of exec'd programs.
+                let raw = f.into_raw_fd();
+                // SAFETY: raw is a freshly opened, owned fd.
+                let high = unsafe { libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 100) };
+                if high >= 100 {
+                    // SAFETY: raw is owned and no longer used after the dup.
+                    unsafe { libc::close(raw) };
+                    high
+                } else {
+                    // dup failed (fd table exhausted): keep the
+                    // original, which still carries O_CLOEXEC.
+                    raw
+                }
+            }
+            Err(_) => 0,
+        }
+    })
+}
 
 /// Give the terminal to the specified process group.
 pub fn give_terminal(pgid: Pid) -> Result<(), nix::Error> {
-    // SAFETY: TERMINAL_FD (0) is stdin, which lives for the process lifetime.
-    let fd = unsafe { BorrowedFd::borrow_raw(TERMINAL_FD) };
+    // SAFETY: terminal_fd() is either the leaked /dev/tty fd or fd 0;
+    // both live for the process lifetime.
+    let fd = unsafe { BorrowedFd::borrow_raw(terminal_fd()) };
     nix::unistd::tcsetpgrp(fd, pgid)
 }
 
 /// Reclaim the terminal for the shell process group.
 pub fn take_terminal(shell_pgid: Pid) -> Result<(), nix::Error> {
-    // SAFETY: TERMINAL_FD (0) is stdin, which lives for the process lifetime.
-    let fd = unsafe { BorrowedFd::borrow_raw(TERMINAL_FD) };
+    // SAFETY: terminal_fd() is either the leaked /dev/tty fd or fd 0;
+    // both live for the process lifetime.
+    let fd = unsafe { BorrowedFd::borrow_raw(terminal_fd()) };
     nix::unistd::tcsetpgrp(fd, shell_pgid)
 }
 
