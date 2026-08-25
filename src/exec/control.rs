@@ -135,6 +135,20 @@ impl Executor {
     /// Reap any zombie background children without blocking.
     pub(crate) fn reap_zombies(&mut self) {
         use crate::env::jobs::JobStatus;
+        // Fast path: no live (Running/Stopped) jobs means no child of
+        // this shell can be waiting to be reaped here — foreground,
+        // pipeline, and command-substitution children are all waited
+        // synchronously at their spawn sites. Skips a waitpid(2) on
+        // every complete command.
+        let has_live_jobs = self
+            .env
+            .process
+            .jobs
+            .all_jobs()
+            .any(|j| matches!(j.status, JobStatus::Running | JobStatus::Stopped(_)));
+        if !has_live_jobs {
+            return;
+        }
         loop {
             match nix::sys::wait::waitpid(
                 nix::unistd::Pid::from_raw(-1),
@@ -319,10 +333,21 @@ impl Executor {
             if self.exit_requested.is_some() {
                 break;
             }
+            // POSIX §2.12: a trapped signal's action runs "after the
+            // execution of the current command" — i.e. between the items
+            // of this list, not only after the whole list finished
+            // (`trap 'echo T' USR1; kill -USR1 $$; echo one` prints T
+            // before one; bash/dash agree). Cheap when nothing is
+            // pending: gated on an atomic flag, zero syscalls.
+            self.process_pending_signals();
+            if self.exit_requested.is_some() {
+                break;
+            }
         }
 
         self.env.exec.last_exit_status = status;
-        // POSIX §2.12: handle async signals (SIGINT trap etc.) between commands.
+        // Catch signals that arrived during the final item when an early
+        // `break` above skipped the in-loop drain.
         self.process_pending_signals();
         status
     }

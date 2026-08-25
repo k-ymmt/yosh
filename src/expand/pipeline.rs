@@ -228,7 +228,10 @@ fn expand_param_to_fields(
                 // LINENO is a computed pseudo-variable (see `param::lookup_var`);
                 // assigning it would resurrect a real `VarStore` entry.
                 if name != "LINENO" {
-                    let _ = env.vars.set(name, &new_val);
+                    // assign_var (not vars.set): ${PATH:=…} must
+                    // invalidate the utility hash (POSIX §2.5.3),
+                    // matching the scalar Assign path in expand::param.
+                    let _ = env.assign_var(name, new_val.as_str());
                 }
                 let mut sub = sub.into_iter();
                 if let Some(first) = sub.next() {

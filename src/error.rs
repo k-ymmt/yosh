@@ -50,12 +50,14 @@ pub enum ExpansionErrorKind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RuntimeErrorKind {
     CommandNotFound,
+    #[allow(dead_code)] // kept for exit-code mapping symmetry (126)
     PermissionDenied,
     RedirectFailed,
     ReadonlyVariable,
     InvalidOption,
     InvalidArgument,
     IoError,
+    #[allow(dead_code)] // kept for exit-code mapping symmetry (126)
     ExecFailed,
     #[allow(dead_code)] // reserved for future trap-handler error reporting
     TrapError,

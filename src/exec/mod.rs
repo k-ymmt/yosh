@@ -264,10 +264,16 @@ impl Executor {
 
     /// Evaluate a string as shell commands (used by trap actions and eval).
     pub fn eval_string(&mut self, input: &str) {
-        if let Ok(program) =
-            crate::parser::Parser::new_with_aliases(input, &self.env.aliases).parse_program()
-        {
-            self.exec_program(&program);
+        match crate::parser::Parser::new_with_aliases(input, &self.env.aliases).parse_program() {
+            Ok(program) => {
+                self.exec_program(&program);
+            }
+            Err(e) => {
+                // A trap action with a syntax error must not fail silently
+                // at fire time (bash/dash print the diagnostic).
+                // ShellError's Display already carries the "yosh: " prefix.
+                eprintln!("{}", e);
+            }
         }
     }
 

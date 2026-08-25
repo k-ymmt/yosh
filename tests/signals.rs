@@ -243,3 +243,93 @@ fn test_background_job_last_pid() {
     let pid: i32 = stdout.trim().parse().expect("$! should be a number");
     assert!(pid > 0);
 }
+
+// `command` must dispatch the Executor-hosted builtins (wait/fg/bg/jobs),
+// not fall through to a PATH binary (audit M4).
+
+#[test]
+fn test_command_wait_waits_for_background_job() {
+    let start = std::time::Instant::now();
+    let (_stdout, _stderr, code) = yosh_exec_timeout("sleep 0.4 & command wait", 10);
+    assert_eq!(code, Some(0));
+    assert!(
+        start.elapsed() >= Duration::from_millis(300),
+        "`command wait` must actually wait for the background job; returned after {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn test_command_wait_reports_operand_status() {
+    let (stdout, _stderr, code) =
+        yosh_exec_timeout("sh -c 'exit 3' & command wait $!; echo st=$?", 10);
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "st=3");
+}
+
+#[test]
+fn test_command_jobs_is_builtin() {
+    let (stdout, stderr, code) = yosh_exec_timeout("sleep 0.3 & command jobs; wait", 10);
+    assert_eq!(code, Some(0), "stderr: {}", stderr);
+    assert!(
+        stdout.contains("Running"),
+        "`command jobs` must run the jobs builtin; stdout = {:?}, stderr = {:?}",
+        stdout,
+        stderr
+    );
+}
+
+// Signal-trap deferral fixes (audit M7 / P4): repeated signals between
+// commands must still be observed with the pending-flag fast path.
+
+#[test]
+fn test_repeated_signals_all_observed_between_commands() {
+    let script = "trap 'echo T' USR1\nkill -USR1 $$\necho a\nkill -USR1 $$\necho b\n";
+    let out = yosh_exec(script);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let t_count = stdout.matches('T').count();
+    assert!(
+        t_count >= 2,
+        "both USR1 deliveries must fire the trap; stdout = {:?}",
+        stdout
+    );
+    // Ordering: first T before 'a', second T before 'b'.
+    let a_idx = stdout.find('a').expect("stdout must contain 'a'");
+    let first_t = stdout.find('T').expect("stdout must contain 'T'");
+    assert!(first_t < a_idx, "trap must fire before next command; stdout = {:?}", stdout);
+}
+
+// Background reaping still works with the live-jobs fast path (audit P4a).
+
+#[test]
+fn test_background_job_reaped_and_waitable_after_exit() {
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "sh -c 'exit 5' & p=$!; sleep 0.2; :; wait $p; echo st=$?",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "st=5");
+}
+
+// SIGPIPE reaches externally-run children at default disposition (audit H1).
+
+#[test]
+fn test_child_sigpipe_default_disposition() {
+    let (stdout, _stderr, code) =
+        yosh_exec_timeout("sh -c 'kill -PIPE $$; echo survived'; echo st=$?", 10);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.trim(),
+        "st=141",
+        "child must die of SIGPIPE (128+13), not survive with it ignored"
+    );
+}
+
+#[test]
+fn test_pipeline_member_sigpipe_default() {
+    // Killing the whole pipeline writer with EPIPE: `yes | head -1`
+    // terminates promptly only if the writer dies on SIGPIPE.
+    let (stdout, _stderr, code) = yosh_exec_timeout("yes 2>/dev/null | head -1", 10);
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "y");
+}

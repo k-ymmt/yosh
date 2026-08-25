@@ -94,6 +94,15 @@ pub fn signal_number_to_name(num: i32) -> Option<&'static str> {
 /// Global self-pipe file descriptor pair (read_fd, write_fd).
 static SELF_PIPE: OnceLock<(RawFd, RawFd)> = OnceLock::new();
 
+/// Fast-path gate for [`drain_pending_signals`]: set by the signal
+/// handler after it writes the self-pipe byte, cleared (swapped) by the
+/// drain. When clear, the drain performs zero syscalls. The
+/// write-byte-then-set-flag / swap-flag-then-read-pipe ordering
+/// guarantees a byte can never be stranded with the flag clear: at
+/// worst a signal arriving exactly during a drain is picked up by the
+/// next drain point.
+static SIGNAL_PENDING: AtomicBool = AtomicBool::new(false);
+
 /// Signals inherited with SIG_IGN disposition at shell entry.
 /// Per POSIX §2.12, these signals cannot be trapped or reset by the shell.
 /// Captured once at startup before any yosh handler is installed; never mutated
@@ -110,6 +119,18 @@ fn capture_ignored_on_entry() -> HashSet<i32> {
     for &(num, _) in SIGNAL_TABLE {
         if num == libc::SIGKILL || num == libc::SIGSTOP {
             // SIGKILL/SIGSTOP cannot be caught or ignored; skip them.
+            continue;
+        }
+        if num == libc::SIGPIPE {
+            // The Rust std runtime sets SIGPIPE to SIG_IGN before main(),
+            // so an observed SIG_IGN here is (almost always) the runtime's
+            // doing, not an inherited disposition from the invoking
+            // process. Treating it as ignored-on-entry made `trap ... PIPE`
+            // a silent no-op, listed a phantom `trap -- '' SIGPIPE`, and
+            // kept SIGPIPE ignored in every child (`find | head` broke).
+            // The runtime's clobber makes the true inherited state
+            // unrecoverable; assume the common case (not ignored).
+            // init_signal_handling restores SIG_DFL right after this.
             continue;
         }
         let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
@@ -167,6 +188,10 @@ extern "C" fn signal_handler(sig: libc::c_int) {
     unsafe {
         libc::write(write_fd, &byte as *const u8 as *const libc::c_void, 1);
     }
+    // AtomicBool::store is async-signal-safe. Set AFTER the byte is in
+    // the pipe so a concurrent drain that observes the flag always finds
+    // the byte (see SIGNAL_PENDING).
+    SIGNAL_PENDING.store(true, Ordering::Release);
 }
 
 /// Create the self-pipe (O_NONBLOCK | O_CLOEXEC) and register sigaction
@@ -179,6 +204,14 @@ pub fn init_signal_handling() {
         // install any yosh handler. Skip registration for those signals so they
         // remain ignored for the shell's lifetime.
         let entry_ignored = IGNORED_ON_ENTRY.get_or_init(capture_ignored_on_entry);
+
+        // Undo the Rust runtime's pre-main SIG_IGN on SIGPIPE (see
+        // capture_ignored_on_entry): the shell itself dies on SIGPIPE like
+        // sh/bash (`yosh -c 'echo hi' | head -0` exits 141), and children
+        // inherit SIG_DFL so pipeline writers get killed by EPIPE instead
+        // of erroring. A user `trap '' PIPE` re-ignores it via the trap
+        // builtin's disposition install.
+        default_signal(libc::SIGPIPE);
 
         let mut fds: [libc::c_int; 2] = [0; 2];
 
@@ -249,6 +282,13 @@ pub fn init_signal_handling() {
 /// Returns a (possibly empty) vector of signal numbers.
 /// Also clears the [`PENDING_EXIT_SIGNAL`] flag.
 pub fn drain_pending_signals() -> Vec<i32> {
+    // Fast path: no handler has signalled since the last drain — skip the
+    // read(2) entirely (this runs after every command). The swap also
+    // claims responsibility for whatever bytes are in the pipe.
+    if !SIGNAL_PENDING.swap(false, Ordering::AcqRel) {
+        return Vec::new();
+    }
+
     // Clear the exit-signal flag before draining so that the terminal poll
     // loop does not spuriously re-trigger after the signal has been handled.
     PENDING_EXIT_SIGNAL.store(false, Ordering::Release);
@@ -306,9 +346,20 @@ pub fn default_signal(sig: i32) {
 /// Reset signals after fork for child processes.
 /// `ignored` signals retain SIG_IGN; all others reset to SIG_DFL.
 /// Signals inherited as SIG_IGN at shell entry (§2.12) are also kept ignored.
+///
+/// Walks the full SIGNAL_TABLE (not just HANDLED_SIGNALS): the trap
+/// builtin can install handlers/SIG_IGN for any trappable signal (e.g.
+/// `trap 'cmd' ABRT`, `trap '' PIPE`), and the shell itself ignores the
+/// job-control signals in monitor mode — all of those must come back to
+/// SIG_DFL in children unless the user trap-ignored them. Callers that
+/// need job-control exceptions (`setup_*_child_signals`) adjust after.
 pub fn reset_child_signals(ignored: &[i32]) {
     let entry_set = IGNORED_ON_ENTRY.get();
-    for &(num, _) in HANDLED_SIGNALS {
+    for &(num, _) in SIGNAL_TABLE {
+        if num == libc::SIGKILL || num == libc::SIGSTOP {
+            // Cannot be caught or ignored; sigaction would fail.
+            continue;
+        }
         let keep_ignored = ignored.contains(&num) || entry_set.is_some_and(|s| s.contains(&num));
         if keep_ignored {
             ignore_signal(num);
@@ -324,6 +375,69 @@ pub fn reset_child_signals(ignored: &[i32]) {
             libc::close(write_fd);
         }
     }
+}
+
+/// OS-level disposition matching a trap-store change, for
+/// [`apply_trap_disposition`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrapDisposition {
+    /// `trap 'cmd' SIG` — route the signal through the self-pipe handler.
+    Command,
+    /// `trap '' SIG` — SIG_IGN (inherited across fork AND exec, per POSIX).
+    Ignore,
+    /// `trap - SIG` — restore what the shell would have without a trap.
+    Default,
+}
+
+/// Install the OS signal disposition for a trap-store change made by the
+/// `trap` builtin. Without this, traps on signals outside
+/// [`HANDLED_SIGNALS`] never take effect (`trap 'echo x' ABRT; kill
+/// -ABRT $$` killed the shell at SIG_DFL).
+///
+/// `monitor` selects the restore target for removed traps on the
+/// job-control signals the shell keeps non-default in monitor mode.
+/// Errors are ignored (SIGKILL/SIGSTOP cannot be caught; the store-level
+/// entry is harmless). Callers must skip signals that were ignored on
+/// entry (POSIX §2.12) — the trap store already no-ops those.
+pub fn apply_trap_disposition(sig: i32, disposition: TrapDisposition, monitor: bool) {
+    let Ok(signal) = Signal::try_from(sig) else {
+        return;
+    };
+    let self_pipe_handler = |restart: bool| {
+        SigAction::new(
+            SigHandler::Handler(signal_handler),
+            if restart {
+                SaFlags::SA_RESTART
+            } else {
+                SaFlags::empty()
+            },
+            SigSet::empty(),
+        )
+    };
+    // HUP/TERM deliberately omit SA_RESTART so a blocking terminal read
+    // returns EINTR and the exit is handled (see init_signal_handling).
+    let restart = sig != libc::SIGHUP && sig != libc::SIGTERM;
+    let sa = match disposition {
+        TrapDisposition::Command => self_pipe_handler(restart),
+        TrapDisposition::Ignore => SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty()),
+        TrapDisposition::Default => {
+            if HANDLED_SIGNALS.iter().any(|&(n, _)| n == sig) {
+                // The shell always keeps its own handler on these.
+                self_pipe_handler(restart)
+            } else if monitor && matches!(sig, libc::SIGTSTP | libc::SIGTTIN | libc::SIGTTOU) {
+                // Monitor mode: the shell itself must not be stopped.
+                SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty())
+            } else if monitor && sig == libc::SIGCHLD {
+                // Monitor mode registers SIGCHLD on the self-pipe.
+                self_pipe_handler(true)
+            } else {
+                SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty())
+            }
+        }
+    };
+    // SAFETY: installing an async-signal-safe handler or plain
+    // disposition; failures (e.g. SIGKILL) are intentionally ignored.
+    let _ = unsafe { sigaction(signal, &sa) };
 }
 
 /// Set up job control signals for the shell process itself.

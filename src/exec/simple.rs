@@ -333,11 +333,13 @@ impl Executor {
                 if has_cmd_sub {
                     last_cmd_sub_status = Some(self.env.exec.last_exit_status);
                 }
-                if let Err(e) = self.env.vars.set_with_options(
-                    &assignment.name,
-                    value,
-                    self.env.mode.options.allexport,
-                ) {
+                // assign_var_with_options (not vars.set_with_options):
+                // `PATH=/dir` must invalidate the utility hash (POSIX §2.5.3).
+                let allexport = self.env.mode.options.allexport;
+                if let Err(e) = self
+                    .env
+                    .assign_var_with_options(&assignment.name, value, allexport)
+                {
                     redirect_state.restore();
                     self.env.exec.last_exit_status = 1;
                     return Err(ShellError::runtime(
@@ -498,11 +500,14 @@ impl Executor {
                         },
                         None => String::new(),
                     };
-                    if let Err(e) = self.env.vars.set_with_options(
-                        &assignment.name,
-                        value,
-                        self.env.mode.options.allexport,
-                    ) {
+                    // assign_var_with_options: a `PATH=… special-builtin`
+                    // prefix assignment persists (POSIX §2.9.1) and must
+                    // invalidate the utility hash like any PATH write.
+                    let allexport = self.env.mode.options.allexport;
+                    if let Err(e) = self
+                        .env
+                        .assign_var_with_options(&assignment.name, value, allexport)
+                    {
                         self.env.exec.last_exit_status = 1;
                         return Err(ShellError::runtime(
                             RuntimeErrorKind::ReadonlyVariable,
@@ -865,7 +870,12 @@ impl Executor {
                 Some(w) => crate::expand::expand_word_to_string(&mut self.env, w)?,
                 None => String::new(),
             };
-            let _ = self.env.assign_var(&assignment.name, value);
+            // A readonly variable rejects the temporary assignment: print
+            // the diagnostic but keep executing the command (sh behavior
+            // for `readonly r=1; r=2 cmd`).
+            if let Err(e) = self.env.assign_var(&assignment.name, value) {
+                eprintln!("yosh: {}", e);
+            }
         }
         Ok(saved)
     }
@@ -929,6 +939,27 @@ impl Executor {
         }
     }
 
+    /// Run one of the regular builtins whose implementation lives on the
+    /// Executor (job table / signal access) rather than in
+    /// `exec_regular_builtin`: wait, fg, bg, jobs, and `command` itself.
+    /// Returns `None` when `name` is not one of them. Used by the
+    /// `command` execution paths, which must honor these as builtins
+    /// (POSIX: `command` bypasses functions only).
+    fn exec_executor_hosted_builtin(&mut self, name: &str, args: &[String]) -> Option<i32> {
+        let status = match name {
+            "wait" => self.builtin_wait(args),
+            "fg" => self.builtin_fg(args),
+            "bg" => self.builtin_bg(args),
+            "jobs" => self.builtin_jobs(args),
+            "command" => return Some(self.builtin_command(args)),
+            _ => return None,
+        };
+        Some(status.unwrap_or_else(|e| {
+            eprintln!("{}", e);
+            e.exit_code()
+        }))
+    }
+
     /// `command -p name args...`: look up `name` via the POSIX default PATH
     /// (ignoring $PATH entirely) and exec it. Builtins are still honored
     /// for the name: POSIX says `command -p` runs the named utility in
@@ -946,11 +977,14 @@ impl Executor {
                 return status;
             }
             BuiltinKind::Regular => {
-                // Don't re-enter special-cased handlers (wait/fg/bg/jobs/command).
-                // If we get here with one of those, fall through to external.
-                if !matches!(name, "wait" | "fg" | "bg" | "jobs" | "command") {
-                    return exec_regular_builtin(name, args, &mut self.env);
+                // POSIX: `command` bypasses FUNCTIONS only — built-ins are
+                // still executed, including the Executor-hosted ones
+                // (`command wait` waits; running a PATH binary instead
+                // returned immediately).
+                if let Some(status) = self.exec_executor_hosted_builtin(name, args) {
+                    return status;
                 }
+                return exec_regular_builtin(name, args, &mut self.env);
             }
             BuiltinKind::NotBuiltin => {}
         }
@@ -990,13 +1024,13 @@ impl Executor {
         match classify_builtin(name) {
             BuiltinKind::Special => return exec_special_builtin(name, args, self),
             BuiltinKind::Regular => {
-                if !matches!(name, "wait" | "fg" | "bg" | "jobs" | "command") {
-                    return exec_regular_builtin(name, args, &mut self.env);
+                // POSIX: `command name` bypasses functions only — the
+                // Executor-hosted builtins (wait/fg/bg/jobs/command) must
+                // run as builtins here too, not be looked up in PATH.
+                if let Some(status) = self.exec_executor_hosted_builtin(name, args) {
+                    return status;
                 }
-                // For the special-cased regular builtins, fall through to
-                // external lookup (running `command wait` via PATH would be
-                // surprising, but this matches how yosh currently dispatches
-                // those names only when invoked as direct simple commands).
+                return exec_regular_builtin(name, args, &mut self.env);
             }
             BuiltinKind::NotBuiltin => {}
         }

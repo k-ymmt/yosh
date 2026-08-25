@@ -68,12 +68,19 @@ impl Executor {
                     ));
                 }
                 Ok(ForkResult::Child) => {
-                    // Set process group
-                    let my_pid = nix::unistd::getpid();
-                    if i == 0 {
-                        setpgid(my_pid, my_pid).ok();
-                    } else {
-                        setpgid(my_pid, pgid).ok();
+                    // Job control only: put the pipeline in its own process
+                    // group. Without monitor mode, members must STAY in the
+                    // shell's process group so a terminal-generated SIGINT
+                    // (sent to the foreground group) reaches them — the
+                    // same guard exec_external_with_redirects applies to
+                    // simple commands.
+                    if self.env.mode.options.monitor {
+                        let my_pid = nix::unistd::getpid();
+                        if i == 0 {
+                            setpgid(my_pid, my_pid).ok();
+                        } else {
+                            setpgid(my_pid, pgid).ok();
+                        }
                     }
                     let ignored = self.env.traps.ignored_signals();
                     self.env.traps.reset_for_subshell();
@@ -133,7 +140,12 @@ impl Executor {
                     if i == 0 {
                         pgid = child;
                     }
-                    setpgid(child, pgid).ok();
+                    if self.env.mode.options.monitor {
+                        // Race-free group placement: both parent and child
+                        // call setpgid. Only under job control (see the
+                        // child-side comment above).
+                        setpgid(child, pgid).ok();
+                    }
                     children.push(child);
                 }
             }

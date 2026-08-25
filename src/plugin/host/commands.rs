@@ -58,13 +58,20 @@ fn host_commands_exec_with_timeout(
     let exec_program: String = if program.contains('/') {
         program.to_string()
     } else {
+        // Uncached lookup: plugin-driven resolutions (e.g. a prompt
+        // plugin running hostname/whoami at load time) must not seed the
+        // user-visible `hash` table — POSIX describes it as remembering
+        // utilities the SHELL invoked.
         let found = ctx.bound_env_with(|env| {
             let path_var = env
                 .vars
                 .get("PATH")
                 .map(|s| s.to_string())
                 .unwrap_or_default();
-            crate::exec::command::find_in_path(program, &path_var, &mut env.utility_hash)
+            match crate::exec::command::lookup_in_path_uncached(program, &path_var) {
+                crate::exec::command::PathLookup::Executable(p) => Some(p),
+                _ => None,
+            }
         })?;
         match found {
             Some(p) => p.to_string_lossy().into_owned(),

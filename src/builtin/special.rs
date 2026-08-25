@@ -41,7 +41,7 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
             return ret;
         }
         "eval" => builtin_eval(args, executor),
-        "exec" => builtin_exec(args, &mut executor.env),
+        "exec" => builtin_exec(args, executor),
         "trap" => builtin_trap(args, &mut executor.env),
         "." => builtin_source(args, executor),
         "shift" => builtin_shift(args, &mut executor.env),
@@ -87,6 +87,11 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
             }
         }
     };
+    // POSIX §2.12: the EXIT trap action starts with `$?` equal to the
+    // value the shell is exiting with (`trap 'echo $?' EXIT; exit 7`
+    // prints 7). Store it before running any trap actions; the final
+    // exit status stays `code` regardless of what the trap body runs.
+    executor.env.exec.last_exit_status = code;
     executor.process_pending_signals();
     executor.execute_exit_trap();
     if executor.env.mode.is_interactive {
@@ -268,7 +273,9 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         }
         if let Some(pos) = arg.find('=') {
             let raw_value = &arg[pos + 1..];
-            if let Err(e) = env.vars.set(name, raw_value) {
+            // assign_var (not vars.set): `readonly PATH=…` must
+            // invalidate the utility hash like any other PATH write.
+            if let Err(e) = env.assign_var(name, raw_value) {
                 eprintln!("yosh: readonly: {}", e);
                 status = 1;
                 continue;
@@ -456,29 +463,44 @@ fn builtin_eval(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
     }
 }
 
-fn builtin_exec(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+fn builtin_exec(args: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
     if args.is_empty() {
         return Ok(0);
     }
-    let cmd = &args[0];
+
+    // POSIX §2.14 exec: when the utility cannot be executed, a
+    // NON-interactive shell exits — 127 if not found, 126 if found but
+    // not executable (matches bash/dash errno semantics). An interactive
+    // shell prints the diagnostic and continues.
+    fn exec_failure(executor: &mut Executor, msg: String, code: i32) -> Result<i32, ShellError> {
+        eprintln!("yosh: {}", msg);
+        executor.env.exec.last_exit_status = code;
+        if !executor.env.mode.is_interactive {
+            executor.exit_shell(code);
+        }
+        Ok(code)
+    }
+
+    let cmd = args[0].clone();
 
     // Resolve the executable path. If the command contains `/`, treat as
-    // a relative or absolute path. Otherwise walk $PATH.
+    // a relative or absolute path (byteenc-decoded so non-UTF-8 paths
+    // reach the OS as their original bytes). Otherwise walk $PATH.
     let resolved_path: std::path::PathBuf = if cmd.contains('/') {
-        std::path::PathBuf::from(cmd)
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = crate::byteenc::decode_bytes(&cmd);
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&bytes))
     } else {
+        let env = &mut executor.env;
         let path_var = env
             .vars
             .get("PATH")
             .map(|s| s.to_string())
             .unwrap_or_default();
-        match crate::exec::command::find_in_path(cmd, &path_var, &mut env.utility_hash) {
+        match crate::exec::command::find_in_path(&cmd, &path_var, &mut env.utility_hash) {
             Some(p) => p,
             None => {
-                return Err(ShellError::runtime(
-                    RuntimeErrorKind::CommandNotFound,
-                    format!("exec: {}: not found", cmd),
-                ));
+                return exec_failure(executor, format!("exec: {}: not found", cmd), 127);
             }
         }
     };
@@ -486,69 +508,111 @@ fn builtin_exec(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> 
     let c_path = match CString::new(resolved_path.as_os_str().as_encoded_bytes()) {
         Ok(s) => s,
         Err(_) => {
-            return Err(ShellError::runtime(
-                RuntimeErrorKind::ExecFailed,
-                format!("exec: {}: invalid path", cmd),
-            ));
+            return exec_failure(executor, format!("exec: {}: invalid path", cmd), 126);
         }
     };
 
+    // argv crosses execve as raw bytes: decode byteenc escapes (interior
+    // NUL is still rejected — it cannot cross the boundary).
     let mut c_args: Vec<CString> = Vec::with_capacity(args.len());
     for a in args {
-        match CString::new(a.as_str()) {
+        match CString::new(crate::byteenc::decode_bytes(a.as_str()).into_owned()) {
             Ok(s) => c_args.push(s),
             Err(_) => {
-                return Err(ShellError::runtime(
-                    RuntimeErrorKind::ExecFailed,
-                    format!("exec: {}: invalid argument", a),
-                ));
+                return exec_failure(executor, format!("exec: {}: invalid argument", a), 126);
             }
         }
     }
 
-    // Build envp from currently-exported variables.
-    let envp: Vec<CString> = env
+    // Build envp from currently-exported variables (byteenc-decoded).
+    let envp: Vec<CString> = executor
+        .env
         .vars
         .environ()
         .iter()
-        .filter_map(|(k, v)| CString::new(format!("{}={}", k, v)).ok())
+        .filter_map(|(k, v)| {
+            let mut bytes = crate::byteenc::decode_bytes(k).into_owned();
+            bytes.push(b'=');
+            bytes.extend_from_slice(&crate::byteenc::decode_bytes(v));
+            CString::new(bytes).ok()
+        })
         .collect();
 
     let err = nix::unistd::execve(&c_path, &c_args, &envp).unwrap_err();
     use nix::errno::Errno;
     match err {
-        Errno::ENOENT => Err(ShellError::runtime(
-            RuntimeErrorKind::CommandNotFound,
-            format!("exec: {}: not found", cmd),
-        )),
-        Errno::EACCES => Err(ShellError::runtime(
-            RuntimeErrorKind::PermissionDenied,
-            format!("exec: {}: permission denied", cmd),
-        )),
-        _ => Err(ShellError::runtime(
-            RuntimeErrorKind::ExecFailed,
-            format!("exec: {}: {}", cmd, err),
-        )),
+        Errno::ENOENT => exec_failure(executor, format!("exec: {}: not found", cmd), 127),
+        Errno::EACCES => {
+            exec_failure(executor, format!("exec: {}: permission denied", cmd), 126)
+        }
+        Errno::ENOEXEC => {
+            // POSIX execvp fallback (mirrors exec_external_with_redirects):
+            // an executable file the kernel refuses to exec is re-run as a
+            // shell script via /bin/sh, passing the resolved file path.
+            let sh = CString::new("/bin/sh").expect("/bin/sh has no NUL");
+            let mut sh_args = Vec::with_capacity(c_args.len() + 1);
+            sh_args.push(sh.clone());
+            sh_args.push(c_path.clone());
+            sh_args.extend_from_slice(&c_args[1..]);
+            let err2 = nix::unistd::execve(&sh, &sh_args, &envp).unwrap_err();
+            exec_failure(executor, format!("exec: {}: {}", cmd, err2), 126)
+        }
+        _ => exec_failure(executor, format!("exec: {}: {}", cmd, err), 126),
     }
 }
 
+/// Install the OS disposition matching a trap-store change (POSIX: the
+/// trap must take effect even for signals the shell has no standing
+/// handler for, e.g. `trap 'cmd' ABRT`). No-ops for EXIT (0), unknown
+/// conditions, and ignored-on-entry signals (§2.12 — the store already
+/// no-oped those).
+fn apply_trap_os_disposition(env: &ShellEnv, condition: &str, action: &TrapAction) {
+    let Some(num) = crate::env::TrapStore::signal_name_to_number(condition) else {
+        return;
+    };
+    if num == 0 || crate::signal::is_ignored_on_entry(num) {
+        return;
+    }
+    let disposition = match action {
+        TrapAction::Command(_) => crate::signal::TrapDisposition::Command,
+        TrapAction::Ignore => crate::signal::TrapDisposition::Ignore,
+        TrapAction::Default => crate::signal::TrapDisposition::Default,
+    };
+    crate::signal::apply_trap_disposition(num, disposition, env.mode.options.monitor);
+}
+
 fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+    // POSIX XBD §12.2 Guideline 10: a leading `--` marks the end of
+    // options — required for the save/restore idiom `t=$(trap); eval
+    // "$t"` to work against our own `trap -- '…' SIGNAME` output.
+    let (args, saw_end_of_options) = if args.first().map(String::as_str) == Some("--") {
+        (&args[1..], true)
+    } else {
+        (args, false)
+    };
     if args.is_empty() {
         env.traps.display_all();
         return Ok(0);
     }
-    if args[0] == "-p" {
+    if !saw_end_of_options && args[0] == "-p" {
         // POSIX 2024: with condition operands, print only the named
-        // conditions; with none, print all traps.
-        if args.len() == 1 {
+        // conditions; with none, print all traps. `--` may still follow.
+        let conds = &args[1..];
+        let conds = if conds.first().map(String::as_str) == Some("--") {
+            &conds[1..]
+        } else {
+            conds
+        };
+        if conds.is_empty() {
             env.traps.display_all();
         } else {
-            env.traps.display_conditions(&args[1..]);
+            env.traps.display_conditions(conds);
         }
         return Ok(0);
     }
     if args.len() == 1 {
         env.traps.remove_trap(&args[0]);
+        apply_trap_os_disposition(env, &args[0], &TrapAction::Default);
         return Ok(0);
     }
     let action_str = &args[0];
@@ -564,9 +628,12 @@ fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> 
     for sig in signals {
         if matches!(action, TrapAction::Default) {
             env.traps.remove_trap(sig);
+            apply_trap_os_disposition(env, sig, &action);
         } else if let Err(e) = env.traps.set_trap(sig, action.clone()) {
             eprintln!("yosh: {}", e);
             status = 1;
+        } else {
+            apply_trap_os_disposition(env, sig, &action);
         }
     }
     Ok(status)

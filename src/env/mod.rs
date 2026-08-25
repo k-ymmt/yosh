@@ -125,6 +125,24 @@ impl ShellEnv {
         Ok(())
     }
 
+    /// Like [`Self::assign_var`] but honoring `set -a` (allexport),
+    /// mirroring `VarStore::set_with_options`. Clears the utility hash
+    /// on PATH writes (POSIX §2.5.3) — plain `PATH=/dir` statements and
+    /// special-builtin prefix assignments must invalidate remembered
+    /// utility locations just like `export PATH=...` does.
+    pub fn assign_var_with_options(
+        &mut self,
+        name: &str,
+        value: impl Into<String>,
+        allexport: bool,
+    ) -> Result<(), String> {
+        self.vars.set_with_options(name, value, allexport)?;
+        if name == "PATH" {
+            self.utility_hash.clear();
+        }
+        Ok(())
+    }
+
     /// Unset a shell variable. If `name == "PATH"`, the utility hash
     /// table is cleared after the successful unset.
     pub fn unset_var(&mut self, name: &str) -> Result<(), String> {
