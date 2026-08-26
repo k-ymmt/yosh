@@ -62,6 +62,22 @@ impl Executor {
             match unsafe { fork() } {
                 Err(e) => {
                     close_all_pipes(&pipes);
+                    // A mid-pipeline fork failure leaves the elements
+                    // forked so far running but never registered with
+                    // add_job — reap_zombies' no-live-jobs fast path
+                    // would then skip waitpid forever, leaving permanent
+                    // zombies. Terminate and reap them before propagating
+                    // the error. SIGTERM first for politeness, then
+                    // SIGKILL so the blocking waitpid below can never
+                    // hang on a member that inherited `trap '' TERM`
+                    // (Ignore traps survive reset_for_subshell).
+                    for &child in &children {
+                        let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGTERM);
+                        let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+                    }
+                    for &child in &children {
+                        let _ = waitpid(child, None);
+                    }
                     return Err(ShellError::runtime(
                         RuntimeErrorKind::IoError,
                         format!("fork: {}", e),

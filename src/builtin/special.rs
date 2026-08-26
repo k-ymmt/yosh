@@ -529,9 +529,22 @@ fn builtin_exec(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
             .get("PATH")
             .map(|s| s.to_string())
             .unwrap_or_default();
-        match crate::exec::command::find_in_path(&cmd, &path_var, &mut env.utility_hash) {
-            Some(p) => p,
-            None => {
+        // lookup_in_path (not find_in_path): the 126/127 distinction
+        // matters here — a matching regular file that is not executable
+        // is "permission denied" / 126, exactly as the execve EACCES
+        // branch below reports it (bash/dash agree for
+        // `PATH=. exec Cargo.toml`).
+        use crate::exec::command::PathLookup;
+        match crate::exec::command::lookup_in_path(&cmd, &path_var, &mut env.utility_hash) {
+            PathLookup::Executable(p) => p,
+            PathLookup::NotExecutable(_) => {
+                return exec_failure(
+                    executor,
+                    format!("exec: {}: permission denied", cmd),
+                    126,
+                );
+            }
+            PathLookup::NotFound => {
                 return exec_failure(executor, format!("exec: {}: not found", cmd), 127);
             }
         }

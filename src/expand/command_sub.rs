@@ -78,7 +78,19 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 default_path_cache: env.default_path_cache.clone(),
                 utility_hash: env.utility_hash.clone(),
             };
+            // Parent `trap 'cmd' SIG` commands installed self-pipe OS
+            // handlers (apply_trap_disposition); the store reset below
+            // drops the trap entries but not those handlers, so a signal
+            // with a parent-only trap would be caught by the leftover
+            // handler instead of killing this child immediately. Capture
+            // the list before the reset and restore each signal to its
+            // baseline disposition after.
+            let parent_command_traps = child_env.traps.command_trapped_signals();
             child_env.traps.reset_for_command_sub();
+            crate::signal::reset_inherited_trap_dispositions(
+                &parent_command_traps,
+                child_env.mode.options.monitor,
+            );
             // The command-sub child is a fresh subshell: the parent's
             // remembered reaped statuses and terminal table jobs are
             // not its children.

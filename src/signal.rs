@@ -440,6 +440,35 @@ pub fn apply_trap_disposition(sig: i32, disposition: TrapDisposition, monitor: b
     let _ = unsafe { sigaction(signal, &sa) };
 }
 
+/// Restore baseline OS dispositions in a fork child that continues to
+/// run shell code (e.g. a command-substitution child) after its trap
+/// store was reset.
+///
+/// `command_trapped` is the set of signals that carried a parent
+/// `trap 'cmd' SIG`, captured BEFORE the store reset
+/// ([`crate::env::TrapStore::command_trapped_signals`]). Each of them
+/// still has the self-pipe handler installed by
+/// [`apply_trap_disposition`]; without this restore, a signal whose only
+/// trap belonged to the parent is caught by the leftover handler in the
+/// child — and, with SA_RESTART, only acted on at the next command
+/// boundary (e.g. after a blocking `sleep` completes) instead of
+/// performing its default action immediately mid-syscall.
+///
+/// The baseline policy lives in [`apply_trap_disposition`]'s `Default`
+/// branch: [`HANDLED_SIGNALS`] keep the self-pipe handler, monitor-mode
+/// job-control signals stay non-default, everything else returns to
+/// SIG_DFL. Entry-ignored signals are skipped (they can never carry a
+/// Command trap — POSIX §2.12 — and must stay SIG_IGN); `trap '' SIG`
+/// entries are not in `command_trapped`, so their SIG_IGN survives too.
+pub fn reset_inherited_trap_dispositions(command_trapped: &[i32], monitor: bool) {
+    for &sig in command_trapped {
+        if is_ignored_on_entry(sig) {
+            continue;
+        }
+        apply_trap_disposition(sig, TrapDisposition::Default, monitor);
+    }
+}
+
 /// Set up job control signals for the shell process itself.
 /// Ignores SIGTSTP, SIGTTIN, SIGTTOU so the shell is not stopped.
 /// Adds SIGCHLD to the self-pipe handler.

@@ -694,7 +694,7 @@ impl Executor {
             &mut self.env.utility_hash,
         );
 
-        let (c_cmd, c_args) = match &resolved {
+        match resolved {
             ResolvedExec::NotFound => {
                 // No executable file candidate exists anywhere in the
                 // search — nothing to fork/exec. Matches the exit code
@@ -703,26 +703,51 @@ impl Executor {
                     "yosh: {}: command not found",
                     cmd
                 ));
-                return 127;
+                127
             }
             ResolvedExec::NotExecutable => {
                 crate::byteenc::write_stderr_decoded_line(&format!(
                     "yosh: {}: permission denied",
                     cmd
                 ));
-                return 126;
+                126
             }
-            ResolvedExec::Executable(path) => match build_exec_cstrings_for_path(path, cmd, args) {
-                Ok(v) => v,
-                Err(ExecCStringError::CommandName) => {
-                    eprintln!("yosh: {}: invalid command name", cmd);
-                    return 127;
-                }
-                Err(ExecCStringError::Argument(arg)) => {
-                    eprintln!("yosh: {}: invalid argument", arg);
-                    return 1;
-                }
-            },
+            ResolvedExec::Executable(path) => {
+                self.spawn_external_at_path(&path, cmd, args, env_overrides, redirects)
+            }
+        }
+    }
+
+    /// Fork and exec an already-resolved external path with the full
+    /// standard child setup: monitor-mode process-group placement and
+    /// terminal handoff, trap-aware signal reset, redirect application,
+    /// environment merge, and parent-side job-table bookkeeping /
+    /// foreground wait. `display_name` becomes the child's argv[0].
+    ///
+    /// Shared by [`Self::exec_external_with_redirects`] (which resolves
+    /// the name via `$PATH` first) and the `command` builtin execution
+    /// paths (which resolve via `$PATH` or the POSIX default PATH
+    /// themselves) — `command sleep 30` must be suspendable with Ctrl+Z
+    /// exactly like `sleep 30`, so both must fork through this one path.
+    pub(crate) fn spawn_external_at_path(
+        &mut self,
+        path: &std::path::Path,
+        display_name: &str,
+        args: &[String],
+        env_overrides: &[(String, String)],
+        redirects: &[crate::parser::ast::Redirect],
+    ) -> i32 {
+        let cmd = display_name;
+        let (c_cmd, c_args) = match build_exec_cstrings_for_path(path, cmd, args) {
+            Ok(v) => v,
+            Err(ExecCStringError::CommandName) => {
+                eprintln!("yosh: {}: invalid command name", cmd);
+                return 127;
+            }
+            Err(ExecCStringError::Argument(arg)) => {
+                eprintln!("yosh: {}: invalid argument", arg);
+                return 1;
+            }
         };
 
         let monitor = self.env.mode.options.monitor;
@@ -1014,7 +1039,11 @@ impl Executor {
         // edb5254, which also resolves uncached.
         let dp = default_path(&self.env).to_string();
         match lookup_in_path_uncached(name, &dp) {
-            PathLookup::Executable(p) => exec_external_absolute(&p, name, args, &mut self.env),
+            // Simple-command redirects were already applied by the
+            // `command` special-case handler in exec_simple_command, and
+            // prefix assignments by apply_temp_assignments — hence the
+            // empty redirect/override slices.
+            PathLookup::Executable(p) => self.spawn_external_at_path(&p, name, args, &[], &[]),
             PathLookup::NotExecutable(p) => {
                 eprintln!("yosh: command: {}: permission denied", p.display());
                 126
@@ -1060,7 +1089,9 @@ impl Executor {
             .map(|s| s.to_string())
             .unwrap_or_default();
         match lookup_in_path(name, &path_var, &mut self.env.utility_hash) {
-            PathLookup::Executable(p) => exec_external_absolute(&p, name, args, &mut self.env),
+            // See exec_command_with_default_path for why the redirect and
+            // override slices are empty here.
+            PathLookup::Executable(p) => self.spawn_external_at_path(&p, name, args, &[], &[]),
             PathLookup::NotExecutable(p) => {
                 eprintln!("yosh: command: {}: permission denied", p.display());
                 126
@@ -1070,70 +1101,6 @@ impl Executor {
                 127
             }
         }
-    }
-}
-
-/// Spawn an absolute path with `args`, inheriting the shell's exported
-/// environment. Used by `command -p` (after default-PATH lookup) and by
-/// `command name` (after current-PATH lookup).
-///
-/// Uses `std::process::Command` rather than manual fork+execvp because
-/// yosh's existing external-command pipeline is tightly coupled to job
-/// control, redirects, and env-sync concerns that we don't need here
-/// (command -p / no-flag forms always run in the foreground with the
-/// simple-command redirects already applied by the special-case handler).
-fn exec_external_absolute(
-    resolved: &std::path::Path,
-    display_name: &str,
-    args: &[String],
-    env: &mut crate::env::ShellEnv,
-) -> i32 {
-    use std::os::unix::ffi::OsStringExt;
-    use std::os::unix::process::CommandExt;
-    use std::os::unix::process::ExitStatusExt;
-
-    // Decode byteenc-escaped shell strings so argv and environment reach
-    // the child as the original raw bytes.
-    let decode_os =
-        |s: &str| std::ffi::OsString::from_vec(crate::byteenc::decode_bytes(s).into_owned());
-    let env_pairs: Vec<(std::ffi::OsString, std::ffi::OsString)> = env
-        .vars
-        .environ()
-        .iter()
-        .map(|(k, v)| (decode_os(k), decode_os(v)))
-        .collect();
-
-    let result = std::process::Command::new(resolved)
-        .arg0(decode_os(display_name))
-        .args(args.iter().map(|a| decode_os(a)))
-        .env_clear()
-        .envs(env_pairs)
-        .status();
-
-    match result {
-        Ok(s) => {
-            if let Some(code) = s.code() {
-                code
-            } else if let Some(sig) = s.signal() {
-                128 + sig
-            } else {
-                1
-            }
-        }
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                eprintln!("yosh: command: {}: not found", display_name);
-                127
-            }
-            std::io::ErrorKind::PermissionDenied => {
-                eprintln!("yosh: command: {}: permission denied", display_name);
-                126
-            }
-            _ => {
-                eprintln!("yosh: command: {}: {}", display_name, e);
-                1
-            }
-        },
     }
 }
 

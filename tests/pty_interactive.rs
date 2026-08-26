@@ -910,6 +910,36 @@ fn test_pty_set_minus_m_reenables_job_control() {
 }
 
 #[test]
+fn test_pty_command_external_suspendable_with_ctrl_z() {
+    // Regression: `command sleep` used to spawn via std::process::Command
+    // with no monitor-mode setpgid — the child stayed in the shell's
+    // process group with TSTP ignored, so Ctrl-Z could not suspend it.
+    // Routed through the standard external fork path, it must behave
+    // exactly like a plain `sleep` under job control.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("command sleep 100\r").unwrap();
+    // Brief pause to let the child start
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Ctrl+Z must suspend the job and return control to the shell
+    s.send("\x1a").unwrap();
+    wait_for_prompt(&mut s);
+
+    s.send("jobs\r").unwrap();
+    s.expect("Stopped")
+        .expect("jobs should show `command sleep` Stopped after Ctrl+Z");
+    wait_for_prompt(&mut s);
+
+    // Cleanup: kill the stopped job
+    s.send("kill %1\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_wait_reaps_background_job() {
     // Regression: in monitor mode SIGCHLD is registered on the
     // self-pipe, and `wait` used to misread the drained SIGCHLD (the

@@ -196,6 +196,10 @@ impl Executor {
     /// `exit` special built-in via `trap_context_status` (POSIX §2.12:
     /// `exit` without an operand inside a trap action uses the value `$?`
     /// had when the trap action started).
+    ///
+    /// Used by the EXIT-trap path, which keeps errexit suppressed inside
+    /// the action (see `test_errexit_trap_action_suppressed`); signal
+    /// traps go through [`Self::run_signal_trap_action`] instead.
     pub(crate) fn run_trap_action(&mut self, cmd: &str) {
         let prev = self
             .env
@@ -206,6 +210,32 @@ impl Executor {
             exec.eval_string(cmd);
         });
         self.env.exec.trap_context_status = prev;
+    }
+
+    /// Execute a SIGNAL trap action (POSIX §2.12). Differences from the
+    /// EXIT-trap path ([`Self::run_trap_action`]):
+    ///
+    /// - On completion, `$?` is restored to its pre-trap value so the
+    ///   interrupted command sequence observes its own status, not the
+    ///   trap action's (`trap 'false' USR1; kill -USR1 $$; echo $?`
+    ///   prints 0 — bash/dash/zsh agree). The restore is skipped when
+    ///   the action itself requested an exit (`exit` builtin, errexit,
+    ///   fatal error) or flow control (`break`/`continue`), whose
+    ///   resulting status must survive.
+    /// - errexit is NOT suppressed: `set -e; trap 'false' USR1;
+    ///   kill -USR1 $$; echo ok` exits 1 without printing ok
+    ///   (bash/dash/zsh agree).
+    ///
+    /// The pre-trap `$?` is still exposed to `exit` without an operand
+    /// via `trap_context_status`.
+    fn run_signal_trap_action(&mut self, cmd: &str) {
+        let saved_status = self.env.exec.last_exit_status;
+        let prev = self.env.exec.trap_context_status.replace(saved_status);
+        self.eval_string(cmd);
+        self.env.exec.trap_context_status = prev;
+        if self.exit_requested.is_none() && self.env.exec.flow_control.is_none() {
+            self.env.exec.last_exit_status = saved_status;
+        }
     }
 
     /// Exit the whole shell process from the shell parent (NOT a forked
@@ -249,14 +279,14 @@ impl Executor {
                 if let Some(crate::env::TrapAction::Command(cmd)) =
                     self.env.traps.get_signal_trap(sig).cloned()
                 {
-                    self.run_trap_action(&cmd);
+                    self.run_signal_trap_action(&cmd);
                 }
                 continue;
             }
 
             match self.env.traps.get_signal_trap(sig).cloned() {
                 Some(crate::env::TrapAction::Command(cmd)) => {
-                    self.run_trap_action(&cmd);
+                    self.run_signal_trap_action(&cmd);
                 }
                 Some(crate::env::TrapAction::Ignore) => {}
                 Some(crate::env::TrapAction::Default) | None => {

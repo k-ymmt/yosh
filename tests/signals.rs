@@ -325,6 +325,105 @@ fn test_child_sigpipe_default_disposition() {
     );
 }
 
+// Signal trap actions must not clobber `$?` (POSIX §2.12: on completion
+// of a trap action, `$?` is restored to its pre-trap value).
+
+#[test]
+fn test_signal_trap_action_restores_status() {
+    let out = yosh_exec("trap 'false' USR1; kill -USR1 $$; echo $?");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "0",
+        "$? after the trap action must be kill's status (0), not the action's (1)"
+    );
+}
+
+#[test]
+fn test_signal_trap_action_output_then_restored_status() {
+    let out = yosh_exec("trap 'echo t' USR1; kill -USR1 $$; echo $?");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"),
+        "t\n0\n",
+        "trap output must precede the restored (0) status"
+    );
+}
+
+#[test]
+fn test_signal_trap_action_exit_keeps_trap_context_status() {
+    // `exit` without an operand inside a trap action uses the value $?
+    // had when the action started (POSIX §2.12) — the post-action $?
+    // restore must not interfere with the requested exit.
+    let out = yosh_exec("trap 'exit' USR1; sh -c 'kill -USR1 $PPID; exit 5'; echo unreached");
+    assert_eq!(out.status.code(), Some(5));
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("unreached"),
+        "exit inside the trap action must terminate the shell"
+    );
+}
+
+#[test]
+fn test_errexit_applies_in_signal_trap_action() {
+    // bash/dash/zsh: `set -e` is NOT suspended inside a signal trap
+    // action — the failing `false` exits the shell with status 1 and
+    // `echo ok` never runs.
+    let out = yosh_exec("set -e; trap 'false' USR1; kill -USR1 $$; echo ok");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("ok"),
+        "errexit must abort the shell from inside the trap action"
+    );
+}
+
+// A command-substitution child resets the parent's traps; the OS signal
+// dispositions installed for parent Command traps must be restored to
+// baseline too, or the leftover self-pipe handler (SA_RESTART) catches
+// the signal and the child only dies at the next command boundary —
+// i.e. after the blocking `sleep 3` completes instead of immediately.
+
+#[test]
+fn test_command_sub_child_dies_immediately_on_parent_trapped_signal() {
+    let start = std::time::Instant::now();
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        r#"trap ":" ABRT; x=$(sh -c 'kill -ABRT $PPID; sleep 3' >/dev/null; echo survived); echo "[$x]""#,
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.trim(),
+        "[]",
+        "the command-sub child must die from ABRT before echoing (bash agrees)"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "child must be killed by ABRT mid-wait, not survive until sleep 3 finishes; took {:?}",
+        start.elapsed()
+    );
+}
+
+// `command <external>` must go through the standard fork/exec path
+// (job control, signal reset, wait bookkeeping), not a bespoke spawn.
+
+#[test]
+fn test_command_external_signal_exit_code() {
+    let (stdout, _stderr, code) = yosh_exec_timeout("command sh -c 'kill -TERM $$'; echo st=$?", 10);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.trim(),
+        "st=143",
+        "a signal-killed `command` external must report 128+signo"
+    );
+}
+
+#[test]
+fn test_command_external_argv0_and_args() {
+    let (stdout, _stderr, code) =
+        yosh_exec_timeout("command sh -c 'echo argv0=$0 first=$1' zero one", 10);
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "argv0=zero first=one");
+}
+
 #[test]
 fn test_pipeline_member_sigpipe_default() {
     // Killing the whole pipeline writer with EPIPE: `yes | head -1`
