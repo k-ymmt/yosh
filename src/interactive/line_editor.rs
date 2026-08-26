@@ -19,7 +19,7 @@ use super::terminal::{CursorStyle, Terminal};
 use super::undo::UndoManager;
 use super::vi::{
     self, EditMode, InsertAt, OpKind, SearchDir, ViCmd, ViEngine, ViFlavor, ViMode, ViMotion,
-    ViOutcome,
+    ViOutcome, VisualCmd, VisualKind, VisualOutcome,
 };
 use super::vim::{self, RegisterKind, UnnamedRegister};
 
@@ -124,6 +124,11 @@ pub struct LineEditor {
     /// through shorter lines, and cleared by any other edit action or
     /// buffer mutation.
     preferred_col: Option<usize>,
+    /// Whether the previous `redraw` painted a VISUAL selection. The
+    /// single-line diff-based partial repaint is bypassed while a
+    /// selection is active and on the first frame after it is
+    /// dismissed (the reverse-video cells must be cleared).
+    prev_render_had_selection: bool,
     /// Whether the previous `redraw` went through the multiline renderer.
     /// The single-line partial-repaint diff must not run against a
     /// multiline on-screen layout, and buffer content alone can't tell
@@ -216,6 +221,7 @@ impl LineEditor {
             prev_render: None,
             cont_prompt_cache: None,
             preferred_col: None,
+            prev_render_had_selection: false,
             prev_render_multiline: false,
             viewport_top: 0,
             edit_mode: EditMode::Emacs,
@@ -337,7 +343,20 @@ impl LineEditor {
         self.prev_total_rows = 0;
         self.prev_cursor_row = 0;
         self.prev_render_multiline = false;
+        self.prev_render_had_selection = false;
         self.viewport_top = 0;
+    }
+
+    /// The active VISUAL selection as a non-empty end-exclusive char
+    /// range for rendering, if any.
+    fn visual_selection_range(&self) -> Option<(usize, usize)> {
+        match self.vi.mode {
+            ViMode::Visual { kind, anchor } => {
+                let (s, e) = vim::visual_selection(&self.buf, anchor, self.pos, kind);
+                (s < e).then_some((s, e))
+            }
+            _ => None,
+        }
     }
 
     /// Insert a character at the current cursor position and advance
@@ -836,6 +855,9 @@ enum KeyAction {
     /// vi `v`: edit the line (or history entry `n`; 0 = current line)
     /// in an external editor, then execute the result.
     ViEditInEditor(u32),
+    /// vim `Ctrl-X Ctrl-E`: edit the buffer in an external editor; the
+    /// result replaces the buffer and editing continues (no submit).
+    ViEditBuffer,
 }
 
 impl LineEditor {
@@ -985,7 +1007,7 @@ impl LineEditor {
                         // The plain read path has no alias store or
                         // editor integration (test-only entry point).
                         KeyAction::ViAliasMacro(_) => {}
-                        KeyAction::ViEditInEditor(_) => {
+                        KeyAction::ViEditInEditor(_) | KeyAction::ViEditBuffer => {
                             self.pending_bell = true;
                         }
                         KeyAction::TabComplete | KeyAction::Continue => {}
@@ -1150,6 +1172,15 @@ impl LineEditor {
         // row counts).
         let prev_was_multiline = self.prev_render_multiline;
 
+        // A VISUAL selection changes on every cursor move, so the diff
+        // path would buy nothing while one is active — and the first
+        // frame after it is dismissed must clear the reverse cells.
+        // Bypass the partial repaint in both cases (keeps
+        // `style_diff_pos` untouched by selection state).
+        let sel_active = matches!(self.vi.mode, ViMode::Visual { .. });
+        let selection = self.visual_selection_range();
+        let force_full = sel_active || self.prev_render_had_selection;
+
         // Decide whether a partial repaint (from the first changed cell)
         // is safe, or whether to fall back to the full clear+repaint.
         //
@@ -1172,7 +1203,7 @@ impl LineEditor {
             self.prev_render
                 .as_ref()
                 .and_then(|(prev_buf, prev_spans)| {
-                    if tw == 0 || prev_was_multiline {
+                    if tw == 0 || prev_was_multiline || force_full {
                         return None;
                     }
                     let char_diff = prev_buf
@@ -1271,7 +1302,45 @@ impl LineEditor {
             term.write_str(prompt)?;
 
             // Write the buffer with or without highlighting
-            if spans.is_empty() {
+            if let Some((sel_s, sel_e)) = selection {
+                // VISUAL selection: per-char walk tracking both the
+                // highlight style and the reverse-video span. Because
+                // `reset_style` clears the reverse attribute too, every
+                // style transition inside the selection re-asserts
+                // reverse after reapplying the color; leaving the
+                // selection resets and reapplies the color style.
+                let mut current_style = HighlightStyle::Default;
+                let mut span_idx = 0;
+                let mut in_sel = false;
+                for (i, ch) in self.buf.iter().enumerate() {
+                    let new_style = if spans.is_empty() {
+                        HighlightStyle::Default
+                    } else {
+                        style_at_advancing(spans, &mut span_idx, i)
+                    };
+                    let sel_here = i >= sel_s && i < sel_e;
+                    if new_style != current_style || (in_sel && !sel_here) {
+                        if current_style != HighlightStyle::Default || in_sel {
+                            term.reset_style()?;
+                            in_sel = false;
+                        }
+                        if new_style != HighlightStyle::Default {
+                            apply_style(term, new_style)?;
+                        }
+                        current_style = new_style;
+                    }
+                    if sel_here && !in_sel {
+                        term.set_reverse(true)?;
+                        in_sel = true;
+                    }
+                    term.write_char(*ch)?;
+                }
+                // Boundary cleanup: a selection reaching the final
+                // buffer character never hits a "leaving" cell.
+                if current_style != HighlightStyle::Default || in_sel {
+                    term.reset_style()?;
+                }
+            } else if spans.is_empty() {
                 term.write_str(&self.buffer())?;
             } else {
                 // Spans are produced in left-to-right scan order (sorted,
@@ -1309,6 +1378,7 @@ impl LineEditor {
         self.prev_total_rows = total_rows;
         self.prev_render = Some((self.buf.clone(), spans.to_vec()));
         self.prev_render_multiline = false;
+        self.prev_render_had_selection = sel_active;
         self.viewport_top = 0;
 
         // Position cursor at self.pos
@@ -1357,6 +1427,9 @@ impl LineEditor {
     ) -> io::Result<()> {
         let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
         let cont_width = display_width(cont_prompt);
+        // VISUAL selection overlay (always a full repaint here).
+        let sel_active = matches!(self.vi.mode, ViMode::Visual { .. });
+        let selection = self.visual_selection_range();
         // Column budget per row; tw == 0 means "unknown width" — treat as
         // unbounded so each logical line stays on one row.
         let tw_eff = if tw == 0 { usize::MAX } else { tw };
@@ -1518,12 +1591,17 @@ impl LineEditor {
         let mut span_idx = 0;
         let mut current_style = HighlightStyle::Default;
         let mut dim_on = false;
+        let mut in_sel = false;
         for (vi, row) in rows[vt..vt + visible].iter().enumerate() {
             if vi > 0 || row.first {
-                // Row breaks and prefixes are always unstyled.
-                if current_style != HighlightStyle::Default {
+                // Row breaks and prefixes are always unstyled; reverse
+                // is switched off before any non-buffer output and
+                // re-asserted at the first selected cell of the next
+                // row, so prompts and wraps are never reverse-rendered.
+                if current_style != HighlightStyle::Default || in_sel {
                     term.reset_style()?;
                     current_style = HighlightStyle::Default;
+                    in_sel = false;
                 }
                 if dim_on {
                     term.set_dim(false)?;
@@ -1549,21 +1627,35 @@ impl LineEditor {
                             term.set_dim(false)?;
                             dim_on = false;
                         }
-                        if !spans.is_empty() {
-                            let new_style = style_at_advancing(spans, &mut span_idx, i);
-                            if new_style != current_style {
-                                if current_style != HighlightStyle::Default {
-                                    term.reset_style()?;
-                                }
-                                apply_style(term, new_style)?;
-                                current_style = new_style;
+                        let sel_here = selection.is_some_and(|(s, e)| i >= s && i < e);
+                        let new_style = if spans.is_empty() {
+                            HighlightStyle::Default
+                        } else {
+                            style_at_advancing(spans, &mut span_idx, i)
+                        };
+                        // reset_style clears reverse too: a style
+                        // transition inside the selection re-asserts
+                        // reverse after reapplying the color.
+                        if new_style != current_style || (in_sel && !sel_here) {
+                            if current_style != HighlightStyle::Default || in_sel {
+                                term.reset_style()?;
+                                in_sel = false;
                             }
+                            if new_style != HighlightStyle::Default {
+                                apply_style(term, new_style)?;
+                            }
+                            current_style = new_style;
+                        }
+                        if sel_here && !in_sel {
+                            term.set_reverse(true)?;
+                            in_sel = true;
                         }
                     }
                     Cell::Sugg => {
-                        if current_style != HighlightStyle::Default {
+                        if current_style != HighlightStyle::Default || in_sel {
                             term.reset_style()?;
                             current_style = HighlightStyle::Default;
+                            in_sel = false;
                         }
                         if !dim_on {
                             term.set_dim(true)?;
@@ -1574,7 +1666,7 @@ impl LineEditor {
                 term.write_char(ch)?;
             }
         }
-        if current_style != HighlightStyle::Default {
+        if current_style != HighlightStyle::Default || in_sel {
             term.reset_style()?;
         }
         if dim_on {
@@ -1600,6 +1692,7 @@ impl LineEditor {
         self.prev_total_rows = visible - 1;
         self.prev_cursor_row = cursor_row - vt;
         self.prev_render_multiline = true;
+        self.prev_render_had_selection = sel_active;
         self.prev_render = Some((self.buf.clone(), spans.to_vec()));
         term.flush()?;
         Ok(())
@@ -1613,6 +1706,7 @@ impl LineEditor {
             }
             match self.vi.mode {
                 ViMode::Command => return self.handle_vi_command_key(key, history),
+                ViMode::Visual { .. } => return self.handle_vim_visual_key(key),
                 ViMode::Insert => {
                     // Ctrl+V literal-next (POSIX vi insert mode): the next
                     // key is inserted verbatim, ESC and control keys
@@ -2297,6 +2391,14 @@ impl LineEditor {
             }
             ViCmd::AliasMacro(c) => KeyAction::ViAliasMacro(c),
             ViCmd::EditInEditor => KeyAction::ViEditInEditor(count),
+            ViCmd::EnterVisual(kind) => {
+                self.vi.mode = ViMode::Visual {
+                    kind,
+                    anchor: self.pos,
+                };
+                KeyAction::Continue
+            }
+            ViCmd::EditBuffer => KeyAction::ViEditBuffer,
             ViCmd::Repeat => {
                 let Some(rec) = self.vi.last_change() else {
                     return self.bell();
@@ -2577,6 +2679,302 @@ impl LineEditor {
         KeyAction::Continue
     }
 
+    /// Handle a key while in VISUAL mode (vim flavor).
+    fn handle_vim_visual_key(&mut self, key: KeyEvent) -> KeyAction {
+        match self.vi.resolve_visual_key(key) {
+            VisualOutcome::Pending => KeyAction::Continue,
+            VisualOutcome::Cmd(cmd, count) => {
+                let action = self.execute_visual_cmd(cmd, count);
+                // Same rationale as command mode: end any emacs-side
+                // kill run / yank-pop state.
+                self.last_action = EditAction::Noop;
+                self.yank_state = None;
+                action
+            }
+        }
+    }
+
+    /// Leave VISUAL mode for Command mode.
+    fn vim_exit_visual(&mut self) {
+        self.vi.mode = ViMode::Command;
+        self.clamp_vi_command_pos();
+    }
+
+    /// The whole logical lines touched by the current selection, as a
+    /// `(line_start, line_end)` char range (no separators consumed).
+    fn vim_visual_line_span(&self, anchor: usize) -> (usize, usize) {
+        vim::visual_selection(&self.buf, anchor, self.pos, VisualKind::Line)
+    }
+
+    fn execute_visual_cmd(&mut self, cmd: VisualCmd, count: u32) -> KeyAction {
+        let ViMode::Visual { kind, anchor } = self.vi.mode else {
+            return self.bell();
+        };
+        match cmd {
+            VisualCmd::Bell => self.bell(),
+            VisualCmd::Move(motion) => {
+                match vi::motion_move(&self.buf, self.pos, motion, count) {
+                    Some(p) => self.pos = p,
+                    None => self.pending_bell = true,
+                }
+                KeyAction::Continue
+            }
+            VisualCmd::LineUp | VisualCmd::LineDown => {
+                // Pure buffer motion: at the buffer edge the cursor
+                // simply stops (bell-free, matching Vim).
+                for _ in 0..count.max(1) {
+                    if cmd == VisualCmd::LineUp {
+                        if self.cursor_line_index() == 0 {
+                            break;
+                        }
+                        self.move_cursor_up();
+                    } else {
+                        if self.cursor_line_index() + 1 >= self.line_count() {
+                            break;
+                        }
+                        self.move_cursor_down();
+                    }
+                    self.clamp_vi_command_pos();
+                }
+                KeyAction::Continue
+            }
+            VisualCmd::Delete | VisualCmd::Change | VisualCmd::Yank => match kind {
+                VisualKind::Char => self.vim_visual_charwise_op(cmd, anchor),
+                VisualKind::Line => self.vim_visual_linewise_op(cmd, anchor),
+            },
+            VisualCmd::DeleteLines => self.vim_visual_linewise_op(VisualCmd::Delete, anchor),
+            VisualCmd::ChangeLines => self.vim_visual_linewise_op(VisualCmd::Change, anchor),
+            VisualCmd::YankLines => self.vim_visual_linewise_op(VisualCmd::Yank, anchor),
+            VisualCmd::Put { before } => self.vim_visual_put(kind, anchor, before),
+            VisualCmd::ReplaceChar(c) => {
+                let (s, e) = vim::visual_selection(&self.buf, anchor, self.pos, kind);
+                if s < e {
+                    self.undo.save(&self.buf, self.pos);
+                    for i in s..e {
+                        // '\n' separators are preserved (oracle-verified:
+                        // charwise rX over ab\ncd keeps the line break).
+                        if self.buf[i] != '\n' {
+                            self.buf[i] = c;
+                        }
+                    }
+                    self.invalidate_width_cache();
+                }
+                self.pos = s;
+                self.vim_exit_visual();
+                KeyAction::Continue
+            }
+            VisualCmd::ToggleCase => {
+                let (s, e) = vim::visual_selection(&self.buf, anchor, self.pos, kind);
+                if s < e {
+                    self.undo.save(&self.buf, self.pos);
+                    for i in s..e {
+                        let ch = self.buf[i];
+                        self.buf[i] = if ch.is_uppercase() {
+                            ch.to_lowercase().next().unwrap_or(ch)
+                        } else if ch.is_lowercase() {
+                            ch.to_uppercase().next().unwrap_or(ch)
+                        } else {
+                            ch
+                        };
+                    }
+                    self.invalidate_width_cache();
+                }
+                self.pos = s;
+                self.vim_exit_visual();
+                KeyAction::Continue
+            }
+            VisualCmd::SwapEnds => {
+                self.vi.mode = ViMode::Visual {
+                    kind,
+                    anchor: self.pos.min(self.buf.len().saturating_sub(1)),
+                };
+                self.pos = anchor.min(self.buf.len().saturating_sub(1));
+                KeyAction::Continue
+            }
+            VisualCmd::ToggleKind(k) => {
+                if k == kind {
+                    self.vim_exit_visual();
+                } else {
+                    // Kind switch preserves the anchor (oracle-verified).
+                    self.vi.mode = ViMode::Visual { kind: k, anchor };
+                }
+                KeyAction::Continue
+            }
+            VisualCmd::Exit => {
+                self.vim_exit_visual();
+                KeyAction::Continue
+            }
+            VisualCmd::Submit => {
+                // Shell semantics: submit the whole line, selection
+                // discarded.
+                self.vim_exit_visual();
+                KeyAction::Submit
+            }
+            VisualCmd::Eof => {
+                if self.is_empty() {
+                    KeyAction::Eof
+                } else {
+                    self.bell()
+                }
+            }
+            VisualCmd::ClearScreen => KeyAction::ClearScreen,
+        }
+    }
+
+    /// Charwise VISUAL `d`/`c`/`y`.
+    fn vim_visual_charwise_op(&mut self, cmd: VisualCmd, anchor: usize) -> KeyAction {
+        let (s, e) = vim::visual_selection(&self.buf, anchor, self.pos, VisualKind::Char);
+        let text: String = self.buf[s..e].iter().collect();
+        if !text.is_empty() {
+            self.record_kill(&text, false, RegisterKind::Charwise);
+        }
+        match cmd {
+            VisualCmd::Yank => {
+                self.pos = s;
+                self.vim_exit_visual();
+            }
+            VisualCmd::Delete | VisualCmd::Change => {
+                if s < e {
+                    self.undo.save(&self.buf, self.pos);
+                    self.buf.drain(s..e);
+                    self.invalidate_width_cache();
+                }
+                self.pos = s;
+                if cmd == VisualCmd::Change {
+                    // c/s enter Insert even on an empty selection.
+                    self.vi.mode = ViMode::Insert;
+                } else {
+                    self.vim_exit_visual();
+                }
+            }
+            _ => unreachable!("charwise op is d/c/y"),
+        }
+        KeyAction::Continue
+    }
+
+    /// Linewise VISUAL operation (`d`/`c`/`y` on a linewise selection,
+    /// and the `D`/`C`/`S`/`R`/`Y` line variants of any selection).
+    fn vim_visual_linewise_op(&mut self, cmd: VisualCmd, anchor: usize) -> KeyAction {
+        let (ls, le) = self.vim_visual_line_span(anchor);
+        let text = vim::linewise_register_text(&self.buf, ls, le);
+        self.record_kill(&text, false, RegisterKind::Linewise);
+        match cmd {
+            VisualCmd::Yank => {
+                self.pos = anchor.min(self.pos).min(self.buf.len().saturating_sub(1));
+                self.vim_exit_visual();
+            }
+            VisualCmd::Delete => {
+                self.undo.save(&self.buf, self.pos);
+                let (start, end) = vim::linewise_delete_range(&self.buf, ls, le);
+                self.buf.drain(start..end);
+                self.pos = start.min(self.buf.len().saturating_sub(1));
+                if let Some(fnb) =
+                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                {
+                    self.pos = fnb;
+                }
+                self.invalidate_width_cache();
+                self.vim_exit_visual();
+            }
+            VisualCmd::Change => {
+                // §8.2 change range: the lines collapse to one empty
+                // logical line, Insert begins on it.
+                self.undo.save(&self.buf, self.pos);
+                self.buf.drain(ls..le);
+                self.pos = ls;
+                self.invalidate_width_cache();
+                self.vi.mode = ViMode::Insert;
+            }
+            _ => unreachable!("linewise op is d/c/y"),
+        }
+        KeyAction::Continue
+    }
+
+    /// VISUAL `p`/`P` (§8.3): the selection is deleted, the register
+    /// contents replace it. With `p` the deleted text swaps into the
+    /// unnamed register (selection's kind); with `P` the register — and
+    /// the kill ring, to keep the front-entry invariant — are left
+    /// unchanged.
+    fn vim_visual_put(&mut self, kind: VisualKind, anchor: usize, before: bool) -> KeyAction {
+        let reg = self.unnamed_register.clone();
+        if reg.text.is_empty() {
+            return self.bell();
+        }
+        self.undo.save(&self.buf, self.pos);
+        // Delete the selection. Linewise selections use the change
+        // range (no separator consumed) so the pasted block lands on
+        // its own line slot between the neighbors.
+        let (s, e) = vim::visual_selection(&self.buf, anchor, self.pos, kind);
+        let deleted: String = self.buf[s..e].iter().collect();
+        if !before && !deleted.is_empty() {
+            let deleted_kind = match kind {
+                VisualKind::Char => RegisterKind::Charwise,
+                VisualKind::Line => RegisterKind::Linewise,
+            };
+            let reg_text = match kind {
+                VisualKind::Char => deleted.clone(),
+                VisualKind::Line => format!("{}\n", deleted),
+            };
+            self.record_kill(&reg_text, false, deleted_kind);
+        }
+        self.buf.drain(s..e);
+        let reg_chars: Vec<char> = reg.text.chars().collect();
+        match (reg.kind, kind) {
+            (RegisterKind::Charwise, VisualKind::Char) => {
+                // Splice in place; cursor on the last pasted char.
+                self.buf.splice(s..s, reg_chars.iter().copied());
+                self.pos = s + reg_chars.len() - 1;
+            }
+            (RegisterKind::Charwise, VisualKind::Line) => {
+                // Charwise text becomes its own new line, occupying the
+                // emptied line slot.
+                self.buf.splice(s..s, reg_chars.iter().copied());
+                self.pos = s;
+                if let Some(fnb) =
+                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                {
+                    self.pos = fnb;
+                }
+            }
+            (RegisterKind::Linewise, VisualKind::Char) => {
+                // Complete line(s) at the deletion point, splitting the
+                // surrounding line: '\n' + T (T ends in '\n' already
+                // separating the following text... the trailing '\n'
+                // of T becomes the break before the split-off tail).
+                let mut ins: Vec<char> = Vec::with_capacity(reg_chars.len() + 1);
+                ins.push('\n');
+                ins.extend(&reg_chars);
+                // Drop the trailing separator when the deletion point
+                // is already at a line boundary end (nothing follows on
+                // the line) to avoid a dangling empty line? Vim keeps
+                // the split; keep it simple and keep the split.
+                let first = s + 1;
+                self.buf.splice(s..s, ins);
+                self.pos = first;
+                if let Some(fnb) =
+                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                {
+                    self.pos = fnb;
+                }
+            }
+            (RegisterKind::Linewise, VisualKind::Line) => {
+                // Replace the lines: T minus its trailing '\n' fills
+                // the emptied line slot.
+                let ins = &reg_chars[..reg_chars.len().saturating_sub(1)];
+                self.buf.splice(s..s, ins.iter().copied());
+                self.pos = s;
+                if let Some(fnb) =
+                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                {
+                    self.pos = fnb;
+                }
+            }
+        }
+        self.invalidate_width_cache();
+        self.vim_exit_visual();
+        KeyAction::Continue
+    }
+
     /// vim `p`/`P`: put the typed unnamed register (§8.3). Charwise
     /// puts splice at the cursor like POSIX vi; a linewise register
     /// opens new line(s) below (`p`) or above (`P`) the cursor's
@@ -2672,7 +3070,7 @@ impl LineEditor {
         }
         let want = match self.vi.mode {
             ViMode::Insert => CursorStyle::Bar,
-            ViMode::Command => CursorStyle::Block,
+            ViMode::Command | ViMode::Visual { .. } => CursorStyle::Block,
         };
         if self.last_cursor_style != Some(want) {
             term.set_cursor_style(want)?;
@@ -2742,26 +3140,16 @@ impl LineEditor {
         Ok(())
     }
 
-    /// vi `v`: run the external editor on the current line (or history
-    /// entry `entry`; 0 = current line). On success the edited text
-    /// replaces the buffer and `Ok(true)` asks the caller to submit it.
-    fn vi_edit_in_editor<T: Terminal>(
+    /// Run `editor` on a temp file seeded with `content`. Returns the
+    /// edited text (trailing newline stripped) on success; on failure
+    /// requests a bell, invalidates the render state, and returns
+    /// `None`. Shared by POSIX-vi `v` and vim `Ctrl-X Ctrl-E`.
+    fn run_external_editor<T: Terminal>(
         &mut self,
         term: &mut T,
-        history: &History,
-        entry: u32,
-    ) -> io::Result<bool> {
-        let content = if entry == 0 {
-            self.buffer()
-        } else {
-            match history.entries().get(entry as usize - 1) {
-                Some(e) => e.clone(),
-                None => {
-                    self.pending_bell = true;
-                    return Ok(false);
-                }
-            }
-        };
+        content: &str,
+        editor: &str,
+    ) -> io::Result<Option<String>> {
         // O_EXCL via create_new: refuses to follow a pre-planted symlink
         // at a predictable path and never overwrites an existing file.
         let mut path = std::env::temp_dir();
@@ -2793,7 +3181,7 @@ impl LineEditor {
         }
         let Some((tmp_path, mut file)) = created else {
             self.pending_bell = true;
-            return Ok(false);
+            return Ok(None);
         };
         path = tmp_path;
         {
@@ -2804,12 +3192,6 @@ impl LineEditor {
 
         term.reset_style()?;
         term.disable_raw_mode()?;
-        // POSIX prescribes vi; honor the conventional VISUAL/EDITOR
-        // overrides first. Shell variables set inside yosh are not
-        // process-environment exports, so this reads the inherited
-        // environment only.
-        let editor = std::env::var("VISUAL")
-            .unwrap_or_else(|_| std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string()));
         let mut parts = editor.split_whitespace();
         let status = parts.next().map(|prog| {
             std::process::Command::new(prog)
@@ -2822,18 +3204,73 @@ impl LineEditor {
         let ok = matches!(status, Some(Ok(st)) if st.success());
         let result = if ok {
             let text = std::fs::read_to_string(&path).unwrap_or_default();
-            let text = text.strip_suffix('\n').unwrap_or(&text).to_string();
-            self.buf = text.chars().collect();
-            self.pos = self.buf.len();
-            self.invalidate_width_cache();
-            true
+            Some(text.strip_suffix('\n').unwrap_or(&text).to_string())
         } else {
             self.pending_bell = true;
             self.invalidate_render_state();
-            false
+            None
         };
         let _ = std::fs::remove_file(&path);
         Ok(result)
+    }
+
+    /// vi `v`: run the external editor on the current line (or history
+    /// entry `entry`; 0 = current line). On success the edited text
+    /// replaces the buffer and `Ok(true)` asks the caller to submit it.
+    fn vi_edit_in_editor<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        history: &History,
+        entry: u32,
+    ) -> io::Result<bool> {
+        let content = if entry == 0 {
+            self.buffer()
+        } else {
+            match history.entries().get(entry as usize - 1) {
+                Some(e) => e.clone(),
+                None => {
+                    self.pending_bell = true;
+                    return Ok(false);
+                }
+            }
+        };
+        // POSIX prescribes vi; honor the conventional VISUAL/EDITOR
+        // overrides first. Shell variables set inside yosh are not
+        // process-environment exports, so this reads the inherited
+        // environment only (ShellEnv resolution remains TODO residual
+        // (b); the vim Ctrl-X Ctrl-E path uses the ShellEnv snapshot).
+        let editor = std::env::var("VISUAL")
+            .unwrap_or_else(|_| std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string()));
+        match self.run_external_editor(term, &content, &editor)? {
+            Some(text) => {
+                self.buf = text.chars().collect();
+                self.pos = self.buf.len();
+                self.invalidate_width_cache();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// vim `Ctrl-X Ctrl-E`: run the snapshotted editor command on the
+    /// buffer; the result replaces the buffer (undoable) and the read
+    /// continues — the user reviews and presses Enter (zsh
+    /// `edit-command-line` behavior).
+    fn vim_edit_buffer<T: Terminal>(&mut self, term: &mut T) -> io::Result<bool> {
+        let content = self.buffer();
+        let editor = self.editor_command.clone();
+        match self.run_external_editor(term, &content, &editor)? {
+            Some(text) => {
+                self.undo.save(&self.buf, self.pos);
+                self.buf = text.chars().collect();
+                self.pos = self.buf.len();
+                self.invalidate_width_cache();
+                self.clamp_vi_command_pos();
+                self.suggestion = None;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     /// Emit (and clear) a pending vi alert as a terminal BEL.
@@ -3278,6 +3715,13 @@ impl LineEditor {
                             }
                             // Editor failed or was aborted: repaint the
                             // prompt line and continue editing.
+                            self.repaint_prompt(term, prompt, upper_lines, false)?;
+                        }
+                        KeyAction::ViEditBuffer => {
+                            // vim Ctrl-X Ctrl-E: the edit result loads
+                            // into the buffer; the read continues.
+                            term.reset_style()?;
+                            self.vim_edit_buffer(term)?;
                             self.repaint_prompt(term, prompt, upper_lines, false)?;
                         }
                         KeyAction::Continue => {}

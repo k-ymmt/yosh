@@ -50,12 +50,25 @@ pub enum ViFlavor {
 }
 
 /// vi submode. Reads always start in insert mode; ESC enters command
-/// mode.
+/// mode. `Visual` exists only in the vim flavor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ViMode {
     #[default]
     Insert,
+    /// = Vim "Normal"; name kept for POSIX-vi continuity.
     Command,
+    /// vim VISUAL mode. `anchor` is the char index where VISUAL was
+    /// entered; the selection is `min(anchor, pos) ..= max(anchor, pos)`
+    /// (inclusive, Vim semantics), expanded to logical-line boundaries
+    /// for `Line`.
+    Visual { kind: VisualKind, anchor: usize },
+}
+
+/// Charwise (`v`) vs linewise (`V`) VISUAL selection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VisualKind {
+    Char,
+    Line,
 }
 
 /// Direction/kind of a pending `f`/`F`/`t`/`T` character search.
@@ -224,8 +237,14 @@ pub enum ViCmd {
     /// `@ c` — run the value of alias `_c` as editor input.
     AliasMacro(char),
     /// `v` — edit the line (or history entry `count`; 0 = current
-    /// line) in the vi editor, then execute the result.
+    /// line) in the vi editor, then execute the result. POSIX flavor
+    /// only; the vim flavor binds `v` to VISUAL.
     EditInEditor,
+    /// vim `v` / `V` — enter VISUAL mode (charwise / linewise).
+    EnterVisual(VisualKind),
+    /// vim `Ctrl-X Ctrl-E` — edit the buffer in the external editor;
+    /// the result replaces the buffer without submitting.
+    EditBuffer,
     Submit,
     Eof,
     Interrupt,
@@ -240,6 +259,57 @@ pub enum ViCmd {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViOutcome {
     Cmd(ViCmd, u32),
+    Pending,
+}
+
+/// Semantic command produced by the VISUAL-mode key state machine
+/// (vim flavor only).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VisualCmd {
+    /// Motion: moves `pos`, extending the selection.
+    Move(ViMotion),
+    /// `j` / Down — pure buffer line motion (stops at the last line).
+    LineDown,
+    /// `k` / Up — pure buffer line motion (stops at the first line).
+    LineUp,
+    /// `d` / `x` — delete the selection.
+    Delete,
+    /// `c` / `s` — delete the selection and enter Insert.
+    Change,
+    /// `y` — yank the selection.
+    Yank,
+    /// `D` — delete the whole logical lines touched by the selection.
+    DeleteLines,
+    /// `C` / `S` / `R` — linewise change of the touched lines.
+    ChangeLines,
+    /// `Y` — linewise yank of the touched lines.
+    YankLines,
+    /// `p` / `P` — replace the selection with the register contents.
+    Put {
+        /// `P`: the unnamed register is left unchanged.
+        before: bool,
+    },
+    /// `r c` — replace every selected character (except `'\n'`).
+    ReplaceChar(char),
+    /// `~` — toggle case of the selection.
+    ToggleCase,
+    /// `o` — swap cursor and anchor.
+    SwapEnds,
+    /// `v` / `V` — same kind exits, other kind switches (§2.3).
+    ToggleKind(VisualKind),
+    /// Esc (no pending) / Ctrl-C — exit to Command mode.
+    Exit,
+    /// Enter — submit the whole line (selection discarded).
+    Submit,
+    Eof,
+    ClearScreen,
+    Bell,
+}
+
+/// Resolution result for VISUAL-mode keys.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VisualOutcome {
+    Cmd(VisualCmd, u32),
     Pending,
 }
 
@@ -259,6 +329,8 @@ enum Pending {
     /// char). A count typed after the operator accumulates here and
     /// multiplies the pre-operator count.
     Op(OpKind, Option<u32>),
+    /// vim `Ctrl-X` seen — waiting for `Ctrl-E` (edit buffer in editor).
+    CtrlX,
 }
 
 /// The most recent buffer-modifying command, for `.`.
@@ -365,6 +437,15 @@ impl ViEngine {
         // Control keys act regardless of pending state (and clear it):
         // interrupt/EOF/redraw mirror their insert-mode meaning.
         if ctrl && !alt {
+            // A pending vim Ctrl-X consumes the next control key.
+            if self.pending == Pending::CtrlX {
+                self.count = None;
+                self.pending = Pending::None;
+                return match key.code {
+                    KeyCode::Char('e') => ViOutcome::Cmd(ViCmd::EditBuffer, 1),
+                    _ => ViOutcome::Cmd(ViCmd::Bell, 1),
+                };
+            }
             self.count = None;
             self.pending = Pending::None;
             return match key.code {
@@ -374,6 +455,12 @@ impl ViEngine {
                 KeyCode::Char('r') => ViOutcome::Cmd(ViCmd::FuzzySearch, 1),
                 // Ctrl+J: raw-mode LF, treated as Enter (see Keymap).
                 KeyCode::Char('j') => ViOutcome::Cmd(ViCmd::Submit, 1),
+                // vim Ctrl-X: prefix for Ctrl-X Ctrl-E (edit buffer).
+                // Shadows Vim's number decrement (out of scope, §12).
+                KeyCode::Char('x') if self.flavor == ViFlavor::Vim => {
+                    self.pending = Pending::CtrlX;
+                    ViOutcome::Pending
+                }
                 _ => ViOutcome::Cmd(ViCmd::Bell, 1),
             };
         }
@@ -456,6 +543,12 @@ impl ViEngine {
                 return ViOutcome::Cmd(ViCmd::AliasMacro(ch), 1);
             }
             Pending::Op(op, count_after) => return self.resolve_op_motion(op, count_after, ch),
+            Pending::CtrlX => {
+                // Ctrl-X followed by a non-control key: not a chord.
+                self.pending = Pending::None;
+                self.count = None;
+                return ViOutcome::Cmd(ViCmd::Bell, 1);
+            }
             Pending::None => {}
         }
 
@@ -488,7 +581,15 @@ impl ViEngine {
             }
             'v' => {
                 let n = self.count.take().unwrap_or(0);
-                return ViOutcome::Cmd(ViCmd::EditInEditor, n);
+                return match self.flavor {
+                    ViFlavor::Posix => ViOutcome::Cmd(ViCmd::EditInEditor, n),
+                    // Vim: enter VISUAL charwise; count ignored (§12).
+                    ViFlavor::Vim => ViOutcome::Cmd(ViCmd::EnterVisual(VisualKind::Char), 1),
+                };
+            }
+            'V' if self.flavor == ViFlavor::Vim => {
+                self.count = None;
+                return ViOutcome::Cmd(ViCmd::EnterVisual(VisualKind::Line), 1);
             }
             _ => {}
         }
@@ -611,6 +712,152 @@ impl ViEngine {
                 None => ViOutcome::Cmd(ViCmd::Bell, if op.is_some() { 1 } else { total }),
             },
         }
+    }
+
+    /// Resolve one VISUAL-mode key event (vim flavor only). Shares the
+    /// count accumulator, find-char pending state, and `;`/`,` find
+    /// memory with Command mode.
+    pub fn resolve_visual_key(&mut self, key: KeyEvent) -> VisualOutcome {
+        use VisualCmd as VC;
+        let mods = key.modifiers;
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        let alt = mods.contains(KeyModifiers::ALT);
+
+        if ctrl && !alt {
+            self.count = None;
+            self.pending = Pending::None;
+            return match key.code {
+                // Vim: Ctrl-C exits VISUAL; it does not cancel the line.
+                KeyCode::Char('c') => VisualOutcome::Cmd(VC::Exit, 1),
+                KeyCode::Char('d') => VisualOutcome::Cmd(VC::Eof, 1),
+                KeyCode::Char('l') => VisualOutcome::Cmd(VC::ClearScreen, 1),
+                KeyCode::Char('j') => VisualOutcome::Cmd(VC::Submit, 1),
+                _ => VisualOutcome::Cmd(VC::Bell, 1),
+            };
+        }
+
+        match key.code {
+            KeyCode::Enter => {
+                self.count = None;
+                self.pending = Pending::None;
+                return VisualOutcome::Cmd(VC::Submit, 1);
+            }
+            KeyCode::Esc => {
+                // A pending prefix (find char, `r`) is cancelled first;
+                // only a bare Esc exits VISUAL.
+                let had_pending = self.count.is_some() || self.pending != Pending::None;
+                self.count = None;
+                self.pending = Pending::None;
+                return if had_pending {
+                    VisualOutcome::Pending
+                } else {
+                    VisualOutcome::Cmd(VC::Exit, 1)
+                };
+            }
+            KeyCode::Left => {
+                let n = self.take_count();
+                return VisualOutcome::Cmd(VC::Move(ViMotion::CharBack), n);
+            }
+            KeyCode::Right => {
+                let n = self.take_count();
+                return VisualOutcome::Cmd(VC::Move(ViMotion::CharForward), n);
+            }
+            KeyCode::Up => {
+                let n = self.take_count();
+                return VisualOutcome::Cmd(VC::LineUp, n);
+            }
+            KeyCode::Down => {
+                let n = self.take_count();
+                return VisualOutcome::Cmd(VC::LineDown, n);
+            }
+            _ => {}
+        }
+
+        let ch = match key.code {
+            KeyCode::Char(c) if !alt => c,
+            // Fast ESC-then-key (Alt encoding): cancel pending input,
+            // then the key acts fresh — but a bare Alt+key exits like
+            // Esc would and replays nothing (VISUAL has no Alt chords).
+            KeyCode::Char(c) => {
+                self.count = None;
+                self.pending = Pending::None;
+                c
+            }
+            KeyCode::Backspace => 'h',
+            _ => return VisualOutcome::Cmd(VC::Bell, 1),
+        };
+
+        match self.pending {
+            Pending::FindChar(kind, _) => {
+                self.pending = Pending::None;
+                let n = self.take_count();
+                self.last_find = Some((kind, ch));
+                return VisualOutcome::Cmd(VC::Move(ViMotion::FindChar(kind, ch)), n);
+            }
+            Pending::ReplaceChar => {
+                self.pending = Pending::None;
+                self.count = None;
+                return VisualOutcome::Cmd(VC::ReplaceChar(ch), 1);
+            }
+            Pending::None => {}
+            // Command-mode-only pendings cannot be active in VISUAL.
+            _ => {
+                self.pending = Pending::None;
+                self.count = None;
+                return VisualOutcome::Cmd(VC::Bell, 1);
+            }
+        }
+
+        if let Some(d) = ch.to_digit(10)
+            && (d != 0 || self.count.is_some())
+        {
+            let cur = self.count.unwrap_or(0);
+            self.count = Some(cur.saturating_mul(10).saturating_add(d).min(COUNT_CAP));
+            return VisualOutcome::Pending;
+        }
+
+        let n = self.take_count();
+        if let Some(mk) = motion_key(ch) {
+            return match mk {
+                MotionKey::Simple(motion) => VisualOutcome::Cmd(VC::Move(motion), n),
+                MotionKey::CountIgnored(motion) => VisualOutcome::Cmd(VC::Move(motion), n),
+                MotionKey::Find(kind) => {
+                    self.pending = Pending::FindChar(kind, None);
+                    self.count = Some(n);
+                    VisualOutcome::Pending
+                }
+                MotionKey::Repeat { rev } => match self.last_find {
+                    Some((kind, c)) => {
+                        let kind = if rev { kind.reversed() } else { kind };
+                        VisualOutcome::Cmd(VC::Move(ViMotion::FindChar(kind, c)), n)
+                    }
+                    None => VisualOutcome::Cmd(VC::Bell, 1),
+                },
+            };
+        }
+        let cmd = match ch {
+            // j/k are pure buffer motion in VISUAL (no history recall).
+            'k' => VC::LineUp,
+            'j' => VC::LineDown,
+            'd' | 'x' => VC::Delete,
+            'c' | 's' => VC::Change,
+            'y' => VC::Yank,
+            'D' => VC::DeleteLines,
+            'C' | 'S' | 'R' => VC::ChangeLines,
+            'Y' => VC::YankLines,
+            'p' => VC::Put { before: false },
+            'P' => VC::Put { before: true },
+            'r' => {
+                self.pending = Pending::ReplaceChar;
+                return VisualOutcome::Pending;
+            }
+            '~' => VC::ToggleCase,
+            'o' => VC::SwapEnds,
+            'v' => VC::ToggleKind(VisualKind::Char),
+            'V' => VC::ToggleKind(VisualKind::Line),
+            _ => VC::Bell,
+        };
+        VisualOutcome::Cmd(cmd, n)
     }
 
     /// Record the most recent buffer-modifying command for `.`.

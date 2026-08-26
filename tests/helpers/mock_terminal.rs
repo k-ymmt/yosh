@@ -23,6 +23,7 @@ pub struct MockTerminal {
     dim: bool,
     bold: bool,
     underline: bool,
+    reverse: bool,
     fg_color: Option<String>,
 }
 
@@ -37,6 +38,7 @@ impl MockTerminal {
             dim: false,
             bold: false,
             underline: false,
+            reverse: false,
             fg_color: None,
         }
     }
@@ -126,7 +128,16 @@ impl Terminal for MockTerminal {
         Ok(())
     }
 
-    fn set_reverse(&mut self, _on: bool) -> io::Result<()> {
+    /// Tracks reverse *state*: `[REV]` / `[/REV]` are emitted only on
+    /// actual transitions — including the implicit turn-off through
+    /// `reset_style` — so the marker stream reflects what a real
+    /// terminal would display.
+    fn set_reverse(&mut self, on: bool) -> io::Result<()> {
+        if self.reverse != on {
+            self.reverse = on;
+            self.output
+                .push(if on { "[REV]" } else { "[/REV]" }.to_string());
+        }
         Ok(())
     }
 
@@ -157,6 +168,10 @@ impl Terminal for MockTerminal {
         self.bold = false;
         self.underline = false;
         self.fg_color = None;
+        if self.reverse {
+            self.reverse = false;
+            self.output.push("[/REV]".to_string());
+        }
         self.output.push("[RESET]".to_string());
         Ok(())
     }

@@ -45,6 +45,17 @@ fn vim_read_full(
     aliases: &yosh::env::aliases::AliasStore,
     is_incomplete: &dyn Fn(&str) -> bool,
 ) -> Option<String> {
+    vim_read_full_with(events, aliases, is_incomplete, None).0
+}
+
+/// `vim_read_full` with an optional editor-command override (for
+/// `Ctrl-X Ctrl-E`); also returns the terminal for output assertions.
+fn vim_read_full_with(
+    events: Vec<crossterm::event::Event>,
+    aliases: &yosh::env::aliases::AliasStore,
+    is_incomplete: &dyn Fn(&str) -> bool,
+    editor_cmd: Option<&str>,
+) -> (Option<String>, MockTerminal) {
     use yosh::interactive::command_completion::{CommandCompleter, CommandCompletionContext};
     use yosh::interactive::completion::CompletionContext;
     use yosh::interactive::highlight::{CheckerEnv, HighlightScanner};
@@ -57,6 +68,9 @@ fn vim_read_full(
     let mut term = MockTerminal::new(events);
     let mut editor = LineEditor::new();
     editor.set_edit_mode(EditMode::Vim);
+    if let Some(cmd) = editor_cmd {
+        editor.set_editor_command(cmd.to_string());
+    }
     let mut history = History::new();
     let mut command_completer = CommandCompleter::new();
     let mut cmd_ctx = CommandCompletionContext {
@@ -70,7 +84,7 @@ fn vim_read_full(
     let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
         std::path::PathBuf::from("/nonexistent"),
     );
-    editor
+    let line = editor
         .read_line_with_completion(
             "$ ",
             &[],
@@ -85,7 +99,8 @@ fn vim_read_full(
             &mut || "> ".to_string(),
             is_incomplete,
         )
-        .expect("read failed")
+        .expect("read failed");
+    (line, term)
 }
 
 fn esc() -> crossterm::event::Event {
@@ -565,4 +580,389 @@ fn vim_p_after_merged_emacs_kills_puts_merged_whole() {
         .read_line("$ ", &[], &mut history, &mut term)
         .expect("read failed");
     assert_eq!(second.as_deref(), Some("one two"));
+}
+
+// ── Phase 3: VISUAL mode ───────────────────────────────────────────────
+
+#[test]
+fn vim_visual_motion_extends_and_d_deletes() {
+    // v at 'e', e to end of "echo": selection "echo"; d deletes it.
+    let line = vim_read(seq![
+        chars("echo hello"),
+        [esc()],
+        chars("0ved"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some(" hello"));
+}
+
+#[test]
+fn vim_visual_x_deletes_selection() {
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0vlx"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("c"));
+}
+
+#[test]
+fn vim_visual_c_deletes_and_enters_insert() {
+    let line = vim_read(seq![
+        chars("echo hello"),
+        [esc()],
+        chars("0vec"),
+        chars("say"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("say hello"));
+}
+
+#[test]
+fn vim_visual_y_then_p_puts_charwise() {
+    // v l selects "ab"; y yanks, cursor to selection start; p after
+    // cursor 0 → "aabbc".
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0vlyp"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("aabbc"));
+}
+
+#[test]
+fn vim_visual_y_cursor_moves_to_selection_start() {
+    let line = vim_read(seq![chars("abcde"), [esc()], chars("0v2lyx"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("bcde"));
+}
+
+#[test]
+fn vim_visual_line_d_deletes_whole_line() {
+    let line = vim_read(seq![
+        chars("aa"),
+        [alt_enter()],
+        chars("bb"),
+        [esc()],
+        chars("Vd"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("aa"));
+}
+
+#[test]
+fn vim_visual_line_c_collapses_to_empty_line() {
+    let line = vim_read(seq![
+        chars("a"),
+        [alt_enter()],
+        chars("b"),
+        [alt_enter()],
+        chars("c"),
+        [esc()],
+        chars("kVc"),
+        chars("X"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("a\nX\nc"));
+}
+
+#[test]
+fn vim_visual_kind_switch_preserves_anchor() {
+    // v..l charwise, V switches to linewise (anchor kept), d deletes
+    // the whole touched line.
+    let line = vim_read(seq![
+        chars("aa"),
+        [alt_enter()],
+        chars("bb"),
+        [esc()],
+        chars("vVd"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("aa"));
+}
+
+#[test]
+fn vim_visual_same_kind_toggle_exits() {
+    // v then v exits VISUAL; x then acts as a Command-mode delete.
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0vvx"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("bc"));
+}
+
+#[test]
+fn vim_visual_esc_exits_to_command() {
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0v"), [esc()], chars("x"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("bc"));
+}
+
+#[test]
+fn vim_visual_ctrl_c_exits_without_cancelling_line() {
+    // Vim behavior: Ctrl-C leaves VISUAL; it does not cancel the read.
+    let line = vim_read(seq![
+        chars("abc"),
+        [esc()],
+        chars("v"),
+        [ctrl('c')],
+        chars("x"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("ab"));
+}
+
+#[test]
+fn vim_visual_o_swaps_ends() {
+    // v at 0, 2l → sel a..c; o → cursor back to 0 with anchor at 2;
+    // l shrinks the selection to b..c; d deletes "bc".
+    let line = vim_read(seq![chars("abcde"), [esc()], chars("0v2lold"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("ade"));
+}
+
+#[test]
+fn vim_visual_r_replaces_selection_preserving_newlines() {
+    // Oracle-verified: charwise rX over ab\ncd → selection chars become
+    // X but the '\n' separator survives.
+    let line = vim_read(seq![
+        chars("ab"),
+        [alt_enter()],
+        chars("cd"),
+        [esc()],
+        chars("vkrX"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("aX\nXX"));
+}
+
+#[test]
+fn vim_visual_tilde_toggles_case_of_selection() {
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0vl~"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("ABc"));
+}
+
+#[test]
+fn vim_visual_enter_submits_whole_line() {
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0vl"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("abc"));
+}
+
+#[test]
+fn vim_visual_k_at_edge_is_pure_buffer_motion() {
+    // k in VISUAL never recalls history: the selection stays on the
+    // current buffer and the cursor simply stops at the first line.
+    let line = vim_read_with_history(
+        &["prev entry"],
+        seq![chars("abc"), [esc()], chars("0vkd"), [enter()]],
+    );
+    assert_eq!(line.as_deref(), Some("bc"));
+}
+
+#[test]
+fn vim_visual_capital_d_deletes_touched_lines() {
+    // Charwise selection; D deletes the whole logical lines it touches.
+    let line = vim_read(seq![
+        chars("aa"),
+        [alt_enter()],
+        chars("bb"),
+        [esc()],
+        chars("vD"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("aa"));
+}
+
+#[test]
+fn vim_visual_capital_y_yanks_lines() {
+    let line = vim_read(seq![chars("ab"), [esc()], chars("vYp"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("ab\nab"));
+}
+
+#[test]
+fn vim_visual_p_swaps_deleted_text_into_register() {
+    // Yank "ab", select "cd", p replaces it; the register now holds the
+    // deleted "cd", so a Command-mode p pastes "cd".
+    let line = vim_read(seq![
+        chars("ab cd"),
+        [esc()],
+        chars("0vly"),
+        chars("wvlp"),
+        chars("p"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("ab abcd"));
+}
+
+#[test]
+fn vim_visual_capital_p_leaves_register_unchanged() {
+    let line = vim_read(seq![
+        chars("ab cd"),
+        [esc()],
+        chars("0vly"),
+        chars("wvlP"),
+        chars("p"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("ab abab"));
+}
+
+#[test]
+fn vim_visual_empty_buffer_operators_are_noops() {
+    // v on an empty buffer: d is a bell-free no-op; typing continues.
+    let line = vim_read(seq![[esc()], chars("vd"), chars("iok"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("ok"));
+}
+
+#[test]
+fn vim_visual_empty_buffer_c_enters_insert() {
+    let line = vim_read(seq![[esc()], chars("vc"), chars("ok"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("ok"));
+}
+
+// ── Phase 3: selection rendering ([REV] markers) ───────────────────────
+
+#[test]
+fn vim_visual_selection_renders_reverse_video() {
+    let mut ed = LineEditor::new();
+    ed.set_edit_mode(EditMode::Vim);
+    let mut history = History::new();
+    let mut term = MockTerminal::new(seq![chars("abc"), [esc()], chars("0vl"), [enter()]]);
+    let line = ed
+        .read_line("$ ", &[], &mut history, &mut term)
+        .expect("read failed");
+    assert_eq!(line.as_deref(), Some("abc"));
+    let all = term.output().join("");
+    // After `v l` the selection covers "ab": reverse on, both chars,
+    // reverse off before the unselected 'c'.
+    assert!(all.contains("[REV]ab[/REV]"), "no reverse span in: {all}");
+}
+
+#[test]
+fn vim_visual_selection_to_buffer_end_cleans_up_reverse() {
+    let mut ed = LineEditor::new();
+    ed.set_edit_mode(EditMode::Vim);
+    let mut history = History::new();
+    // ESC leaves the cursor on 'b'; v selects it — the selection ends
+    // at the buffer's last character (boundary cleanup case).
+    let mut term = MockTerminal::new(seq![chars("ab"), [esc()], chars("v"), [enter()]]);
+    let line = ed
+        .read_line("$ ", &[], &mut history, &mut term)
+        .expect("read failed");
+    assert_eq!(line.as_deref(), Some("ab"));
+    let all = term.output().join("");
+    assert!(all.contains("[REV]b[/REV]"), "no boundary cleanup in: {all}");
+}
+
+#[test]
+fn vim_visual_reverse_reasserted_across_style_transitions() {
+    // With syntax highlighting active, a selection spanning several
+    // style spans must re-assert reverse after every style transition
+    // (reset_style clears the reverse attribute).
+    let aliases = yosh::env::aliases::AliasStore::default();
+    let (line, term) = vim_read_full_with(
+        seq![chars("echo 'hi'"), [esc()], chars("0v$"), [enter()]],
+        &aliases,
+        &|_| false,
+        None,
+    );
+    assert_eq!(line.as_deref(), Some("echo 'hi'"));
+    let all = term.output().join("");
+    let frames: Vec<&str> = all.split("[REV]").collect();
+    // At least two reverse assertions in the fully-selected frame
+    // (initial entry + at least one re-assertion at a span boundary).
+    assert!(
+        frames.len() >= 3,
+        "expected multiple [REV] assertions in: {all}"
+    );
+}
+
+#[test]
+fn vim_visual_multiline_selection_keeps_prompts_unreversed() {
+    // A linewise selection over a two-line buffer: reverse must be off
+    // before the row break / continuation prompt is written.
+    let aliases = yosh::env::aliases::AliasStore::default();
+    let (line, term) = vim_read_full_with(
+        seq![
+            chars("echo 'a"),
+            [esc()],
+            [enter()],
+            chars("b'"),
+            [esc()],
+            chars("Vk"),
+            [enter()]
+        ],
+        &aliases,
+        &|s: &str| s.chars().filter(|&c| c == '\'').count() % 2 == 1,
+        None,
+    );
+    assert_eq!(line.as_deref(), Some("echo 'a\nb'"));
+    let all = term.output().join("");
+    // The continuation prompt "> " must never be inside a reverse span:
+    // no "[REV]" directly abutting the prompt without an intervening
+    // "[/REV]".
+    for (i, _) in all.match_indices("> ") {
+        let before = &all[..i];
+        let on = before.matches("[REV]").count();
+        let off = before.matches("[/REV]").count();
+        assert!(on == off, "prompt rendered inside reverse span: {all}");
+    }
+}
+
+// ── Phase 3: Ctrl-X Ctrl-E ─────────────────────────────────────────────
+
+/// Write a stub editor script that replaces the temp file's content.
+fn stub_editor(dir: &std::path::Path, new_content: &str) -> String {
+    let script = dir.join("stub_editor.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf '%s' '{new_content}' > \"$1\"\n"),
+    )
+    .unwrap();
+    format!("/bin/sh {}", script.display())
+}
+
+#[test]
+fn vim_ctrl_x_ctrl_e_loads_result_without_submitting() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let editor = stub_editor(dir.path(), "echo edited");
+    let aliases = yosh::env::aliases::AliasStore::default();
+    // The edited buffer is NOT submitted: appending " ok" then Enter
+    // proves the read continued.
+    let (line, _term) = vim_read_full_with(
+        seq![
+            chars("orig"),
+            [esc()],
+            [ctrl('x')],
+            [ctrl('e')],
+            chars("A ok"),
+            [enter()]
+        ],
+        &aliases,
+        &|_| false,
+        Some(&editor),
+    );
+    assert_eq!(line.as_deref(), Some("echo edited ok"));
+}
+
+#[test]
+fn vim_ctrl_x_ctrl_e_is_undoable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let editor = stub_editor(dir.path(), "echo edited");
+    let aliases = yosh::env::aliases::AliasStore::default();
+    let (line, _term) = vim_read_full_with(
+        seq![
+            chars("orig"),
+            [esc()],
+            [ctrl('x')],
+            [ctrl('e')],
+            chars("u"),
+            [enter()]
+        ],
+        &aliases,
+        &|_| false,
+        Some(&editor),
+    );
+    assert_eq!(line.as_deref(), Some("orig"));
+}
+
+#[test]
+fn vim_ctrl_x_other_key_bells() {
+    // Ctrl-X followed by anything but Ctrl-E is not a chord.
+    let line = vim_read(seq![
+        chars("abc"),
+        [esc()],
+        [ctrl('x')],
+        [ctrl('l')],
+        chars("x"),
+        [enter()]
+    ]);
+    // Ctrl-X Ctrl-L bells (chord broken); x then deletes normally.
+    assert_eq!(line.as_deref(), Some("ab"));
 }
