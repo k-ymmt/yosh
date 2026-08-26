@@ -253,19 +253,26 @@ fn parse_bracket(pat: &str) -> Option<(usize, bool, Vec<BracketItem>)> {
 
     while let Some(c0) = rest.chars().next() {
         // Closing ']' (but not when it would make an empty class — a leading
-        // ']' is treated as a literal member).
+        // ']' is treated as a literal member). Only an UNESCAPED `]`
+        // closes: `\]` below is a literal member.
         if c0 == ']' && !members.is_empty() {
             rest = &rest[c0.len_utf8()..];
             found_close = true;
             break;
         }
 
-        // The remainder of the class body after the current member char.
-        let after_c0 = &rest[c0.len_utf8()..];
+        // Decode the member char, honoring `\x` escapes. The pattern
+        // renderer (`expand_word_to_pattern`) backslash-escapes quoted
+        // metacharacters, so `\]` is a quote-protected `]`: a literal
+        // member that must NOT close the class (POSIX §2.13.1; bash:
+        // `[a\]b]` matches `]`, and `sr[c\]` has no closer so the `[`
+        // stays literal). Mirrors the mask-aware closer scan in
+        // `pathname::bracket_has_close`.
+        let (m0, m0_escaped, after_m0) = decode_bracket_char(rest, c0);
 
-        // POSIX character class [:class:]
-        if c0 == '[' && after_c0.starts_with(':') {
-            let after_open = &after_c0[':'.len_utf8()..];
+        // POSIX character class [:class:] — only an unescaped `[` opens one.
+        if !m0_escaped && m0 == '[' && after_m0.starts_with(':') {
+            let after_open = &after_m0[':'.len_utf8()..];
             if let Some((consumed, class)) = try_parse_posix_class(after_open) {
                 members.push(BracketItem::Class(class));
                 rest = &after_open[consumed..];
@@ -274,20 +281,22 @@ fn parse_bracket(pat: &str) -> Option<(usize, bool, Vec<BracketItem>)> {
             // Fall through to literal handling on a malformed class.
         }
 
-        // Range: x-y  (only if '-' is followed by another non-']' char).
-        if let Some('-') = after_c0.chars().next() {
-            let after_dash = &after_c0['-'.len_utf8()..];
-            if let Some(hi) = after_dash.chars().next()
-                && hi != ']'
-            {
-                members.push(BracketItem::Range(c0, hi));
-                rest = &after_dash[hi.len_utf8()..];
-                continue;
+        // Range: x-y (only if '-' is followed by another member char that
+        // is not an unescaped ']'; an escaped `\]` endpoint is allowed).
+        if let Some('-') = after_m0.chars().next() {
+            let after_dash = &after_m0['-'.len_utf8()..];
+            if let Some(h0) = after_dash.chars().next() {
+                let (hi, hi_escaped, after_hi) = decode_bracket_char(after_dash, h0);
+                if hi != ']' || hi_escaped {
+                    members.push(BracketItem::Range(m0, hi));
+                    rest = after_hi;
+                    continue;
+                }
             }
         }
 
-        members.push(BracketItem::Char(c0));
-        rest = &rest[c0.len_utf8()..];
+        members.push(BracketItem::Char(m0));
+        rest = after_m0;
     }
 
     if !found_close {
@@ -296,6 +305,22 @@ fn parse_bracket(pat: &str) -> Option<(usize, bool, Vec<BracketItem>)> {
 
     let consumed = pat.len() - rest.len();
     Some((consumed, negate, members))
+}
+
+/// Decode one bracket-member char at the head of `rest` (whose first
+/// char is `c0`): a `\x` escape yields the escaped char with
+/// `escaped = true`; a trailing lone `\` is a literal backslash.
+/// Returns `(member_char, escaped, remainder_after_member)`.
+fn decode_bracket_char(rest: &str, c0: char) -> (char, bool, &str) {
+    if c0 == '\\' {
+        let after_bs = &rest[c0.len_utf8()..];
+        match after_bs.chars().next() {
+            Some(e) => (e, true, &after_bs[e.len_utf8()..]),
+            None => ('\\', false, after_bs),
+        }
+    } else {
+        (c0, false, &rest[c0.len_utf8()..])
+    }
 }
 
 enum BracketItem {
@@ -784,10 +809,60 @@ mod tests {
 
     #[test]
     fn test_star_then_bracket_with_escaped_literal_member() {
-        // `[a\]b]` — backslash is not special inside brackets (POSIX),
-        // so this is parsed as members a, \, b with the first `]` closing.
         // Confirms bracket member parsing is unaffected by pre-parsing.
         assert!(matches("*[abc]*", "xxbxx"));
+    }
+
+    // ── Escaped `]` inside bracket expressions (quoted-`]` rendering) ──
+    // `expand_word_to_pattern` backslash-escapes quote-protected bytes;
+    // `parse_bracket` must treat `\]` as a literal member that cannot
+    // close the class, so the renderer and matcher agree.
+
+    #[test]
+    fn test_escaped_close_bracket_is_literal_member() {
+        // `[a\]b]` — members a, ], b; the final unescaped `]` closes.
+        // bash: `case ] in [a\]b]) ...` matches.
+        assert!(matches("[a\\]b]", "]"));
+        assert!(matches("[a\\]b]", "a"));
+        assert!(matches("[a\\]b]", "b"));
+        assert!(!matches("[a\\]b]", "c"));
+    }
+
+    #[test]
+    fn test_escaped_close_bracket_does_not_close_class() {
+        // `sr[c\]` — the only `]` is escaped, so the class never closes:
+        // `[` falls back to a literal and the escaped `]` is a literal.
+        // This is the token sequence rendered for `sr[c"]"` (quoted `]`).
+        assert!(!matches("sr[c\\]", "src"));
+        assert!(matches("sr[c\\]", "sr[c]"));
+    }
+
+    #[test]
+    fn test_escaped_open_bracket_does_not_start_posix_class() {
+        // `[\[:a]` — the escaped `[` is a literal member, not the start
+        // of a `[:class:]`; members are [, :, a.
+        assert!(matches("[\\[:a]", "["));
+        assert!(matches("[\\[:a]", ":"));
+        assert!(matches("[\\[:a]", "a"));
+        assert!(!matches("[\\[:a]", "b"));
+    }
+
+    #[test]
+    fn test_escaped_backslash_member() {
+        // `[\\]` (chars: [ \ \ ]) — an escaped backslash member.
+        assert!(matches("[\\\\]", "\\"));
+        assert!(!matches("[\\\\]", "]"));
+    }
+
+    #[test]
+    fn test_escaped_range_endpoint() {
+        // `[a-\]]` — a range whose high endpoint is an escaped `]`.
+        // ASCII order: a(0x61) > ](0x5D), so use `[\--a]` style instead:
+        // `[\]-a]` — low endpoint is the escaped `]` (0x5D), high `a`.
+        assert!(matches("[\\]-a]", "]"));
+        assert!(matches("[\\]-a]", "a"));
+        assert!(matches("[\\]-a]", "_"));
+        assert!(!matches("[\\]-a]", "b"));
     }
 
     // ── Literal pattern via escapes (Task 2 PERF item 9 support) ──

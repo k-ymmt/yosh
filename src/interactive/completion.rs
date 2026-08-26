@@ -84,18 +84,67 @@ pub fn is_segment_delimiter(ch: u8) -> bool {
 /// `buf[..end]` (0 when there is none): the start of the pipeline
 /// segment containing `end`. Tracks single/double quotes so delimiters
 /// inside quotes do not split.
+///
+/// A balanced `$(...)` / `$((...))` or `` `...` `` substitution closed
+/// before `end` is skipped whole: its closing `)` (or the operators
+/// inside it) belongs to the substitution, not to the pipeline — so
+/// `git -C $(pwd) ch<Tab>` still resolves `git` as the command word.
+/// When the cursor is INSIDE an unterminated substitution, the segment
+/// starts just after its opener (completing `echo $(git ch<Tab>`
+/// resolves `git`), matching the previous `(`-as-delimiter behavior.
 pub fn segment_start(buf: &str, end: usize) -> usize {
-    let bytes = buf.as_bytes();
-    let end = end.min(buf.len());
+    let bytes = &buf.as_bytes()[..end.min(buf.len())];
     let mut seg_start = 0usize;
     let mut in_single = false;
     let mut in_double = false;
-    for (i, &ch) in bytes.iter().enumerate().take(end) {
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i];
         match ch {
-            b'\'' if !in_double => in_single = !in_single,
-            b'"' if !in_single => in_double = !in_double,
-            ch if is_segment_delimiter(ch) && !in_single && !in_double => seg_start = i + 1,
-            _ => {}
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                i += 1;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                i += 1;
+            }
+            b'$' if !in_single && bytes.get(i + 1) == Some(&b'(') => {
+                // skip_balanced_parens is quote/escape-aware and treats
+                // the extra parens of `$((...))` as ordinary nesting.
+                let j = crate::expand::scan::skip_balanced_parens(bytes, i + 2);
+                if j < bytes.len() {
+                    i = j + 1; // past the closing `)`
+                } else {
+                    // Unterminated before the cursor: cursor is inside
+                    // the substitution — it opens a fresh segment.
+                    seg_start = i + 2;
+                    i += 2;
+                }
+            }
+            b'`' if !in_single => {
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] != b'`' {
+                    if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
+                if j < bytes.len() {
+                    i = j + 1; // past the closing backtick
+                } else {
+                    seg_start = i + 1;
+                    i += 1;
+                }
+            }
+            ch if is_segment_delimiter(ch) && !in_single && !in_double => {
+                seg_start = i + 1;
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
         }
     }
     seg_start
@@ -212,19 +261,51 @@ pub fn resolve_dir(dir_part: &str, cwd: &str) -> String {
 }
 
 /// The directory prefix of `word` exactly as the user typed it (up to
-/// and including the last `/`, no tilde expansion), with a single
-/// leading quote character stripped first — mirroring [`split_path`] so
-/// quoted words (`'sub/xy`, or the value part of `--file='sub/xy`)
-/// reconstruct their replacement text consistently.
+/// and including the last `/`, no tilde expansion) — mirroring
+/// [`split_path`] so quoted words (`'sub/xy`, or the value part of
+/// `--file='sub/xy`) reconstruct their replacement text consistently.
+///
+/// A single leading quote character is KEPT in the returned prefix:
+/// the completion word starts at the quote, so the replacement text
+/// must re-insert it or a space-containing match would be inserted
+/// unquoted (`cd "/tmp/My D<Tab>` must complete to `"/tmp/My Dir/`,
+/// not `/tmp/My Dir/`).
 pub fn dir_prefix_of(word: &str) -> String {
-    let stripped = if word.starts_with('\'') || word.starts_with('"') {
-        &word[1..]
-    } else {
-        word
+    let (quote, stripped) = match word.as_bytes().first() {
+        Some(&q @ (b'\'' | b'"')) => (Some(q as char), &word[1..]),
+        _ => (None, word),
     };
-    match stripped.rfind('/') {
-        Some(pos) => stripped[..=pos].to_string(),
-        None => String::new(),
+    let dir = match stripped.rfind('/') {
+        Some(pos) => &stripped[..=pos],
+        None => "",
+    };
+    match quote {
+        Some(q) => format!("{q}{dir}"),
+        None => dir.to_string(),
+    }
+}
+
+/// If `prefix` (the verbatim re-inserted part of a completion
+/// replacement, e.g. `"/tmp/My ` or `--file='sub/`) leaves a quote
+/// open, return that quote character so the caller can close it after
+/// a completed filename — bash-like: `cat "My D<Tab>` completes to
+/// `cat "My Doc.txt" ` (directories stay open for further completion).
+pub fn unclosed_quote(prefix: &str) -> Option<char> {
+    let mut in_single = false;
+    let mut in_double = false;
+    for ch in prefix.chars() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            _ => {}
+        }
+    }
+    if in_single {
+        Some('\'')
+    } else if in_double {
+        Some('"')
+    } else {
+        None
     }
 }
 
@@ -426,6 +507,75 @@ mod tests {
         let (start, word) = extract_completion_word(buf, buf.len());
         assert_eq!(start, 5);
         assert_eq!(word, "'a\nb");
+    }
+
+    // ── segment_start ───────────────────────────────────────────────
+
+    #[test]
+    fn test_segment_start_skips_closed_command_sub() {
+        // The `)` of a closed $() is not a segment boundary.
+        assert_eq!(segment_start("git -C $(pwd) ch", 16), 0);
+        // Arithmetic form too.
+        assert_eq!(segment_start("echo $((1+2)) x", 15), 0);
+    }
+
+    #[test]
+    fn test_segment_start_skips_closed_backticks() {
+        assert_eq!(segment_start("git -C `pwd` ch", 15), 0);
+    }
+
+    #[test]
+    fn test_segment_start_open_command_sub_starts_segment() {
+        // Cursor inside `$(`: the substitution opens its own segment.
+        assert_eq!(segment_start("echo $(git ch", 13), 7);
+        assert_eq!(segment_start("echo `git ch", 12), 6);
+    }
+
+    #[test]
+    fn test_segment_start_plain_delimiters_still_split() {
+        assert_eq!(segment_start("cat f | grep x", 14), 7);
+        assert_eq!(segment_start("(cd /tmp) git ch", 16), 9);
+        assert_eq!(segment_start("echo 'a | b' x", 14), 0);
+    }
+
+    #[test]
+    fn test_segment_start_command_sub_inside_double_quotes() {
+        // `"$(pwd)"` — skipped whole; the trailing `|` still splits.
+        assert_eq!(segment_start("git -C \"$(pwd)\" st | wc", 23), 20);
+    }
+
+    // ── dir_prefix_of / unclosed_quote ──────────────────────────────
+
+    #[test]
+    fn test_dir_prefix_keeps_leading_double_quote() {
+        // `cd "/tmp/My D<Tab>` must re-insert the opening quote, or a
+        // space-containing match replaces the word unquoted.
+        assert_eq!(dir_prefix_of("\"/tmp/My D"), "\"/tmp/");
+        assert_eq!(dir_prefix_of("'/tmp/My D"), "'/tmp/");
+    }
+
+    #[test]
+    fn test_dir_prefix_quote_without_slash() {
+        assert_eq!(dir_prefix_of("\"My D"), "\"");
+        assert_eq!(dir_prefix_of("'My D"), "'");
+    }
+
+    #[test]
+    fn test_dir_prefix_unquoted_unchanged() {
+        assert_eq!(dir_prefix_of("src/int"), "src/");
+        assert_eq!(dir_prefix_of("foo"), "");
+        assert_eq!(dir_prefix_of("~/Doc/x"), "~/Doc/");
+    }
+
+    #[test]
+    fn test_unclosed_quote() {
+        assert_eq!(unclosed_quote("\"/tmp/My "), Some('"'));
+        assert_eq!(unclosed_quote("'sub/"), Some('\''));
+        assert_eq!(unclosed_quote("--file='sub/"), Some('\''));
+        assert_eq!(unclosed_quote("src/"), None);
+        assert_eq!(unclosed_quote("\"done\" "), None);
+        // A double quote inside single quotes does not open a string.
+        assert_eq!(unclosed_quote("'a\"b' "), None);
     }
 
     // ── split_path ──────────────────────────────────────────────────
@@ -659,6 +809,34 @@ mod tests {
         assert_eq!(result.common_prefix, "nested.txt");
         assert_eq!(result.word_start, 4);
         assert_eq!(result.dir_prefix, "subdir/");
+    }
+
+    #[test]
+    fn test_complete_quoted_word_keeps_quote_in_dir_prefix() {
+        // `cat "sub dir/nes<Tab>` — the replacement text is
+        // dir_prefix + candidate; the opening quote must survive so the
+        // space-containing path stays a single argument.
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("sub dir")).unwrap();
+        File::create(tmp.path().join("sub dir").join("nested.txt")).unwrap();
+        let ctx = CompletionContext {
+            cwd: tmp.path().to_str().unwrap().to_string(),
+            home: "/home/user".to_string(),
+            show_dotfiles: false,
+        };
+        let buf = "cat \"sub dir/nes";
+        let result = complete(buf, buf.len(), &ctx);
+        assert_eq!(result.candidates, vec!["nested.txt"]);
+        assert_eq!(result.word_start, 4); // at the opening quote
+        assert_eq!(result.dir_prefix, "\"sub dir/");
+        // Reconstructed replacement (what handle_tab_complete inserts).
+        let replacement = format!(
+            "{}{}{} ",
+            result.dir_prefix,
+            &result.candidates[0],
+            unclosed_quote(&result.dir_prefix).unwrap()
+        );
+        assert_eq!(replacement, "\"sub dir/nested.txt\" ");
     }
 
     #[test]

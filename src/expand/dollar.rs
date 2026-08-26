@@ -66,7 +66,7 @@ pub(super) fn expand_string(env: &mut ShellEnv, s: &str) -> crate::error::Result
                     // inside the braces follows normal word rules per POSIX
                     // §2.7.4. Fall back to a plain lookup if the lexer
                     // rejects the expression.
-                    result.push_str(&expand_braced_param(env, inner));
+                    result.push_str(&expand_braced_param(env, inner)?);
                 }
                 b'(' => {
                     if i + 1 < bytes.len() && bytes[i + 1] == b'(' {
@@ -213,16 +213,25 @@ fn run_command_sub(env: &mut ShellEnv, cmd_str: &str, result: &mut String) {
 
 /// Expand the inside of a `${...}` by re-lexing it as a full parameter
 /// expansion. `inner` is the text between the braces.
-fn expand_braced_param(env: &mut ShellEnv, inner: &str) -> String {
+///
+/// A nested expansion failure (`${x:-$((1/0))}`, an unterminated nested
+/// construct, …) propagates as `Err` so the raw-string contexts share the
+/// word-context error channel — a heredoc containing it takes the
+/// redirection-error path (diagnose once, skip the command, status 1,
+/// shell continues), matching bash/dash. `${x:?}`/nounset diagnostics
+/// are NOT `Err`: `param::expand` reports those via
+/// `FlowControl::ExpansionError` and returns `Ok` (see
+/// `param::expansion_error`), so they are unaffected here.
+fn expand_braced_param(env: &mut ShellEnv, inner: &str) -> crate::error::Result<String> {
     let input = format!("${{{}}}", inner);
     let mut lexer = crate::lexer::Lexer::new(&input);
     if let Ok(tok) = lexer.next_token()
         && let crate::lexer::token::Token::Word(word) = tok.token
         && let [WordPart::Parameter(p)] = word.parts.as_slice()
     {
-        return param::expand(env, p).unwrap_or_default();
+        return param::expand(env, p);
     }
-    env.vars.get(inner).unwrap_or("").to_string()
+    Ok(env.vars.get(inner).unwrap_or("").to_string())
 }
 
 #[cfg(test)]
@@ -264,6 +273,44 @@ mod tests {
     fn braced_default() {
         let mut env = make_env();
         assert_eq!(expand_string(&mut env, "${x:-3} + 1").unwrap(), "3 + 1");
+    }
+
+    #[test]
+    fn braced_default_nested_arith_error_propagates() {
+        // Regression: a failing nested expansion inside `${x:-...}` was
+        // swallowed into an empty substitution; bash/dash diagnose
+        // division by 0 and fail the command.
+        let mut env = make_env();
+        assert!(expand_string(&mut env, "${x:-$((1/0))}").is_err());
+        // Two levels deep as well.
+        assert!(expand_string(&mut env, "${x:-${y:-$((1/0))}}").is_err());
+    }
+
+    #[test]
+    fn braced_error_form_is_not_err_channel() {
+        // `${x:?}` reports through FlowControl::ExpansionError (see
+        // param::expansion_error), not through Err — the redirect layer
+        // handles it separately. Pin that propagating nested errors did
+        // not reroute it.
+        let mut env = make_env();
+        assert!(expand_string(&mut env, "${nope:?boom}").is_ok());
+        assert_eq!(
+            env.exec.flow_control,
+            Some(crate::env::FlowControl::ExpansionError)
+        );
+    }
+
+    #[test]
+    fn braced_default_literal_open_brace() {
+        // `${x:-{}` — the bare `{` needs no closer; the first `}` closes
+        // the expansion (bash/dash print `{`).
+        let mut env = make_env();
+        assert_eq!(expand_string(&mut env, "[${x:-{}]").unwrap(), "[{]");
+        // Nested `${` still spans to the matching outer `}`.
+        assert_eq!(
+            expand_string(&mut env, "[${x:-${y:-a}}]").unwrap(),
+            "[a]"
+        );
     }
 
     #[test]

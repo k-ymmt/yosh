@@ -8,7 +8,10 @@ pub mod pattern;
 mod dollar;
 mod heredoc;
 mod pipeline;
-mod scan;
+// pub(crate): `interactive::completion::segment_start` reuses the
+// quote-aware balanced-paren scanner to skip `$(...)` command
+// substitutions when finding pipeline-segment boundaries.
+pub(crate) mod scan;
 mod tilde;
 
 pub use heredoc::expand_body as expand_heredoc_body;
@@ -267,7 +270,13 @@ pub fn expand_word_to_pattern(env: &mut ShellEnv, word: &Word) -> crate::error::
             result.push_str(f.scalar_join_sep.as_deref().unwrap_or(" "));
         }
         for (bi, ch) in f.value.char_indices() {
-            if matches!(ch, '*' | '?' | '[' | '\\') && f.is_glob_protected(bi) {
+            // `]` is escaped too: a quoted `]` must not close a bracket
+            // expression opened by an unquoted `[` (POSIX §2.13.1 —
+            // `sr[c"]"` stays literal and does not match `src`). The
+            // matcher's `parse_bracket` treats `\]` as a literal member
+            // that cannot close the class, mirroring the mask-aware
+            // closer scan in `pathname::bracket_has_close`.
+            if matches!(ch, '*' | '?' | '[' | ']' | '\\') && f.is_glob_protected(bi) {
                 result.push('\\');
             }
             result.push(ch);
@@ -791,6 +800,34 @@ mod tests {
             parts: vec![WordPart::Parameter(ParamExpr::Simple("p".to_string()))],
         };
         assert_eq!(expand_word_to_pattern(&mut env, &word).unwrap(), "*");
+    }
+
+    #[test]
+    fn pattern_quoted_close_bracket_is_escaped() {
+        let mut env = make_env();
+        // sr[c"]" — unquoted `sr[c` + quoted `]`: the quoted `]` must be
+        // escaped so it cannot close the unquoted `[` (POSIX §2.13.1;
+        // bash: `case src in sr[c"]") ...` does NOT match).
+        let word = Word {
+            parts: vec![
+                WordPart::Literal("sr[c".to_string()),
+                WordPart::DoubleQuoted(vec![WordPart::Literal("]".to_string())]),
+            ],
+        };
+        let pat = expand_word_to_pattern(&mut env, &word).unwrap();
+        assert_eq!(pat, "sr[c\\]");
+        // Renderer and matcher agree: the rendered pattern is literal.
+        assert!(!pattern::matches(&pat, "src"));
+        assert!(pattern::matches(&pat, "sr[c]"));
+    }
+
+    #[test]
+    fn pattern_unquoted_close_bracket_not_escaped() {
+        let mut env = make_env();
+        let word = Word::literal("sr[c]");
+        let pat = expand_word_to_pattern(&mut env, &word).unwrap();
+        assert_eq!(pat, "sr[c]");
+        assert!(pattern::matches(&pat, "src"));
     }
 
     #[test]

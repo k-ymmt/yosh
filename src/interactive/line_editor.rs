@@ -3208,6 +3208,13 @@ impl LineEditor {
                 let is_dir = candidate.ends_with('/');
                 let mut replacement = format!("{}{}", dir_prefix, candidate);
                 if !is_dir {
+                    // A quote opened in the kept prefix (`cd "/tmp/My D`)
+                    // is closed after a completed filename so the trailing
+                    // space ends the argument (bash-like). Directories
+                    // stay open for further completion.
+                    if let Some(q) = completion::unclosed_quote(&dir_prefix) {
+                        replacement.push(q);
+                    }
                     replacement.push(' ');
                 }
                 self.replace_word(word_start, &replacement);
@@ -3230,6 +3237,9 @@ impl LineEditor {
                 let is_dir = sel.ends_with('/');
                 let mut replacement = format!("{}{}", dir_prefix, sel);
                 if !is_dir {
+                    if let Some(q) = completion::unclosed_quote(&dir_prefix) {
+                        replacement.push(q);
+                    }
                     replacement.push(' ');
                 }
                 self.replace_word(word_start, &replacement);

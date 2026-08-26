@@ -91,7 +91,9 @@ pub fn skip_balanced_parens(bytes: &[u8], start: usize) -> usize {
 /// construct and must not close the outer `${...}` (POSIX §2.6.2: the
 /// matching `}` skips over embedded command substitutions) — e.g.
 /// `${x:-$(printf %s })}` closes at the final `}`, not the one inside
-/// `$()`. Nested `${...}` is covered by the brace depth counter.
+/// `$()`. Only a nested `${` raises the brace depth: a bare `{` is an
+/// ordinary character that needs no closer (bash/dash: `${x:-{}`
+/// expands to `{`, it is not an unterminated expansion).
 pub fn skip_balanced_braces(bytes: &[u8], start: usize) -> usize {
     let mut i = start;
     let mut depth: usize = 1;
@@ -108,6 +110,11 @@ pub fn skip_balanced_braces(bytes: &[u8], start: usize) -> usize {
                 let j = skip_balanced_parens(bytes, i + 2);
                 i = if j < bytes.len() { j + 1 } else { j };
             }
+            b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                // Nested ${...} parameter expansion.
+                depth += 1;
+                i += 2;
+            }
             b'`' => {
                 // Nested backtick substitution — skip to the closing
                 // unescaped backtick (or end of input if unterminated).
@@ -121,10 +128,6 @@ pub fn skip_balanced_braces(bytes: &[u8], start: usize) -> usize {
                 }
                 i = if j < bytes.len() { j + 1 } else { j };
             }
-            b'{' => {
-                depth += 1;
-                i += 1;
-            }
             b'}' => {
                 depth -= 1;
                 if depth > 0 {
@@ -132,6 +135,8 @@ pub fn skip_balanced_braces(bytes: &[u8], start: usize) -> usize {
                 }
             }
             _ => {
+                // Includes bare `{`: only `${` opens a nested expansion,
+                // so a literal `{` contributes nothing to the depth.
                 i += 1;
             }
         }
@@ -244,8 +249,32 @@ mod tests {
 
     #[test]
     fn test_skip_balanced_braces_nested() {
-        let input = b"{inner} outer}";
-        assert_eq!(skip_balanced_braces(input, 0), 13);
+        // Only `${` opens a nested level; `${inner}` is skipped whole.
+        let input = b"${inner} outer}";
+        assert_eq!(skip_balanced_braces(input, 0), 14);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_bare_open_brace_is_literal() {
+        // `${x:-{}` — the bare `{` needs no closer, so the first `}`
+        // closes the expansion (bash/dash print `{`).
+        let input = b"x:-{}";
+        assert_eq!(skip_balanced_braces(input, 0), 4);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_bare_brace_then_text() {
+        // `${x:-{a}` closes at the `}` after `a`.
+        let input = b"x:-{a} tail";
+        assert_eq!(skip_balanced_braces(input, 0), 5);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_nested_dollar_brace_with_default() {
+        // `${x:-${y:-a}}` — the inner `${` raises depth, so the final
+        // `}` closes the outer expansion.
+        let input = b"x:-${y:-a}}";
+        assert_eq!(skip_balanced_braces(input, 0), input.len() - 1);
     }
 
     #[test]

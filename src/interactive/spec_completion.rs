@@ -1114,6 +1114,36 @@ name = \"add\"
         assert_eq!(args, vec!["commit", "-m", "a > b"]);
     }
 
+    #[test]
+    fn words_closed_command_sub_does_not_split_segment() {
+        // "git -C $(pwd) ch|" — word_start = 14: the `)` closing the
+        // command substitution is not a segment boundary, so the
+        // command word is still git.
+        let buf = "git -C $(pwd) ch";
+        let (cmd, args) = command_words(buf, 14).unwrap();
+        assert_eq!(cmd, "git");
+        assert_eq!(args, vec!["-C", "$(pwd)"]);
+    }
+
+    #[test]
+    fn words_closed_backtick_does_not_split_segment() {
+        // "git -C `pwd` ch|" — word_start = 13.
+        let buf = "git -C `pwd` ch";
+        let (cmd, args) = command_words(buf, 13).unwrap();
+        assert_eq!(cmd, "git");
+        assert_eq!(args, vec!["-C", "`pwd`"]);
+    }
+
+    #[test]
+    fn words_inside_open_command_sub_start_fresh_segment() {
+        // "echo $(git ch|" — the cursor is inside the substitution:
+        // its own command word (git) resolves, not echo.
+        let buf = "echo $(git ch";
+        let (cmd, args) = command_words(buf, 11).unwrap();
+        assert_eq!(cmd, "git");
+        assert!(args.is_empty());
+    }
+
     // ── resolve ──────────────────────────────────────────────────────
 
     fn as_strings(words: &[&str]) -> Vec<String> {

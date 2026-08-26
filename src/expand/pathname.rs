@@ -25,7 +25,7 @@ pub fn expand(_env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField>
     let mut result = Vec::new();
     for field in fields {
         if has_unquoted_glob_chars(&field) {
-            let matches = glob_match(&field.value);
+            let matches = glob_match(&escaped_pattern_of(&field));
             if matches.is_empty() {
                 // No match — keep original field unchanged.
                 result.push(field);
@@ -42,6 +42,46 @@ pub fn expand(_env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField>
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/// Render a field into the backslash-escaped pattern form shared with
+/// `expand_word_to_pattern` (see `expand::expand_word_to_pattern`):
+/// glob metacharacters originating from quoted (glob-protected) bytes
+/// are escaped so `pattern::compile` treats them literally. This keeps
+/// the compile step in agreement with the mask-aware predicate
+/// `has_unquoted_glob_chars` — e.g. `[\\]` (a backslash-escaped `\`
+/// inside an unquoted class) still matches a file named `\`, and a
+/// quoted `*` concatenated with unquoted metachars (`"*"[ab]`) stays
+/// literal instead of becoming a wildcard.
+fn escaped_pattern_of(field: &ExpandedField) -> String {
+    let mut out = String::with_capacity(field.value.len());
+    for (bi, ch) in field.value.char_indices() {
+        if matches!(ch, '*' | '?' | '[' | ']' | '\\') && field.is_glob_protected(bi) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Strip the `\x` escapes inserted by `escaped_pattern_of` from a
+/// pattern component that is used LITERALLY (no glob chars): each `\x`
+/// denotes the literal character `x`, matching `pattern::parse_pattern`
+/// semantics. A trailing lone `\` stays a literal backslash.
+fn unescape_component(component: &str) -> String {
+    let mut out = String::with_capacity(component.len());
+    let mut chars = component.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(next) => out.push(next),
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
 
 /// Return `true` if the field contains at least one unquoted glob metachar:
 /// `*`, `?`, or a `[` that opens a closable bracket expression.
@@ -186,8 +226,10 @@ fn expand_components(dir: String, components: &[&str]) -> Vec<String> {
         }
         result
     } else {
-        // Literal component: just append and recurse.
-        let full = join_path(&dir, component);
+        // Literal component: strip pattern escapes (a `\x` from a quoted
+        // metachar denotes the literal `x`) before touching the
+        // filesystem or emitting the path, then append and recurse.
+        let full = join_path(&dir, &unescape_component(component));
         if rest.is_empty() {
             // Verify the path exists.
             if fs_path(&full).exists() {
@@ -511,6 +553,105 @@ mod tests {
         let mut f = ExpandedField::new();
         f.push_expanded("src[c]x");
         assert!(has_unquoted_glob_chars(&f));
+    }
+
+    // ── escaped_pattern_of / mask-aware glob compile ──
+
+    #[test]
+    fn escaped_pattern_renders_protected_metachars() {
+        let mut f = ExpandedField::new();
+        f.push_expanded("[");
+        f.push_quoted("\\");
+        f.push_expanded("]");
+        assert_eq!(escaped_pattern_of(&f), "[\\\\]");
+
+        let mut f = ExpandedField::new();
+        f.push_quoted("*");
+        f.push_expanded("[ab]");
+        assert_eq!(escaped_pattern_of(&f), "\\*[ab]");
+    }
+
+    #[test]
+    fn unescape_component_strips_escapes() {
+        assert_eq!(unescape_component("f\\*le"), "f*le");
+        assert_eq!(unescape_component("plain"), "plain");
+        assert_eq!(unescape_component("tail\\"), "tail\\");
+    }
+
+    #[test]
+    fn escaped_backslash_class_matches_backslash_file() {
+        // `echo [\\]` with a file named `\`: the escaped backslash is a
+        // literal class member, so the glob matches (bash parity). The
+        // compile step must receive the mask-rendered `[\\]`, not the
+        // raw value `[\]` (whose `\]` would be an escaped `]` and leave
+        // the class unclosed).
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::File::create(tmp.path().join("\\")).unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let env = make_env();
+        let mut f = ExpandedField::new();
+        f.push_expanded(&format!("{}/[", dir));
+        f.push_quoted("\\");
+        f.push_expanded("]");
+        let result = values(expand(&env, vec![f]));
+        assert_eq!(result, vec![format!("{}/\\", dir)]);
+    }
+
+    #[test]
+    fn quoted_star_in_mixed_field_stays_literal() {
+        // `"*"*` — the quoted `*` is literal, the unquoted `*` globs:
+        // only entries whose name STARTS with `*` match (bash parity).
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::File::create(tmp.path().join("*x")).unwrap();
+        std::fs::File::create(tmp.path().join("ax")).unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let env = make_env();
+        let mut f = ExpandedField::new();
+        f.push_expanded(&format!("{}/", dir));
+        f.push_quoted("*");
+        f.push_expanded("*");
+        let result = values(expand(&env, vec![f]));
+        assert_eq!(result, vec![format!("{}/*x", dir)]);
+    }
+
+    #[test]
+    fn quoted_literal_component_before_glob_component() {
+        // `"f*le"/​*` style: a fully-escaped literal component on the
+        // path to a glob component must be unescaped before the
+        // filesystem walk emits it.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("f*le")).unwrap();
+        std::fs::File::create(tmp.path().join("f*le").join("inner.txt")).unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let env = make_env();
+        let mut f = ExpandedField::new();
+        f.push_expanded(&format!("{}/", dir));
+        f.push_quoted("f*le");
+        f.push_expanded("/inner.*");
+        let result = values(expand(&env, vec![f]));
+        assert_eq!(result, vec![format!("{}/f*le/inner.txt", dir)]);
+    }
+
+    #[test]
+    fn quoted_bracket_literal_component_unescaped_on_walk() {
+        // `"["d/inner.*` — the `\[d` component has no closable bracket,
+        // so it is used literally: the escape must be stripped before
+        // the directory walk and in the emitted path.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("[d")).unwrap();
+        std::fs::File::create(tmp.path().join("[d").join("inner.txt")).unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let env = make_env();
+        let mut f = ExpandedField::new();
+        f.push_expanded(&format!("{}/", dir));
+        f.push_quoted("[");
+        f.push_expanded("d/inner.*");
+        let result = values(expand(&env, vec![f]));
+        assert_eq!(result, vec![format!("{}/[d/inner.txt", dir)]);
     }
 
     #[test]
