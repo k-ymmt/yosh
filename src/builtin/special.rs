@@ -102,6 +102,35 @@ fn builtin_exit(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
     }
 }
 
+/// Quote a variable value so the printed assignment is suitable for shell
+/// re-input (POSIX §2.15: `set`, `export -p`, `readonly -p` must write
+/// their output "in a format that can be reused as input"). Values made
+/// only of safe characters print unquoted; anything else is wrapped in
+/// single quotes, with embedded single quotes emitted as `'\''`.
+/// byteenc-escaped bytes (U+10FE00 range) are not in the safe set, so they
+/// land inside single quotes where the raw bytes decoded at the stdout
+/// boundary are literal — encoded values round-trip unchanged.
+fn quote_for_reinput(value: &str) -> std::borrow::Cow<'_, str> {
+    fn is_safe(c: char) -> bool {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '_' | '.' | '/' | ':' | '-' | '+' | ',' | '@' | '%')
+    }
+    if !value.is_empty() && value.chars().all(is_safe) {
+        return std::borrow::Cow::Borrowed(value);
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    std::borrow::Cow::Owned(out)
+}
+
 // POSIX XBD §12.2 Utility Syntax Guideline 10: `--` marks end of options.
 // Shared by export / readonly / unset to keep operand validation consistent.
 fn consume_end_of_options(args: &[String], idx: usize) -> usize {
@@ -130,7 +159,7 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
         exported.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in exported {
             crate::builtin::regular::write_stdout_decoded(
-                &format!("export {}=\"{}\"", name, value),
+                &format!("export {}={}", name, quote_for_reinput(&value)),
                 true,
             );
         }
@@ -166,7 +195,7 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
                 .map(|(n, v)| (n.clone(), v.clone()))
             {
                 crate::builtin::regular::write_stdout_decoded(
-                    &format!("export {}=\"{}\"", n, value),
+                    &format!("export {}={}", n, quote_for_reinput(&value)),
                     true,
                 );
             }
@@ -253,7 +282,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in sorted {
             crate::builtin::regular::write_stdout_decoded(
-                &format!("readonly {}={}", name, value),
+                &format!("readonly {}={}", name, quote_for_reinput(&value)),
                 true,
             );
         }
@@ -284,7 +313,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         } else if print_mode {
             // `readonly -p name`: print only this variable (if readonly).
             if let Some(v) = env.vars.get_var(name).filter(|v| v.readonly) {
-                let line = format!("readonly {}={}", name, v.value);
+                let line = format!("readonly {}={}", name, quote_for_reinput(&v.value));
                 crate::builtin::regular::write_stdout_decoded(&line, true);
             }
         } else {
@@ -395,7 +424,10 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
             .collect();
         vars.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in vars {
-            crate::builtin::regular::write_stdout_decoded(&format!("{}={}", name, value), true);
+            crate::builtin::regular::write_stdout_decoded(
+                &format!("{}={}", name, quote_for_reinput(&value)),
+                true,
+            );
         }
         return Ok(0);
     }
@@ -542,9 +574,7 @@ fn builtin_exec(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
     use nix::errno::Errno;
     match err {
         Errno::ENOENT => exec_failure(executor, format!("exec: {}: not found", cmd), 127),
-        Errno::EACCES => {
-            exec_failure(executor, format!("exec: {}: permission denied", cmd), 126)
-        }
+        Errno::EACCES => exec_failure(executor, format!("exec: {}: permission denied", cmd), 126),
         Errno::ENOEXEC => {
             // POSIX execvp fallback (mirrors exec_external_with_redirects):
             // an executable file the kernel refuses to exec is re-run as a
@@ -1054,6 +1084,48 @@ fn create_secure_tempfile(prefix: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::exec::Executor;
+
+    // ── quote_for_reinput (POSIX §2.15 re-input format) ──
+
+    #[test]
+    fn quote_for_reinput_safe_value_unquoted() {
+        assert_eq!(quote_for_reinput("plain"), "plain");
+        assert_eq!(
+            quote_for_reinput("/usr/local/bin:/usr/bin"),
+            "/usr/local/bin:/usr/bin"
+        );
+        assert_eq!(quote_for_reinput("v1.2-rc+3"), "v1.2-rc+3");
+    }
+
+    #[test]
+    fn quote_for_reinput_empty_value_quoted() {
+        assert_eq!(quote_for_reinput(""), "''");
+    }
+
+    #[test]
+    fn quote_for_reinput_space_and_specials_quoted() {
+        assert_eq!(quote_for_reinput("a b"), "'a b'");
+        assert_eq!(quote_for_reinput("say \"hi\""), "'say \"hi\"'");
+        assert_eq!(quote_for_reinput("$HOME `x` \\"), "'$HOME `x` \\'");
+        assert_eq!(quote_for_reinput("has\nnewline"), "'has\nnewline'");
+    }
+
+    #[test]
+    fn quote_for_reinput_embedded_single_quote() {
+        assert_eq!(quote_for_reinput("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn quote_for_reinput_byteenc_escape_round_trips() {
+        // A value carrying byteenc-escaped raw bytes must pass through
+        // unchanged apart from the surrounding quotes; the escape
+        // codepoints decode to their original bytes at the stdout
+        // boundary and single quotes keep those bytes literal on
+        // re-input.
+        let encoded = crate::byteenc::encode_bytes(b"f\xe9g").into_owned();
+        let quoted = quote_for_reinput(&encoded);
+        assert_eq!(quoted, format!("'{}'", encoded));
+    }
 
     #[test]
     fn exit_builtin_sets_exit_requested_in_interactive_mode() {

@@ -236,6 +236,18 @@ fn glob_in_dir(dir: &str, pattern: &str) -> Vec<String> {
     let compiled = pattern::compile(pattern);
 
     let mut matches = Vec::new();
+
+    // `read_dir` never yields the `.` and `..` entries, but POSIX's
+    // leading-<period> rule makes them matchable when the pattern begins
+    // with an explicit `.` (bash/dash: `echo .*` lists `. ..` first;
+    // `.[!.]*` matches neither). Offer them as candidates explicitly.
+    if !skip_hidden {
+        for special in [".", ".."] {
+            if compiled.matches(special) {
+                matches.push(special.to_string());
+            }
+        }
+    }
     for entry in read_dir.flatten() {
         let name = entry.file_name();
         // Encode the raw entry bytes so names that are not valid UTF-8
@@ -375,6 +387,29 @@ mod tests {
                 m
             );
         }
+    }
+
+    // ── Leading-dot rule: `.` / `..` candidates (audit L7) ──
+
+    #[test]
+    fn dot_star_matches_dot_and_dotdot() {
+        let matches = glob_in_dir(".", ".*");
+        assert!(matches.contains(&".".to_string()), "got: {:?}", matches);
+        assert!(matches.contains(&"..".to_string()), "got: {:?}", matches);
+    }
+
+    #[test]
+    fn dot_bang_dot_star_excludes_dot_and_dotdot() {
+        let matches = glob_in_dir(".", ".[!.]*");
+        assert!(!matches.contains(&".".to_string()), "got: {:?}", matches);
+        assert!(!matches.contains(&"..".to_string()), "got: {:?}", matches);
+    }
+
+    #[test]
+    fn star_still_excludes_dot_and_dotdot() {
+        let matches = glob_in_dir(".", "*");
+        assert!(!matches.contains(&".".to_string()));
+        assert!(!matches.contains(&"..".to_string()));
     }
 
     // ── has_unquoted_glob_chars ──

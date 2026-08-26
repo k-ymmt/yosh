@@ -115,20 +115,16 @@ fn expand_part_arith_sub(
     fields: &mut [ExpandedField],
     in_double_quote: bool,
 ) -> crate::error::Result<()> {
-    match arith::evaluate(env, expr) {
-        Ok(result) => {
-            if in_double_quote {
-                fields.last_mut().unwrap().push_quoted(&result);
-            } else {
-                fields.last_mut().unwrap().push_expanded(&result);
-            }
-            Ok(())
-        }
-        Err(msg) => Err(crate::error::ShellError::expansion(
-            crate::error::ExpansionErrorKind::InvalidArithmetic,
-            msg,
-        )),
+    // arith::evaluate builds the ShellError (Expansion kind) itself; a
+    // failure propagates unchanged, so word-context arithmetic errors abort
+    // a non-interactive shell per POSIX §2.8.1.
+    let result = arith::evaluate(env, expr)?;
+    if in_double_quote {
+        fields.last_mut().unwrap().push_quoted(&result);
+    } else {
+        fields.last_mut().unwrap().push_expanded(&result);
     }
+    Ok(())
 }
 
 /// Expand a `ParamExpr` into `fields`.

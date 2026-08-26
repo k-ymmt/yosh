@@ -39,11 +39,8 @@ pub enum ParseErrorKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum ExpansionErrorKind {
     DivisionByZero,
-    UnsetVariable,
-    ParameterError,
     InvalidArithmetic,
 }
 

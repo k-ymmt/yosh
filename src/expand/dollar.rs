@@ -31,7 +31,13 @@ pub(super) enum DollarMode {
 /// `$((expr))`) in a raw string, per the POSIX double-quote-like context
 /// shared by unquoted heredoc bodies and arithmetic expressions
 /// (no field splitting, no pathname expansion, `"` not special).
-pub(super) fn expand_string(env: &mut ShellEnv, s: &str, mode: DollarMode) -> String {
+/// A nested arithmetic failure propagates as the `ShellError` built by
+/// `arith::evaluate`, so both contexts share one error channel.
+pub(super) fn expand_string(
+    env: &mut ShellEnv,
+    s: &str,
+    mode: DollarMode,
+) -> crate::error::Result<String> {
     let bytes = s.as_bytes();
     let mut result = String::new();
     let mut i = 0;
@@ -68,14 +74,7 @@ pub(super) fn expand_string(env: &mut ShellEnv, s: &str, mode: DollarMode) -> St
                         if i + 1 < bytes.len() {
                             i += 2;
                         } // skip ))
-                        match arith::evaluate(env, expr) {
-                            Ok(val) => result.push_str(&val),
-                            Err(msg) => {
-                                eprintln!("yosh: arithmetic: {}", msg);
-                                env.exec.last_exit_status = 1;
-                                result.push('0');
-                            }
-                        }
+                        result.push_str(&arith::evaluate(env, expr)?);
                     } else {
                         // $(...) — command substitution
                         i += 1;
@@ -194,7 +193,7 @@ pub(super) fn expand_string(env: &mut ShellEnv, s: &str, mode: DollarMode) -> St
             i += ch.len_utf8();
         }
     }
-    result
+    Ok(result)
 }
 
 /// Push one expansion result, applying the arith empty-operand policy.
@@ -256,7 +255,7 @@ mod tests {
         let mut env = make_env();
         env.vars.set("FOO", "bar").unwrap();
         assert_eq!(
-            expand_string(&mut env, "v=$FOO.", DollarMode::Heredoc),
+            expand_string(&mut env, "v=$FOO.", DollarMode::Heredoc).unwrap(),
             "v=bar."
         );
     }
@@ -264,33 +263,45 @@ mod tests {
     #[test]
     fn heredoc_mode_unset_var_empty() {
         let mut env = make_env();
-        assert_eq!(expand_string(&mut env, "[$nope]", DollarMode::Heredoc), "[]");
+        assert_eq!(
+            expand_string(&mut env, "[$nope]", DollarMode::Heredoc).unwrap(),
+            "[]"
+        );
     }
 
     #[test]
     fn arith_mode_unset_var_is_zero() {
         let mut env = make_env();
-        assert_eq!(expand_string(&mut env, "$nope + 1", DollarMode::Arith), "0 + 1");
+        assert_eq!(
+            expand_string(&mut env, "$nope + 1", DollarMode::Arith).unwrap(),
+            "0 + 1"
+        );
     }
 
     #[test]
     fn arith_mode_braced_default() {
         let mut env = make_env();
-        assert_eq!(expand_string(&mut env, "${x:-3} + 1", DollarMode::Arith), "3 + 1");
+        assert_eq!(
+            expand_string(&mut env, "${x:-3} + 1", DollarMode::Arith).unwrap(),
+            "3 + 1"
+        );
     }
 
     #[test]
     fn arith_mode_braced_length() {
         let mut env = make_env();
         env.vars.set("a", "hello").unwrap();
-        assert_eq!(expand_string(&mut env, "${#a}+1", DollarMode::Arith), "5+1");
+        assert_eq!(
+            expand_string(&mut env, "${#a}+1", DollarMode::Arith).unwrap(),
+            "5+1"
+        );
     }
 
     #[test]
     fn arith_mode_nested_arith() {
         let mut env = make_env();
         assert_eq!(
-            expand_string(&mut env, "$((1+1)) + 1", DollarMode::Arith),
+            expand_string(&mut env, "$((1+1)) + 1", DollarMode::Arith).unwrap(),
             "2 + 1"
         );
     }
@@ -300,11 +311,11 @@ mod tests {
         let mut env = make_env();
         env.vars.set("x", "1").unwrap();
         assert_eq!(
-            expand_string(&mut env, "日本$x語", DollarMode::Arith),
+            expand_string(&mut env, "日本$x語", DollarMode::Arith).unwrap(),
             "日本1語"
         );
         assert_eq!(
-            expand_string(&mut env, "日本$x語", DollarMode::Heredoc),
+            expand_string(&mut env, "日本$x語", DollarMode::Heredoc).unwrap(),
             "日本1語"
         );
     }
@@ -314,7 +325,7 @@ mod tests {
         let mut env = make_env();
         env.vars.set("x", "1").unwrap();
         assert_eq!(
-            expand_string(&mut env, r"\$x \\ \a", DollarMode::Heredoc),
+            expand_string(&mut env, r"\$x \\ \a", DollarMode::Heredoc).unwrap(),
             r"$x \ \a"
         );
     }
@@ -323,7 +334,7 @@ mod tests {
     fn line_continuation_removed() {
         let mut env = make_env();
         assert_eq!(
-            expand_string(&mut env, "a\\\nb", DollarMode::Heredoc),
+            expand_string(&mut env, "a\\\nb", DollarMode::Heredoc).unwrap(),
             "ab"
         );
     }

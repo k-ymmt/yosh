@@ -3,13 +3,12 @@ use crate::error::{self, ParseErrorKind, ShellError};
 use crate::parser::ast::WordPart;
 
 impl Lexer {
-    pub fn register_heredoc(&mut self, delimiter: String, quoted: bool, strip_tabs: bool) -> u64 {
+    pub fn register_heredoc(&mut self, delimiter: String, strip_tabs: bool) -> u64 {
         let id = self.next_heredoc_id;
         self.next_heredoc_id += 1;
         self.pending_heredocs.push(PendingHereDoc {
             id,
             delimiter,
-            quoted,
             strip_tabs,
         });
         id

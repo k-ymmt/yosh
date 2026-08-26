@@ -139,6 +139,38 @@
       (`src/expand/pipeline.rs::push_positionals`,
       `src/expand/param.rs`).
 
+## POSIX Compliance: Audit Deferrals (recorded 2026-08-26)
+
+- [ ] DEVIATION (decided, audit M9): `test` / `[` deliberately omits the
+      XSI `-a` / `-o` binary logical operators and `(` `)` grouping.
+      POSIX Issue 8 marks them obsolescent and their grammar is ambiguous,
+      but real-world scripts still use them, so this is a known
+      compatibility risk. The portable forms `[ a ] && [ b ]` /
+      `[ a ] || [ b ]` work (`src/builtin/test.rs`).
+- [ ] Parser executes commands preceding a syntax error on the same `-c`
+      input (`yosh -c 'echo hi; if'` prints hi before the diagnostic);
+      sh/dash parse the whole input first and execute nothing (audit L5,
+      `src/main.rs::run_string`).
+- [ ] `save_fd` parks saved fds at >=10 via F_DUPFD with no reservation
+      against user scripts that redirect multi-digit fds, so
+      `exec 10>...` can collide with a save slot (audit L9,
+      `src/exec/redirect.rs::save_fd`; same exposure family as the
+      internal self-pipe/terminal fd item in the Job Control section).
+- [ ] `$(trap 'x' INT; trap)` inside a command substitution prints the
+      parent shell's trap snapshot, not the subshell's own updated table
+      (pre-existing; `src/expand/command_sub.rs`, `src/env/traps.rs`).
+- [ ] Arithmetic `$((x || y))` / `$((x && y))` evaluate both operands
+      eagerly: side effects in the right operand (assignments,
+      `$((0 && (x=5)))`) are not short-circuited the way C semantics and
+      bash/dash prescribe (`src/expand/arith.rs::{logical_or,logical_and}`).
+- [ ] Perf follow-ups (measure before acting, audit notes): variable
+      lookups clone values on several expansion paths — a `Cow<str>`
+      return could avoid per-expansion allocation (`src/env/vars.rs`,
+      `src/expand/param.rs`); arithmetic expressions are re-lexed and
+      re-parsed on every evaluation — an AST cache would help hot loops
+      (`src/expand/arith.rs`); command-substitution children clone the
+      full `ShellEnv` before forking (`src/expand/command_sub.rs`).
+
 ## History: Known Limitations
 
 - [ ] `suggest()` linear scan performance — iterates all history entries on each keystroke; acceptable for HISTSIZE ≤ 500, may need caching or indexing for larger histories (`src/interactive/history.rs`)

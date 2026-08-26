@@ -41,8 +41,6 @@ pub struct PendingHereDoc {
     /// commands after registration) are attached to the right redirect.
     pub id: u64,
     pub delimiter: String,
-    #[allow(dead_code)]
-    pub quoted: bool,
     pub strip_tabs: bool,
 }
 

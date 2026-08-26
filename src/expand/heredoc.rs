@@ -14,7 +14,14 @@ use crate::parser::ast::WordPart;
 /// If `quoted` is true (delimiter was quoted), body is literal — no expansion.
 /// If `quoted` is false, parameter expansion, command substitution, and arithmetic
 /// expansion are performed (same as double-quote context, but `"` is not special).
-pub fn expand_body(env: &mut ShellEnv, parts: &[WordPart], quoted: bool) -> String {
+/// An arithmetic failure in the body surfaces as the `ShellError` built by
+/// `arith::evaluate`; the redirect layer converts it to a redirection error
+/// (command aborted, shell continues — matching dash/bash).
+pub fn expand_body(
+    env: &mut ShellEnv,
+    parts: &[WordPart],
+    quoted: bool,
+) -> crate::error::Result<String> {
     // Lexer::read_heredoc_body always stores the body as a single
     // `WordPart::Literal`; other variants cannot occur.
     let mut raw_body = String::new();
@@ -33,7 +40,7 @@ pub fn expand_body(env: &mut ShellEnv, parts: &[WordPart], quoted: bool) -> Stri
 
     if quoted {
         // Quoted delimiter: no expansion, return literal body
-        raw_body
+        Ok(raw_body)
     } else {
         // Unquoted delimiter: expand $VAR, $(cmd), `cmd`, $((expr)).
         expand_string(env, &raw_body, DollarMode::Heredoc)
@@ -54,7 +61,10 @@ mod tests {
     fn test_expand_heredoc_body_literal() {
         let mut env = make_env();
         let parts = vec![WordPart::Literal("hello world\n".to_string())];
-        assert_eq!(expand_body(&mut env, &parts, true), "hello world\n");
+        assert_eq!(
+            expand_body(&mut env, &parts, true).unwrap(),
+            "hello world\n"
+        );
     }
 
     #[test]
@@ -62,7 +72,10 @@ mod tests {
         let mut env = make_env();
         env.vars.set("FOO", "bar").unwrap();
         let parts = vec![WordPart::Literal("value is $FOO\n".to_string())];
-        assert_eq!(expand_body(&mut env, &parts, true), "value is $FOO\n");
+        assert_eq!(
+            expand_body(&mut env, &parts, true).unwrap(),
+            "value is $FOO\n"
+        );
     }
 
     #[test]
@@ -72,6 +85,9 @@ mod tests {
         // The lexer stores the body as a single Literal; the dollar
         // scanner performs the expansion.
         let parts = vec![WordPart::Literal("value is $FOO\n".to_string())];
-        assert_eq!(expand_body(&mut env, &parts, false), "value is bar\n");
+        assert_eq!(
+            expand_body(&mut env, &parts, false).unwrap(),
+            "value is bar\n"
+        );
     }
 }

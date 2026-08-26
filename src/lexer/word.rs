@@ -3,6 +3,26 @@ use super::{Lexer, is_name_char, is_name_start};
 use crate::error::{self, ParseErrorKind, ShellError};
 use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 
+/// Flush the accumulated literal run into `parts` (no-op when empty).
+/// `read_word_parts` calls this before emitting any non-literal part.
+#[inline]
+fn flush_literal(parts: &mut Vec<WordPart>, literal: &mut String) {
+    if !literal.is_empty() {
+        parts.push(WordPart::Literal(std::mem::take(literal)));
+    }
+}
+
+/// Build the `UnterminatedParamExpansion` parse error shared by the
+/// `${...}` scanning paths, anchored at the expansion's opening span.
+fn param_err(span: Span, message: impl Into<String>) -> ShellError {
+    ShellError::parse(
+        ParseErrorKind::UnterminatedParamExpansion,
+        span.line,
+        span.column,
+        message,
+    )
+}
+
 impl Lexer {
     // ---- Word construction methods ----
 
@@ -38,23 +58,17 @@ impl Lexer {
                 }
                 match ch {
                     b'$' => {
-                        if !literal.is_empty() {
-                            parts.push(WordPart::Literal(std::mem::take(&mut literal)));
-                        }
+                        flush_literal(&mut parts, &mut literal);
                         let part = self.read_dollar(true)?;
                         parts.push(part);
                     }
                     b'\\' => {
-                        if !literal.is_empty() {
-                            parts.push(WordPart::Literal(std::mem::take(&mut literal)));
-                        }
+                        flush_literal(&mut parts, &mut literal);
                         let part = self.read_backslash_in_double_quote()?;
                         parts.push(part);
                     }
                     b'`' => {
-                        if !literal.is_empty() {
-                            parts.push(WordPart::Literal(std::mem::take(&mut literal)));
-                        }
+                        flush_literal(&mut parts, &mut literal);
                         let part = self.read_backtick()?;
                         parts.push(part);
                     }
@@ -74,16 +88,12 @@ impl Lexer {
                 }
                 match ch {
                     b'\'' => {
-                        if !literal.is_empty() {
-                            parts.push(WordPart::Literal(std::mem::take(&mut literal)));
-                        }
+                        flush_literal(&mut parts, &mut literal);
                         let part = self.read_single_quote()?;
                         parts.push(part);
                     }
                     b'"' => {
-                        if !literal.is_empty() {
-                            parts.push(WordPart::Literal(std::mem::take(&mut literal)));
-                        }
+                        flush_literal(&mut parts, &mut literal);
                         let part = self.read_double_quote()?;
                         parts.push(part);
                     }
@@ -96,24 +106,18 @@ impl Lexer {
                             self.advance(); // consume '\n'
                         // loop continues with `literal` still accumulating
                         } else {
-                            if !literal.is_empty() {
-                                parts.push(WordPart::Literal(std::mem::take(&mut literal)));
-                            }
+                            flush_literal(&mut parts, &mut literal);
                             let part = self.read_escape_unquoted()?;
                             parts.push(part);
                         }
                     }
                     b'$' => {
-                        if !literal.is_empty() {
-                            parts.push(WordPart::Literal(std::mem::take(&mut literal)));
-                        }
+                        flush_literal(&mut parts, &mut literal);
                         let part = self.read_dollar(false)?;
                         parts.push(part);
                     }
                     b'`' => {
-                        if !literal.is_empty() {
-                            parts.push(WordPart::Literal(std::mem::take(&mut literal)));
-                        }
+                        flush_literal(&mut parts, &mut literal);
                         let part = self.read_backtick()?;
                         parts.push(part);
                     }
@@ -303,12 +307,7 @@ impl Lexer {
     /// Reads the parameter name inside braces (after `${`).
     fn read_param_name(&mut self, span: Span) -> error::Result<String> {
         if self.at_end() {
-            return Err(ShellError::parse(
-                ParseErrorKind::UnterminatedParamExpansion,
-                span.line,
-                span.column,
-                "unterminated parameter expansion",
-            ));
+            return Err(param_err(span, "unterminated parameter expansion"));
         }
         let ch = self.current_byte();
         match ch {
@@ -327,10 +326,8 @@ impl Lexer {
                 Ok(digits)
             }
             c if is_name_start(c) => Ok(self.read_name()),
-            _ => Err(ShellError::parse(
-                ParseErrorKind::UnterminatedParamExpansion,
-                span.line,
-                span.column,
+            _ => Err(param_err(
+                span,
                 format!("invalid parameter name character: '{}'", ch as char),
             )),
         }
@@ -346,12 +343,7 @@ impl Lexer {
     /// Expects the given byte at current position, consuming it on success.
     fn expect_byte(&mut self, expected: u8, span: Span) -> error::Result<()> {
         if self.at_end() || self.current_byte() != expected {
-            return Err(ShellError::parse(
-                ParseErrorKind::UnterminatedParamExpansion,
-                span.line,
-                span.column,
-                format!("expected '{}'", expected as char),
-            ));
+            return Err(param_err(span, format!("expected '{}'", expected as char)));
         }
         self.advance();
         Ok(())
@@ -415,12 +407,7 @@ impl Lexer {
     /// After reading the param name inside `${`, read optional operator and closing `}`.
     fn read_param_operator(&mut self, span: Span, name: String) -> error::Result<WordPart> {
         if self.at_end() {
-            return Err(ShellError::parse(
-                ParseErrorKind::UnterminatedParamExpansion,
-                span.line,
-                span.column,
-                "unterminated parameter expansion",
-            ));
+            return Err(param_err(span, "unterminated parameter expansion"));
         }
 
         let ch = self.current_byte();
@@ -456,10 +443,8 @@ impl Lexer {
                 self.read_conditional_param(span, name, true)
             }
             b'-' | b'=' | b'?' | b'+' => self.read_conditional_param(span, name, false),
-            _ => Err(ShellError::parse(
-                ParseErrorKind::UnterminatedParamExpansion,
-                span.line,
-                span.column,
+            _ => Err(param_err(
+                span,
                 format!(
                     "unexpected character in parameter expansion: '{}'",
                     ch as char
@@ -476,12 +461,7 @@ impl Lexer {
         null_check: bool,
     ) -> error::Result<WordPart> {
         if self.at_end() {
-            return Err(ShellError::parse(
-                ParseErrorKind::UnterminatedParamExpansion,
-                span.line,
-                span.column,
-                "unterminated parameter expansion",
-            ));
+            return Err(param_err(span, "unterminated parameter expansion"));
         }
         let op = self.current_byte();
         self.advance(); // consume operator
@@ -517,10 +497,8 @@ impl Lexer {
                 null_check,
             },
             _ => {
-                return Err(ShellError::parse(
-                    ParseErrorKind::UnterminatedParamExpansion,
-                    span.line,
-                    span.column,
+                return Err(param_err(
+                    span,
                     format!("unknown parameter operator: '{}'", op as char),
                 ));
             }
@@ -984,5 +962,197 @@ impl Lexer {
         let mut parser = crate::parser::Parser::new(&content);
         let program = parser.parse_program()?;
         Ok(WordPart::CommandSub(program))
+    }
+}
+
+// ─── Unit tests ──────────────────────────────────────────────────────────────
+//
+// Characterization tests for `read_word_parts`: they pin the current
+// tokenization (part shapes and error line/column) so mechanical refactors
+// inside this file have a direct gate. Higher-level behavior is covered by
+// the parser integration tests and e2e.
+
+#[cfg(test)]
+mod tests {
+    use super::super::Lexer;
+    use crate::error::{ParseErrorKind, ShellError, ShellErrorKind};
+    use crate::parser::ast::{ParamExpr, Word, WordPart};
+
+    fn parts(input: &str) -> Vec<WordPart> {
+        Lexer::new(input).read_word_parts(false, None).unwrap()
+    }
+
+    fn parse_err(input: &str) -> ShellError {
+        Lexer::new(input).read_word_parts(false, None).unwrap_err()
+    }
+
+    fn lit(s: &str) -> WordPart {
+        WordPart::Literal(s.to_string())
+    }
+
+    fn word(parts: Vec<WordPart>) -> Word {
+        Word { parts }
+    }
+
+    #[test]
+    fn plain_word_single_literal() {
+        assert_eq!(parts("hello"), vec![lit("hello")]);
+    }
+
+    #[test]
+    fn word_stops_at_whitespace_and_metachar() {
+        assert_eq!(parts("ab cd"), vec![lit("ab")]);
+        assert_eq!(parts("ab|cd"), vec![lit("ab")]);
+    }
+
+    #[test]
+    fn single_quoted() {
+        assert_eq!(
+            parts("'a b'"),
+            vec![WordPart::SingleQuoted("a b".to_string())]
+        );
+    }
+
+    #[test]
+    fn double_quoted_with_param() {
+        assert_eq!(
+            parts("\"a $x\""),
+            vec![WordPart::DoubleQuoted(vec![
+                lit("a "),
+                WordPart::Parameter(ParamExpr::Simple("x".to_string())),
+            ])]
+        );
+    }
+
+    #[test]
+    fn mixed_word_flushes_literal_between_parts() {
+        assert_eq!(
+            parts("a$x'q'b"),
+            vec![
+                lit("a"),
+                WordPart::Parameter(ParamExpr::Simple("x".to_string())),
+                WordPart::SingleQuoted("q".to_string()),
+                lit("b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn braced_default_expansion() {
+        assert_eq!(
+            parts("${x:-d}"),
+            vec![WordPart::Parameter(ParamExpr::Default {
+                name: "x".to_string(),
+                word: Some(word(vec![lit("d")])),
+                null_check: true,
+            })]
+        );
+    }
+
+    #[test]
+    fn braced_length_expansion() {
+        assert_eq!(
+            parts("${#x}"),
+            vec![WordPart::Parameter(ParamExpr::Length("x".to_string()))]
+        );
+    }
+
+    #[test]
+    fn braced_strip_short_suffix() {
+        assert_eq!(
+            parts("${x%p}"),
+            vec![WordPart::Parameter(ParamExpr::StripShortSuffix(
+                "x".to_string(),
+                word(vec![lit("p")]),
+            ))]
+        );
+    }
+
+    #[test]
+    fn arith_expansion_trimmed_expr() {
+        assert_eq!(
+            parts("$((1+2))"),
+            vec![WordPart::ArithSub("1+2".to_string())]
+        );
+        assert_eq!(
+            parts("$(( 1 + 2 ))"),
+            vec![WordPart::ArithSub("1 + 2".to_string())]
+        );
+    }
+
+    #[test]
+    fn command_substitution_dollar_form() {
+        let p = parts("$(echo hi)");
+        assert_eq!(p.len(), 1);
+        assert!(
+            matches!(&p[0], WordPart::CommandSub(prog) if prog.commands.len() == 1),
+            "got: {:?}",
+            p
+        );
+    }
+
+    #[test]
+    fn command_substitution_backtick_form() {
+        let p = parts("`echo hi`");
+        assert_eq!(p.len(), 1);
+        assert!(
+            matches!(&p[0], WordPart::CommandSub(prog) if prog.commands.len() == 1),
+            "got: {:?}",
+            p
+        );
+    }
+
+    #[test]
+    fn unquoted_escape_emits_escaped_literal() {
+        assert_eq!(
+            parts(r"\a"),
+            vec![WordPart::EscapedLiteral("a".to_string())]
+        );
+        assert_eq!(
+            parts(r"a\ b"),
+            vec![
+                lit("a"),
+                WordPart::EscapedLiteral(" ".to_string()),
+                lit("b")
+            ]
+        );
+    }
+
+    #[test]
+    fn line_continuation_is_transparent() {
+        assert_eq!(parts("a\\\nb"), vec![lit("ab")]);
+    }
+
+    #[test]
+    fn unterminated_param_expansion_error_location() {
+        let e = parse_err("${x");
+        assert_eq!(
+            e.kind,
+            ShellErrorKind::Parse(ParseErrorKind::UnterminatedParamExpansion)
+        );
+        let loc = e.location.expect("param error carries a location");
+        assert_eq!((loc.line, loc.column), (1, 2));
+    }
+
+    #[test]
+    fn unterminated_single_quote_error_location() {
+        let e = parse_err("'abc");
+        assert_eq!(
+            e.kind,
+            ShellErrorKind::Parse(ParseErrorKind::UnterminatedSingleQuote)
+        );
+        let loc = e.location.expect("quote error carries a location");
+        assert_eq!((loc.line, loc.column), (1, 1));
+    }
+
+    #[test]
+    fn unterminated_double_quote_error_location() {
+        let e = parse_err("\"abc");
+        assert_eq!(
+            e.kind,
+            ShellErrorKind::Parse(ParseErrorKind::UnterminatedDoubleQuote)
+        );
+        let loc = e.location.expect("quote error carries a location");
+        assert_eq!((loc.line, loc.column), (1, 1));
     }
 }

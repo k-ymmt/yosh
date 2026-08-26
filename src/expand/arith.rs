@@ -1,16 +1,39 @@
 use crate::env::ShellEnv;
+use crate::error::{ExpansionErrorKind, ShellError};
 
 /// Maximum depth of recursive variable-as-expression evaluation
 /// (`x=y; y=1; $((x))`). Prevents infinite loops like `x=x`.
 const MAX_RECURSION_DEPTH: u32 = 64;
 
+/// Build the `ShellError` for a general arithmetic evaluation failure.
+/// All arithmetic errors are `ShellError::expansion`, so the POSIX §2.8.1
+/// consequences table applies uniformly at every call site: a word-context
+/// failure aborts a non-interactive shell, a heredoc-context failure is
+/// converted to a redirection error at the redirect boundary (matching
+/// dash/bash, which keep the shell alive there).
+fn arith_err(msg: impl std::fmt::Display) -> ShellError {
+    ShellError::expansion(
+        ExpansionErrorKind::InvalidArithmetic,
+        format!("arithmetic: {}", msg),
+    )
+}
+
+/// `arith_err` variant for division/modulo by zero, carrying the dedicated
+/// `ExpansionErrorKind::DivisionByZero` kind.
+fn div_zero_err(msg: &str) -> ShellError {
+    ShellError::expansion(
+        ExpansionErrorKind::DivisionByZero,
+        format!("arithmetic: {}", msg),
+    )
+}
+
 /// Evaluate an arithmetic expression and return the result as a string.
 /// Expands `$VAR`, `${VAR}`, `$(cmd)`, `` `cmd` ``, and nested `$((...))`
 /// first (via the shared dollar-scanner), then parses and evaluates.
-pub fn evaluate(env: &mut ShellEnv, expr: &str) -> Result<String, String> {
+pub fn evaluate(env: &mut ShellEnv, expr: &str) -> crate::error::Result<String> {
     // Step 1: expand dollar references (arith policy: empty results
     // substitute "0"; see `DollarMode::Arith`).
-    let expanded = super::dollar::expand_string(env, expr, super::dollar::DollarMode::Arith);
+    let expanded = super::dollar::expand_string(env, expr, super::dollar::DollarMode::Arith)?;
 
     // Step 2: parse and evaluate
     let bytes = expanded.as_bytes();
@@ -21,8 +44,8 @@ pub fn evaluate(env: &mut ShellEnv, expr: &str) -> Result<String, String> {
         depth: 0,
     };
 
-    // Callers print the diagnostic (heredoc expansion directly, word
-    // expansion via the ShellError path in `exec_command`).
+    // Callers print the diagnostic (word expansion via the ShellError path
+    // in `exec_command`, heredoc expansion via the redirect-error path).
     parser.eval_full().map(|val| val.to_string())
 }
 
@@ -50,15 +73,15 @@ struct ArithParser<'a> {
 impl<'a> ArithParser<'a> {
     /// Parse a complete expression and require it to consume all input.
     /// Trailing garbage (`$((1 2))`) is a syntax error, matching bash/dash.
-    fn eval_full(&mut self) -> Result<i64, String> {
+    fn eval_full(&mut self) -> crate::error::Result<i64> {
         let val = self.expr()?;
         self.skip_whitespace();
         if self.pos < self.input.len() {
             let rest = String::from_utf8_lossy(&self.input[self.pos..]);
-            return Err(format!(
+            return Err(arith_err(format!(
                 "syntax error: unexpected token '{}'",
                 rest.trim_end()
-            ));
+            )));
         }
         Ok(val)
     }
@@ -68,7 +91,7 @@ impl<'a> ArithParser<'a> {
     /// gives `$((x))` == 0); anything else is recursively evaluated as an
     /// arithmetic expression (`x=1+2; $((x))` == 3, matching bash/dash),
     /// with a depth cap so self-referential values (`x=x`) terminate.
-    fn eval_var_value(&mut self, name: &str, raw: &str) -> Result<i64, String> {
+    fn eval_var_value(&mut self, name: &str, raw: &str) -> crate::error::Result<i64> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return Ok(0);
@@ -77,7 +100,10 @@ impl<'a> ArithParser<'a> {
             return Ok(v);
         }
         if self.depth >= MAX_RECURSION_DEPTH {
-            return Err(format!("{}: expression recursion level exceeded", name));
+            return Err(arith_err(format!(
+                "{}: expression recursion level exceeded",
+                name
+            )));
         }
         let mut sub = ArithParser {
             input: trimmed.as_bytes(),
@@ -94,26 +120,29 @@ impl<'a> ArithParser<'a> {
         }
     }
 
-    fn expect(&mut self, ch: u8) -> Result<(), String> {
+    fn expect(&mut self, ch: u8) -> crate::error::Result<()> {
         self.skip_whitespace();
         if self.pos < self.input.len() && self.input[self.pos] == ch {
             self.pos += 1;
             Ok(())
         } else {
             let got = self.input.get(self.pos).copied().unwrap_or(b'?');
-            Err(format!("expected '{}', got '{}'", ch as char, got as char))
+            Err(arith_err(format!(
+                "expected '{}', got '{}'",
+                ch as char, got as char
+            )))
         }
     }
 
     // ── Top-level expression ─────────────────────────────────────────────────
 
-    fn expr(&mut self) -> Result<i64, String> {
+    fn expr(&mut self) -> crate::error::Result<i64> {
         self.comma()
     }
 
     // ── Comma: a, b, c (lowest precedence) ──────────────────────────────────
 
-    fn comma(&mut self) -> Result<i64, String> {
+    fn comma(&mut self) -> crate::error::Result<i64> {
         let mut result = self.ternary()?;
         loop {
             self.skip_whitespace();
@@ -129,7 +158,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Ternary: a ? b : c ───────────────────────────────────────────────────
 
-    fn ternary(&mut self) -> Result<i64, String> {
+    fn ternary(&mut self) -> crate::error::Result<i64> {
         let cond = self.logical_or()?;
         self.skip_whitespace();
         if self.pos < self.input.len() && self.input[self.pos] == b'?' {
@@ -145,7 +174,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Logical OR: || ───────────────────────────────────────────────────────
 
-    fn logical_or(&mut self) -> Result<i64, String> {
+    fn logical_or(&mut self) -> crate::error::Result<i64> {
         let mut left = self.logical_and()?;
         loop {
             self.skip_whitespace();
@@ -165,7 +194,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Logical AND: && ──────────────────────────────────────────────────────
 
-    fn logical_and(&mut self) -> Result<i64, String> {
+    fn logical_and(&mut self) -> crate::error::Result<i64> {
         let mut left = self.bitwise_or()?;
         loop {
             self.skip_whitespace();
@@ -185,7 +214,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Bitwise OR: | ────────────────────────────────────────────────────────
 
-    fn bitwise_or(&mut self) -> Result<i64, String> {
+    fn bitwise_or(&mut self) -> crate::error::Result<i64> {
         let mut left = self.bitwise_xor()?;
         loop {
             self.skip_whitespace();
@@ -205,7 +234,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Bitwise XOR: ^ ───────────────────────────────────────────────────────
 
-    fn bitwise_xor(&mut self) -> Result<i64, String> {
+    fn bitwise_xor(&mut self) -> crate::error::Result<i64> {
         let mut left = self.bitwise_and()?;
         loop {
             self.skip_whitespace();
@@ -222,7 +251,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Bitwise AND: & ───────────────────────────────────────────────────────
 
-    fn bitwise_and(&mut self) -> Result<i64, String> {
+    fn bitwise_and(&mut self) -> crate::error::Result<i64> {
         let mut left = self.equality()?;
         loop {
             self.skip_whitespace();
@@ -242,7 +271,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Equality: ==, != ─────────────────────────────────────────────────────
 
-    fn equality(&mut self) -> Result<i64, String> {
+    fn equality(&mut self) -> crate::error::Result<i64> {
         let mut left = self.relational()?;
         loop {
             self.skip_whitespace();
@@ -269,7 +298,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Relational: <, >, <=, >= ─────────────────────────────────────────────
 
-    fn relational(&mut self) -> Result<i64, String> {
+    fn relational(&mut self) -> crate::error::Result<i64> {
         let mut left = self.shift()?;
         loop {
             self.skip_whitespace();
@@ -310,7 +339,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Shift: <<, >> ────────────────────────────────────────────────────────
 
-    fn shift(&mut self) -> Result<i64, String> {
+    fn shift(&mut self) -> crate::error::Result<i64> {
         let mut left = self.additive()?;
         loop {
             self.skip_whitespace();
@@ -337,7 +366,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Additive: +, - ───────────────────────────────────────────────────────
 
-    fn additive(&mut self) -> Result<i64, String> {
+    fn additive(&mut self) -> crate::error::Result<i64> {
         let mut left = self.multiplicative()?;
         loop {
             self.skip_whitespace();
@@ -358,7 +387,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Multiplicative: *, /, % ──────────────────────────────────────────────
 
-    fn multiplicative(&mut self) -> Result<i64, String> {
+    fn multiplicative(&mut self) -> crate::error::Result<i64> {
         let mut left = self.unary()?;
         loop {
             self.skip_whitespace();
@@ -370,7 +399,7 @@ impl<'a> ArithParser<'a> {
                 self.pos += 1;
                 let right = self.unary()?;
                 if right == 0 {
-                    return Err("division by zero".to_string());
+                    return Err(div_zero_err("division by zero"));
                 }
                 // wrapping: INT_MIN / -1 yields INT_MIN (C semantics) instead of panicking
                 left = left.wrapping_div(right);
@@ -378,7 +407,7 @@ impl<'a> ArithParser<'a> {
                 self.pos += 1;
                 let right = self.unary()?;
                 if right == 0 {
-                    return Err("division by zero (modulo)".to_string());
+                    return Err(div_zero_err("division by zero (modulo)"));
                 }
                 // wrapping: INT_MIN % -1 yields 0 instead of panicking
                 left = left.wrapping_rem(right);
@@ -391,7 +420,7 @@ impl<'a> ArithParser<'a> {
 
     // ── Unary: -, +, !, ~ ───────────────────────────────────────────────────
 
-    fn unary(&mut self) -> Result<i64, String> {
+    fn unary(&mut self) -> crate::error::Result<i64> {
         self.skip_whitespace();
         if self.pos < self.input.len() {
             match self.input[self.pos] {
@@ -417,16 +446,16 @@ impl<'a> ArithParser<'a> {
                 _ => self.primary(),
             }
         } else {
-            Err("unexpected end of expression".to_string())
+            Err(arith_err("unexpected end of expression"))
         }
     }
 
     // ── Primary: number, variable, (expr) ───────────────────────────────────
 
-    fn primary(&mut self) -> Result<i64, String> {
+    fn primary(&mut self) -> crate::error::Result<i64> {
         self.skip_whitespace();
         if self.pos >= self.input.len() {
-            return Err("unexpected end of expression".to_string());
+            return Err(arith_err("unexpected end of expression"));
         }
 
         let ch = self.input[self.pos];
@@ -449,37 +478,37 @@ impl<'a> ArithParser<'a> {
             return self.parse_name_or_assign();
         }
 
-        Err(format!("unexpected character '{}'", ch as char))
+        Err(arith_err(format!("unexpected character '{}'", ch as char)))
     }
 
     // ── Number literal: decimal, octal (0…), hex (0x…) ──────────────────────
 
-    fn parse_number(&mut self) -> Result<i64, String> {
+    fn parse_number(&mut self) -> crate::error::Result<i64> {
         let start = self.pos;
         // Collect all digit/letter chars for the number
         while self.pos < self.input.len() && (self.input[self.pos].is_ascii_alphanumeric()) {
             self.pos += 1;
         }
-        let s = std::str::from_utf8(&self.input[start..self.pos]).map_err(|e| e.to_string())?;
+        let s = std::str::from_utf8(&self.input[start..self.pos]).map_err(arith_err)?;
 
         // Hex
         if s.starts_with("0x") || s.starts_with("0X") {
             i64::from_str_radix(&s[2..], 16)
-                .map_err(|e| format!("invalid hex literal '{}': {}", s, e))
+                .map_err(|e| arith_err(format!("invalid hex literal '{}': {}", s, e)))
         // Octal (leading zero but more digits follow)
         } else if s.starts_with('0') && s.len() > 1 {
             i64::from_str_radix(&s[1..], 8)
-                .map_err(|e| format!("invalid octal literal '{}': {}", s, e))
+                .map_err(|e| arith_err(format!("invalid octal literal '{}': {}", s, e)))
         // Decimal
         } else {
             s.parse::<i64>()
-                .map_err(|e| format!("invalid number '{}': {}", s, e))
+                .map_err(|e| arith_err(format!("invalid number '{}': {}", s, e)))
         }
     }
 
     // ── Identifier: variable lookup or assignment (x = expr) ─────────────────
 
-    fn parse_name_or_assign(&mut self) -> Result<i64, String> {
+    fn parse_name_or_assign(&mut self) -> crate::error::Result<i64> {
         let start = self.pos;
         while self.pos < self.input.len()
             && (self.input[self.pos].is_ascii_alphanumeric() || self.input[self.pos] == b'_')
@@ -487,7 +516,7 @@ impl<'a> ArithParser<'a> {
             self.pos += 1;
         }
         let name = std::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|e| e.to_string())?
+            .map_err(arith_err)?
             .to_string();
 
         self.skip_whitespace();
@@ -505,14 +534,14 @@ impl<'a> ArithParser<'a> {
                 CompoundOp::Mul => cur_val.wrapping_mul(rhs),
                 CompoundOp::Div => {
                     if rhs == 0 {
-                        return Err("division by zero".to_string());
+                        return Err(div_zero_err("division by zero"));
                     }
                     // wrapping: INT_MIN / -1 yields INT_MIN (C semantics)
                     cur_val.wrapping_div(rhs)
                 }
                 CompoundOp::Mod => {
                     if rhs == 0 {
-                        return Err("division by zero".to_string());
+                        return Err(div_zero_err("division by zero (modulo)"));
                     }
                     // wrapping: INT_MIN % -1 yields 0
                     cur_val.wrapping_rem(rhs)
@@ -849,13 +878,43 @@ mod tests {
         assert_eq!(evaluate(&mut e, "$((1+1)) + 1"), Ok("3".to_string()));
     }
 
+    // ── Unified error channel: kind classification ──
+
+    #[test]
+    fn test_division_by_zero_has_dedicated_kind() {
+        let err = evaluate(&mut env(), "1/0").unwrap_err();
+        assert!(
+            matches!(
+                err.kind,
+                crate::error::ShellErrorKind::Expansion(ExpansionErrorKind::DivisionByZero)
+            ),
+            "got: {:?}",
+            err.kind
+        );
+        assert!(err.message.contains("division by zero"), "got: {err}");
+        assert!(err.requires_noninteractive_exit());
+    }
+
+    #[test]
+    fn test_syntax_error_is_invalid_arithmetic_kind() {
+        let err = evaluate(&mut env(), "1 +").unwrap_err();
+        assert!(
+            matches!(
+                err.kind,
+                crate::error::ShellErrorKind::Expansion(ExpansionErrorKind::InvalidArithmetic)
+            ),
+            "got: {:?}",
+            err.kind
+        );
+    }
+
     // ── Trailing-garbage detection (audit M5) ──
 
     #[test]
     fn test_trailing_garbage_is_syntax_error() {
         let mut e = env();
         let err = evaluate(&mut e, "1 2").unwrap_err();
-        assert!(err.contains("syntax error"), "got: {err}");
+        assert!(err.message.contains("syntax error"), "got: {err}");
     }
 
     #[test]
@@ -886,7 +945,7 @@ mod tests {
         let mut e = env();
         e.vars.set("x", "x").unwrap();
         let err = evaluate(&mut e, "x").unwrap_err();
-        assert!(err.contains("recursion"), "got: {err}");
+        assert!(err.message.contains("recursion"), "got: {err}");
     }
 
     #[test]

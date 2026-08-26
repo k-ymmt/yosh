@@ -271,8 +271,15 @@ impl RedirectState {
             RedirectKind::HereDoc(heredoc) => {
                 let target_fd = redirect.fd.unwrap_or(0);
 
-                // Expand the body
-                let body = crate::expand::expand_heredoc_body(env, &heredoc.body, heredoc.quoted);
+                // Expand the body. An expansion failure (e.g. $((1/0)))
+                // becomes a redirection error: the command is aborted but
+                // the shell continues — dash and bash both keep the shell
+                // alive for a heredoc arithmetic failure, unlike the word
+                // path (empirical 2026-08-26; POSIX §2.7.4 heredocs are
+                // redirections, so the §2.8.1 redirection-error row
+                // applies, not the expansion-error row).
+                let body = crate::expand::expand_heredoc_body(env, &heredoc.body, heredoc.quoted)
+                    .map_err(|e| e.message)?;
 
                 let read_fd = heredoc_source_fd(&crate::byteenc::decode_bytes(&body))?;
 
