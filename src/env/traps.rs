@@ -154,21 +154,6 @@ impl TrapStore {
         self.reset_non_ignored();
     }
 
-    /// Return signal numbers whose action is a `Command` trap — i.e. the
-    /// signals for which `apply_trap_disposition` installed the shell's
-    /// self-pipe OS handler. Fork-time subshell paths that reset the trap
-    /// store but keep running shell code (command substitution) capture
-    /// this list BEFORE the reset so the leftover OS dispositions can be
-    /// restored to baseline (see
-    /// [`crate::signal::reset_inherited_trap_dispositions`]).
-    pub fn command_trapped_signals(&self) -> Vec<i32> {
-        self.signal_traps
-            .iter()
-            .filter(|(_, action)| matches!(action, TrapAction::Command(_)))
-            .map(|(&num, _)| num)
-            .collect()
-    }
-
     /// Return signal numbers that have TrapAction::Ignore disposition.
     pub fn ignored_signals(&self) -> Vec<i32> {
         self.signal_traps

@@ -103,6 +103,15 @@
       — or pgrp-wide WUNTRACED status probing. Wrap-up review
       2026-08-25 round 2 finding, pre-existing
       (`src/exec/control.rs::exec_async`, `src/env/jobs/`).
+      2026-08-26 addendum: the same double fork also skews `$PPID`
+      seen by the exec'd command — `sh -c 'kill -USR1 $PPID' &` in a
+      command substitution signals the intermediate async wrapper
+      (which dies at SIG_DFL) instead of the substitution child, where
+      bash/dash's exec-in-place optimization makes `$PPID` the
+      substitution child itself. Found while fixing the fork-child
+      self-pipe-handler retention bug (signals targeted at the
+      subst/subshell child itself now kill it immediately; see
+      `signal::reset_shell_child_signals`).
 - [ ] `wait_until_foreground` untestable-order residuals — the two
       backgrounded-REPL PTY tests pin the stop and the fg recovery but
       not (a) the spin-detector reset semantics (a regression that
@@ -415,13 +424,15 @@
 
 - [ ] Self-pipe fork race in remaining fork sites — a forked child inherits
       the parent's self-pipe handler and the shared pipe until
-      `reset_child_signals` runs, so a signal delivered to the child in that
-      window is written into the pipe and later misread by the parent as its
-      own (parent then exits via `handle_default_signal`). `exec_async`
+      `reset_shell_child_signals` runs (which since 2026-08-26 also swaps in
+      a fresh child-private pipe), so a signal delivered to the child in that
+      window is written into the SHARED pipe and later misread by the parent
+      as its own (parent then exits via `handle_default_signal`). `exec_async`
       (`src/exec/control.rs`) now blocks all signals across the fork and
       restores the mask on both sides after dispositions are set; the same
-      latent race exists in `exec_subshell` (`src/exec/compound.rs`) and the
-      pipeline child forks (`src/exec/pipeline.rs`). Apply the same
+      latent race exists in `exec_subshell` (`src/exec/compound.rs`), the
+      pipeline child forks (`src/exec/pipeline.rs`), and command
+      substitution (`src/expand/command_sub.rs`). Apply the same
       block/restore pattern there if a repro surfaces (2026-07-14: observed
       only for async lists via `kill -TERM $!` racing the child's reset).
 
@@ -432,7 +443,7 @@
 - [ ] `expand_assignment_builtin_args` string round-trip — helper builds `"NAME=value"` strings that the builtin re-parses with `find('=')`. Lossless today, but couples the helper shape to the legacy builtin API. When a future refactor touches `builtin_export`/`builtin_readonly` signatures, consider passing `Vec<(String, Option<String>)>` directly to skip the round-trip (`src/exec/simple.rs`, `src/builtin/special.rs`).
 - [ ] `exec_function_call` residual overhead vs arithmetic loop (§4.2) — 2026-08-26: two of the four suspected causes fixed (per-call `catch_unwind` replaced with a `ScopeGuard` Drop popper in `src/exec/function.rs`; the call-site deep clone removed by storing `Rc<FunctionDef>` in `env.functions`). Remaining candidates if the gap still matters: `exec_function_call_cached_environ`, `exec_function_call_smallvec_scope` sub-benches per `performance.md` §4.2 candidate #1. Re-measure before acting — the ~50 µs/call figure predates the 2026-08-26 fixes (`src/exec/function.rs`).
 - [ ] Multi-byte IFS support in UTF-8 locale (bash-extension parity) — `field_split::split` currently matches IFS as an ASCII byte-set. `IFS="日"; set -- $"a日b"` yields `[a] [b]` under bash in UTF-8 locale (character-level match) but is silently ignored (post-fix A) or produces garbled bytes (pre-fix A) in yosh. POSIX leaves this locale-dependent; bash uses character-level matching when locale is multi-byte. Plan: introduce a `char`-level IFS match path (`char_indices` in `split_field`, char-mode `ifs` set) gated by locale detection. Deferred from the 2026-04-21 `append_byte` UTF-8 panic fix to keep scope minimal. See the brainstorming log for that fix; reference bash 3.2 behavior under `LC_ALL=en_US.UTF-8` as the target semantics.
-- [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard.
+- [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard. Observed in the wild 2026-08-26: with TWO full `cargo test` runs racing on one machine, the in-process command-sub unit tests (`exec::simple::tests::standalone_true_cmd_sub_propagates_zero` and neighbors) deadlocked — the fork child froze on the libtest main thread's fork-frozen stdout lock inside `exit_child`'s `stdout().flush()`, and the test thread blocked forever in the command-sub pipe `read_to_end`. Single-suite runs (8+ consecutive) never reproduce; avoid running two suites concurrently, or move these fork tests to integration binaries if it recurs.
 - [ ] `Parser::current_token` API shape — `interactive/parse_status.rs:61` compares the result against `&Token::Newline` literally, which forces every caller to construct a borrowed `Token` value just for equality. Consider a predicate `fn is_token(&self, t: &Token) -> bool` (or an enum-tag helper) that hides the borrow. Discovered during the 2026-05-05 visibility-tightening spec follow-up (`docs/superpowers/specs/2026-05-05-parser-visibility-tightening-design.md` §4.2-1, `src/parser/mod.rs`).
 - [ ] Bench API surface — `Parser::new` and `parse_program` are the only two `Parser` items required to stay `pub`; their sole external consumers are `benches/parser_bench.rs` and `benches/exec_bench.rs`. Wrapping them in a bench-only helper module (e.g. an internal `pub(crate) fn parse_for_bench(s: &str) -> Program` reachable through a `#[cfg(any(test, feature = "internal_api"))]` shim) would let both `Parser::new` and `parse_program` drop to `pub(crate)`, shrinking the public Parser surface from 10 to 8. Requires bench-side refactor. Discovered during the 2026-05-05 visibility-tightening spec follow-up (§4.2-3, `benches/parser_bench.rs`, `benches/exec_bench.rs`).
 - [ ] `ulimit` `-f` block arithmetic assumes `libc::rlim_t == u64` — `BLOCK_SIZE: libc::rlim_t = 512` and `SetBlocks(n: u64).saturating_mul(BLOCK_SIZE)` (`src/builtin/regular.rs`) compile only where `rlim_t` is `u64` (macOS, 64-bit Linux). On 32-bit Linux `rlim_t` is `u32`, making the `u64 * u32` a type error. Not a runtime risk and the project has no Linux CI / targets macOS, but if a 32-bit target is ever added, type `BLOCK_SIZE` as `u64` and cast at the `set_fsize` / `format_fsize_limit` call sites. Final-review follow-up from 2026-05-26 ulimit native -f branch.

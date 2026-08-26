@@ -231,8 +231,12 @@ impl Executor {
                 // remembered reaped statuses and terminal table jobs
                 // are not its children.
                 self.env.process.jobs.reset_for_subshell();
+                // Shell-child variants: an async child keeps running
+                // shell code, so the self-pipe is re-created (traps set
+                // inside the list must work) while parent handlers reset
+                // to SIG_DFL per POSIX §2.12.
                 if self.env.mode.options.monitor {
-                    signal::setup_background_child_signals(&ignored);
+                    signal::setup_background_shell_child_signals(&ignored);
                     // A background job is a subshell, not a job-controlling
                     // shell: with monitor left on, a nested external command
                     // would be forked into its own new process group and this
@@ -260,7 +264,7 @@ impl Executor {
                         .insert(libc::SIGQUIT, crate::env::TrapAction::Ignore);
                     ignored.push(libc::SIGINT);
                     ignored.push(libc::SIGQUIT);
-                    signal::reset_child_signals(&ignored);
+                    signal::reset_shell_child_signals(&ignored);
                     if let Ok(devnull) = std::fs::File::open("/dev/null") {
                         use std::os::fd::AsRawFd;
                         unsafe {

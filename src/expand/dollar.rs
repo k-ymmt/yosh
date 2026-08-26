@@ -222,16 +222,38 @@ fn run_command_sub(env: &mut ShellEnv, cmd_str: &str, result: &mut String) {
 /// are NOT `Err`: `param::expand` reports those via
 /// `FlowControl::ExpansionError` and returns `Ok` (see
 /// `param::expansion_error`), so they are unaffected here.
+///
+/// A body the lexer rejects (`${x:bad}`, `${}`, …) is a malformed
+/// substitution and is also an `Err` — the word context fails at parse
+/// time for the same text (`unknown parameter operator`), and dash
+/// diagnoses `Bad substitution` in heredocs; silently falling back to a
+/// plain variable lookup swallowed the error entirely.
 fn expand_braced_param(env: &mut ShellEnv, inner: &str) -> crate::error::Result<String> {
     let input = format!("${{{}}}", inner);
     let mut lexer = crate::lexer::Lexer::new(&input);
-    if let Ok(tok) = lexer.next_token()
-        && let crate::lexer::token::Token::Word(word) = tok.token
-        && let [WordPart::Parameter(p)] = word.parts.as_slice()
-    {
-        return param::expand(env, p);
+    match lexer.next_token() {
+        Ok(tok) => {
+            if let crate::lexer::token::Token::Word(word) = tok.token
+                && let [WordPart::Parameter(p)] = word.parts.as_slice()
+            {
+                param::expand(env, p)
+            } else {
+                // Lexed, but not as a single parameter expansion — the
+                // scanned braces do not form a valid `${...}`.
+                Err(ShellError::expansion(
+                    ExpansionErrorKind::BadSubstitution,
+                    format!("${{{}}}: bad substitution", inner),
+                ))
+            }
+        }
+        // Reuse the lexer's specific diagnostic (`unknown parameter
+        // operator: ':'`, `unterminated parameter expansion`, …), the
+        // same message the word context reports for this text.
+        Err(e) => Err(ShellError::expansion(
+            ExpansionErrorKind::BadSubstitution,
+            e.message,
+        )),
     }
-    Ok(env.vars.get(inner).unwrap_or("").to_string())
 }
 
 #[cfg(test)]
@@ -427,6 +449,70 @@ mod tests {
         let mut env = make_env();
         let err = expand_string(&mut env, "`echo hi").unwrap_err();
         assert!(err.message.contains("backtick"), "{}", err);
+    }
+
+    // ── malformed ${...} bodies are diagnosed, not silently swallowed
+    //    into a plain variable lookup ───────────────────────────────────
+
+    #[test]
+    fn malformed_param_operator_is_error() {
+        // `${y:bad}` — `:` must be followed by -, =, ?, + (or a digit for
+        // no POSIX form at all). dash: "Bad substitution"; the word
+        // context fails at parse time with the same lexer diagnostic.
+        let mut env = make_env();
+        let err = expand_string(&mut env, "${y:bad}").unwrap_err();
+        assert_eq!(
+            err.kind,
+            crate::error::ShellErrorKind::Expansion(
+                crate::error::ExpansionErrorKind::BadSubstitution
+            )
+        );
+        assert!(
+            err.message.contains("unknown parameter operator"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn malformed_nested_param_is_error() {
+        // Regression: `${x:-${y:bad}}` with x unset expanded to "" —
+        // the inner failure was swallowed by the plain-lookup fallback.
+        let mut env = make_env();
+        let err = expand_string(&mut env, "${x:-${y:bad}}").unwrap_err();
+        assert_eq!(
+            err.kind,
+            crate::error::ShellErrorKind::Expansion(
+                crate::error::ExpansionErrorKind::BadSubstitution
+            )
+        );
+    }
+
+    #[test]
+    fn empty_braces_are_error() {
+        // `${}` — bash/dash both diagnose "bad substitution".
+        let mut env = make_env();
+        assert!(expand_string(&mut env, "${}").is_err());
+    }
+
+    #[test]
+    fn malformed_param_set_variable_still_error() {
+        // A set variable does not legitimize a malformed operator.
+        let mut env = make_env();
+        env.vars.set("y", "val").unwrap();
+        assert!(expand_string(&mut env, "${y:bad}").is_err());
+    }
+
+    #[test]
+    fn valid_forms_with_spaces_and_newlines_still_ok() {
+        // The re-lex path must keep accepting word-context-valid bodies:
+        // spaces and embedded newlines inside the default word.
+        let mut env = make_env();
+        assert_eq!(
+            expand_string(&mut env, "${x:-hello world}").unwrap(),
+            "hello world"
+        );
+        assert_eq!(expand_string(&mut env, "${x:-a\nb}").unwrap(), "a\nb");
     }
 
     #[test]

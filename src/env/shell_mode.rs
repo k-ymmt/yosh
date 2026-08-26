@@ -219,6 +219,17 @@ pub struct ShellMode {
     /// POSIX XCU 2.5.2 requires their `$-` to still report `i` —
     /// bash/dash agree. `flag_string` ORs this with `is_interactive`.
     pub flag_i: bool,
+    /// Snapshot of the `m` letter for `$-`, decoupled from the live
+    /// `options.monitor` behavior flag — the `m` analogue of `flag_i`.
+    /// Command-substitution and `(...)` subshell children of a
+    /// monitor-mode shell must run with `options.monitor: false` (a
+    /// subshell is not a job-controlling shell: nested tcsetpgrp
+    /// handoffs would strand the parent's terminal — see
+    /// `expand/command_sub.rs`), yet their `$-` must still report `m`
+    /// like bash does in subshells. An explicit `set -m`/`set +m` in
+    /// the child re-syncs this snapshot (see the `set` wrapper in
+    /// `builtin/special.rs`).
+    pub flag_m: bool,
     pub in_dot_script: bool,
 }
 
@@ -226,9 +237,17 @@ impl ShellMode {
     /// Full `$-` flag string: the option letters plus `i` when the shell
     /// is interactive (POSIX XCU 2.5.2 special parameters). `i` is
     /// invocation state, not a settable option, so it lives here rather
-    /// than in [`ShellOptions`].
+    /// than in [`ShellOptions`]; `m` may also come from the `flag_m`
+    /// snapshot when a subshell child runs with the live monitor
+    /// behavior off.
     pub fn flag_string(&self) -> String {
         let mut s = self.options.to_flag_string();
+        if self.flag_m && !self.options.monitor {
+            // Reinsert the snapshot `m` at to_flag_string's canonical
+            // slot (a, b, c, C, e, f, m, n, s, u, v, x).
+            let pos = s.find(['n', 's', 'u', 'v', 'x']).unwrap_or(s.len());
+            s.insert(pos, 'm');
+        }
         if self.is_interactive || self.flag_i {
             // Preserve to_flag_string's alphabetical-ish emit order
             // (a, b, c, C, e, f, [i], m, n, s, u, v, x).
@@ -281,6 +300,7 @@ mod tests {
             options: ShellOptions::default(),
             is_interactive: true,
             flag_i: false,
+            flag_m: false,
             in_dot_script: false,
         };
         mode.options.monitor = true;
@@ -300,6 +320,7 @@ mod tests {
             options: ShellOptions::default(),
             is_interactive: true,
             flag_i: false,
+            flag_m: false,
             in_dot_script: false,
         };
         assert_eq!(mode.flag_string(), "i");
@@ -313,6 +334,7 @@ mod tests {
             options: ShellOptions::default(),
             is_interactive: false,
             flag_i: true,
+            flag_m: false,
             in_dot_script: false,
         };
         assert_eq!(mode.flag_string(), "i");

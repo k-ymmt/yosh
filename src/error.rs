@@ -45,6 +45,11 @@ pub enum ExpansionErrorKind {
     /// Unterminated `${`, `$(`, `$((`, or `` ` `` found while expanding a
     /// raw string (heredoc body / arithmetic text) at end of input.
     UnterminatedExpansion,
+    /// A brace-balanced `${...}` in a raw string (heredoc body /
+    /// arithmetic text) whose body is not a valid parameter expansion
+    /// (`${x:bad}`, `${}`); the word-context lexer rejects the same text
+    /// at parse time.
+    BadSubstitution,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -107,6 +107,7 @@ impl ShellEnv {
                 options: ShellOptions::default(),
                 is_interactive: false,
                 flag_i: false,
+                flag_m: false,
                 in_dot_script: false,
             },
             shell_name: shell_name.into(),

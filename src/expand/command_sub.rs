@@ -68,6 +68,11 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                     // … but `$-` must still report `i` inside $( ) of an
                     // interactive shell (POSIX XCU 2.5.2; bash/dash agree).
                     flag_i: env.mode.is_interactive || env.mode.flag_i,
+                    // Same snapshot pattern for `m`: the live monitor
+                    // behavior is turned off below (subshells are not
+                    // job-controlling shells), but `$-` keeps reporting
+                    // `m` like bash's subshells do.
+                    flag_m: env.mode.options.monitor || env.mode.flag_m,
                     in_dot_script: false,
                 },
                 shell_name: env.shell_name.clone(),
@@ -78,19 +83,28 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 default_path_cache: env.default_path_cache.clone(),
                 utility_hash: env.utility_hash.clone(),
             };
-            // Parent `trap 'cmd' SIG` commands installed self-pipe OS
-            // handlers (apply_trap_disposition); the store reset below
-            // drops the trap entries but not those handlers, so a signal
-            // with a parent-only trap would be caught by the leftover
-            // handler instead of killing this child immediately. Capture
-            // the list before the reset and restore each signal to its
-            // baseline disposition after.
-            let parent_command_traps = child_env.traps.command_trapped_signals();
+            // POSIX §2.12: traps caught by the parent (including the
+            // shell's always-registered HANDLED_SIGNALS self-pipe
+            // handlers) are reset to default in this subshell — the
+            // child must die from e.g. USR1 immediately, mid-blocking-
+            // syscall, not defer it to the next command boundary via a
+            // leftover SA_RESTART handler. `trap '' SIG` entries stay
+            // ignored (they survive the store reset below), and the
+            // self-pipe is re-created so traps set INSIDE the command
+            // substitution still work.
             child_env.traps.reset_for_command_sub();
-            crate::signal::reset_inherited_trap_dispositions(
-                &parent_command_traps,
-                child_env.mode.options.monitor,
-            );
+            let ignored = child_env.traps.ignored_signals();
+            crate::signal::reset_shell_child_signals(&ignored);
+            // A command substitution is a subshell, not a job-controlling
+            // shell: with monitor left on, a nested external command
+            // would be forked into its own process group and this child
+            // would call tcsetpgrp around it — and with SIGTTOU now at
+            // SIG_DFL (reset above; it used to be the parent's inherited
+            // SIG_IGN), the take-back tcsetpgrp from what is by then a
+            // background process group stops this child and strands the
+            // interactive parent's terminal on a dead process group.
+            // Same guard as pipeline members and async children.
+            child_env.mode.options.monitor = false;
             // The command-sub child is a fresh subshell: the parent's
             // remembered reaped statuses and terminal table jobs are
             // not its children.

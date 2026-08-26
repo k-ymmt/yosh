@@ -343,9 +343,13 @@ pub fn default_signal(sig: i32) {
     }
 }
 
-/// Reset signals after fork for child processes.
-/// `ignored` signals retain SIG_IGN; all others reset to SIG_DFL.
-/// Signals inherited as SIG_IGN at shell entry (§2.12) are also kept ignored.
+/// Disposition walk shared by [`reset_child_signals`] (fork+exec
+/// children) and [`reset_shell_child_signals`] (fork children that keep
+/// running shell code): `ignored` signals (user `trap '' SIG`) retain
+/// SIG_IGN, signals inherited as SIG_IGN at shell entry (§2.12) stay
+/// ignored, everything else — including the parent's [`HANDLED_SIGNALS`]
+/// self-pipe handlers and any `trap 'cmd' SIG` handlers — resets to
+/// SIG_DFL.
 ///
 /// Walks the full SIGNAL_TABLE (not just HANDLED_SIGNALS): the trap
 /// builtin can install handlers/SIG_IGN for any trappable signal (e.g.
@@ -353,7 +357,7 @@ pub fn default_signal(sig: i32) {
 /// job-control signals in monitor mode — all of those must come back to
 /// SIG_DFL in children unless the user trap-ignored them. Callers that
 /// need job-control exceptions (`setup_*_child_signals`) adjust after.
-pub fn reset_child_signals(ignored: &[i32]) {
+fn reset_child_dispositions(ignored: &[i32]) {
     let entry_set = IGNORED_ON_ENTRY.get();
     for &(num, _) in SIGNAL_TABLE {
         if num == libc::SIGKILL || num == libc::SIGSTOP {
@@ -367,6 +371,15 @@ pub fn reset_child_signals(ignored: &[i32]) {
             default_signal(num);
         }
     }
+}
+
+/// Reset signals after fork for children that will `exec` (or exit
+/// without running further shell code). See
+/// [`reset_child_dispositions`] for the disposition policy; the
+/// self-pipe fds are closed since an exec'd child has no use for them
+/// (they are CLOEXEC anyway — closing here also covers exec failure).
+pub fn reset_child_signals(ignored: &[i32]) {
+    reset_child_dispositions(ignored);
 
     // Close self-pipe fds if they exist.
     if let Some(&(read_fd, write_fd)) = SELF_PIPE.get() {
@@ -375,6 +388,72 @@ pub fn reset_child_signals(ignored: &[i32]) {
             libc::close(write_fd);
         }
     }
+}
+
+/// Reset signals after fork for a child that CONTINUES running shell
+/// code (command substitution, `(...)` subshell, pipeline member,
+/// async `&` list). Two differences from the parent state matter:
+///
+/// * Dispositions: signals the parent kept on its self-pipe handler —
+///   the always-registered [`HANDLED_SIGNALS`] and any `trap 'cmd' SIG`
+///   — go to SIG_DFL. POSIX §2.12: traps caught by the parent are reset
+///   to default in a subshell, so a USR1/TERM/… must kill the child
+///   immediately, even mid-blocking-syscall, instead of being deferred
+///   by the leftover SA_RESTART handler to the next command boundary
+///   (where it only takes effect after e.g. a long `sleep` completes).
+///   `trap '' SIG` and entry-ignored signals stay SIG_IGN.
+///
+/// * Self-pipe: the child must NOT share the parent's pipe — a byte
+///   written by one process's handler could be drained by the other.
+///   The inherited fds are replaced with a fresh pipe
+///   ([`reinit_self_pipe_after_fork`]) so the child's OWN `trap`
+///   invocations (which reinstall the self-pipe handler via
+///   [`apply_trap_disposition`]) keep working.
+///
+/// The forking parent itself is untouched — the interactive REPL and a
+/// `yosh -c` top level keep their handlers and pipe.
+pub fn reset_shell_child_signals(ignored: &[i32]) {
+    reset_child_dispositions(ignored);
+    reinit_self_pipe_after_fork();
+}
+
+/// Replace the inherited self-pipe with a fresh pipe on the SAME fd
+/// numbers (the `SELF_PIPE` OnceLock cannot be re-set), and clear the
+/// pending-signal flags inherited from the parent. Called only in fork
+/// children that keep running shell code; a no-op if the pipe was never
+/// created. The old fds are still open when `pipe(2)` runs, so the new
+/// temporary fds can never collide with the targets and `dup2` replaces
+/// them atomically.
+fn reinit_self_pipe_after_fork() {
+    if let Some(&(read_fd, write_fd)) = SELF_PIPE.get() {
+        // SAFETY: plain fd syscalls in a freshly forked, single-threaded
+        // child; failures leave the (harmless) inherited pipe in place.
+        unsafe {
+            let mut fds: [libc::c_int; 2] = [0; 2];
+            if libc::pipe(fds.as_mut_ptr()) == 0 {
+                libc::dup2(fds[0], read_fd);
+                libc::dup2(fds[1], write_fd);
+                if fds[0] != read_fd && fds[0] != write_fd {
+                    libc::close(fds[0]);
+                }
+                if fds[1] != read_fd && fds[1] != write_fd {
+                    libc::close(fds[1]);
+                }
+                // dup2 clears O_CLOEXEC and copies file-status flags from
+                // the fresh pipe (no O_NONBLOCK) — restore both.
+                for &fd in &[read_fd, write_fd] {
+                    let fl = libc::fcntl(fd, libc::F_GETFL);
+                    libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK);
+                    libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+                }
+            }
+        }
+    }
+    // Stale parent state must not leak into the child: a byte the parent
+    // handler wrote pre-fork now sits in a pipe the child no longer
+    // reads, and these flags belong with it.
+    SIGNAL_PENDING.store(false, Ordering::Release);
+    PENDING_EXIT_SIGNAL.store(false, Ordering::Release);
 }
 
 /// OS-level disposition matching a trap-store change, for
@@ -438,35 +517,6 @@ pub fn apply_trap_disposition(sig: i32, disposition: TrapDisposition, monitor: b
     // SAFETY: installing an async-signal-safe handler or plain
     // disposition; failures (e.g. SIGKILL) are intentionally ignored.
     let _ = unsafe { sigaction(signal, &sa) };
-}
-
-/// Restore baseline OS dispositions in a fork child that continues to
-/// run shell code (e.g. a command-substitution child) after its trap
-/// store was reset.
-///
-/// `command_trapped` is the set of signals that carried a parent
-/// `trap 'cmd' SIG`, captured BEFORE the store reset
-/// ([`crate::env::TrapStore::command_trapped_signals`]). Each of them
-/// still has the self-pipe handler installed by
-/// [`apply_trap_disposition`]; without this restore, a signal whose only
-/// trap belonged to the parent is caught by the leftover handler in the
-/// child — and, with SA_RESTART, only acted on at the next command
-/// boundary (e.g. after a blocking `sleep` completes) instead of
-/// performing its default action immediately mid-syscall.
-///
-/// The baseline policy lives in [`apply_trap_disposition`]'s `Default`
-/// branch: [`HANDLED_SIGNALS`] keep the self-pipe handler, monitor-mode
-/// job-control signals stay non-default, everything else returns to
-/// SIG_DFL. Entry-ignored signals are skipped (they can never carry a
-/// Command trap — POSIX §2.12 — and must stay SIG_IGN); `trap '' SIG`
-/// entries are not in `command_trapped`, so their SIG_IGN survives too.
-pub fn reset_inherited_trap_dispositions(command_trapped: &[i32], monitor: bool) {
-    for &sig in command_trapped {
-        if is_ignored_on_entry(sig) {
-            continue;
-        }
-        apply_trap_disposition(sig, TrapDisposition::Default, monitor);
-    }
 }
 
 /// Set up job control signals for the shell process itself.
@@ -651,10 +701,11 @@ pub fn reset_job_control_signals() {
     default_signal(libc::SIGCHLD);
 }
 
-/// Set up signals for a foreground child process.
-/// Restores SIGTSTP, SIGTTIN, SIGTTOU to SIG_DFL so the child can be stopped.
-pub fn setup_foreground_child_signals(ignored: &[i32]) {
-    reset_child_signals(ignored);
+/// Foreground job-control overrides applied on top of the base child
+/// reset: SIGTSTP, SIGTTIN, SIGTTOU to SIG_DFL so the child can be
+/// stopped (even when the parent inherited them SIG_IGN at entry),
+/// unless the user trap-ignored them.
+fn apply_foreground_child_overrides(ignored: &[i32]) {
     if !ignored.contains(&libc::SIGTSTP) {
         default_signal(libc::SIGTSTP);
     }
@@ -666,10 +717,10 @@ pub fn setup_foreground_child_signals(ignored: &[i32]) {
     }
 }
 
-/// Set up signals for a background child process.
-/// Ignores SIGTTIN to prevent background reads from stopping.
-pub fn setup_background_child_signals(ignored: &[i32]) {
-    reset_child_signals(ignored);
+/// Background job-control overrides applied on top of the base child
+/// reset: SIGTTIN ignored to prevent background reads from stopping the
+/// job; SIGTSTP/SIGTTOU stoppable unless user trap-ignored.
+fn apply_background_child_overrides(ignored: &[i32]) {
     ignore_signal(libc::SIGTTIN);
     if !ignored.contains(&libc::SIGTSTP) {
         default_signal(libc::SIGTSTP);
@@ -677,6 +728,33 @@ pub fn setup_background_child_signals(ignored: &[i32]) {
     if !ignored.contains(&libc::SIGTTOU) {
         default_signal(libc::SIGTTOU);
     }
+}
+
+/// Set up signals for a foreground child process that will `exec`.
+pub fn setup_foreground_child_signals(ignored: &[i32]) {
+    reset_child_signals(ignored);
+    apply_foreground_child_overrides(ignored);
+}
+
+/// Set up signals for a foreground fork child that continues running
+/// shell code (monitor-mode pipeline member): same dispositions as
+/// [`setup_foreground_child_signals`], but the self-pipe is re-created
+/// instead of closed so traps set inside the child keep working (see
+/// [`reset_shell_child_signals`]).
+pub fn setup_foreground_shell_child_signals(ignored: &[i32]) {
+    reset_shell_child_signals(ignored);
+    apply_foreground_child_overrides(ignored);
+}
+
+/// Set up signals for a background fork child that continues running
+/// shell code (monitor-mode async `&` list): base child reset with the
+/// background job-control overrides, with the self-pipe re-created
+/// instead of closed (see [`reset_shell_child_signals`]). Background
+/// externals are exec'd from inside this child via the standard
+/// foreground path, so no exec'ing background variant exists.
+pub fn setup_background_shell_child_signals(ignored: &[i32]) {
+    reset_shell_child_signals(ignored);
+    apply_background_child_overrides(ignored);
 }
 
 #[cfg(test)]
@@ -796,7 +874,7 @@ mod tests {
         let _ = init_job_control_signals as fn();
         let _ = reset_job_control_signals as fn();
         let _ = setup_foreground_child_signals as fn(&[i32]);
-        let _ = setup_background_child_signals as fn(&[i32]);
+        let _ = setup_background_shell_child_signals as fn(&[i32]);
     }
 
     #[test]

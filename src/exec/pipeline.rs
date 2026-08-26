@@ -105,8 +105,12 @@ impl Executor {
                     // remembered reaped statuses and terminal table jobs
                     // are not their children.
                     self.env.process.jobs.reset_for_subshell();
+                    // Shell-child variants: a pipeline member keeps
+                    // running shell code, so the self-pipe is re-created
+                    // (traps set inside the member must work) while
+                    // parent handlers reset to SIG_DFL per POSIX §2.12.
                     if self.env.mode.options.monitor {
-                        signal::setup_foreground_child_signals(&ignored);
+                        signal::setup_foreground_shell_child_signals(&ignored);
                         // A pipeline element is a subshell, not a
                         // job-controlling shell: with monitor left on, a
                         // nested external command would be forked into its
@@ -119,7 +123,7 @@ impl Executor {
                         // this pipeline's process group.
                         self.env.mode.options.monitor = false;
                     } else {
-                        signal::reset_child_signals(&ignored);
+                        signal::reset_shell_child_signals(&ignored);
                     }
 
                     // Set up stdin from previous pipe's read end (if not first)

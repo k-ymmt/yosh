@@ -106,7 +106,23 @@ impl Executor {
                 // reaped statuses and its terminal table jobs must not be
                 // waitable here (bash: `(wait $p)` reports "not a child").
                 self.env.process.jobs.reset_for_subshell();
-                signal::reset_child_signals(&ignored);
+                // Shell-child variant: dispositions reset (parent traps
+                // and self-pipe handlers -> SIG_DFL per POSIX §2.12) but
+                // the self-pipe is re-created, not closed — this child
+                // keeps running shell code and may set its own traps.
+                signal::reset_shell_child_signals(&ignored);
+                // A `(...)` subshell is not a job-controlling shell: with
+                // monitor left on, a nested external command would be
+                // forked into its own process group and this child would
+                // call tcsetpgrp around it — and with SIGTTOU at SIG_DFL
+                // the take-back tcsetpgrp from what is by then a
+                // background process group stops this child and strands
+                // the interactive parent's terminal on a dead process
+                // group ((/bin/echo hi) froze the REPL). Same guard as
+                // pipeline members and async children; `$-` keeps
+                // reporting `m` via the flag_m snapshot (bash-like).
+                self.env.mode.flag_m = self.env.mode.options.monitor || self.env.mode.flag_m;
+                self.env.mode.options.monitor = false;
                 let status = self.exec_body(body);
                 // POSIX §2.12: EXIT pseudo-signal handler runs on shell exit,
                 // including subshell exit. Fire BEFORE _exit so the action runs

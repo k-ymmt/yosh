@@ -402,6 +402,142 @@ fn test_command_sub_child_dies_immediately_on_parent_trapped_signal() {
     );
 }
 
+// Fork children that keep running shell code (command substitution,
+// subshells, pipeline members, async lists) must not inherit the
+// parent's self-pipe handlers for HANDLED_SIGNALS either: POSIX §2.12
+// resets traps caught by the parent to default in a subshell, so a
+// USR1/TERM/… whose only trap belonged to the parent must kill the
+// child immediately, mid-blocking-syscall — not be caught by the
+// leftover SA_RESTART handler and deferred to the next command boundary
+// (i.e. after a long `sleep` completes). The `sh -c 'kill … $PPID'`
+// runs in the foreground, so $PPID is exactly the substitution/subshell
+// child. (bash/dash agree on all of these.)
+
+#[test]
+fn test_command_sub_child_dies_immediately_on_parent_trapped_handled_signal() {
+    // USR1 is in HANDLED_SIGNALS (unlike ABRT above), so the shell's
+    // always-registered self-pipe handler must be reset too.
+    let start = std::time::Instant::now();
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        r#"trap ":" USR1; x=$(sh -c 'kill -USR1 $PPID; sleep 3' >/dev/null; echo survived); echo "[$x]""#,
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.trim(),
+        "[]",
+        "the command-sub child must die from USR1 before echoing (bash agrees)"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "child must be killed by USR1 mid-wait, not survive until sleep 3 finishes; took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn test_command_sub_child_dies_immediately_on_untrapped_handled_signal() {
+    // Same as above with NO parent trap: the plain HANDLED_SIGNALS
+    // self-pipe handler alone must not keep the child alive either.
+    let start = std::time::Instant::now();
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        r#"x=$(sh -c 'kill -USR1 $PPID; sleep 3' >/dev/null; echo survived); echo "[$x]""#,
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "[]");
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn test_subshell_child_dies_immediately_on_parent_trapped_handled_signal() {
+    let start = std::time::Instant::now();
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        r#"trap ":" USR1; (sh -c 'kill -USR1 $PPID; sleep 3' >/dev/null; echo survived); echo after=$?"#,
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.trim(),
+        "after=158",
+        "the subshell must die from USR1 (128+30) without echoing"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "took {:?}",
+        start.elapsed()
+    );
+}
+
+// A trap set INSIDE the fork child must still work after the reset:
+// the child's own `trap` builtin reinstalls the self-pipe handler, and
+// the child gets a FRESH self-pipe (sharing the parent's pipe would let
+// one process drain the other's signal bytes; closing it — the old
+// subshell behavior — silently lost the child's own traps).
+
+#[test]
+fn test_command_sub_child_own_trap_still_works() {
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        r#"x=$(trap "echo t" USR1; sh -c 'kill -USR1 $PPID'; echo done); echo "[$x]""#,
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.trim(),
+        "[t\ndone]",
+        "a trap set inside the command substitution must fire (bash agrees)"
+    );
+}
+
+#[test]
+fn test_subshell_child_own_trap_still_works() {
+    // Pre-fix, reset_child_signals closed the inherited self-pipe fds in
+    // subshell children, so the reinstalled handler wrote into a closed
+    // pipe and the trap (and the signal itself) vanished silently.
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        r#"(trap "echo t" USR1; sh -c 'kill -USR1 $PPID'; echo done)"#,
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.trim(),
+        "t\ndone",
+        "a trap set inside a ( ) subshell must fire (bash agrees)"
+    );
+}
+
+#[test]
+fn test_pipeline_member_own_trap_still_works() {
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        r#"{ trap "echo t" USR1; sh -c 'kill -USR1 $PPID'; echo done; } | cat"#,
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.trim(),
+        "t\ndone",
+        "a trap set inside a pipeline member must fire (bash agrees)"
+    );
+}
+
+#[test]
+fn test_async_child_own_trap_still_works() {
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        r#"{ trap "echo t" USR1; sh -c 'kill -USR1 $PPID'; echo done; } > /tmp/yosh-async-trap-$$.out & wait $!; cat /tmp/yosh-async-trap-$$.out; rm -f /tmp/yosh-async-trap-$$.out"#,
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.trim(),
+        "t\ndone",
+        "a trap set inside an async list must fire (bash agrees)"
+    );
+}
+
 // `command <external>` must go through the standard fork/exec path
 // (job control, signal reset, wait bookkeeping), not a bespoke spawn.
 

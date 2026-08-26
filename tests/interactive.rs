@@ -1236,6 +1236,68 @@ fn test_tab_complete_quoted_word_preserves_quote() {
 }
 
 #[test]
+fn test_tab_complete_mid_word_suppresses_closing_quote_and_space() {
+    // Regression: with text after the cursor, single-candidate completion
+    // appended the closing quote + trailing space unconditionally while
+    // replace_word only replaces up to the cursor — `cat "foo<cursor>BAR"`
+    // became `cat "foobar" BAR"`. Mid-buffer completion must replace the
+    // word head only and leave the tail untouched.
+    let tmp = tempfile::TempDir::new().unwrap();
+    fs::File::create(tmp.path().join("foobar")).unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+
+    // Type `cat "fooBAR"`, cursor-left over `BAR"`, then Tab + Enter.
+    let mut events = chars("cat \"fooBAR\"");
+    for _ in 0..4 {
+        events.push(key(KeyCode::Left));
+    }
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
+    let result = editor
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut spec_store,
+            &mut scanner,
+            &checker_env,
+            "",
+            &mut || "> ".to_string(),
+            &|_| false,
+        )
+        .unwrap();
+    assert_eq!(result, Some("cat \"foobarBAR\"".to_string()));
+}
+
+#[test]
 fn test_tab_complete_with_multibyte_word_does_not_panic() {
     // Regression: handle_tab_complete passed the CHAR-index cursor
     // (`self.pos`) to the byte-indexed completion APIs. With a multibyte

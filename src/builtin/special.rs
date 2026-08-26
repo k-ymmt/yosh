@@ -38,6 +38,13 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
                     executor.env.mode.options.monitor = false;
                 }
             }
+            // An explicit `set -m`/`set +m` overrides the subshell
+            // `flag_m` `$-` snapshot: a child that turned monitor off
+            // internally still shows `m` in `$-` (bash-like) until the
+            // user toggles it themselves.
+            if set_args_mention_monitor(args) {
+                executor.env.mode.flag_m = executor.env.mode.options.monitor;
+            }
             return ret;
         }
         "eval" => builtin_eval(args, executor),
@@ -64,6 +71,37 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
 // ---------------------------------------------------------------------------
 // Existing implementations (moved from mod.rs)
 // ---------------------------------------------------------------------------
+
+/// Whether a `set` invocation explicitly toggles the monitor option
+/// (`-m`/`+m`, in a char cluster like `-em`, or `-o monitor`/`+o
+/// monitor`). Scans the same leading-option region `builtin_set`
+/// consumes: stops at `--`, `-`, or the first non-option argument.
+/// Used by the `set` dispatch wrapper to re-sync the `flag_m` `$-`
+/// snapshot on an explicit user toggle.
+fn set_args_mention_monitor(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--" || a == "-" || a == "+" {
+            break;
+        }
+        let Some(rest) = a.strip_prefix('-').or_else(|| a.strip_prefix('+')) else {
+            break;
+        };
+        if rest == "o" {
+            if args.get(i + 1).is_some_and(|n| n == "monitor") {
+                return true;
+            }
+            i += 2;
+            continue;
+        }
+        if rest.contains('m') && !rest.starts_with('o') {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
 
 fn builtin_exit(args: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
     let code = if args.is_empty() {

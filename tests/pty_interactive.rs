@@ -690,6 +690,46 @@ fn test_pty_syntax_highlight_pipe() {
 }
 
 #[test]
+fn test_pty_subshell_external_keeps_terminal() {
+    // Regression (pre-existing): `( /bin/echo hi )` in the monitor-mode
+    // REPL handed the terminal to the external's process group, and with
+    // SIGTTOU at SIG_DFL in the subshell child the take-back tcsetpgrp
+    // stopped the child — stranding the terminal on a dead process group
+    // and leaving the REPL spinning unresponsively in crossterm's read
+    // loop. The subshell child now runs with monitor off (like pipeline
+    // members), so nested externals stay in the shell's process group.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("(/bin/echo sub_out)\r").unwrap();
+    expect_output(&mut s, "sub_out", "subshell external output");
+    wait_for_prompt(&mut s);
+
+    s.send("echo still_alive\r").unwrap();
+    expect_output(&mut s, "still_alive", "REPL responsive after subshell external");
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_command_sub_external_keeps_terminal() {
+    // Same terminal-stranding class as the subshell test above, for the
+    // command-substitution child (which used to escape it only because it
+    // inherited the parent's SIG_IGN on SIGTTOU).
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("x=$(/bin/echo cs_out); echo \"got=$x\"\r").unwrap();
+    expect_output(&mut s, "got=cs_out", "command-sub external output");
+    wait_for_prompt(&mut s);
+
+    s.send("echo still_alive\r").unwrap();
+    expect_output(&mut s, "still_alive", "REPL responsive after command-sub external");
+
+    exit_shell(&mut s);
+}
+
+#[test]
 fn ansi_colored_prompt() {
     let (mut session, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut session);

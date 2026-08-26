@@ -3201,13 +3201,20 @@ impl LineEditor {
             return Ok(());
         }
 
+        // `replace_word` only replaces up to the cursor; with text after
+        // the cursor (mid-buffer completion), appending the closing quote
+        // + trailing space would corrupt the tail — `cat "foo<cursor>BAR"`
+        // became `cat "foobar" BAR"`. Only close the argument when the
+        // cursor is at the end of the buffer.
+        let at_end = self.pos == self.buf.len();
+
         if self.tab_count == 1 {
             if candidates.len() == 1 {
                 // Single candidate: replace word
                 let candidate = &candidates[0];
                 let is_dir = candidate.ends_with('/');
                 let mut replacement = format!("{}{}", dir_prefix, candidate);
-                if !is_dir {
+                if !is_dir && at_end {
                     // A quote opened in the kept prefix (`cd "/tmp/My D`)
                     // is closed after a completed filename so the trailing
                     // space ends the argument (bash-like). Directories
@@ -3236,7 +3243,7 @@ impl LineEditor {
             if let Some(sel) = selected {
                 let is_dir = sel.ends_with('/');
                 let mut replacement = format!("{}{}", dir_prefix, sel);
-                if !is_dir {
+                if !is_dir && at_end {
                     if let Some(q) = completion::unclosed_quote(&dir_prefix) {
                         replacement.push(q);
                     }
