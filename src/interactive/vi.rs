@@ -523,8 +523,12 @@ impl ViEngine {
             }
             'D' => ViCmd::Op(OpKind::Delete, ViMotion::LineEnd),
             'C' => ViCmd::Op(OpKind::Change, ViMotion::LineEnd),
-            // POSIX Y is y$ (unlike full vi, where Y is yy).
-            'Y' => ViCmd::Op(OpKind::Yank, ViMotion::LineEnd),
+            // POSIX Y is y$; Vim's default Y is yy (linewise,
+            // oracle-verified against vim --clean).
+            'Y' => match self.flavor {
+                ViFlavor::Posix => ViCmd::Op(OpKind::Yank, ViMotion::LineEnd),
+                ViFlavor::Vim => ViCmd::OpLine(OpKind::Yank),
+            },
             'S' => ViCmd::OpLine(OpKind::Change),
             's' => ViCmd::SubstChar,
             'p' => ViCmd::PutAfter,

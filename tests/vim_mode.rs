@@ -331,3 +331,238 @@ fn vim_insert_ctrl_w_stops_at_logical_line_start() {
     ]);
     assert_eq!(line.as_deref(), Some("abc\nz"));
 }
+
+// ── Phase 2: typed unnamed register + linewise Normal-mode ops ─────────
+
+#[test]
+fn vim_dd_deletes_line_and_trailing_separator() {
+    let line = vim_read(seq![
+        chars("aa"),
+        [alt_enter()],
+        chars("bb"),
+        [esc()],
+        chars("kdd"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("bb"));
+}
+
+#[test]
+fn vim_dd_on_last_line_consumes_preceding_separator() {
+    let line = vim_read(seq![
+        chars("aa"),
+        [alt_enter()],
+        chars("bb"),
+        [esc()],
+        chars("dd"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("aa"));
+}
+
+#[test]
+fn vim_dd_whole_buffer_leaves_empty() {
+    let line = vim_read(seq![
+        chars("aa"),
+        [esc()],
+        chars("dd"),
+        chars("iok"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("ok"));
+}
+
+#[test]
+fn vim_count_dd_deletes_lines() {
+    let line = vim_read(seq![
+        chars("aa"),
+        [alt_enter()],
+        chars("bb"),
+        [alt_enter()],
+        chars("cc"),
+        [esc()],
+        chars("kk2dd"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("cc"));
+}
+
+#[test]
+fn vim_dd_cursor_lands_on_first_non_blank() {
+    let line = vim_read(seq![
+        chars("aa"),
+        [alt_enter()],
+        chars("  bb"),
+        [esc()],
+        chars("kddx"),
+        [enter()]
+    ]);
+    // dd removes "aa\n"; cursor on the 'b' of "  bb"; x deletes it.
+    assert_eq!(line.as_deref(), Some("  b"));
+}
+
+#[test]
+fn vim_cc_collapses_line_to_empty_and_inserts() {
+    // Oracle-verified: cc on line b of a\nb\nc yields a\n<insert>\nc.
+    let line = vim_read(seq![
+        chars("a"),
+        [alt_enter()],
+        chars("b"),
+        [alt_enter()],
+        chars("c"),
+        [esc()],
+        chars("kcc"),
+        chars("X"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("a\nX\nc"));
+}
+
+#[test]
+fn vim_count_cc_collapses_lines_to_one() {
+    let line = vim_read(seq![
+        chars("a"),
+        [alt_enter()],
+        chars("b"),
+        [alt_enter()],
+        chars("c"),
+        [esc()],
+        chars("kk2cc"),
+        chars("X"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("X\nc"));
+}
+
+#[test]
+fn vim_yy_p_pastes_line_below() {
+    let line = vim_read(seq![chars("ab"), [esc()], chars("yyp"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("ab\nab"));
+}
+
+#[test]
+fn vim_capital_y_is_linewise_yy() {
+    // Vim default: Y = yy, not POSIX y$.
+    let line = vim_read(seq![chars("ab"), [esc()], chars("0Yp"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("ab\nab"));
+}
+
+#[test]
+fn vim_yy_capital_p_pastes_line_above() {
+    let line = vim_read(seq![
+        chars("aa"),
+        [alt_enter()],
+        chars("bb"),
+        [esc()],
+        chars("yyP"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("aa\nbb\nbb"));
+}
+
+#[test]
+fn vim_ddp_swaps_lines() {
+    let line = vim_read(seq![
+        chars("aa"),
+        [alt_enter()],
+        chars("bb"),
+        [esc()],
+        chars("kddp"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("bb\naa"));
+}
+
+#[test]
+fn vim_linewise_put_with_count_repeats_block() {
+    let line = vim_read(seq![chars("ab"), [esc()], chars("yy2p"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("ab\nab\nab"));
+}
+
+#[test]
+fn vim_linewise_put_cursor_on_first_non_blank_of_pasted_line() {
+    let line = vim_read(seq![
+        chars("  ab"),
+        [esc()],
+        chars("yypx"),
+        [enter()]
+    ]);
+    // Pasted "  ab" below; cursor on its 'a'; x deletes it.
+    assert_eq!(line.as_deref(), Some("  ab\n  b"));
+}
+
+#[test]
+fn vim_charwise_put_splices_at_cursor() {
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0xp"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("bac"));
+}
+
+#[test]
+fn vim_dot_repeats_dd() {
+    let line = vim_read(seq![
+        chars("a"),
+        [alt_enter()],
+        chars("b"),
+        [alt_enter()],
+        chars("c"),
+        [esc()],
+        chars("kkdd."),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("c"));
+}
+
+#[test]
+fn vim_register_persists_across_reads() {
+    let mut ed = LineEditor::new();
+    ed.set_edit_mode(EditMode::Vim);
+    let mut history = History::new();
+    let mut term = MockTerminal::new(seq![chars("ab"), [esc()], chars("yy"), [enter()]]);
+    let first = ed
+        .read_line("$ ", &[], &mut history, &mut term)
+        .expect("read failed");
+    assert_eq!(first.as_deref(), Some("ab"));
+    let mut term = MockTerminal::new(seq![[esc()], chars("p"), [enter()]]);
+    let second = ed
+        .read_line("$ ", &[], &mut history, &mut term)
+        .expect("read failed");
+    assert_eq!(second.as_deref(), Some("\nab"));
+}
+
+#[test]
+fn vim_p_after_emacs_kill_reads_kill_ring_front() {
+    // Kill in emacs mode, then switch the same editor to vim and put:
+    // the unnamed register mirrors the kill ring's front entry.
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let mut term = MockTerminal::new(seq![chars("abc"), [ctrl('a')], [ctrl('k')], [enter()]]);
+    let first = ed
+        .read_line("$ ", &[], &mut history, &mut term)
+        .expect("read failed");
+    assert_eq!(first.as_deref(), Some(""));
+    ed.set_edit_mode(EditMode::Vim);
+    let mut term = MockTerminal::new(seq![[esc()], chars("p"), [enter()]]);
+    let second = ed
+        .read_line("$ ", &[], &mut history, &mut term)
+        .expect("read failed");
+    assert_eq!(second.as_deref(), Some("abc"));
+}
+
+#[test]
+fn vim_p_after_merged_emacs_kills_puts_merged_whole() {
+    // Two consecutive emacs backward-word kills merge in the ring; the
+    // register mirrors the merged front entry.
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let mut term = MockTerminal::new(seq![chars("one two"), [ctrl('w')], [ctrl('w')], [enter()]]);
+    let first = ed
+        .read_line("$ ", &[], &mut history, &mut term)
+        .expect("read failed");
+    assert_eq!(first.as_deref(), Some(""));
+    ed.set_edit_mode(EditMode::Vim);
+    let mut term = MockTerminal::new(seq![[esc()], chars("p"), [enter()]]);
+    let second = ed
+        .read_line("$ ", &[], &mut history, &mut term)
+        .expect("read failed");
+    assert_eq!(second.as_deref(), Some("one two"));
+}

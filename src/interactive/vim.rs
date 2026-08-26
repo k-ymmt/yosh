@@ -1,0 +1,135 @@
+// src/interactive/vim.rs
+
+//! Vim-flavor editing logic for `set -o vim` (non-POSIX extension).
+//!
+//! Everything specific to Vim-editor semantics — the typed unnamed
+//! register and the linewise range math — lives here, separate from the
+//! POSIX vi machinery in `vi.rs`. `line_editor.rs` calls into this
+//! module only when `ViEngine::flavor == ViFlavor::Vim`.
+
+use super::vi;
+
+/// Whether register text is a character span or whole line(s).
+/// Linewise text always carries one trailing `'\n'` per line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum RegisterKind {
+    #[default]
+    Charwise,
+    Linewise,
+}
+
+/// The single typed unnamed register (Vim's `""`). Mirrors the kill
+/// ring's front entry after every kill-ring write (front-entry
+/// invariant), so text killed in emacs or POSIX-vi mode is `p`-puttable
+/// after `set -o vim`.
+#[derive(Clone, Debug, Default)]
+pub struct UnnamedRegister {
+    pub text: String,
+    pub kind: RegisterKind,
+}
+
+/// Char range `[line_start(i), line_end(j))` of the `count` logical
+/// lines starting at the cursor's line, clamped to the last line.
+/// Separators between the lines are inside the range; the trailing
+/// separator (if any) is not.
+pub fn linewise_target(buf: &[char], pos: usize, count: u32) -> (usize, usize) {
+    let ls = vi::line_start(buf, pos);
+    let mut le = vi::line_end(buf, pos);
+    for _ in 1..count.max(1) {
+        if le >= buf.len() {
+            break;
+        }
+        le = vi::line_end(buf, le + 1);
+    }
+    (ls, le)
+}
+
+/// Register text for a linewise operation over `[ls, le)`: the selected
+/// lines joined with `'\n'` plus one trailing `'\n'` (synthesized for
+/// the buffer's final line), regardless of which separator a delete
+/// consumes.
+pub fn linewise_register_text(buf: &[char], ls: usize, le: usize) -> String {
+    let mut s: String = buf[ls..le].iter().collect();
+    s.push('\n');
+    s
+}
+
+/// Delete range for `dd` / linewise-VISUAL `d`: the line span plus one
+/// consumed separator — the trailing one when a line follows, else the
+/// preceding one, else none (whole buffer).
+pub fn linewise_delete_range(buf: &[char], ls: usize, le: usize) -> (usize, usize) {
+    if le < buf.len() {
+        (ls, le + 1)
+    } else if ls > 0 {
+        (ls - 1, le)
+    } else {
+        (ls, le)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chars(s: &str) -> Vec<char> {
+        s.chars().collect()
+    }
+
+    #[test]
+    fn linewise_target_single_line() {
+        let b = chars("abc");
+        assert_eq!(linewise_target(&b, 1, 1), (0, 3));
+        // Count clamps at the last line.
+        assert_eq!(linewise_target(&b, 1, 5), (0, 3));
+    }
+
+    #[test]
+    fn linewise_target_multiline_counts() {
+        let b = chars("aa\nbb\ncc");
+        assert_eq!(linewise_target(&b, 0, 1), (0, 2));
+        assert_eq!(linewise_target(&b, 0, 2), (0, 5));
+        assert_eq!(linewise_target(&b, 0, 3), (0, 8));
+        assert_eq!(linewise_target(&b, 0, 9), (0, 8));
+        // From the middle line.
+        assert_eq!(linewise_target(&b, 3, 1), (3, 5));
+        assert_eq!(linewise_target(&b, 3, 2), (3, 8));
+    }
+
+    #[test]
+    fn linewise_target_empty_line() {
+        let b = chars("a\n\nb");
+        // The empty middle line selects itself.
+        assert_eq!(linewise_target(&b, 2, 1), (2, 2));
+    }
+
+    #[test]
+    fn register_text_appends_trailing_newline() {
+        let b = chars("aa\nbb\ncc");
+        assert_eq!(linewise_register_text(&b, 0, 2), "aa\n");
+        assert_eq!(linewise_register_text(&b, 0, 5), "aa\nbb\n");
+        assert_eq!(linewise_register_text(&b, 6, 8), "cc\n");
+        // Empty line yields just the separator.
+        let b = chars("a\n\nb");
+        assert_eq!(linewise_register_text(&b, 2, 2), "\n");
+    }
+
+    #[test]
+    fn delete_range_consumes_trailing_separator() {
+        let b = chars("aa\nbb");
+        assert_eq!(linewise_delete_range(&b, 0, 2), (0, 3));
+    }
+
+    #[test]
+    fn delete_range_consumes_preceding_separator_at_tail() {
+        let b = chars("aa\nbb");
+        assert_eq!(linewise_delete_range(&b, 3, 5), (2, 5));
+    }
+
+    #[test]
+    fn delete_range_whole_buffer_has_no_separator() {
+        let b = chars("aa");
+        assert_eq!(linewise_delete_range(&b, 0, 2), (0, 2));
+        let b: Vec<char> = Vec::new();
+        assert_eq!(linewise_delete_range(&b, 0, 0), (0, 0));
+    }
+}

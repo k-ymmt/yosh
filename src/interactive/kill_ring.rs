@@ -54,6 +54,12 @@ impl KillRing {
         self.yank_index = 0;
     }
 
+    /// The most recent kill, without touching the yank rotation state.
+    /// Used to mirror the front entry into the vim unnamed register.
+    pub fn front(&self) -> Option<&str> {
+        self.ring.front().map(|s| s.as_str())
+    }
+
     /// Return the most recent kill (for Ctrl+Y). Resets yank_index to 0.
     pub fn yank(&mut self) -> Option<&str> {
         if self.ring.is_empty() {

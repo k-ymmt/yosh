@@ -354,6 +354,13 @@ fn vi_yy_then_p_duplicates_line_text() {
 }
 
 #[test]
+fn vi_capital_y_stays_y_dollar() {
+    // POSIX Y = y$ (unchanged by the vim-mode work, where Y is yy).
+    let line = vi_read(seq![chars("ab"), [esc()], chars("0Y$p"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("abab"));
+}
+
+#[test]
 fn vi_yw_then_capital_p_pastes_before_cursor() {
     let line = vi_read(seq![chars("ab cd"), [esc()], chars("0ywP"), [enter()]]);
     assert_eq!(line.as_deref(), Some("ab ab cd"));

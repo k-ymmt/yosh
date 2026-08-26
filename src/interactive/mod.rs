@@ -17,6 +17,7 @@ pub mod spec_completion;
 pub mod terminal;
 pub mod undo;
 pub mod vi;
+pub mod vim;
 
 use std::io::{self, Write};
 

@@ -18,8 +18,10 @@ use super::spec_completion::{self, SpecStore};
 use super::terminal::{CursorStyle, Terminal};
 use super::undo::UndoManager;
 use super::vi::{
-    self, EditMode, InsertAt, OpKind, SearchDir, ViCmd, ViEngine, ViMode, ViMotion, ViOutcome,
+    self, EditMode, InsertAt, OpKind, SearchDir, ViCmd, ViEngine, ViFlavor, ViMode, ViMotion,
+    ViOutcome,
 };
+use super::vim::{self, RegisterKind, UnnamedRegister};
 
 /// Return the highlight style covering char index `i`, advancing `span_idx`
 /// forward as needed.
@@ -174,6 +176,10 @@ pub struct LineEditor {
     /// the ShellEnv variable store (`VISUAL`, else `EDITOR`, else
     /// `vi`) by the REPL before each read.
     editor_command: String,
+    /// Vim typed unnamed register (`""`). Mirrors the kill ring's front
+    /// entry after every kill-ring write; read by vim-flavor `p`/`P`.
+    /// Persists across reads like the kill ring.
+    unnamed_register: UnnamedRegister,
 }
 
 #[derive(Debug, Clone)]
@@ -225,6 +231,36 @@ impl LineEditor {
             vi_macro_budget: 0,
             vi_literal_next: false,
             editor_command: "vi".to_string(),
+            unnamed_register: UnnamedRegister::default(),
+        }
+    }
+
+    /// Kill-ring write plus the §8.1 front-entry mirror: every kill in
+    /// any editing mode routes through here (or
+    /// [`record_kill_prepend`](Self::record_kill_prepend)) so the vim
+    /// unnamed register always equals the ring's front entry. `kind` is
+    /// `Charwise` except for vim-flavor linewise operations.
+    fn record_kill(&mut self, text: &str, append: bool, kind: RegisterKind) {
+        self.kill_ring.kill(text, append);
+        self.sync_unnamed_register(kind);
+    }
+
+    /// [`record_kill`](Self::record_kill) for backward kills that merge
+    /// by prepending to the ring's front entry.
+    fn record_kill_prepend(&mut self, text: &str, append: bool, kind: RegisterKind) {
+        self.kill_ring.prepend(text, append);
+        self.sync_unnamed_register(kind);
+    }
+
+    /// Copy the kill ring's front entry into the unnamed register.
+    /// A no-op when the ring is empty (empty kills are dropped by the
+    /// ring and are not writes).
+    fn sync_unnamed_register(&mut self, kind: RegisterKind) {
+        if let Some(front) = self.kill_ring.front() {
+            self.unnamed_register = UnnamedRegister {
+                text: front.to_string(),
+                kind,
+            };
         }
     }
 
@@ -1739,7 +1775,7 @@ impl LineEditor {
             return;
         }
         let killed: String = self.buf[start..self.pos].iter().collect();
-        self.kill_ring.kill(&killed, false);
+        self.record_kill(&killed, false, RegisterKind::Charwise);
         self.buf.drain(start..self.pos);
         self.pos = start;
         self.invalidate_width_cache();
@@ -1927,7 +1963,7 @@ impl LineEditor {
                     return KeyAction::Continue;
                 };
                 let killed: String = self.buf[start..end].iter().collect();
-                self.kill_ring.kill(&killed, false);
+                self.record_kill(&killed, false, RegisterKind::Charwise);
                 self.buf.drain(start..end);
                 self.invalidate_width_cache();
                 self.clamp_vi_command_pos();
@@ -1944,7 +1980,7 @@ impl LineEditor {
                 self.undo.save(&self.buf, self.pos);
                 let start = self.pos.saturating_sub(count as usize).max(ls);
                 let killed: String = self.buf[start..self.pos].iter().collect();
-                self.kill_ring.kill(&killed, false);
+                self.record_kill(&killed, false, RegisterKind::Charwise);
                 self.buf.drain(start..self.pos);
                 self.pos = start;
                 self.invalidate_width_cache();
@@ -1999,7 +2035,7 @@ impl LineEditor {
                 match vi::motion_range(&self.buf, self.pos, motion, count) {
                     Some((start, end)) if start < end => {
                         let text: String = self.buf[start..end].iter().collect();
-                        self.kill_ring.kill(&text, false);
+                        self.record_kill(&text, false, RegisterKind::Charwise);
                         match op {
                             OpKind::Yank => {
                                 // POSIX: the cursor does not move.
@@ -2022,11 +2058,14 @@ impl LineEditor {
                 }
             }
             ViCmd::OpLine(op) => {
+                if self.vi.flavor == ViFlavor::Vim {
+                    return self.vim_op_line(op, count);
+                }
                 let ls = vi::line_start(&self.buf, self.pos);
                 let le = vi::line_end(&self.buf, self.pos);
                 let text: String = self.buf[ls..le].iter().collect();
                 if !text.is_empty() {
-                    self.kill_ring.kill(&text, false);
+                    self.record_kill(&text, false, RegisterKind::Charwise);
                 }
                 match op {
                     OpKind::Yank => {}
@@ -2048,7 +2087,7 @@ impl LineEditor {
                 if self.pos < le {
                     let end = (self.pos + count as usize).min(le);
                     let text: String = self.buf[self.pos..end].iter().collect();
-                    self.kill_ring.kill(&text, false);
+                    self.record_kill(&text, false, RegisterKind::Charwise);
                     self.buf.drain(self.pos..end);
                     self.invalidate_width_cache();
                 }
@@ -2056,6 +2095,9 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::PutAfter | ViCmd::PutBefore => {
+                if self.vi.flavor == ViFlavor::Vim {
+                    return self.vim_put(cmd == ViCmd::PutAfter, count);
+                }
                 let text = self.kill_ring.yank().map(str::to_string);
                 let Some(text) = text.filter(|t| !t.is_empty()) else {
                     return self.bell();
@@ -2495,6 +2537,113 @@ impl LineEditor {
         self.invalidate_width_cache();
     }
 
+    // ── vim flavor (set -o vim) ────────────────────────────────────────
+
+    /// vim `[count]dd` / `cc` / `yy` / `Y`: whole-line operation on
+    /// `count` logical lines with linewise register semantics (§8.2).
+    fn vim_op_line(&mut self, op: OpKind, count: u32) -> KeyAction {
+        let (ls, le) = vim::linewise_target(&self.buf, self.pos, count);
+        let text = vim::linewise_register_text(&self.buf, ls, le);
+        self.record_kill(&text, false, RegisterKind::Linewise);
+        match op {
+            OpKind::Yank => {}
+            OpKind::Delete => {
+                self.undo.save(&self.buf, self.pos);
+                let (start, end) = vim::linewise_delete_range(&self.buf, ls, le);
+                self.buf.drain(start..end);
+                // Cursor: first non-blank of the line now at the deleted
+                // position (or the new last line when the tail was
+                // deleted; 0 on an empty buffer).
+                self.pos = start.min(self.buf.len().saturating_sub(1));
+                if let Some(fnb) =
+                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                {
+                    self.pos = fnb;
+                }
+                self.invalidate_width_cache();
+                self.clamp_vi_command_pos();
+            }
+            OpKind::Change => {
+                // The change range consumes no separator: the selected
+                // lines collapse to one empty logical line and Insert
+                // begins on it (oracle-verified Vim `cc`).
+                self.undo.save(&self.buf, self.pos);
+                self.buf.drain(ls..le);
+                self.pos = ls;
+                self.invalidate_width_cache();
+                self.vi.mode = ViMode::Insert;
+            }
+        }
+        KeyAction::Continue
+    }
+
+    /// vim `p`/`P`: put the typed unnamed register (§8.3). Charwise
+    /// puts splice at the cursor like POSIX vi; a linewise register
+    /// opens new line(s) below (`p`) or above (`P`) the cursor's
+    /// logical line, cursor to the first non-blank of the first pasted
+    /// line.
+    fn vim_put(&mut self, after: bool, count: u32) -> KeyAction {
+        let reg = self.unnamed_register.clone();
+        if reg.text.is_empty() {
+            return self.bell();
+        }
+        self.undo.save(&self.buf, self.pos);
+        let chars: Vec<char> = reg.text.chars().collect();
+        // Bound the total inserted text (count × register length) so a
+        // huge count cannot balloon the buffer.
+        let reps = (count.max(1) as usize)
+            .min(1_000_000 / chars.len().max(1))
+            .max(1);
+        match reg.kind {
+            RegisterKind::Charwise => {
+                let le = vi::line_end(&self.buf, self.pos);
+                let at = if after {
+                    (self.pos + 1).min(le)
+                } else {
+                    self.pos
+                };
+                let mut insert_pos = at;
+                for _ in 0..reps {
+                    for &c in &chars {
+                        self.buf.insert(insert_pos, c);
+                        insert_pos += 1;
+                    }
+                }
+                self.pos = insert_pos - 1;
+            }
+            RegisterKind::Linewise => {
+                // The pasted block is the register text repeated
+                // `count` times, then treated as one linewise text T
+                // (always ending in '\n').
+                let mut block: Vec<char> = Vec::with_capacity(chars.len() * reps);
+                for _ in 0..reps {
+                    block.extend_from_slice(&chars);
+                }
+                if after {
+                    // Insert '\n' + T[..len-1] at the cursor line's end.
+                    let le = vi::line_end(&self.buf, self.pos);
+                    block.pop();
+                    block.insert(0, '\n');
+                    self.buf.splice(le..le, block);
+                    self.pos = le + 1;
+                } else {
+                    // Insert T at the cursor line's start.
+                    let ls = vi::line_start(&self.buf, self.pos);
+                    self.buf.splice(ls..ls, block);
+                    self.pos = ls;
+                }
+                if let Some(fnb) =
+                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                {
+                    self.pos = fnb;
+                }
+            }
+        }
+        self.invalidate_width_cache();
+        self.clamp_vi_command_pos();
+        KeyAction::Continue
+    }
+
     /// Replay the last insert session's text (for `.`), honoring `R`
     /// overwrite semantics, then leave insert mode like ESC does.
     fn vi_replay_insert(&mut self) {
@@ -2778,25 +2927,25 @@ impl LineEditor {
             }
             EditAction::KillToEnd => {
                 let killed = self.kill_to_end();
-                self.kill_ring.kill(&killed, consecutive_kill);
+                self.record_kill(&killed, consecutive_kill, RegisterKind::Charwise);
                 KeyAction::Continue
             }
             EditAction::KillToStart => {
                 let killed = self.kill_to_start();
-                self.kill_ring.prepend(&killed, consecutive_kill);
+                self.record_kill_prepend(&killed, consecutive_kill, RegisterKind::Charwise);
                 KeyAction::Continue
             }
             EditAction::KillBackwardWord => {
                 for _ in 0..count {
                     let killed = self.kill_backward_word();
-                    self.kill_ring.prepend(&killed, consecutive_kill);
+                    self.record_kill_prepend(&killed, consecutive_kill, RegisterKind::Charwise);
                 }
                 KeyAction::Continue
             }
             EditAction::KillForwardWord => {
                 for _ in 0..count {
                     let killed = self.kill_forward_word();
-                    self.kill_ring.kill(&killed, consecutive_kill);
+                    self.record_kill(&killed, consecutive_kill, RegisterKind::Charwise);
                 }
                 KeyAction::Continue
             }
