@@ -338,10 +338,10 @@ fn quote_object_range(buf: &[char], pos: usize, q: char, around: bool) -> Option
 /// nesting (whole buffer — bracket blocks may span `'\n'`).
 fn bracket_match_forward(buf: &[char], from: usize, open: char, close: char) -> Option<usize> {
     let mut depth = 0i32;
-    for i in from..buf.len() {
-        if buf[i] == open {
+    for (i, &c) in buf.iter().enumerate().skip(from) {
+        if c == open {
             depth += 1;
-        } else if buf[i] == close {
+        } else if c == close {
             depth -= 1;
             if depth == 0 {
                 return Some(i);
