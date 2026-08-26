@@ -148,6 +148,47 @@ fn test_pty_vi_mode_basic_editing() {
 }
 
 #[test]
+fn test_pty_vim_mode_toggle_and_display() {
+    // set -o vim takes effect at the next prompt (Phase 1: vi-identical
+    // editing), and set -o reports the three-way mutual exclusion.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("set -o vim\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    s.send("echo vimXok").unwrap();
+    s.send("\x1b").unwrap(); // ESC → command mode, cursor on 'k'
+    s.send("hhx").unwrap(); // back onto 'X', delete it
+    s.send("\r").unwrap();
+    expect_output(&mut s, "vimok", "vim-mode edited output not found");
+    wait_for_prompt(&mut s);
+
+    s.send("set -o | grep -E '^(vi|vim|emacs)' | tr '\\n' ' '; echo END\r")
+        .unwrap();
+    expect_output(
+        &mut s,
+        "emacs        off vi           off vim          on",
+        "set -o vim state not reported",
+    );
+    wait_for_prompt(&mut s);
+
+    // set -o vi switches back and turns vim off.
+    s.send("set -o vi\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("set -o | grep -E '^(vi|vim|emacs)' | tr '\\n' ' '; echo END\r")
+        .unwrap();
+    expect_output(
+        &mut s,
+        "emacs        off vi           on vim          off",
+        "set -o vi-after-vim state not reported",
+    );
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_vi_mode_dollar_and_history_k() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);

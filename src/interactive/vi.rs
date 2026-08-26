@@ -17,12 +17,36 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Line-editing flavor selected by `set -o emacs` / `set -o vi`.
+/// Line-editing flavor selected by `set -o emacs` / `set -o vi` /
+/// `set -o vim`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum EditMode {
     #[default]
     Emacs,
     Vi,
+    /// Vim-editor semantics (non-POSIX extension): vi-family dispatch
+    /// with Vim editing behavior layered on via [`ViFlavor::Vim`].
+    Vim,
+}
+
+impl EditMode {
+    /// True for the vi-family modes (`Vi` / `Vim`): they share the vi
+    /// key dispatch, per-read state reset, undo-save suppression, and
+    /// cursor-style handling.
+    pub fn is_vi_family(self) -> bool {
+        matches!(self, Self::Vi | Self::Vim)
+    }
+}
+
+/// Editing-semantics flavor of the vi engine: POSIX vi line editing
+/// (`set -o vi`) or Vim-editor semantics (`set -o vim`). Shared
+/// machinery lives in one code path; behavior differences branch on
+/// this at key resolution and command execution.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ViFlavor {
+    #[default]
+    Posix,
+    Vim,
 }
 
 /// vi submode. Reads always start in insert mode; ESC enters command
@@ -299,6 +323,9 @@ const COUNT_CAP: u32 = 1_000_000;
 #[derive(Debug, Default)]
 pub struct ViEngine {
     pub mode: ViMode,
+    /// POSIX-vi vs Vim semantics, synced from the edit mode by
+    /// `LineEditor::set_edit_mode`.
+    pub flavor: ViFlavor,
     /// When true, insert mode overwrites (entered via `R`).
     pub replace_overwrite: bool,
     count: Option<u32>,

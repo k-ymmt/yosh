@@ -25,6 +25,11 @@ pub struct ShellOptions {
     /// vi-style line editing (`set -o vi`, POSIX XCU sh). Mutually
     /// exclusive with `emacs`. No `$-` letter.
     pub vi: bool,
+    /// Vim-style line editing (`set -o vim`). Non-POSIX extension:
+    /// vi-family editing with Vim-editor semantics (VISUAL mode, text
+    /// objects, multi-level undo/redo). Mutually exclusive with `vi`
+    /// and `emacs`. No `$-` letter.
+    pub vim: bool,
 }
 
 impl ShellOptions {
@@ -116,11 +121,20 @@ impl ShellOptions {
                 self.emacs = on;
                 if on {
                     self.vi = false;
+                    self.vim = false;
                 }
             }
             "vi" => {
                 self.vi = on;
                 if on {
+                    self.emacs = false;
+                    self.vim = false;
+                }
+            }
+            "vim" => {
+                self.vim = on;
+                if on {
+                    self.vi = false;
                     self.emacs = false;
                 }
             }
@@ -165,6 +179,7 @@ impl ShellOptions {
             ("pipefail", self.pipefail),
             ("verbose", self.verbose),
             ("vi", self.vi),
+            ("vim", self.vim),
             ("xtrace", self.xtrace),
         ];
         entries.sort_by_key(|(name, _)| *name);
@@ -404,6 +419,33 @@ mod tests {
         assert_eq!(opts.to_flag_string(), "");
         opts.set_by_name("emacs", true).unwrap();
         assert_eq!(opts.to_flag_string(), "");
+        opts.set_by_name("vim", true).unwrap();
+        assert_eq!(opts.to_flag_string(), "");
+    }
+
+    #[test]
+    fn test_vim_mode_mutually_exclusive_with_vi_and_emacs() {
+        let mut opts = ShellOptions::default();
+        opts.set_by_name("vim", true).unwrap();
+        assert!(opts.vim);
+        assert!(!opts.vi);
+        assert!(!opts.emacs);
+
+        opts.set_by_name("vi", true).unwrap();
+        assert!(opts.vi);
+        assert!(!opts.vim);
+
+        opts.set_by_name("vim", true).unwrap();
+        opts.set_by_name("emacs", true).unwrap();
+        assert!(opts.emacs);
+        assert!(!opts.vim);
+
+        // Turning vim off leaves no mode set (emacs fallback in the REPL).
+        opts.set_by_name("vim", true).unwrap();
+        opts.set_by_name("vim", false).unwrap();
+        assert!(!opts.vim);
+        assert!(!opts.vi);
+        assert!(!opts.emacs);
     }
 
     #[test]

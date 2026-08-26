@@ -37,6 +37,7 @@ names = ["-x"]
 names = ["-o"]
 value = { values = [
     "allexport",
+    "emacs",
     "errexit",
     "ignoreeof",
     "monitor",
@@ -47,5 +48,7 @@ value = { values = [
     "nounset",
     "pipefail",
     "verbose",
+    "vi",
+    "vim",
     "xtrace",
 ] }

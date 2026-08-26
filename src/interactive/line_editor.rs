@@ -170,6 +170,10 @@ pub struct LineEditor {
     vi_macro_budget: u32,
     /// vi insert-mode Ctrl+V: the next key is inserted literally.
     vi_literal_next: bool,
+    /// Editor command for vim-mode `Ctrl-X Ctrl-E`, snapshotted from
+    /// the ShellEnv variable store (`VISUAL`, else `EDITOR`, else
+    /// `vi`) by the REPL before each read.
+    editor_command: String,
 }
 
 #[derive(Debug, Clone)]
@@ -220,13 +224,27 @@ impl LineEditor {
             pending_events: VecDeque::new(),
             vi_macro_budget: 0,
             vi_literal_next: false,
+            editor_command: "vi".to_string(),
         }
     }
 
     /// Select the editing flavor for subsequent reads (`set -o emacs` /
-    /// `set -o vi`). Takes effect at the start of the next read.
+    /// `set -o vi` / `set -o vim`). Takes effect at the start of the
+    /// next read.
     pub fn set_edit_mode(&mut self, mode: EditMode) {
         self.edit_mode = mode;
+        self.vi.flavor = if mode == EditMode::Vim {
+            vi::ViFlavor::Vim
+        } else {
+            vi::ViFlavor::Posix
+        };
+    }
+
+    /// Snapshot the editor command (`$VISUAL` / `$EDITOR` resolution
+    /// from the shell variable store) for vim-mode `Ctrl-X Ctrl-E`,
+    /// taken by the REPL before each read.
+    pub fn set_editor_command(&mut self, cmd: String) {
+        self.editor_command = cmd;
     }
 
     /// Return the current buffer contents as a `String`.
@@ -263,7 +281,7 @@ impl LineEditor {
         self.vi_search_input = None;
         self.pending_events.clear();
         self.vi_literal_next = false;
-        if self.edit_mode == EditMode::Vi {
+        if self.edit_mode.is_vi_family() {
             // Base undo entry so `u` after the first insert session can
             // restore the empty line (vi undo is session-granular; the
             // per-run emacs saves are suppressed in vi insert mode).
@@ -1553,7 +1571,7 @@ impl LineEditor {
 
     /// Map a single key event to a [`KeyAction`], mutating the buffer as needed.
     fn handle_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
-        if self.edit_mode == EditMode::Vi {
+        if self.edit_mode.is_vi_family() {
             if self.vi_search_input.is_some() {
                 return self.handle_vi_search_key(key, history);
             }
@@ -1652,7 +1670,7 @@ impl LineEditor {
         // so nothing typed or edited inside the session (plain chars,
         // Backspace, the Ctrl kills) may create intermediate entries;
         // `u` after ESC must restore the whole pre-session state.
-        let vi_insert = self.edit_mode == EditMode::Vi;
+        let vi_insert = self.edit_mode.is_vi_family();
         if self.last_was_insert && !matches!(action, EditAction::InsertChar(_)) && !vi_insert {
             // Finalize the insert group — save current state as group boundary
             self.undo.save(&self.buf, self.pos);
@@ -2500,7 +2518,7 @@ impl LineEditor {
     /// changed since the last emit. No-op in emacs mode (the user's
     /// terminal default is left untouched).
     fn sync_cursor_style<T: Terminal>(&mut self, term: &mut T) -> io::Result<()> {
-        if self.edit_mode != EditMode::Vi {
+        if !self.edit_mode.is_vi_family() {
             return Ok(());
         }
         let want = match self.vi.mode {
@@ -3001,7 +3019,7 @@ impl LineEditor {
                                 // continuation conventionally starts in
                                 // insert mode, whichever submode Enter
                                 // was pressed in.
-                                if self.edit_mode == EditMode::Vi {
+                                if self.edit_mode.is_vi_family() {
                                     // The continuation is a fresh insert
                                     // session: save the pre-continuation
                                     // state for `u` and start the `.`

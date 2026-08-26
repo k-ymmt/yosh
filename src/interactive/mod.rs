@@ -236,14 +236,33 @@ impl Repl {
                 .set_exec_env(self.executor.env.vars.environ().to_vec());
 
             // Sync the editing flavor each prompt so `set -o vi` /
-            // `set -o emacs` take effect at the next read. Neither set
-            // (e.g. `set +o vi`) falls back to emacs behavior.
-            self.line_editor
-                .set_edit_mode(if self.executor.env.mode.options.vi {
-                    vi::EditMode::Vi
-                } else {
-                    vi::EditMode::Emacs
-                });
+            // `set -o vim` / `set -o emacs` take effect at the next
+            // read. None set (e.g. `set +o vi`) falls back to emacs
+            // behavior.
+            let options = &self.executor.env.mode.options;
+            self.line_editor.set_edit_mode(if options.vim {
+                vi::EditMode::Vim
+            } else if options.vi {
+                vi::EditMode::Vi
+            } else {
+                vi::EditMode::Emacs
+            });
+
+            // Snapshot the vim-mode Ctrl-X Ctrl-E editor command from
+            // the ShellEnv variable store only (it imports the process
+            // environment at startup, so inherited values are visible
+            // while `unset VISUAL` is respected).
+            let editor_cmd = self
+                .executor
+                .env
+                .vars
+                .get("VISUAL")
+                .filter(|v| !v.is_empty())
+                .or_else(|| self.executor.env.vars.get("EDITOR"))
+                .filter(|v| !v.is_empty())
+                .unwrap_or("vi")
+                .to_string();
+            self.line_editor.set_editor_command(editor_cmd);
 
             // Take history and aliases out of the environment for the
             // duration of the read: the lazy PS2 closure below borrows the
