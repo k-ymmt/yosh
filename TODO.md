@@ -168,6 +168,13 @@
 - [ ] `$(trap 'x' INT; trap)` inside a command substitution prints the
       parent shell's trap snapshot, not the subshell's own updated table
       (pre-existing; `src/expand/command_sub.rs`, `src/env/traps.rs`).
+- [ ] DEVIATION (Rust runtime limitation, wrap-up review 2026-08-26):
+      a SIGPIPE ignored by the invoking process is not preserved (POSIX
+      §2.12 says entry-ignored signals stay ignored). Rust's std sets
+      SIGPIPE to SIG_IGN before `main`, destroying the inherited
+      disposition, so yosh assumes not-ignored and restores SIG_DFL
+      (`src/signal.rs::capture_ignored_on_entry`). Revisit if std
+      stabilizes `unix_sigpipe` / `-Zon-broken-pipe`.
 - [ ] Arithmetic `$((x || y))` / `$((x && y))` evaluate both operands
       eagerly: side effects in the right operand (assignments,
       `$((0 && (x=5)))`) are not short-circuited the way C semantics and
