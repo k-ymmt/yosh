@@ -42,6 +42,9 @@ pub enum ParseErrorKind {
 pub enum ExpansionErrorKind {
     DivisionByZero,
     InvalidArithmetic,
+    /// Unterminated `${`, `$(`, `$((`, or `` ` `` found while expanding a
+    /// raw string (heredoc body / arithmetic text) at end of input.
+    UnterminatedExpansion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

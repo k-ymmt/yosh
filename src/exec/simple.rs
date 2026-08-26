@@ -523,7 +523,11 @@ impl Executor {
                     if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, false) {
                         self.env.exec.last_exit_status = 1;
                         if !self.env.mode.is_interactive {
-                            eprintln!("yosh: {}", e);
+                            // Empty message = diagnostic already printed
+                            // (heredoc `${x:?}`/nounset failure).
+                            if !e.is_empty() {
+                                eprintln!("yosh: {}", e);
+                            }
                             self.exit_shell(1);
                         }
                         return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
@@ -536,7 +540,11 @@ impl Executor {
                 if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                     self.env.exec.last_exit_status = 1;
                     if !self.env.mode.is_interactive {
-                        eprintln!("yosh: {}", e);
+                        // Empty message = diagnostic already printed
+                        // (heredoc `${x:?}`/nounset failure).
+                        if !e.is_empty() {
+                            eprintln!("yosh: {}", e);
+                        }
                         self.exit_shell(1);
                     }
                     return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
@@ -741,7 +749,11 @@ impl Executor {
                 // Apply redirects (no need to save, we're in the child)
                 let mut redir_state = RedirectState::new();
                 if let Err(e) = redir_state.apply(redirects, &mut self.env, false) {
-                    eprintln!("yosh: {}", e);
+                    // Empty message = diagnostic already printed (heredoc
+                    // `${x:?}`/nounset failure inside this child).
+                    if !e.is_empty() {
+                        eprintln!("yosh: {}", e);
+                    }
                     super::exit_child(1);
                 }
 

@@ -31,9 +31,16 @@ fn div_zero_err(msg: &str) -> ShellError {
 /// Expands `$VAR`, `${VAR}`, `$(cmd)`, `` `cmd` ``, and nested `$((...))`
 /// first (via the shared dollar-scanner), then parses and evaluates.
 pub fn evaluate(env: &mut ShellEnv, expr: &str) -> crate::error::Result<String> {
-    // Step 1: expand dollar references (arith policy: empty results
-    // substitute "0"; see `DollarMode::Arith`).
-    let expanded = super::dollar::expand_string(env, expr, super::dollar::DollarMode::Arith)?;
+    // Step 1: expand dollar references. Expansions substitute their
+    // actual (possibly empty) text — `$((1${x}2))` with `x` unset is 12,
+    // matching bash/dash.
+    let expanded = super::dollar::expand_string(env, expr)?;
+
+    // An entirely blank expression evaluates to 0 (bash/dash: `$(( ))`
+    // and `$(($x))` with `x` unset/empty both print 0).
+    if expanded.trim().is_empty() {
+        return Ok("0".to_string());
+    }
 
     // Step 2: parse and evaluate
     let bytes = expanded.as_bytes();

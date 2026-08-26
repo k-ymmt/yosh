@@ -1175,6 +1175,65 @@ fn test_tab_completes_single_candidate() {
 }
 
 #[test]
+fn test_tab_complete_with_multibyte_word_does_not_panic() {
+    // Regression: handle_tab_complete passed the CHAR-index cursor
+    // (`self.pos`) to the byte-indexed completion APIs. With a multibyte
+    // word before the cursor the byte slice landed mid-character and
+    // panicked ("byte index N is not a char boundary"). The cursor must
+    // be converted to a byte offset first.
+    let tmp = tempfile::TempDir::new().unwrap();
+    fs::File::create(tmp.path().join("日本語ファイル.txt")).unwrap();
+
+    let ctx = CompletionContext {
+        cwd: tmp.path().to_str().unwrap().to_string(),
+        home: "/home/user".to_string(),
+        show_dotfiles: false,
+    };
+
+    // Type "ls 日本語" + Tab + Enter (argument position → path completion).
+    let mut events = chars("ls 日本語");
+    events.push(key(KeyCode::Tab));
+    events.push(key(KeyCode::Enter));
+
+    let mut term = MockTerminal::new(events);
+    let mut editor = LineEditor::new();
+    let mut history = History::new();
+    let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
+    let result = editor
+        .read_line_with_completion(
+            "$ ",
+            &[],
+            &mut history,
+            &mut term,
+            &ctx,
+            &mut cmd_ctx,
+            &mut spec_store,
+            &mut scanner,
+            &checker_env,
+            "",
+            &mut || "> ".to_string(),
+            &|_| false,
+        )
+        .unwrap();
+    assert_eq!(result, Some("ls 日本語ファイル.txt ".to_string()));
+}
+
+#[test]
 fn test_tab_completes_common_prefix() {
     let tmp = tempfile::TempDir::new().unwrap();
     fs::File::create(tmp.path().join("file_alpha.rs")).unwrap();

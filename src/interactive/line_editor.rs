@@ -3161,9 +3161,15 @@ impl LineEditor {
         cmd_ctx: &mut CommandCompletionContext<'_>,
         specs: &mut SpecStore,
     ) -> io::Result<()> {
+        // `self.pos` is a char index into `self.buf`; the completion APIs
+        // (`extract_completion_word`, `completion::complete`) take BYTE
+        // indices into the rendered buffer string. Convert once here —
+        // passing the char index would slice mid-character (panic) as soon
+        // as the buffer contains a multibyte char before the cursor.
+        let byte_pos: usize = self.buf[..self.pos].iter().map(|c| c.len_utf8()).sum();
         let (word_start, word) = {
             let buf = self.buffer();
-            let (ws, w) = extract_completion_word(&buf, self.pos);
+            let (ws, w) = extract_completion_word(&buf, byte_pos);
             (ws, w.to_owned())
         };
         let is_cmd_pos = {
@@ -3187,7 +3193,7 @@ impl LineEditor {
             (result.candidates, result.common_prefix, result.keep_prefix)
         } else {
             // Path completion (existing)
-            let result = completion::complete(&self.buffer(), self.pos, ctx);
+            let result = completion::complete(&self.buffer(), byte_pos, ctx);
             (result.candidates, result.common_prefix, result.dir_prefix)
         };
 
@@ -3207,7 +3213,9 @@ impl LineEditor {
                 self.replace_word(word_start, &replacement);
             } else {
                 // Multiple candidates: replace with common prefix if longer
-                let current_word_len = self.buffer()[word_start..self.pos].len();
+                // (byte lengths on both sides: `word_start`/`byte_pos` are
+                // byte offsets into the rendered buffer).
+                let current_word_len = self.buffer()[word_start..byte_pos].len();
                 let new_word = format!("{}{}", dir_prefix, common_prefix);
                 if new_word.len() > current_word_len {
                     self.replace_word(word_start, &new_word);

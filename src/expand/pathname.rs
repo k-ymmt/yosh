@@ -59,7 +59,7 @@ fn has_unquoted_glob_chars(field: &ExpandedField) -> bool {
         }
         match b {
             b'*' | b'?' => return true,
-            b'[' if bracket_has_close(bytes, i) => return true,
+            b'[' if bracket_has_close(bytes, i, &|j| field.is_glob_protected(j)) => return true,
             _ => {}
         }
     }
@@ -75,9 +75,16 @@ fn has_unquoted_glob_chars(field: &ExpandedField) -> bool {
 /// glob attempt, which is exactly today's behavior for every `[`), never
 /// a false negative.
 ///
+/// `is_protected(j)` reports whether the byte at `j` is glob-protected
+/// (quoted). A protected `]` can never CLOSE the expression — POSIX
+/// §2.13.1: a quoted `]` is literal, so `sr[c"]"` has no closing bracket
+/// and the `[` stays literal (matches bash/dash). It still counts as an
+/// immediate literal member (`["]"x]`), like an unquoted one in that
+/// position.
+///
 /// Byte-wise scanning is UTF-8 safe: `[`/`]`/`!` are ASCII and never
 /// appear inside multibyte sequences.
-fn bracket_has_close(bytes: &[u8], open: usize) -> bool {
+fn bracket_has_close(bytes: &[u8], open: usize, is_protected: &dyn Fn(usize) -> bool) -> bool {
     let mut j = open + 1;
     if bytes.get(j) == Some(&b'!') {
         j += 1;
@@ -85,17 +92,18 @@ fn bracket_has_close(bytes: &[u8], open: usize) -> bool {
     if bytes.get(j) == Some(&b']') {
         j += 1;
     }
-    j < bytes.len() && bytes[j..].contains(&b']')
+    (j..bytes.len()).any(|k| bytes[k] == b']' && !is_protected(k))
 }
 
-/// `has_unquoted_glob_chars` for a plain pattern string (no quote mask):
-/// used by the per-component test in `expand_components`.
+/// `has_unquoted_glob_chars` for a plain pattern string (no quote mask —
+/// nothing is protected): used by the per-component test in
+/// `expand_components`, whose input is a raw `field.value` slice.
 fn str_has_glob_chars(s: &str) -> bool {
     let bytes = s.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
         match b {
             b'*' | b'?' => return true,
-            b'[' if bracket_has_close(bytes, i) => return true,
+            b'[' if bracket_has_close(bytes, i, &|_| false) => return true,
             _ => {}
         }
     }
@@ -459,13 +467,49 @@ mod tests {
     }
 
     #[test]
-    fn unquoted_open_bracket_with_quoted_close_still_globs() {
-        // The `[` is glob-subject; the predicate scans for a byte-level
-        // `]` regardless of its quoting, matching what the matcher sees
-        // when it parses the raw field value.
+    fn unquoted_open_bracket_with_quoted_close_is_literal() {
+        // POSIX §2.13.1: a quoted `]` is literal and cannot close the
+        // bracket expression, so an unquoted `[` with only a quoted `]`
+        // after it has no closer and stays literal (bash: `sr[c"]"`
+        // prints `sr[c]`, it does not glob-match `src`).
         let mut f = ExpandedField::new();
         f.push_expanded("[a");
         f.push_quoted("]");
+        assert!(!has_unquoted_glob_chars(&f));
+    }
+
+    #[test]
+    fn quoted_close_bracket_repro_sr_c() {
+        // `sr[c"]"` — `[` and `c` unquoted, `]` quoted → literal.
+        let mut f = ExpandedField::new();
+        f.push_expanded("sr[c");
+        f.push_quoted("]");
+        assert!(!has_unquoted_glob_chars(&f));
+
+        // `sr["c]"` — `[` unquoted, `c]` quoted → no unprotected closer,
+        // literal.
+        let mut f = ExpandedField::new();
+        f.push_expanded("sr[");
+        f.push_quoted("c]");
+        assert!(!has_unquoted_glob_chars(&f));
+    }
+
+    #[test]
+    fn quoted_close_followed_by_unquoted_close_still_globs() {
+        // `[a"]"]` — the quoted `]` is a literal member; the later
+        // unquoted `]` closes the expression, so this is a glob.
+        let mut f = ExpandedField::new();
+        f.push_expanded("[a");
+        f.push_quoted("]");
+        f.push_expanded("]");
+        assert!(has_unquoted_glob_chars(&f));
+    }
+
+    #[test]
+    fn fully_unquoted_bracket_still_globs_after_mask_fix() {
+        // Regression guard: fully unquoted patterns keep globbing.
+        let mut f = ExpandedField::new();
+        f.push_expanded("src[c]x");
         assert!(has_unquoted_glob_chars(&f));
     }
 

@@ -85,6 +85,13 @@ pub fn skip_balanced_parens(bytes: &[u8], start: usize) -> usize {
 /// Used for `${...}` parameter expansion scanning in heredoc strings.
 /// Returns the index of the closing `}` where depth reaches 0.
 /// If no matching `}` is found, returns `bytes.len()`.
+///
+/// A `}` inside a nested `$(...)` / `$((...))` command or arithmetic
+/// substitution, or inside `` `...` `` backticks, belongs to that nested
+/// construct and must not close the outer `${...}` (POSIX §2.6.2: the
+/// matching `}` skips over embedded command substitutions) — e.g.
+/// `${x:-$(printf %s })}` closes at the final `}`, not the one inside
+/// `$()`. Nested `${...}` is covered by the brace depth counter.
 pub fn skip_balanced_braces(bytes: &[u8], start: usize) -> usize {
     let mut i = start;
     let mut depth: usize = 1;
@@ -94,6 +101,26 @@ pub fn skip_balanced_braces(bytes: &[u8], start: usize) -> usize {
             continue;
         }
         match bytes[i] {
+            b'$' if bytes.get(i + 1) == Some(&b'(') => {
+                // Nested $(...) or $((...)) — skip to its closing `)`.
+                // skip_balanced_parens tracks paren depth, so the extra
+                // `(` of `$((...))` is balanced by the extra `)`.
+                let j = skip_balanced_parens(bytes, i + 2);
+                i = if j < bytes.len() { j + 1 } else { j };
+            }
+            b'`' => {
+                // Nested backtick substitution — skip to the closing
+                // unescaped backtick (or end of input if unterminated).
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] != b'`' {
+                    if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
+                i = if j < bytes.len() { j + 1 } else { j };
+            }
             b'{' => {
                 depth += 1;
                 i += 1;
@@ -243,6 +270,43 @@ mod tests {
     #[test]
     fn test_skip_balanced_braces_unterminated_returns_len() {
         let input = b"var:-default";
+        assert_eq!(skip_balanced_braces(input, 0), input.len());
+    }
+
+    // ── nested $()/backtick constructs inside ${...} ─────────────────
+    #[test]
+    fn test_skip_balanced_braces_nested_command_sub_with_brace() {
+        // ${x:-$(printf %s })} — the `}` inside $() must not close.
+        let input = b"x:-$(printf %s })}";
+        assert_eq!(skip_balanced_braces(input, 0), input.len() - 1);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_nested_arith_sub_with_brace() {
+        // ${x:-$((1+1))} plus a `}`-carrying nested sub variant.
+        let input = b"x:-$((1+1))}";
+        assert_eq!(skip_balanced_braces(input, 0), input.len() - 1);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_nested_backtick_with_brace() {
+        // ${x:-`printf %s }`} — the `}` inside backticks must not close.
+        let input = b"x:-`printf %s }`}";
+        assert_eq!(skip_balanced_braces(input, 0), input.len() - 1);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_escaped_backtick_not_nested() {
+        // A backslash-escaped backtick does not open a nested
+        // substitution; the first unquoted `}` closes.
+        let input = b"x:-\\`}";
+        assert_eq!(skip_balanced_braces(input, 0), input.len() - 1);
+    }
+
+    #[test]
+    fn test_skip_balanced_braces_unterminated_nested_command_sub() {
+        // ${x:-$(printf %s }  (no closers at all) — consumes to EOF.
+        let input = b"x:-$(printf %s }";
         assert_eq!(skip_balanced_braces(input, 0), input.len());
     }
 }

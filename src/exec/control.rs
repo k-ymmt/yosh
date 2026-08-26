@@ -68,7 +68,14 @@ impl Executor {
     /// (and fires the EXIT trap) instead of `process::exit`ing from
     /// arbitrarily deep in the executor.
     fn report_command_error(&mut self, e: &ShellError) -> i32 {
-        eprintln!("{}", e);
+        // Empty message = the diagnostic was already printed at the point
+        // of failure (e.g. `param::expansion_error` for a `${x:?}` /
+        // nounset failure inside a heredoc body, converted to a
+        // redirection error in `RedirectState::apply_one`). Printing here
+        // would duplicate the line; dash/bash print it once.
+        if !e.message.is_empty() {
+            eprintln!("{}", e);
+        }
         let code = e.exit_code();
         self.env.exec.last_exit_status = code;
         if !self.env.mode.is_interactive && e.requires_noninteractive_exit() {

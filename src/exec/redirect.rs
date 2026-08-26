@@ -281,6 +281,21 @@ impl RedirectState {
                 let body = crate::expand::expand_heredoc_body(env, &heredoc.body, heredoc.quoted)
                     .map_err(|e| e.message)?;
 
+                // Braced-parameter failures (`${x:?msg}`, `set -u` unset)
+                // report through `param::expansion_error` instead of `Err`:
+                // the diagnostic is already printed and
+                // `FlowControl::ExpansionError` is raised. Convert that to
+                // the same redirection-error outcome as above (command
+                // skipped, status 1, shell continues — matching dash;
+                // empirical 2026-08-26): clear the flow control so it does
+                // not abort the non-interactive shell, and return the
+                // already-reported sentinel (empty message) so
+                // `report_command_error` does not print a second line.
+                if env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError) {
+                    env.exec.flow_control = None;
+                    return Err(String::new());
+                }
+
                 let read_fd = heredoc_source_fd(&crate::byteenc::decode_bytes(&body))?;
 
                 // Connect read end to target fd (stdin by default)

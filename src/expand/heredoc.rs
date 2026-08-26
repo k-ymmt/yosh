@@ -6,7 +6,7 @@
 //! parameter, arithmetic, and command substitution only — via the shared
 //! dollar-scanner in `expand::dollar`.
 
-use super::dollar::{DollarMode, expand_string};
+use super::dollar::expand_string;
 use crate::env::ShellEnv;
 use crate::parser::ast::WordPart;
 
@@ -17,6 +17,15 @@ use crate::parser::ast::WordPart;
 /// An arithmetic failure in the body surfaces as the `ShellError` built by
 /// `arith::evaluate`; the redirect layer converts it to a redirection error
 /// (command aborted, shell continues — matching dash/bash).
+///
+/// Braced-parameter failures (`${x:?msg}`, `set -u` unset variables) do
+/// not return `Err` from the expander — they print their diagnostic and
+/// raise `FlowControl::ExpansionError` (see `param::expansion_error`).
+/// In a WORD context that aborts a non-interactive shell, but in a
+/// heredoc dash keeps the shell alive (empirical 2026-08-26; heredocs are
+/// redirections, so POSIX §2.8.1's redirection-error row applies). The
+/// redirect layer therefore checks for a newly-raised `ExpansionError`
+/// after calling this function and converts it into a redirection error.
 pub fn expand_body(
     env: &mut ShellEnv,
     parts: &[WordPart],
@@ -43,7 +52,7 @@ pub fn expand_body(
         Ok(raw_body)
     } else {
         // Unquoted delimiter: expand $VAR, $(cmd), `cmd`, $((expr)).
-        expand_string(env, &raw_body, DollarMode::Heredoc)
+        expand_string(env, &raw_body)
     }
 }
 
