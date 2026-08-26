@@ -1,4 +1,4 @@
-package yosh:plugin@0.2.9;
+package yosh:plugin@0.2.12;
 
 interface types {
     enum error-code {
