@@ -185,6 +185,12 @@ pub struct LineEditor {
     /// entry after every kill-ring write; read by vim-flavor `p`/`P`.
     /// Persists across reads like the kill ring.
     unnamed_register: UnnamedRegister,
+    /// vim §7.2 Insert staging slot: the pre-state of the pending
+    /// Insert session (set when a command enters Insert, or at read
+    /// start). Committed as one undo unit when Insert ends iff the
+    /// buffer changed — a no-op insert session commits nothing and
+    /// preserves redo.
+    vim_undo_staged: Option<(Vec<char>, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -238,7 +244,24 @@ impl LineEditor {
             vi_literal_next: false,
             editor_command: "vi".to_string(),
             unnamed_register: UnnamedRegister::default(),
+            vim_undo_staged: None,
         }
+    }
+
+    /// Per-arm undo snapshot for the shared vi command arms: a no-op in
+    /// the vim flavor, where the §7.2 compare-and-commit wrapper owns
+    /// all undo bookkeeping.
+    fn save_undo_posix(&mut self) {
+        if self.vi.flavor != ViFlavor::Vim {
+            self.undo.save(&self.buf, self.pos);
+        }
+    }
+
+    /// Commit one vim undo unit: push the pre-state and invalidate the
+    /// redo stack. Callers check that the buffer actually changed.
+    fn vim_commit_undo(&mut self, pre_buf: &[char], pre_pos: usize) {
+        self.undo.save(pre_buf, pre_pos);
+        self.undo.clear_redo();
     }
 
     /// Kill-ring write plus the §8.1 front-entry mirror: every kill in
@@ -323,7 +346,13 @@ impl LineEditor {
         self.vi_search_input = None;
         self.pending_events.clear();
         self.vi_literal_next = false;
-        if self.edit_mode.is_vi_family() {
+        self.vim_undo_staged = None;
+        if self.edit_mode == EditMode::Vim {
+            // The initial Insert session (every read starts in Insert
+            // with no entry transition) is staged with the empty-buffer
+            // snapshot; committed on the first Esc iff text was typed.
+            self.vim_undo_staged = Some((Vec::new(), 0));
+        } else if self.edit_mode.is_vi_family() {
             // Base undo entry so `u` after the first insert session can
             // restore the empty line (vi undo is session-granular; the
             // per-run emacs saves are suppressed in vi insert mode).
@@ -1747,14 +1776,19 @@ impl LineEditor {
                     // and run the key as a command-mode command, exactly
                     // like typing them slowly. This shadows the emacs
                     // Alt-chords (Alt+f/b/d…) in vi insert mode — vi ESC
-                    // correctness wins; the Ctrl bindings all remain.
+                    // correctness wins; the plain Ctrl bindings all
+                    // remain. Alt+Ctrl+key is a fast ESC before a
+                    // control key (e.g. ESC then Ctrl-X): the control
+                    // modifier is preserved into command mode.
                     if let KeyCode::Char(c) = key.code
                         && key.modifiers.contains(KeyModifiers::ALT)
-                        && !key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         self.vi_leave_insert_mode();
                         return self.handle_vi_command_key(
-                            KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                            KeyEvent::new(
+                                KeyCode::Char(c),
+                                key.modifiers.difference(KeyModifiers::ALT),
+                            ),
                             history,
                         );
                     }
@@ -1891,6 +1925,15 @@ impl LineEditor {
                 self.vi_last_insert.clear();
             }
         }
+        // vim §7.2: leaving Insert commits the staged session as one
+        // unit iff the buffer changed; a no-op session commits nothing
+        // and preserves redo.
+        if self.vi.flavor == ViFlavor::Vim
+            && let Some((staged_buf, staged_pos)) = self.vim_undo_staged.take()
+            && self.buf != staged_buf
+        {
+            self.vim_commit_undo(&staged_buf, staged_pos);
+        }
         self.last_was_insert = false;
         self.vi.mode = ViMode::Command;
         self.vi.replace_overwrite = false;
@@ -1956,6 +1999,24 @@ impl LineEditor {
         )
     }
 
+    /// vim: commands the §7.2 wrapper must not treat as changes —
+    /// `u`/`Ctrl-R` manipulate the stacks themselves, and history
+    /// navigation/recall triggers the history-reset in `vi_recall`
+    /// instead. `U` is deliberately NOT excluded: its restore-to-base
+    /// commits as a regular unit.
+    fn vim_undo_excluded(cmd: ViCmd) -> bool {
+        matches!(
+            cmd,
+            ViCmd::Undo
+                | ViCmd::Redo
+                | ViCmd::HistoryPrev
+                | ViCmd::HistoryNext
+                | ViCmd::HistoryGoto
+                | ViCmd::SearchNext
+                | ViCmd::SearchReverse
+        )
+    }
+
     fn execute_vi_cmd_inner(
         &mut self,
         cmd: ViCmd,
@@ -1965,6 +2026,12 @@ impl LineEditor {
     ) -> KeyAction {
         let mode_before = self.vi.mode;
         let gen_before = self.buf_generation;
+        // §7.2 compare-and-commit wrapper (vim flavor): snapshot before
+        // dispatch, commit one unit after iff the buffer changed. Only
+        // at the outermost depth — a `.` replay must yield exactly one
+        // unit, committed by the outer Repeat invocation.
+        let pre = (!replaying && self.vi.flavor == ViFlavor::Vim)
+            .then(|| (self.buf.clone(), self.pos));
         let action = self.execute_vi_cmd_arm(cmd, count, history);
         if !replaying {
             // Entering insert mode starts a new insert session (for the
@@ -1979,6 +2046,19 @@ impl LineEditor {
                 && (self.buf_generation != gen_before || self.vi.mode == ViMode::Insert)
             {
                 self.vi.record_change(cmd, count);
+            }
+            if let Some((pre_buf, pre_pos)) = pre
+                && !Self::vim_undo_excluded(cmd)
+            {
+                if mode_before != ViMode::Insert && self.vi.mode == ViMode::Insert {
+                    // A command that enters Insert transfers its
+                    // snapshot into the staging slot: the deletion and
+                    // the inserted text form one unit, committed when
+                    // Insert ends.
+                    self.vim_undo_staged = Some((pre_buf, pre_pos));
+                } else if self.buf != pre_buf {
+                    self.vim_commit_undo(&pre_buf, pre_pos);
+                }
             }
         }
         action
@@ -2001,7 +2081,7 @@ impl LineEditor {
             self.pending_bell = true;
             return None;
         }
-        self.undo.save(&self.buf, self.pos);
+        self.save_undo_posix();
         Some((self.pos, (self.pos + count as usize).min(le)))
     }
 
@@ -2028,8 +2108,9 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::EnterInsert(at) => {
-                // Pre-session state for session-granular vi undo.
-                self.undo.save(&self.buf, self.pos);
+                // Pre-session state for session-granular vi undo (vim:
+                // the wrapper stages the snapshot instead).
+                self.save_undo_posix();
                 self.vi.mode = ViMode::Insert;
                 let le = vi::line_end(&self.buf, self.pos);
                 match at {
@@ -2051,7 +2132,7 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::ReplaceMode => {
-                self.undo.save(&self.buf, self.pos);
+                self.save_undo_posix();
                 self.vi.mode = ViMode::Insert;
                 self.vi.replace_overwrite = true;
                 KeyAction::Continue
@@ -2075,7 +2156,7 @@ impl LineEditor {
                 if self.pos <= ls {
                     return self.bell();
                 }
-                self.undo.save(&self.buf, self.pos);
+                self.save_undo_posix();
                 let start = self.pos.saturating_sub(count as usize).max(ls);
                 let killed: String = self.buf[start..self.pos].iter().collect();
                 self.record_kill(&killed, false, RegisterKind::Charwise);
@@ -2139,7 +2220,7 @@ impl LineEditor {
                                 // POSIX: the cursor does not move.
                             }
                             OpKind::Delete | OpKind::Change => {
-                                self.undo.save(&self.buf, self.pos);
+                                self.save_undo_posix();
                                 self.buf.drain(start..end);
                                 self.pos = start;
                                 self.invalidate_width_cache();
@@ -2163,7 +2244,6 @@ impl LineEditor {
                         // c enters Insert inside the pair
                         // (oracle-verified: ci( on () yields (X)).
                         if op == OpKind::Change {
-                            self.undo.save(&self.buf, self.pos);
                             self.pos = s;
                             self.vi.mode = ViMode::Insert;
                         }
@@ -2179,7 +2259,6 @@ impl LineEditor {
                                 self.pos = s;
                             }
                             OpKind::Delete | OpKind::Change => {
-                                self.undo.save(&self.buf, self.pos);
                                 self.buf.drain(s..e);
                                 self.pos = s;
                                 self.invalidate_width_cache();
@@ -2207,7 +2286,7 @@ impl LineEditor {
                 match op {
                     OpKind::Yank => {}
                     OpKind::Delete | OpKind::Change => {
-                        self.undo.save(&self.buf, self.pos);
+                        self.save_undo_posix();
                         self.buf.drain(ls..le);
                         self.pos = ls;
                         self.invalidate_width_cache();
@@ -2219,7 +2298,7 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::SubstChar => {
-                self.undo.save(&self.buf, self.pos);
+                self.save_undo_posix();
                 let le = vi::line_end(&self.buf, self.pos);
                 if self.pos < le {
                     let end = (self.pos + count as usize).min(le);
@@ -2268,6 +2347,25 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::Undo => {
+                if self.vi.flavor == ViFlavor::Vim {
+                    // Multi-level undo with counts; the current state
+                    // moves to the redo stack.
+                    for _ in 0..count.max(1) {
+                        match self.undo.undo_swap(&self.buf, self.pos) {
+                            Some((buf, pos)) => {
+                                self.buf = buf;
+                                self.pos = pos;
+                            }
+                            None => {
+                                self.pending_bell = true;
+                                break;
+                            }
+                        }
+                    }
+                    self.invalidate_width_cache();
+                    self.clamp_vi_command_pos();
+                    return KeyAction::Continue;
+                }
                 match self.undo.undo() {
                     Some((buf, pos)) => {
                         self.buf = buf;
@@ -2279,10 +2377,29 @@ impl LineEditor {
                 }
                 KeyAction::Continue
             }
+            ViCmd::Redo => {
+                // vim flavor only (POSIX resolution never produces it).
+                for _ in 0..count.max(1) {
+                    match self.undo.redo_swap(&self.buf, self.pos) {
+                        Some((buf, pos)) => {
+                            self.buf = buf;
+                            self.pos = pos;
+                        }
+                        None => {
+                            self.pending_bell = true;
+                            break;
+                        }
+                    }
+                }
+                self.invalidate_width_cache();
+                self.clamp_vi_command_pos();
+                KeyAction::Continue
+            }
             ViCmd::UndoAll => {
                 // U restores the line the edit started from (empty, or
-                // the recalled history entry); u can undo the U itself.
-                self.undo.save(&self.buf, self.pos);
+                // the recalled history entry); u can undo the U itself
+                // (vim: via the wrapper commit).
+                self.save_undo_posix();
                 self.buf = self.vi_line_base.clone();
                 self.pos = 0;
                 self.invalidate_width_cache();
@@ -2356,7 +2473,7 @@ impl LineEditor {
                 let Some(word) = word.map(str::to_string) else {
                     return self.bell();
                 };
-                self.undo.save(&self.buf, self.pos);
+                self.save_undo_posix();
                 let le = vi::line_end(&self.buf, self.pos);
                 let mut at = (self.pos + 1).min(le);
                 // POSIX: "Append a <space> after the current character
@@ -2418,7 +2535,7 @@ impl LineEditor {
                 // submit: the input is recorded in history but executes
                 // as comments. (POSIX describes the single-line case;
                 // commenting each line keeps multiline buffers inert.)
-                self.undo.save(&self.buf, self.pos);
+                self.save_undo_posix();
                 self.buf.insert(0, '#');
                 let mut i = 1;
                 while i < self.buf.len() {
@@ -2477,6 +2594,14 @@ impl LineEditor {
         self.suggestion = None;
         self.invalidate_width_cache();
         self.clamp_vi_command_pos();
+        // vim §7.1: recalling a history entry resets the undo history —
+        // both stacks clear and a fresh base starts (the line-editor
+        // analog of Vim's per-buffer undo). `u` right after a recall
+        // bells; `U` still restores the as-recalled state.
+        if self.vi.flavor == ViFlavor::Vim {
+            self.undo.clear();
+            self.vim_undo_staged = None;
+        }
     }
 
     /// vi `k` / `j`: move within a multiline buffer first (matching the
@@ -2676,7 +2801,7 @@ impl LineEditor {
     /// Replace the char range `[start, end)` with `text`, leaving the
     /// cursor after the inserted text.
     fn vi_replace_range(&mut self, start: usize, end: usize, text: &str) {
-        self.undo.save(&self.buf, self.pos);
+        self.save_undo_posix();
         self.buf.splice(start..end, text.chars());
         self.pos = start + text.chars().count();
         self.invalidate_width_cache();
@@ -2693,7 +2818,6 @@ impl LineEditor {
         match op {
             OpKind::Yank => {}
             OpKind::Delete => {
-                self.undo.save(&self.buf, self.pos);
                 let (start, end) = vim::linewise_delete_range(&self.buf, ls, le);
                 self.buf.drain(start..end);
                 // Cursor: first non-blank of the line now at the deleted
@@ -2712,7 +2836,6 @@ impl LineEditor {
                 // The change range consumes no separator: the selected
                 // lines collapse to one empty logical line and Insert
                 // begins on it (oracle-verified Vim `cc`).
-                self.undo.save(&self.buf, self.pos);
                 self.buf.drain(ls..le);
                 self.pos = ls;
                 self.invalidate_width_cache();
@@ -2727,7 +2850,16 @@ impl LineEditor {
         match self.vi.resolve_visual_key(key) {
             VisualOutcome::Pending => KeyAction::Continue,
             VisualOutcome::Cmd(cmd, count) => {
+                // §7.2: one undo unit per VISUAL operation; an operator
+                // that enters Insert (c/s/C/S/R) stages its snapshot
+                // instead, spanning the deletion and the typed text.
+                let pre = (self.buf.clone(), self.pos);
                 let action = self.execute_visual_cmd(cmd, count);
+                if self.vi.mode == ViMode::Insert {
+                    self.vim_undo_staged = Some(pre);
+                } else if self.buf != pre.0 {
+                    self.vim_commit_undo(&pre.0, pre.1);
+                }
                 // Same rationale as command mode: end any emacs-side
                 // kill run / yank-pop state.
                 self.last_action = EditAction::Noop;
@@ -2792,7 +2924,6 @@ impl LineEditor {
             VisualCmd::ReplaceChar(c) => {
                 let (s, e) = vim::visual_selection(&self.buf, anchor, self.pos, kind);
                 if s < e {
-                    self.undo.save(&self.buf, self.pos);
                     for i in s..e {
                         // '\n' separators are preserved (oracle-verified:
                         // charwise rX over ab\ncd keeps the line break).
@@ -2809,7 +2940,6 @@ impl LineEditor {
             VisualCmd::ToggleCase => {
                 let (s, e) = vim::visual_selection(&self.buf, anchor, self.pos, kind);
                 if s < e {
-                    self.undo.save(&self.buf, self.pos);
                     for i in s..e {
                         let ch = self.buf[i];
                         self.buf[i] = if ch.is_uppercase() {
@@ -2900,7 +3030,6 @@ impl LineEditor {
             }
             VisualCmd::Delete | VisualCmd::Change => {
                 if s < e {
-                    self.undo.save(&self.buf, self.pos);
                     self.buf.drain(s..e);
                     self.invalidate_width_cache();
                 }
@@ -2929,7 +3058,6 @@ impl LineEditor {
                 self.vim_exit_visual();
             }
             VisualCmd::Delete => {
-                self.undo.save(&self.buf, self.pos);
                 let (start, end) = vim::linewise_delete_range(&self.buf, ls, le);
                 self.buf.drain(start..end);
                 self.pos = start.min(self.buf.len().saturating_sub(1));
@@ -2944,7 +3072,6 @@ impl LineEditor {
             VisualCmd::Change => {
                 // §8.2 change range: the lines collapse to one empty
                 // logical line, Insert begins on it.
-                self.undo.save(&self.buf, self.pos);
                 self.buf.drain(ls..le);
                 self.pos = ls;
                 self.invalidate_width_cache();
@@ -2965,7 +3092,6 @@ impl LineEditor {
         if reg.text.is_empty() {
             return self.bell();
         }
-        self.undo.save(&self.buf, self.pos);
         // Delete the selection. Linewise selections use the change
         // range (no separator consumed) so the pasted block lands on
         // its own line slot between the neighbors.
@@ -3050,7 +3176,6 @@ impl LineEditor {
         if reg.text.is_empty() {
             return self.bell();
         }
-        self.undo.save(&self.buf, self.pos);
         let chars: Vec<char> = reg.text.chars().collect();
         // Bound the total inserted text (count × register length) so a
         // huge count cannot balloon the buffer.
@@ -3326,9 +3451,13 @@ impl LineEditor {
         let editor = self.editor_command.clone();
         match self.run_external_editor(term, &content, &editor)? {
             Some(text) => {
-                self.undo.save(&self.buf, self.pos);
+                let pre = (self.buf.clone(), self.pos);
                 self.buf = text.chars().collect();
                 self.pos = self.buf.len();
+                // The buffer replacement is one undo unit (§7.2).
+                if self.buf != pre.0 {
+                    self.vim_commit_undo(&pre.0, pre.1);
+                }
                 self.invalidate_width_cache();
                 self.clamp_vi_command_pos();
                 self.suggestion = None;
@@ -3674,8 +3803,21 @@ impl LineEditor {
                                     // The continuation is a fresh insert
                                     // session: save the pre-continuation
                                     // state for `u` and start the `.`
-                                    // text capture at the new line.
-                                    self.undo.save(&self.buf, self.pos);
+                                    // text capture at the new line. In
+                                    // the vim flavor an ongoing Insert
+                                    // session simply absorbs the '\n';
+                                    // from Command mode the pre-newline
+                                    // snapshot moves to the staging slot
+                                    // (one unit spanning the newline
+                                    // plus the typed continuation).
+                                    if self.vi.flavor == ViFlavor::Vim {
+                                        if self.vi.mode != ViMode::Insert {
+                                            self.vim_undo_staged =
+                                                Some((self.buf.clone(), self.pos));
+                                        }
+                                    } else {
+                                        self.undo.save(&self.buf, self.pos);
+                                    }
                                     self.pos = self.buf.len();
                                     self.vi.mode = ViMode::Insert;
                                     self.vi.replace_overwrite = false;

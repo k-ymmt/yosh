@@ -1197,3 +1197,203 @@ fn vim_visual_empty_inner_object_bells_keeps_selection() {
     ]);
     assert_eq!(line.as_deref(), Some(" \"\" y"));
 }
+
+// ── Phase 5: undo / redo ───────────────────────────────────────────────
+
+#[test]
+fn vim_multi_level_undo() {
+    let line = vim_read(seq![chars("abc"), [esc()], chars("xxxuu"), [enter()]]);
+    // Three x units; two u's restore two of them.
+    assert_eq!(line.as_deref(), Some("ab"));
+}
+
+#[test]
+fn vim_ctrl_r_redoes() {
+    let line = vim_read(seq![
+        chars("abc"),
+        [esc()],
+        chars("xxxuu"),
+        [ctrl('r')],
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("a"));
+}
+
+#[test]
+fn vim_count_undo_and_redo() {
+    let line = vim_read(seq![chars("abcd"), [esc()], chars("xxx2u"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("abc"));
+    let line = vim_read(seq![
+        chars("abcd"),
+        [esc()],
+        chars("xxx3u2"),
+        [ctrl('r')],
+        [enter()]
+    ]);
+    // 3u undoes all three deletes; 2 Ctrl-R redoes two of them.
+    assert_eq!(line.as_deref(), Some("ab"));
+}
+
+#[test]
+fn vim_undo_past_first_change_restores_empty_and_bells() {
+    let line = vim_read(seq![
+        chars("abc"),
+        [esc()],
+        chars("uu"),
+        chars("iok"),
+        [enter()]
+    ]);
+    // First u undoes the initial insert session (empty buffer); the
+    // second bells; iok types into the empty buffer.
+    assert_eq!(line.as_deref(), Some("ok"));
+}
+
+#[test]
+fn vim_noop_insert_session_preserves_redo() {
+    // Vim: after `x u i<Esc>`, Ctrl-R still redoes the x.
+    let line = vim_read(seq![
+        chars("ab"),
+        [esc()],
+        chars("xui"),
+        [esc()],
+        [ctrl('r')],
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("a"));
+}
+
+#[test]
+fn vim_same_result_change_preserves_redo() {
+    // Documented deviation (§12): a change whose result equals its
+    // input commits nothing, so redo survives.
+    let line = vim_read(seq![
+        chars("ab"),
+        [esc()],
+        chars("xu0ra"),
+        [ctrl('r')],
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("a"));
+}
+
+#[test]
+fn vim_change_family_is_one_unit() {
+    let line = vim_read(seq![
+        chars("hello world"),
+        [esc()],
+        chars("0cw"),
+        chars("bye"),
+        [esc()],
+        chars("u"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("hello world"));
+}
+
+#[test]
+fn vim_change_undo_then_redo() {
+    let line = vim_read(seq![
+        chars("hello world"),
+        [esc()],
+        chars("0cw"),
+        chars("bye"),
+        [esc()],
+        chars("u"),
+        [ctrl('r')],
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("bye world"));
+}
+
+#[test]
+fn vim_dot_repeat_is_one_unit() {
+    let line = vim_read(seq![
+        chars("aa bb"),
+        [esc()],
+        chars("0cw"),
+        chars("zz"),
+        [esc()],
+        chars("0w."),
+        chars("u"),
+        [enter()]
+    ]);
+    // The `.` repeat is exactly one unit: u restores only the second
+    // change.
+    assert_eq!(line.as_deref(), Some("zz bb"));
+}
+
+#[test]
+fn vim_visual_op_is_undoable() {
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0vldu"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("abc"));
+}
+
+#[test]
+fn vim_visual_change_is_one_unit() {
+    let line = vim_read(seq![
+        chars("abc"),
+        [esc()],
+        chars("0vlc"),
+        chars("XY"),
+        [esc()],
+        chars("u"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("abc"));
+}
+
+#[test]
+fn vim_history_recall_resets_undo() {
+    // u immediately after a recall bells (fresh undo base); the
+    // recalled buffer is unchanged.
+    let line = vim_read_with_history(
+        &["echo x"],
+        seq![chars("abc"), [esc()], chars("ku"), [enter()]],
+    );
+    assert_eq!(line.as_deref(), Some("echo x"));
+}
+
+#[test]
+fn vim_undo_after_recall_edit_restores_recalled_state() {
+    let line = vim_read_with_history(&["echo x"], seq![[esc()], chars("kxu"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("echo x"));
+}
+
+#[test]
+fn vim_incomplete_enter_continuation_is_one_unit() {
+    // From Command mode the continuation newline + typed text form one
+    // unit (analogous to Vim's o); u removes both.
+    let aliases = yosh::env::aliases::AliasStore::default();
+    let odd_quotes = |s: &str| s.chars().filter(|&c| c == '\'').count() % 2 == 1;
+    let line = vim_read_full(
+        seq![
+            chars("echo 'a"),
+            [esc()],
+            [enter()],
+            chars("b"),
+            [esc()],
+            chars("u"),
+            chars("A'"),
+            [enter()]
+        ],
+        &aliases,
+        &odd_quotes,
+    );
+    assert_eq!(line.as_deref(), Some("echo 'a'"));
+}
+
+#[test]
+fn vim_undo_restores_snapshot_cursor() {
+    // After u the cursor moves to the snapshot's position: the pre-x
+    // cursor sat on 'c', so a following x deletes 'c' again — and a
+    // second u restores again.
+    let line = vim_read(seq![
+        chars("abc"),
+        [esc()],
+        chars("0xu"),
+        chars("x"),
+        [enter()]
+    ]);
+    // Snapshot cursor was at 0 ('a'): the second x deletes 'a' again.
+    assert_eq!(line.as_deref(), Some("bc"));
+}

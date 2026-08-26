@@ -400,6 +400,36 @@
 - [ ] Spec completion: `command_words` treats unquoted `&` in `2>&1` as a segment separator and counts assignment prefixes (`FOO=1 cmd`) / redirection words as command/positional words — spec lookup misses, degrading gracefully to path completion (`src/interactive/spec_completion.rs`)
 - [ ] Spec completion: parse-error warning `eprintln!` fires while the terminal is in raw mode (staircase output, prompt not redrawn; once per session per bad file) (`src/interactive/spec_completion.rs`)
 
+## vim mode residuals
+
+`set -o vim` landed 2026-08-26 (all five phases of
+`docs/superpowers/specs/2026-08-26-vim-editing-mode-design.md`). The
+spec's §12 deviations that are deliberate policy (shell-semantics
+boundary keys, `U` approximation, count-ignored `v`/`%`) are permanent;
+the items below are deferred work, not policy:
+
+- [ ] `.` repeat of VISUAL-mode changes — VISUAL operations are not
+      recorded for `.`; Vim repeats them on a same-size region
+      (`src/interactive/line_editor.rs`).
+- [ ] VISUAL `u` / `U` (lower/uppercase the selection) — currently bell
+      (`src/interactive/vi.rs::resolve_visual_key`).
+- [ ] Insert-mode Vim extensions — `Ctrl-O` (one-shot Normal command),
+      `Ctrl-R <reg>`, `Ctrl-A` (`src/interactive/line_editor.rs`).
+- [ ] Named registers (`"a`–`"z`), numbered registers — only the typed
+      unnamed register exists (`src/interactive/vim.rs`).
+- [ ] Blockwise VISUAL (`Ctrl-V`), `gv`, VISUAL `I`/`A`
+      (`src/interactive/vi.rs`, `src/interactive/line_editor.rs`).
+- [ ] Linewise selection of an empty logical line renders no highlighted
+      cells — the renderer has no cell for `'\n'`
+      (`src/interactive/line_editor.rs::redraw_multiline`).
+- [ ] Normal-mode `Ctrl-A`/`Ctrl-X` number increment/decrement —
+      `Ctrl-X` is taken by the `Ctrl-X Ctrl-E` chord; would need a
+      different binding or a timeout (`src/interactive/vi.rs`).
+- [ ] Undo commit criterion is buffer byte-difference — a change command
+      whose result equals its input (e.g. `r` with the same char)
+      commits nothing and preserves redo, where Vim would create a unit
+      and clear redo (`src/interactive/line_editor.rs`).
+
 ## Future: Plugin System Enhancements
 
 - [ ] Consolidate `HostContext`, `MetadataCtx`, and `TestCtx` onto a shared `HostBackend` trait so the three host implementations no longer have to mirror WIT changes by hand. Mirrors the existing TODO about deriving metadata-extract deny stubs from the bindgen `Host` traits (`src/plugin/host/`, `crates/yosh-plugin-manager/src/test_host/`, `crates/yosh-plugin-manager/src/metadata_extract.rs`).

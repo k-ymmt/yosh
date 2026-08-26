@@ -189,6 +189,82 @@ fn test_pty_vim_mode_toggle_and_display() {
 }
 
 #[test]
+fn test_pty_vim_mode_visual_edit() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("set -o vim\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    // Select "XX" with charwise VISUAL and delete it.
+    s.send("echo XXok").unwrap();
+    s.send("\x1b").unwrap(); // command mode, cursor on 'k'
+    s.send("0w").unwrap(); // to the 'X'
+    s.send("vl").unwrap(); // VISUAL, extend over both X's
+    s.send("d").unwrap();
+    s.send("\r").unwrap();
+    expect_output(&mut s, "ok", "vim VISUAL delete failed");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_vim_mode_undo_redo_round_trip() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("set -o vim\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    // x deletes the final 'z'; u restores it; Ctrl-R redoes the delete.
+    s.send("echo worldz").unwrap();
+    s.send("\x1b").unwrap();
+    s.send("x").unwrap();
+    s.send("u").unwrap();
+    s.send("\x12").unwrap(); // Ctrl-R = redo
+    s.send("\r").unwrap();
+    expect_output(&mut s, "world", "vim undo/redo round trip failed");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_vim_mode_ctrl_x_ctrl_e_scripted_editor() {
+    // The editor command must resolve from the ShellEnv variable store:
+    // VISUAL is removed from the process environment, `unset VISUAL`
+    // guards against inheritance, and EDITOR is set as a plain
+    // (non-exported) shell variable.
+    let (mut s, tmpdir) = helpers::pty::spawn_yosh_with_env(&[("VISUAL", None)]);
+    let script = tmpdir.path().join("stub_editor.sh");
+    std::fs::write(&script, "#!/bin/sh\nprintf 'echo pty_edited' > \"$1\"\n").unwrap();
+    wait_for_prompt(&mut s);
+
+    s.send("set -o vim\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("unset VISUAL\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send(&format!("EDITOR='/bin/sh {}'\r", script.display()))
+        .unwrap();
+    wait_for_prompt(&mut s);
+
+    s.send("orig").unwrap();
+    s.send("\x1b").unwrap();
+    s.send("\x18\x05").unwrap(); // Ctrl-X Ctrl-E
+    // The result loads into the buffer and is NOT submitted: wait for
+    // the repaint showing the edited buffer (also avoids racing the \r
+    // into the still-running editor), then Enter executes it.
+    s.expect(Regex("pty_edited"))
+        .expect("edited buffer was not loaded into the line");
+    s.send("\r").unwrap();
+    expect_output(&mut s, "pty_edited", "vim Ctrl-X Ctrl-E flow failed");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_vi_mode_dollar_and_history_k() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);

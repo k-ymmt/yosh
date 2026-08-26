@@ -219,6 +219,8 @@ pub enum ViCmd {
     PutBefore,
     /// `u`
     Undo,
+    /// vim `Ctrl-R` — redo (`[count]` supported).
+    Redo,
     /// `U`
     UndoAll,
     /// `.` — count 0 means "no explicit count given".
@@ -458,8 +460,15 @@ impl ViEngine {
         let alt = mods.contains(KeyModifiers::ALT);
 
         // Control keys act regardless of pending state (and clear it):
-        // interrupt/EOF/redraw mirror their insert-mode meaning.
-        if ctrl && !alt {
+        // interrupt/EOF/redraw mirror their insert-mode meaning. A fast
+        // ESC before a control key arrives as Alt+Ctrl+key (terminal
+        // ESC-prefix encoding): the ESC cancels pending input first,
+        // then the control key acts fresh — same as typing them slowly.
+        if ctrl {
+            if alt {
+                self.count = None;
+                self.pending = Pending::None;
+            }
             // A pending vim Ctrl-X consumes the next control key.
             if self.pending == Pending::CtrlX {
                 self.count = None;
@@ -469,13 +478,18 @@ impl ViEngine {
                     _ => ViOutcome::Cmd(ViCmd::Bell, 1),
                 };
             }
-            self.count = None;
+            let n = self.take_count();
             self.pending = Pending::None;
             return match key.code {
                 KeyCode::Char('c') => ViOutcome::Cmd(ViCmd::Interrupt, 1),
                 KeyCode::Char('d') => ViOutcome::Cmd(ViCmd::Eof, 1),
                 KeyCode::Char('l') => ViOutcome::Cmd(ViCmd::ClearScreen, 1),
-                KeyCode::Char('r') => ViOutcome::Cmd(ViCmd::FuzzySearch, 1),
+                // vim: Ctrl-R is redo in Command mode (fuzzy history
+                // search stays on Ctrl-R in Insert mode).
+                KeyCode::Char('r') => match self.flavor {
+                    ViFlavor::Posix => ViOutcome::Cmd(ViCmd::FuzzySearch, 1),
+                    ViFlavor::Vim => ViOutcome::Cmd(ViCmd::Redo, n),
+                },
                 // Ctrl+J: raw-mode LF, treated as Enter (see Keymap).
                 KeyCode::Char('j') => ViOutcome::Cmd(ViCmd::Submit, 1),
                 // vim Ctrl-X: prefix for Ctrl-X Ctrl-E (edit buffer).
@@ -1744,6 +1758,210 @@ mod tests {
         assert_eq!(
             e.resolve_command_key(key(';')),
             ViOutcome::Cmd(ViCmd::Bell, 1)
+        );
+    }
+
+    // ── vim flavor resolution grammar ──────────────────────────────────
+
+    fn vim_engine() -> ViEngine {
+        let mut e = ViEngine::new();
+        e.mode = ViMode::Command;
+        e.flavor = ViFlavor::Vim;
+        e
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn vim_v_enters_visual_and_y_is_linewise() {
+        let mut e = vim_engine();
+        assert_eq!(
+            e.resolve_command_key(key('v')),
+            ViOutcome::Cmd(ViCmd::EnterVisual(VisualKind::Char), 1)
+        );
+        assert_eq!(
+            e.resolve_command_key(key('V')),
+            ViOutcome::Cmd(ViCmd::EnterVisual(VisualKind::Line), 1)
+        );
+        assert_eq!(
+            e.resolve_command_key(key('Y')),
+            ViOutcome::Cmd(ViCmd::OpLine(OpKind::Yank), 1)
+        );
+        // Count on v is ignored (§12).
+        assert_eq!(e.resolve_command_key(key('3')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('v')),
+            ViOutcome::Cmd(ViCmd::EnterVisual(VisualKind::Char), 1)
+        );
+    }
+
+    #[test]
+    fn vim_text_object_pending_grammar() {
+        let mut e = vim_engine();
+        // d i w with a count typed before the operator.
+        assert_eq!(e.resolve_command_key(key('2')), ViOutcome::Pending);
+        assert_eq!(e.resolve_command_key(key('d')), ViOutcome::Pending);
+        assert_eq!(e.resolve_command_key(key('a')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('w')),
+            ViOutcome::Cmd(
+                ViCmd::OpObject {
+                    op: OpKind::Delete,
+                    around: true,
+                    obj: 'w'
+                },
+                2
+            )
+        );
+        // ci" resolves with around=false.
+        assert_eq!(e.resolve_command_key(key('c')), ViOutcome::Pending);
+        assert_eq!(e.resolve_command_key(key('i')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('"')),
+            ViOutcome::Cmd(
+                ViCmd::OpObject {
+                    op: OpKind::Change,
+                    around: false,
+                    obj: '"'
+                },
+                1
+            )
+        );
+    }
+
+    #[test]
+    fn vim_g_prefix_grammar() {
+        let mut e = vim_engine();
+        assert_eq!(e.resolve_command_key(key('g')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('e')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::WordEndBack { big: false }), 1)
+        );
+        // Under an operator, with counts multiplying.
+        assert_eq!(e.resolve_command_key(key('2')), ViOutcome::Pending);
+        assert_eq!(e.resolve_command_key(key('d')), ViOutcome::Pending);
+        assert_eq!(e.resolve_command_key(key('g')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('E')),
+            ViOutcome::Cmd(
+                ViCmd::Op(OpKind::Delete, ViMotion::WordEndBack { big: true }),
+                2
+            )
+        );
+        // g + unknown → bell.
+        assert_eq!(e.resolve_command_key(key('g')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('z')),
+            ViOutcome::Cmd(ViCmd::Bell, 1)
+        );
+    }
+
+    #[test]
+    fn vim_percent_resolution() {
+        let mut e = vim_engine();
+        assert_eq!(
+            e.resolve_command_key(key('%')),
+            ViOutcome::Cmd(ViCmd::Move(ViMotion::MatchPair), 1)
+        );
+        assert_eq!(e.resolve_command_key(key('d')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('%')),
+            ViOutcome::Cmd(ViCmd::Op(OpKind::Delete, ViMotion::MatchPair), 1)
+        );
+        // POSIX flavor: % stays a bell.
+        let mut p = ViEngine::new();
+        p.mode = ViMode::Command;
+        assert_eq!(
+            p.resolve_command_key(key('%')),
+            ViOutcome::Cmd(ViCmd::Bell, 1)
+        );
+    }
+
+    #[test]
+    fn vim_ctrl_x_chord() {
+        let mut e = vim_engine();
+        assert_eq!(e.resolve_command_key(ctrl('x')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(ctrl('e')),
+            ViOutcome::Cmd(ViCmd::EditBuffer, 1)
+        );
+        // Broken chord bells.
+        assert_eq!(e.resolve_command_key(ctrl('x')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(key('q')),
+            ViOutcome::Cmd(ViCmd::Bell, 1)
+        );
+        // POSIX flavor: Ctrl-X is not a prefix.
+        let mut p = ViEngine::new();
+        p.mode = ViMode::Command;
+        assert_eq!(
+            p.resolve_command_key(ctrl('x')),
+            ViOutcome::Cmd(ViCmd::Bell, 1)
+        );
+    }
+
+    #[test]
+    fn vim_ctrl_r_is_redo_with_count() {
+        let mut e = vim_engine();
+        assert_eq!(e.resolve_command_key(key('3')), ViOutcome::Pending);
+        assert_eq!(
+            e.resolve_command_key(ctrl('r')),
+            ViOutcome::Cmd(ViCmd::Redo, 3)
+        );
+        // POSIX flavor keeps fuzzy history search.
+        let mut p = ViEngine::new();
+        p.mode = ViMode::Command;
+        assert_eq!(
+            p.resolve_command_key(ctrl('r')),
+            ViOutcome::Cmd(ViCmd::FuzzySearch, 1)
+        );
+    }
+
+    #[test]
+    fn vim_visual_resolution_basics() {
+        use VisualCmd as VC;
+        let mut e = vim_engine();
+        e.mode = ViMode::Visual {
+            kind: VisualKind::Char,
+            anchor: 0,
+        };
+        assert_eq!(
+            e.resolve_visual_key(key('d')),
+            VisualOutcome::Cmd(VC::Delete, 1)
+        );
+        assert_eq!(
+            e.resolve_visual_key(key('o')),
+            VisualOutcome::Cmd(VC::SwapEnds, 1)
+        );
+        // i + object.
+        assert_eq!(e.resolve_visual_key(key('i')), VisualOutcome::Pending);
+        assert_eq!(
+            e.resolve_visual_key(key('w')),
+            VisualOutcome::Cmd(
+                VC::TextObject {
+                    around: false,
+                    obj: 'w'
+                },
+                1
+            )
+        );
+        // Esc with a pending prefix cancels only the prefix.
+        assert_eq!(e.resolve_visual_key(key('f')), VisualOutcome::Pending);
+        assert_eq!(
+            e.resolve_visual_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            VisualOutcome::Pending
+        );
+        // Bare Esc exits.
+        assert_eq!(
+            e.resolve_visual_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            VisualOutcome::Cmd(VC::Exit, 1)
+        );
+        // j/k resolve to pure buffer line motion.
+        assert_eq!(
+            e.resolve_visual_key(key('k')),
+            VisualOutcome::Cmd(VC::LineUp, 1)
         );
     }
 }
