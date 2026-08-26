@@ -966,3 +966,234 @@ fn vim_ctrl_x_other_key_bells() {
     // Ctrl-X Ctrl-L bells (chord broken); x then deletes normally.
     assert_eq!(line.as_deref(), Some("ab"));
 }
+
+// ── Phase 4: text objects + motions ────────────────────────────────────
+
+#[test]
+fn vim_diw_deletes_inner_word() {
+    let line = vim_read(seq![
+        chars("one two three"),
+        [esc()],
+        chars("0wdiw"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("one  three"));
+}
+
+#[test]
+fn vim_daw_includes_trailing_whitespace() {
+    let line = vim_read(seq![
+        chars("one two three"),
+        [esc()],
+        chars("0wdaw"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("one three"));
+}
+
+#[test]
+fn vim_daw_on_last_word_takes_leading_whitespace() {
+    let line = vim_read(seq![chars("one two"), [esc()], chars("daw"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("one"));
+}
+
+#[test]
+fn vim_count_applies_to_aw() {
+    let line = vim_read(seq![
+        chars("one two three"),
+        [esc()],
+        chars("0d2aw"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("three"));
+}
+
+#[test]
+fn vim_ciw_changes_word() {
+    let line = vim_read(seq![
+        chars("one two"),
+        [esc()],
+        chars("0ciw"),
+        chars("1"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("1 two"));
+}
+
+#[test]
+fn vim_ci_quote_changes_quoted_string() {
+    let line = vim_read(seq![
+        chars("say \"hi there\" now"),
+        [esc()],
+        chars("07lci\""),
+        chars("bye"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("say \"bye\" now"));
+}
+
+#[test]
+fn vim_di_quote_before_first_quote_targets_next_span() {
+    let line = vim_read(seq![
+        chars("say 'hi'"),
+        [esc()],
+        chars("0di'"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("say ''"));
+}
+
+#[test]
+fn vim_ci_paren_on_empty_pair_enters_insert_inside() {
+    // Oracle-verified: ci(X on () yields (X).
+    let line = vim_read(seq![
+        chars("()"),
+        [esc()],
+        chars("0ci("),
+        chars("X"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("(X)"));
+}
+
+#[test]
+fn vim_di_paren_nested_resolves_enclosing() {
+    let line = vim_read(seq![
+        chars("f(a(b)c)"),
+        [esc()],
+        chars("02ldi("),
+        [enter()]
+    ]);
+    // Cursor on 'a' (index 2): the enclosing pair is the outer one.
+    assert_eq!(line.as_deref(), Some("f()"));
+}
+
+#[test]
+fn vim_da_bracket_multiline() {
+    let line = vim_read(seq![
+        chars("f[a"),
+        [alt_enter()],
+        chars("b]c"),
+        [esc()],
+        chars("kllda["),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("fc"));
+}
+
+#[test]
+fn vim_unknown_object_char_bells() {
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0diq"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("abc"));
+}
+
+#[test]
+fn vim_percent_jumps_to_match() {
+    // Oracle-verified: 0%x on `{ "}" }` deletes the final }, not the
+    // quoted one.
+    let line = vim_read(seq![
+        chars("{ \"}\" }"),
+        [esc()],
+        chars("0%x"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("{ \"}\" "));
+}
+
+#[test]
+fn vim_d_percent_is_inclusive() {
+    let line = vim_read(seq![chars("(ab) c"), [esc()], chars("0d%"), [enter()]]);
+    assert_eq!(line.as_deref(), Some(" c"));
+}
+
+#[test]
+fn vim_percent_without_pair_bells() {
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0%x"), [enter()]]);
+    // % bells; x still deletes at the unmoved cursor.
+    assert_eq!(line.as_deref(), Some("bc"));
+}
+
+#[test]
+fn vim_ge_moves_to_previous_word_end() {
+    let line = vim_read(seq![
+        chars("one two three"),
+        [esc()],
+        chars("0wwgex"),
+        [enter()]
+    ]);
+    // From 't' of three: ge lands on the 'o' of two; x deletes it.
+    assert_eq!(line.as_deref(), Some("one tw three"));
+}
+
+#[test]
+fn vim_dge_is_inclusive_backward() {
+    let line = vim_read(seq![chars("one two"), [esc()], chars("0wdge"), [enter()]]);
+    // From 't' of two (4): dge deletes 'e'(2)..='t'(4) → "on" + "wo".
+    assert_eq!(line.as_deref(), Some("onwo"));
+}
+
+#[test]
+fn vim_g_plus_other_key_bells() {
+    let line = vim_read(seq![chars("abc"), [esc()], chars("0gzx"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("bc"));
+}
+
+#[test]
+fn vim_dot_repeats_diw() {
+    let line = vim_read(seq![
+        chars("aa bb"),
+        [esc()],
+        chars("0diww."),
+        [enter()]
+    ]);
+    // diw deletes "aa"; w moves to "bb"; . repeats diw.
+    assert_eq!(line.as_deref(), Some(" "));
+}
+
+#[test]
+fn vim_visual_iw_selects_word_from_single_char() {
+    let line = vim_read(seq![
+        chars("one two"),
+        [esc()],
+        chars("0wviwd"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("one "));
+}
+
+#[test]
+fn vim_visual_iw_extends_larger_selection() {
+    // Oracle-verified: 0vwiwd on `one two three` leaves ` three`.
+    let line = vim_read(seq![
+        chars("one two three"),
+        [esc()],
+        chars("0vwiwd"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some(" three"));
+}
+
+#[test]
+fn vim_visual_percent_extends_selection() {
+    let line = vim_read(seq![chars("(ab) c"), [esc()], chars("0v%d"), [enter()]]);
+    assert_eq!(line.as_deref(), Some(" c"));
+}
+
+#[test]
+fn vim_visual_ge_extends_selection() {
+    let line = vim_read(seq![chars("one two"), [esc()], chars("0wvged"), [enter()]]);
+    assert_eq!(line.as_deref(), Some("onwo"));
+}
+
+#[test]
+fn vim_visual_empty_inner_object_bells_keeps_selection() {
+    // i" on "" leaves the selection unchanged with a bell; d then
+    // deletes the original one-char selection.
+    let line = vim_read(seq![
+        chars("x \"\" y"),
+        [esc()],
+        chars("0vi\"d"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some(" \"\" y"));
+}

@@ -119,6 +119,14 @@ pub enum ViMotion {
     /// `f c` / `F c` / `t c` / `T c` (and `;` / `,` after the engine
     /// substitutes the remembered kind/char)
     FindChar(FindKind, char),
+    /// vim `%` — jump to the matching `( ) [ ] { }`. Inclusive under an
+    /// operator; count ignored.
+    MatchPair,
+    /// vim `ge` / `gE` — end of the previous word / WORD. Inclusive
+    /// under an operator.
+    WordEndBack {
+        big: bool,
+    },
 }
 
 /// Operator commands that pair with a motion (`d` / `c` / `y`).
@@ -197,6 +205,12 @@ pub enum ViCmd {
     Op(OpKind, ViMotion),
     /// `dd` / `cc` (also `S`) / `yy` — operate on the whole logical line.
     OpLine(OpKind),
+    /// vim `d`/`c`/`y` + `i`/`a` + object char (`diw`, `ci"`, …).
+    OpObject {
+        op: OpKind,
+        around: bool,
+        obj: char,
+    },
     /// `s` — delete count chars and enter insert mode.
     SubstChar,
     /// `p`
@@ -293,6 +307,8 @@ pub enum VisualCmd {
     ReplaceChar(char),
     /// `~` — toggle case of the selection.
     ToggleCase,
+    /// `i`/`a` + object char — select or extend by the text object.
+    TextObject { around: bool, obj: char },
     /// `o` — swap cursor and anchor.
     SwapEnds,
     /// `v` / `V` — same kind exits, other kind switches (§2.3).
@@ -331,6 +347,13 @@ enum Pending {
     Op(OpKind, Option<u32>),
     /// vim `Ctrl-X` seen — waiting for `Ctrl-E` (edit buffer in editor).
     CtrlX,
+    /// vim operator + `i`/`a` seen — waiting for the object char.
+    TextObject { op: OpKind, around: bool },
+    /// vim `g` prefix — waiting for `e`/`E`; carries the operator
+    /// context for `dge`-style sequences (`None` in VISUAL mode).
+    G(Option<OpKind>),
+    /// vim VISUAL `i`/`a` seen — waiting for the object char.
+    VisualObject { around: bool },
 }
 
 /// The most recent buffer-modifying command, for `.`.
@@ -549,6 +572,34 @@ impl ViEngine {
                 self.count = None;
                 return ViOutcome::Cmd(ViCmd::Bell, 1);
             }
+            Pending::TextObject { op, around } => {
+                self.pending = Pending::None;
+                let n = self.take_count();
+                return ViOutcome::Cmd(ViCmd::OpObject { op, around, obj: ch }, n);
+            }
+            Pending::G(op) => {
+                self.pending = Pending::None;
+                let n = self.take_count();
+                let motion = match ch {
+                    'e' => ViMotion::WordEndBack { big: false },
+                    'E' => ViMotion::WordEndBack { big: true },
+                    // `g` + other → bell.
+                    _ => return ViOutcome::Cmd(ViCmd::Bell, 1),
+                };
+                return ViOutcome::Cmd(
+                    match op {
+                        Some(op) => ViCmd::Op(op, motion),
+                        None => ViCmd::Move(motion),
+                    },
+                    n,
+                );
+            }
+            Pending::VisualObject { .. } => {
+                // VISUAL-only pending cannot be active in Command mode.
+                self.pending = Pending::None;
+                self.count = None;
+                return ViOutcome::Cmd(ViCmd::Bell, 1);
+            }
             Pending::None => {}
         }
 
@@ -595,6 +646,18 @@ impl ViEngine {
         }
 
         let n = self.take_count();
+        if self.flavor == ViFlavor::Vim {
+            match ch {
+                // `%`: count ignored (Vim's [count]% is percent-of-file).
+                '%' => return ViOutcome::Cmd(ViCmd::Move(ViMotion::MatchPair), 1),
+                'g' => {
+                    self.pending = Pending::G(None);
+                    self.count = Some(n);
+                    return ViOutcome::Pending;
+                }
+                _ => {}
+            }
+        }
         if let Some(mk) = motion_key(ch) {
             return self.apply_motion_key(mk, n, None);
         }
@@ -678,6 +741,28 @@ impl ViEngine {
         // Doubled operator char = whole-line variant.
         if ch == op.cmd_char() {
             return ViOutcome::Cmd(ViCmd::OpLine(op), total);
+        }
+
+        if self.flavor == ViFlavor::Vim {
+            match ch {
+                // Text-object pending: `d`/`c`/`y` + `i`/`a`.
+                'i' | 'a' => {
+                    self.pending = Pending::TextObject {
+                        op,
+                        around: ch == 'a',
+                    };
+                    self.count = Some(total);
+                    return ViOutcome::Pending;
+                }
+                'g' => {
+                    self.pending = Pending::G(Some(op));
+                    self.count = Some(total);
+                    return ViOutcome::Pending;
+                }
+                // Inclusive motion; count ignored.
+                '%' => return ViOutcome::Cmd(ViCmd::Op(op, ViMotion::MatchPair), 1),
+                _ => {}
+            }
         }
 
         match motion_key(ch) {
@@ -799,6 +884,21 @@ impl ViEngine {
                 self.count = None;
                 return VisualOutcome::Cmd(VC::ReplaceChar(ch), 1);
             }
+            Pending::G(_) => {
+                self.pending = Pending::None;
+                let n = self.take_count();
+                let motion = match ch {
+                    'e' => ViMotion::WordEndBack { big: false },
+                    'E' => ViMotion::WordEndBack { big: true },
+                    _ => return VisualOutcome::Cmd(VC::Bell, 1),
+                };
+                return VisualOutcome::Cmd(VC::Move(motion), n);
+            }
+            Pending::VisualObject { around } => {
+                self.pending = Pending::None;
+                let n = self.take_count();
+                return VisualOutcome::Cmd(VC::TextObject { around, obj: ch }, n);
+            }
             Pending::None => {}
             // Command-mode-only pendings cannot be active in VISUAL.
             _ => {
@@ -839,6 +939,17 @@ impl ViEngine {
             // j/k are pure buffer motion in VISUAL (no history recall).
             'k' => VC::LineUp,
             'j' => VC::LineDown,
+            '%' => return VisualOutcome::Cmd(VC::Move(ViMotion::MatchPair), 1),
+            'g' => {
+                self.pending = Pending::G(None);
+                self.count = Some(n);
+                return VisualOutcome::Pending;
+            }
+            'i' | 'a' => {
+                self.pending = Pending::VisualObject { around: ch == 'a' };
+                self.count = Some(n);
+                return VisualOutcome::Pending;
+            }
             'd' | 'x' => VC::Delete,
             'c' | 's' => VC::Change,
             'y' => VC::Yank,
@@ -910,7 +1021,7 @@ pub fn is_blank(c: char) -> bool {
 /// vi character class: 0 = blank (incl. newline), 1 = word char
 /// (alphanumeric or underscore), 2 = other punctuation. Bigwords
 /// collapse classes 1 and 2.
-fn char_class(c: char, big: bool) -> u8 {
+pub(crate) fn char_class(c: char, big: bool) -> u8 {
     if is_blank(c) || c == '\n' {
         0
     } else if big || c.is_alphanumeric() || c == '_' {
@@ -1112,6 +1223,22 @@ pub fn motion_move(buf: &[char], pos: usize, motion: ViMotion, count: u32) -> Op
                 FindKind::ToBack => Some(idx + 1),
             }
         }
+        ViMotion::MatchPair => super::vim::match_pair_target(buf, pos),
+        ViMotion::WordEndBack { big } => {
+            let mut p = pos;
+            for step in 0..count {
+                match super::vim::prev_word_end(buf, p, big) {
+                    Some(np) => p = np,
+                    None => {
+                        if step == 0 {
+                            return None;
+                        }
+                        break;
+                    }
+                }
+            }
+            Some(p)
+        }
     }
 }
 
@@ -1231,6 +1358,27 @@ pub fn motion_range(
                 FindKind::FindBack => Some((idx, pos)),
                 FindKind::ToBack => Some((idx + 1, pos)),
             }
+        }
+        // Inclusive in both directions (Vim semantics).
+        ViMotion::MatchPair => {
+            let t = super::vim::match_pair_target(buf, pos)?;
+            Some((pos.min(t), pos.max(t) + 1))
+        }
+        // Inclusive backward motion: `dge` deletes through the cursor
+        // character.
+        ViMotion::WordEndBack { big } => {
+            let mut p = pos;
+            let mut moved = false;
+            for _ in 0..count {
+                match super::vim::prev_word_end(buf, p, big) {
+                    Some(np) => {
+                        p = np;
+                        moved = true;
+                    }
+                    None => break,
+                }
+            }
+            if moved { Some((p, pos + 1)) } else { None }
         }
     }
 }

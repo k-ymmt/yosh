@@ -1948,6 +1948,10 @@ impl LineEditor {
                 | ViCmd::PutBefore
                 | ViCmd::Op(OpKind::Delete | OpKind::Change, _)
                 | ViCmd::OpLine(OpKind::Delete | OpKind::Change)
+                | ViCmd::OpObject {
+                    op: OpKind::Delete | OpKind::Change,
+                    ..
+                }
                 | ViCmd::InsertPrevBigword
         )
     }
@@ -2149,6 +2153,45 @@ impl LineEditor {
                         KeyAction::Continue
                     }
                     _ => self.bell(),
+                }
+            }
+            ViCmd::OpObject { op, around, obj } => {
+                match vim::text_object_range(&self.buf, self.pos, obj, around, count) {
+                    None => self.bell(),
+                    Some((s, e)) if s == e => {
+                        // Empty inner object: d/y are bell-free no-ops;
+                        // c enters Insert inside the pair
+                        // (oracle-verified: ci( on () yields (X)).
+                        if op == OpKind::Change {
+                            self.undo.save(&self.buf, self.pos);
+                            self.pos = s;
+                            self.vi.mode = ViMode::Insert;
+                        }
+                        KeyAction::Continue
+                    }
+                    Some((s, e)) => {
+                        let text: String = self.buf[s..e].iter().collect();
+                        // Text-object deletes/yanks are charwise (§6.2).
+                        self.record_kill(&text, false, RegisterKind::Charwise);
+                        match op {
+                            OpKind::Yank => {
+                                // Vim: the cursor moves to the object start.
+                                self.pos = s;
+                            }
+                            OpKind::Delete | OpKind::Change => {
+                                self.undo.save(&self.buf, self.pos);
+                                self.buf.drain(s..e);
+                                self.pos = s;
+                                self.invalidate_width_cache();
+                                if op == OpKind::Change {
+                                    self.vi.mode = ViMode::Insert;
+                                } else {
+                                    self.clamp_vi_command_pos();
+                                }
+                            }
+                        }
+                        KeyAction::Continue
+                    }
                 }
             }
             ViCmd::OpLine(op) => {
@@ -2781,6 +2824,28 @@ impl LineEditor {
                 }
                 self.pos = s;
                 self.vim_exit_visual();
+                KeyAction::Continue
+            }
+            VisualCmd::TextObject { around, obj } => {
+                match vim::text_object_range(&self.buf, self.pos, obj, around, count) {
+                    Some((s, e)) if s < e => {
+                        if anchor == self.pos {
+                            // Single-char selection: select the object.
+                            self.vi.mode = ViMode::Visual { kind, anchor: s };
+                            self.pos = e - 1;
+                        } else if self.pos >= anchor {
+                            // Larger forward selection: extend its end
+                            // (oracle-verified: 0vwiwd on `one two
+                            // three` leaves ` three`).
+                            self.pos = self.pos.max(e - 1);
+                        } else {
+                            self.pos = self.pos.min(s);
+                        }
+                    }
+                    // No object / empty inner object: bell, selection
+                    // unchanged.
+                    _ => self.pending_bell = true,
+                }
                 KeyAction::Continue
             }
             VisualCmd::SwapEnds => {
