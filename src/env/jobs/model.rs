@@ -46,6 +46,9 @@ pub struct Job {
     pub id: JobId,
     pub pgid: nix::unistd::Pid,
     pub pids: Vec<nix::unistd::Pid>,
+    /// Per-member statuses, parallel to `pids`. Source of truth for
+    /// `status`, which caches the aggregate (see `aggregate_status`).
+    pub(super) member_statuses: Vec<JobStatus>,
     pub command: String,
     pub status: JobStatus,
     pub notified: bool,
@@ -57,6 +60,78 @@ pub struct Job {
 }
 
 impl Job {
+    /// This member pid's own tracked status, or `None` if the pid is not
+    /// a member of this job.
+    pub fn member_status(&self, pid: nix::unistd::Pid) -> Option<JobStatus> {
+        self.pids
+            .iter()
+            .position(|&p| p == pid)
+            .map(|i| self.member_statuses[i])
+    }
+
+    /// Set one member's status. Returns true when the pid is a member.
+    /// Callers must recompute the aggregate (`aggregate_status`) after.
+    pub(crate) fn set_member_status(&mut self, pid: nix::unistd::Pid, status: JobStatus) -> bool {
+        match self.pids.iter().position(|&p| p == pid) {
+            Some(i) => {
+                self.member_statuses[i] = status;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Compute the job's aggregate status from its members:
+    /// - any member Running → Running (bash: a job counts as stopped
+    ///   only when every process is stopped or dead)
+    /// - else any member Stopped → Stopped (signal of the last stopped
+    ///   member in pipeline order)
+    /// - else all terminal → the LAST member's terminal status (POSIX:
+    ///   a pipeline's exit status is its last element's)
+    pub(crate) fn aggregate_status(&self) -> JobStatus {
+        if self
+            .member_statuses
+            .iter()
+            .any(|s| matches!(s, JobStatus::Running))
+        {
+            return JobStatus::Running;
+        }
+        if let Some(sig) = self.member_statuses.iter().rev().find_map(|s| match s {
+            JobStatus::Stopped(sig) => Some(*sig),
+            _ => None,
+        }) {
+            return JobStatus::Stopped(sig);
+        }
+        self.member_statuses
+            .last()
+            .copied()
+            .unwrap_or(JobStatus::Running)
+    }
+
+    /// Resume every stopped member (Stopped → Running) and refresh the
+    /// aggregate. Used by `fg`/`bg`, which SIGCONT the whole process
+    /// group; already-terminal members keep their statuses.
+    pub(crate) fn resume_stopped_members(&mut self) {
+        for s in &mut self.member_statuses {
+            if matches!(s, JobStatus::Stopped(_)) {
+                *s = JobStatus::Running;
+            }
+        }
+        self.status = self.aggregate_status();
+    }
+
+    /// Mark every still-running member Stopped(sig) and refresh the
+    /// aggregate. Used when a foreground wait observes a stop: the
+    /// terminal delivered the stop signal to the whole process group,
+    /// so every live member received it.
+    pub(crate) fn stop_live_members(&mut self, sig: i32) {
+        for s in &mut self.member_statuses {
+            if matches!(s, JobStatus::Running) {
+                *s = JobStatus::Stopped(sig);
+            }
+        }
+        self.status = self.aggregate_status();
+    }
     /// Termios snapshot captured the last time this job stopped
     /// (SIGTSTP/SIGSTOP), or `None` if it has never stopped or capture was
     /// unavailable (non-interactive/non-monitor or stdin not a TTY).

@@ -61,34 +61,6 @@
       wait, so this is bash-specific consumption. Revisit only if a
       real script depends on bash's 127
       (`src/exec/job_control.rs::builtin_wait`).
-- [ ] Bare `wait` with only Stopped jobs returns 0 immediately and
-      clears the reaped-status map prematurely (a remembered `wait $q`
-      then reports 127 although the bare wait never waited for the
-      stopped job to terminate). Wrap-up review 2026-08-25 round 1
-      minor finding (`src/exec/job_control.rs::builtin_wait`).
-      2026-09-02 addendum: more reachable since async exec-in-place
-      made background-external stops visible — a job that stops and is
-      later SIGCONT'd is also skipped by an operandless `wait` running
-      while it is Stopped (dash waits for its termination; wrap-up
-      review 2026-09-02 round 1 re-confirmation).
-- [ ] Reaper has no WCONTINUED handling — a background job stopped and
-      then resumed by an external `kill -CONT` stays displayed as
-      Stopped in `jobs` even though the process is running again
-      (repro: `sh -c 'kill -STOP $$; echo R; sleep 2' &` then
-      `kill -CONT $!` — second `jobs` still says Stopped(SIGSTOP)).
-      Newly observable since async exec-in-place made direct-child
-      stops visible; fix wants WaitPidFlag::WCONTINUED in
-      `reap_zombies`/`wait_for_foreground_job` plus a
-      Stopped→Running transition. Wrap-up review 2026-09-02 round 1
-      minor finding (`src/exec/control.rs::reap_zombies`,
-      `src/env/jobs/`).
-- [ ] The reaped-status map records the job's single aggregate status
-      for every member pid of a multi-pid job, so `wait <member-pid>`
-      after cleanup reports the aggregate rather than that member's
-      own status. Same root cause as the existing
-      `JobTable::update_status` per-process status tracking item
-      (Code Quality section); fixing that fixes this
-      (`src/env/jobs/notification.rs::cleanup_notified`).
 - [ ] `reset_for_subshell` keeps Running (and Stopped) parent jobs in
       the forked child's table so `$(jobs)` matches bash's special
       case, but plain `(jobs)` therefore also lists them where bash
@@ -107,19 +79,20 @@
       code when a user targets one. Wrap-up review 2026-08-25 round 3
       residual (`src/signal.rs`, `src/env/jobs/terminal.rs`,
       `src/exec/redirect.rs`).
-- [ ] Async wrapper residuals after the 2026-09-01 exec-in-place fix —
-      `cmd &` with a single external simple command now execs directly
-      in the async child (no grandchild; stops visible to `jobs`/`bg`,
-      `$PPID` correct — see
-      `docs/superpowers/specs/2026-09-01-async-exec-in-place-design.md`),
-      but other async payload shapes (pipelines, `a && b &`, compounds,
-      `command cmd &`, builtins/functions with nested externals) still
+- [ ] Async wrapper residuals after the 2026-09-01 exec-in-place fix
+      and the 2026-09-02 async-pipeline direct fork — `cmd &` (single
+      external simple command) execs in the async child, and `a | b &`
+      now forks its members directly from the shell with per-member
+      status tracking (stops visible, `$!` = last member; see
+      `docs/superpowers/specs/2026-09-02-job-member-status-async-pipeline-design.md`),
+      but the remaining async payload shapes (`a && b &`, `! p &`,
+      compounds, `command cmd &`, builtins/functions with nested
+      externals, and compound members INSIDE an async pipeline) still
       run in a wrapper subshell whose grandchild stops remain invisible
-      to job control and whose exec'd commands still see the wrapper as
-      `$PPID`. Extending coverage wants per-member pid tracking in the
-      job table (pipelines) or pgrp-wide WUNTRACED status probing.
-      Revisit if real scripts hit the remaining shapes
-      (`src/exec/control.rs::exec_async`, `src/env/jobs/`).
+      to job control and whose exec'd commands see the wrapper as
+      `$PPID`. Revisit if real scripts hit the remaining shapes
+      (`src/exec/control.rs::exec_async`,
+      `src/exec/pipeline.rs::exec_async_pipeline`).
       DEVIATION note (2026-09-01, recorded in the spec): plugins'
       post_exec hook does not fire for an exec-in-place background
       external — pre-optimization it ran inside the discarded forked
@@ -137,7 +110,17 @@
       `src/exec/job_control.rs`, `tests/pty_interactive.rs`).
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
 - [ ] `suspend` builtin — not implemented
-- [ ] Pipeline command display in `jobs` output uses placeholder format — improve to reconstruct shell syntax
+- [ ] Pipeline command display in `jobs` falls back to "(pipeline)" /
+      "(background)" when any member has non-literal words (parameters,
+      command substitutions) — literal pipelines render fully since
+      2026-09-02 (`src/exec/mod.rs::preview_pipeline`); rendering the
+      dynamic cases needs Word→source reconstruction (same helper the
+      `set -x` structural-headers item wants)
+- [ ] `jobs -l` prints one line with the pgid for a multi-pid pipeline
+      job; bash lists every member pid on its own continuation line
+      (empirical bash 3.2, 2026-09-02). Cosmetic; per-member statuses
+      are tracked since 2026-09-02 so only the formatter needs work
+      (`src/env/jobs/format.rs::format_job_long`)
 - [ ] Task 7 (`fg` job-termios replay) has no direct PTY assertion — Task 9/10 verify end-state only (Task 6 shell-restore). On macOS/BSD, `/bin/cat`'s `read()` inherits `SIG_DFL` for SIGCONT and BSD does not auto-restart `read()` without `SA_RESTART`, so cat exits with EINTR immediately after `fg`. Linux auto-restarts `read()` on terminals for `SIG_DFL` signals, masking this asymmetry. Revisit by using a sleep/read-loop helper that retries on EINTR, or by reading `tcgetattr` directly via the PTY master between `fg\r` and cat's exit (the diagnosis details currently live in the `DEVIATION` comment of `test_pty_termios_preserved_across_suspend_fg` in `tests/pty_interactive.rs`).
 - [ ] `JobTable.shell_tmodes` is a one-time startup snapshot — `stty` invoked at the interactive prompt modifies the real terminal but not the cached snapshot, so the post-foreground shell-restore overwrites user-applied `stty` changes (`src/interactive/mod.rs` + `src/env/jobs/mod.rs`). Matches glibc manual behavior; revisit if user reports surface.
 
@@ -469,19 +452,6 @@ the items below are deferred work, not policy:
 - [ ] `test_helpers::load_plugin_with_caps` no-allowlist ergonomics — nearly all callers in `tests/plugin.rs` (29 as of 2026-08-25) pass `&[]` for the new `allowed_commands` parameter introduced in T6. Consider a no-allowlist convenience method or a `Default` impl so common test setups are less verbose. Code-review follow-up from 2026-04-29 plugin commands:exec branch (`src/plugin/mod.rs`).
 ## Future: Code Quality Improvements
 
-- [ ] Serialize fd-manipulating unit tests to kill the
-      `redirect_only_returns_zero` flake — the `redirect_only_*` tests
-      (`src/exec/simple.rs::tests`) run `exec_program` on redirect-only
-      commands, which dup2-swap and restore the PROCESS-shared fd 1 with
-      save=true; under the parallel libtest harness two such tests can
-      interleave mid-swap and fail with `dup: Bad file descriptor`
-      (observed 2026-07-13 and 2026-09-01, always passes in isolation —
-      production is unaffected, the real shell is single-threaded). Fix:
-      a `static STDIO_LOCK: Mutex<()>` in the test module, locked at the
-      top of every test that redirects the shell process's own stdio
-      (audit for other `exec_program`-with-redirects unit tests while at
-      it); prefer the std Mutex over adding a serial_test dev-dependency.
-
 - [ ] Self-pipe fork race in remaining fork sites — a forked child inherits
       the parent's self-pipe handler and the shared pipe until
       `reset_shell_child_signals` runs (which since 2026-08-26 also swaps in
@@ -489,14 +459,15 @@ the items below are deferred work, not policy:
       window is written into the SHARED pipe and later misread by the parent
       as its own (parent then exits via `handle_default_signal`). `exec_async`
       (`src/exec/control.rs`) now blocks all signals across the fork and
-      restores the mask on both sides after dispositions are set; the same
-      latent race exists in `exec_subshell` (`src/exec/compound.rs`), the
-      pipeline child forks (`src/exec/pipeline.rs`), and command
+      restores the mask on both sides after dispositions are set (as does
+      the async-pipeline fork loop `exec_async_pipeline`, 2026-09-02); the
+      same latent race exists in `exec_subshell` (`src/exec/compound.rs`),
+      the foreground pipeline child forks
+      (`src/exec/pipeline.rs::exec_multi_pipeline`), and command
       substitution (`src/expand/command_sub.rs`). Apply the same
       block/restore pattern there if a repro surfaces (2026-07-14: observed
       only for async lists via `kill -TERM $!` racing the child's reset).
 
-- [ ] `JobTable::update_status` per-process status tracking — currently overwrites the overall `job.status` on each child exit; if per-process status tracking (e.g., `$PIPESTATUS` array) is needed in the future, the `Job` struct will need a `Vec<(Pid, JobStatus)>` field instead of a single `status` (`src/env/jobs/mod.rs`)
 - [ ] `exec_regular_builtin` "internal error" guards for `wait` / `fg`/`bg`/`jobs` / `command` are growing — consider factoring "Executor-requiring builtins" into an explicit classification or dispatch table instead of per-name guards (`src/builtin/mod.rs`)
 - [ ] `highlight_scanner` `KEYWORDS` duplicates POSIX §2.4 list — `src/interactive/highlight_scanner/helpers.rs` defines its own copy of the 16 reserved words, separate from the canonical `crate::lexer::reserved::RESERVED_WORDS`. Consolidate once the contextual subsets (`COMMAND_POSITION_KEYWORDS` includes `"time"`, command-position restoration logic) are re-expressed in terms of the canonical list (`src/interactive/highlight_scanner/helpers.rs`)
 - [ ] `try_parse_assignment` `other.clone()` deep-copies CommandSub — the non-Literal branch clones each remaining `WordPart`, which for `$(...)` substitutions clones the embedded `Program`. Same inefficiency as the prior `extend_from_slice`, so not a regression, but consider consuming `Word` (take ownership) or draining `word.parts` to avoid the copy (`src/parser/simple.rs`).

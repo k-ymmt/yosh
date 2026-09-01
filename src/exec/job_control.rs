@@ -80,12 +80,18 @@ impl Executor {
         // interruption still overrides this via its early return.
         let no_operands = args.is_empty();
         let target_pids: Vec<Pid> = if args.is_empty() {
+            // POSIX: wait until all known process IDs TERMINATE — a
+            // Stopped job has not terminated, so it must be waited for
+            // too (dash agrees, blocking until the job is continued and
+            // exits; previously Stopped jobs were skipped and the wait
+            // returned 0 immediately). All member pids, not just the
+            // leader: a pipeline job terminates when every member does.
             self.env
                 .process
                 .jobs
                 .all_jobs()
-                .filter(|j| j.status == JobStatus::Running)
-                .map(|j| j.pgid)
+                .filter(|j| matches!(j.status, JobStatus::Running | JobStatus::Stopped(_)))
+                .flat_map(|j| j.pids.iter().copied())
                 .collect()
         } else {
             let mut pids = Vec::new();
@@ -94,7 +100,12 @@ impl Executor {
                     match self.env.process.jobs.resolve_job_spec(arg) {
                         Ok(job_id) => {
                             if let Some(job) = self.env.process.jobs.get(job_id) {
-                                pids.push(job.pgid);
+                                // All member pids in pipeline order: bash
+                                // waits for the whole job, and the final
+                                // reported status is then the LAST
+                                // member's — `wait %1` on `a | b` returns
+                                // b's status (empirical 2026-09-02).
+                                pids.extend(job.pids.iter().copied());
                             } else {
                                 return Err(ShellError::runtime(
                                     RuntimeErrorKind::CommandNotFound,
@@ -152,14 +163,16 @@ impl Executor {
             // consulted only when the pid is absent from the table —
             // matched against every member pid, not just the leader, so
             // a recycled pid backing any live process cannot resolve to
-            // a stale status.
+            // a stale status. The MEMBER's own tracked status is what
+            // gets reported, not the job aggregate: `wait <member-pid>`
+            // of a pipeline job must return that process's status.
             let table_status = self
                 .env
                 .process
                 .jobs
                 .all_jobs()
                 .find(|j| j.pids.contains(pid))
-                .map(|j| j.status);
+                .and_then(|j| j.member_status(*pid));
             match table_status {
                 Some(JobStatus::Done(code)) => {
                     last_status = code;
@@ -206,8 +219,7 @@ impl Executor {
                     // trap action must see that status, not the last
                     // signal's (wrap-up review 2026-09-02 round 2
                     // finding).
-                    let interrupt_sig =
-                        signals.iter().find(|&&s| s != libc::SIGCHLD).copied();
+                    let interrupt_sig = signals.iter().find(|&&s| s != libc::SIGCHLD).copied();
                     // POSIX XCU wait: interrupted by a signal for which
                     // a trap is set, wait returns 128+sig — and bash
                     // runs the trap only AFTER wait has returned, so
@@ -269,7 +281,8 @@ impl Executor {
                             .jobs
                             .all_jobs()
                             .find(|j| j.pids.contains(pid))
-                            .and_then(|j| match j.status {
+                            .and_then(|j| j.member_status(*pid))
+                            .and_then(|s| match s {
                                 JobStatus::Done(code) => Some(code),
                                 JobStatus::Terminated(sig) => Some(128 + sig),
                                 _ => None,
@@ -427,12 +440,11 @@ impl Executor {
         // Print the command being foregrounded
         eprintln!("{}", command);
 
-        // Update job state
+        // Update job state — the SIGCONT below resumes the whole
+        // process group, so every stopped member becomes Running.
         if let Some(job) = self.env.process.jobs.get_mut(job_id) {
             job.foreground = true;
-            if matches!(job.status, JobStatus::Stopped(_)) {
-                job.status = JobStatus::Running;
-            }
+            job.resume_stopped_members();
         }
 
         // Restore the job's saved termios (if any) before handing the
@@ -536,9 +548,10 @@ impl Executor {
             job.pgid
         };
 
-        // Update job state
+        // Update job state — the SIGCONT below resumes the whole
+        // process group, so every stopped member becomes Running.
         if let Some(job) = self.env.process.jobs.get_mut(job_id) {
-            job.status = JobStatus::Running;
+            job.resume_stopped_members();
             job.foreground = false;
             eprintln!("[{}]+ {} &", job.id, job.command);
         }
@@ -584,7 +597,10 @@ impl Executor {
         captured: Option<nix::sys::termios::Termios>,
     ) {
         if let Some(job) = self.env.process.jobs.get_mut(job_id) {
-            job.status = JobStatus::Stopped(sig);
+            // The terminal delivered the stop signal to the whole
+            // foreground process group, so every still-running member
+            // received it; already-exited members keep their statuses.
+            job.stop_live_members(sig);
             job.notified = false;
             job.foreground = false;
             job.set_saved_tmodes(captured);
@@ -902,6 +918,75 @@ mod tests {
             .builtin_wait(&["88891".to_string()])
             .expect("wait on a member pid of a Done job must not error");
         assert_eq!(status, 4);
+    }
+
+    #[test]
+    fn wait_reports_each_member_own_status() {
+        use crate::env::jobs::JobStatus;
+        use nix::unistd::Pid;
+        let mut exec = Executor::new("yosh", vec![]);
+        let leader = Pid::from_raw(88900);
+        let member = Pid::from_raw(88901);
+        exec.env
+            .process
+            .jobs
+            .add_job(leader, vec![leader, member], "a | b", false);
+        exec.env
+            .process
+            .jobs
+            .update_status(leader, JobStatus::Done(2));
+        exec.env
+            .process
+            .jobs
+            .update_status(member, JobStatus::Done(6));
+
+        // Per-member tracking: each pid reports its OWN status, not the
+        // job aggregate (previously the last update overwrote a single
+        // shared status field).
+        let status = exec
+            .builtin_wait(&["88900".to_string()])
+            .expect("wait on the leader must not error");
+        assert_eq!(status, 2);
+        let status = exec
+            .builtin_wait(&["88901".to_string()])
+            .expect("wait on the member must not error");
+        assert_eq!(status, 6);
+    }
+
+    #[test]
+    fn wait_reports_member_own_status_after_cleanup() {
+        use crate::env::jobs::JobStatus;
+        use nix::unistd::Pid;
+        let mut exec = Executor::new("yosh", vec![]);
+        let leader = Pid::from_raw(88910);
+        let member = Pid::from_raw(88911);
+        let id = exec
+            .env
+            .process
+            .jobs
+            .add_job(leader, vec![leader, member], "a | b", false);
+        exec.env
+            .process
+            .jobs
+            .update_status(leader, JobStatus::Done(2));
+        exec.env
+            .process
+            .jobs
+            .update_status(member, JobStatus::Done(6));
+        exec.env.process.jobs.mark_notified(id);
+        exec.env.process.jobs.cleanup_notified();
+        assert!(exec.env.process.jobs.get(id).is_none());
+
+        // The reaped-status map now remembers each member's OWN status
+        // (previously the aggregate was recorded for every member pid).
+        let status = exec
+            .builtin_wait(&["88910".to_string()])
+            .expect("wait on the remembered leader must not error");
+        assert_eq!(status, 2);
+        let status = exec
+            .builtin_wait(&["88911".to_string()])
+            .expect("wait on the remembered member must not error");
+        assert_eq!(status, 6);
     }
 
     #[test]

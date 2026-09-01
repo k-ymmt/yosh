@@ -823,7 +823,11 @@ fn test_pty_subshell_external_keeps_terminal() {
     wait_for_prompt(&mut s);
 
     s.send("echo still_alive\r").unwrap();
-    expect_output(&mut s, "still_alive", "REPL responsive after subshell external");
+    expect_output(
+        &mut s,
+        "still_alive",
+        "REPL responsive after subshell external",
+    );
 
     exit_shell(&mut s);
 }
@@ -841,7 +845,11 @@ fn test_pty_command_sub_external_keeps_terminal() {
     wait_for_prompt(&mut s);
 
     s.send("echo still_alive\r").unwrap();
-    expect_output(&mut s, "still_alive", "REPL responsive after command-sub external");
+    expect_output(
+        &mut s,
+        "still_alive",
+        "REPL responsive after command-sub external",
+    );
 
     exit_shell(&mut s);
 }
@@ -1976,4 +1984,65 @@ fn tab_spec_completion_offers_flags_on_empty_word() {
         "spec completion did not offer flag on empty word",
     );
     exit_shell(&mut session);
+}
+
+#[test]
+fn test_pty_async_pipeline_member_stop_visible_in_jobs() {
+    // `cat | sh &`: the members are forked directly from the shell
+    // (2026-09-02 async pipeline direct fork) and the head cat — exec'd
+    // in place — reads the tty from the background pgrp and stops on
+    // SIGTTIN while the other member exits. With per-member tracking
+    // the job aggregate becomes Stopped once no member is running
+    // (pre-fix the wrapper subshell stayed Running forever and the
+    // command displayed as "(background)").
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("/bin/cat | /bin/sh -c 'exit 0' &\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    // Give the head member time to exec and hit SIGTTIN, and the tail
+    // member time to exit; the next prompt's reap records both.
+    s.send("sleep 0.5\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("jobs\r").unwrap();
+    s.expect(Regex(r"Stopped\(SIGTTIN\)\s+/bin/cat \| /bin/sh"))
+        .expect("stopped pipeline head must show Stopped with the full pipeline command");
+    wait_for_prompt(&mut s);
+
+    s.send("kill -9 %1\r").unwrap();
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_externally_continued_job_shows_running_again() {
+    // Regression (TODO 2026-09-02): the reaper had no WCONTINUED
+    // handling, so a background job stopped and then resumed by an
+    // external `kill -CONT` stayed displayed Stopped in `jobs` even
+    // though the process was running again.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("/bin/sh -c 'kill -STOP $$; sleep 5' &\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("sleep 0.3\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("jobs\r").unwrap();
+    s.expect("Stopped")
+        .expect("self-stopped background job must show Stopped");
+    wait_for_prompt(&mut s);
+
+    s.send("kill -CONT %1\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("sleep 0.2\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("jobs\r").unwrap();
+    s.expect(Regex(r"Running\s+/bin/sh"))
+        .expect("externally continued job must show Running again");
+    wait_for_prompt(&mut s);
+
+    s.send("kill -9 %1\r").unwrap();
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
 }

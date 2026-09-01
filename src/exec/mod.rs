@@ -52,37 +52,50 @@ pub(crate) fn shell_exit(status: i32) -> ! {
     std::process::exit(status);
 }
 
+/// Reconstruct a human-readable preview of a whole pipeline for `jobs`
+/// output: every member must be a simple command whose words are purely
+/// literal; members are joined with " | ". Returns `None` when any member
+/// is a compound command or contains unexpanded parameters / command
+/// substitutions (rendering those would require expansion).
+fn preview_pipeline(pipeline: &crate::parser::ast::Pipeline) -> Option<String> {
+    let mut members = Vec::with_capacity(pipeline.commands.len());
+    for cmd in &pipeline.commands {
+        let Command::Simple(sc) = cmd else {
+            return None;
+        };
+        if sc.words.is_empty() {
+            return None;
+        }
+        let mut words = Vec::with_capacity(sc.words.len());
+        for w in &sc.words {
+            let mut s = String::new();
+            for part in &w.parts {
+                match part {
+                    WordPart::Literal(lit) => s.push_str(lit),
+                    WordPart::EscapedLiteral(lit) => s.push_str(lit),
+                    WordPart::SingleQuoted(lit) => {
+                        s.push('\'');
+                        s.push_str(lit);
+                        s.push('\'');
+                    }
+                    _ => return None,
+                }
+            }
+            words.push(s);
+        }
+        members.push(words.join(" "));
+    }
+    Some(members.join(" | "))
+}
+
 /// Reconstruct a short, human-readable preview of an AndOrList for display in
 /// `jobs` output and for `%string` / `%?string` job-spec matching against
-/// `Job.command`. Uses the literal words of the first simple command when the
-/// pipeline starts with one and every word is purely literal; falls back to
+/// `Job.command`. Uses the literal rendering of the first pipeline when every
+/// member is a simple command with purely literal words; falls back to
 /// "(background)" otherwise (compound commands, unexpanded parameters, command
-/// substitutions in the command word, etc.).
+/// substitutions, etc.).
 fn preview_command(and_or: &AndOrList) -> String {
-    let Some(Command::Simple(sc)) = and_or.first.commands.first() else {
-        return "(background)".to_string();
-    };
-    if sc.words.is_empty() {
-        return "(background)".to_string();
-    }
-    let mut words = Vec::with_capacity(sc.words.len());
-    for w in &sc.words {
-        let mut s = String::new();
-        for part in &w.parts {
-            match part {
-                WordPart::Literal(lit) => s.push_str(lit),
-                WordPart::EscapedLiteral(lit) => s.push_str(lit),
-                WordPart::SingleQuoted(lit) => {
-                    s.push('\'');
-                    s.push_str(lit);
-                    s.push('\'');
-                }
-                _ => return "(background)".to_string(),
-            }
-        }
-        words.push(s);
-    }
-    words.join(" ")
+    preview_pipeline(&and_or.first).unwrap_or_else(|| "(background)".to_string())
 }
 
 pub struct Executor {
@@ -514,8 +527,19 @@ mod tests {
     }
 
     #[test]
-    fn preview_command_pipeline_uses_first_simple_command() {
-        assert_eq!(preview_command(&first_and_or("sleep 5 | cat")), "sleep 5");
+    fn preview_command_pipeline_renders_all_members() {
+        assert_eq!(
+            preview_command(&first_and_or("sleep 5 | cat")),
+            "sleep 5 | cat"
+        );
+    }
+
+    #[test]
+    fn preview_command_pipeline_with_unpreviewable_member_falls_back() {
+        assert_eq!(
+            preview_command(&first_and_or("echo hi | grep $x")),
+            "(background)"
+        );
     }
 
     #[test]

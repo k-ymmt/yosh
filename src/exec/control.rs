@@ -163,7 +163,15 @@ impl Executor {
         loop {
             match nix::sys::wait::waitpid(
                 nix::unistd::Pid::from_raw(-1),
-                Some(nix::sys::wait::WaitPidFlag::WNOHANG | nix::sys::wait::WaitPidFlag::WUNTRACED),
+                Some(
+                    nix::sys::wait::WaitPidFlag::WNOHANG
+                        | nix::sys::wait::WaitPidFlag::WUNTRACED
+                        // A background job stopped and then resumed by an
+                        // external `kill -CONT` must transition back to
+                        // Running in `jobs` output (previously it stayed
+                        // displayed Stopped forever).
+                        | nix::sys::wait::WaitPidFlag::WCONTINUED,
+                ),
             ) {
                 Ok(nix::sys::wait::WaitStatus::Exited(pid, code)) => {
                     self.env
@@ -183,7 +191,14 @@ impl Executor {
                         .jobs
                         .update_status(pid, JobStatus::Stopped(sig as i32));
                 }
+                Ok(nix::sys::wait::WaitStatus::Continued(pid)) => {
+                    self.env.process.jobs.update_status(pid, JobStatus::Running);
+                }
                 Ok(nix::sys::wait::WaitStatus::StillAlive) => break,
+                // Exited/Signaled/Stopped/Continued/StillAlive is
+                // exhaustive on macOS (Ptrace* variants are Linux-only);
+                // keep a catch-all for cross-platform builds.
+                #[allow(unreachable_patterns)]
                 Ok(_) => continue,
                 Err(_) => break,
             }
@@ -192,6 +207,15 @@ impl Executor {
 
     /// Execute a command asynchronously (background with &).
     fn exec_async(&mut self, and_or: &AndOrList) -> Result<i32, ShellError> {
+        // A bare multi-command pipeline payload forks its members
+        // directly from this shell (no wrapper subshell), so the job
+        // table tracks every member pid — stops become visible to
+        // `jobs`/`bg` and `$!` is the last member (bash parity). Negated
+        // pipelines and AND-OR lists keep the wrapper below: their final
+        // status is computed by shell code that must outlive the members.
+        if and_or.rest.is_empty() && !and_or.first.negated && and_or.first.commands.len() >= 2 {
+            return self.exec_async_pipeline(&and_or.first);
+        }
         // Block signals across the fork: the child inherits the parent's
         // self-pipe handler AND the shared pipe, so a signal delivered to
         // the child before reset_child_signals runs would be written into

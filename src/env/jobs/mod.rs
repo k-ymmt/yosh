@@ -78,10 +78,12 @@ impl JobTable {
         self.reaped_statuses
             .retain(|(p, _)| !pids.contains(p) && *p != pgid);
 
+        let member_statuses = vec![JobStatus::Running; pids.len()];
         let job = Job {
             id,
             pgid,
             pids,
+            member_statuses,
             command: command.into(),
             status: JobStatus::Running,
             notified: false,
@@ -171,12 +173,19 @@ impl JobTable {
     // Task 3: status updates, search helpers
     // -----------------------------------------------------------------------
 
-    /// Update the status of the job that contains `pid`.
-    /// Resets the notified flag to false so the change will be reported.
+    /// Update the status of the member `pid` in the job that contains it
+    /// and recompute the job's aggregate status. Resets the notified flag
+    /// when the aggregate changed so the change will be reported (for a
+    /// multi-member job, an early member's exit that leaves the job
+    /// Running is not a reportable change).
     pub fn update_status(&mut self, pid: Pid, status: JobStatus) {
         if let Some(job) = self.jobs.values_mut().find(|j| j.pids.contains(&pid)) {
-            job.status = status;
-            notification::reset_after_status_change(job);
+            job.set_member_status(pid, status);
+            let aggregate = job.aggregate_status();
+            if job.status != aggregate {
+                job.status = aggregate;
+                notification::reset_after_status_change(job);
+            }
         }
     }
 
@@ -411,14 +420,84 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_update_status_by_pid() {
+    fn test_update_status_tracks_members_and_aggregate() {
         let mut table = JobTable::default();
         let id = table.add_job(pid(55), vec![pid(55), pid(56)], "pipe", false);
-        table.update_status(pid(56), JobStatus::Done(0));
 
+        // One member done, the other still running: the job stays Running
+        // but the member's own status is tracked.
+        table.update_status(pid(56), JobStatus::Done(0));
         let job = table.get(id).unwrap();
+        assert_eq!(job.status, JobStatus::Running);
+        assert_eq!(job.member_status(pid(56)), Some(JobStatus::Done(0)));
+        assert_eq!(job.member_status(pid(55)), Some(JobStatus::Running));
+
+        // Last member exits: aggregate becomes terminal.
+        table.update_status(pid(55), JobStatus::Done(3));
+        let job = table.get(id).unwrap();
+        assert!(
+            !job.notified,
+            "notified should be reset on aggregate change"
+        );
+        // Aggregate is the LAST member's status (pipeline order), not the
+        // last-reaped: 56 is the last element and exited 0.
         assert_eq!(job.status, JobStatus::Done(0));
-        assert!(!job.notified, "notified should be reset to false");
+    }
+
+    #[test]
+    fn test_aggregate_last_element_defines_pipeline_status() {
+        // `cat big | false`: false (last element) exits 1 first, cat
+        // exits 0 later — the job status must be the last ELEMENT's (1),
+        // not the last-reaped process's (0).
+        let mut table = JobTable::default();
+        let id = table.add_job(pid(60), vec![pid(60), pid(61)], "cat | false", false);
+        table.update_status(pid(61), JobStatus::Done(1));
+        table.update_status(pid(60), JobStatus::Done(0));
+        assert_eq!(table.get(id).unwrap().status, JobStatus::Done(1));
+    }
+
+    #[test]
+    fn test_aggregate_stopped_only_when_no_member_running() {
+        let mut table = JobTable::default();
+        let id = table.add_job(pid(70), vec![pid(70), pid(71)], "cat | sleep", false);
+
+        // Member 0 stops while member 1 still runs: job counts as Running
+        // (bash: a job is stopped only when every process is stopped or
+        // dead).
+        table.update_status(pid(70), JobStatus::Stopped(21));
+        assert_eq!(table.get(id).unwrap().status, JobStatus::Running);
+
+        // Member 1 exits: now the job is Stopped.
+        table.update_status(pid(71), JobStatus::Done(0));
+        assert_eq!(table.get(id).unwrap().status, JobStatus::Stopped(21));
+    }
+
+    #[test]
+    fn test_resume_stopped_members_keeps_terminal_members() {
+        let mut table = JobTable::default();
+        let id = table.add_job(pid(80), vec![pid(80), pid(81)], "a | b", false);
+        table.update_status(pid(81), JobStatus::Done(5));
+        table.update_status(pid(80), JobStatus::Stopped(20));
+        assert_eq!(table.get(id).unwrap().status, JobStatus::Stopped(20));
+
+        table.get_mut(id).unwrap().resume_stopped_members();
+        let job = table.get(id).unwrap();
+        assert_eq!(job.member_status(pid(80)), Some(JobStatus::Running));
+        assert_eq!(job.member_status(pid(81)), Some(JobStatus::Done(5)));
+        assert_eq!(job.status, JobStatus::Running);
+    }
+
+    #[test]
+    fn test_stop_live_members_marks_running_only() {
+        let mut table = JobTable::default();
+        let id = table.add_job(pid(90), vec![pid(90), pid(91)], "a | b", false);
+        table.update_status(pid(91), JobStatus::Done(2));
+
+        table.get_mut(id).unwrap().stop_live_members(20);
+        let job = table.get(id).unwrap();
+        assert_eq!(job.member_status(pid(90)), Some(JobStatus::Stopped(20)));
+        assert_eq!(job.member_status(pid(91)), Some(JobStatus::Done(2)));
+        assert_eq!(job.status, JobStatus::Stopped(20));
     }
 
     #[test]

@@ -61,26 +61,44 @@ impl super::JobTable {
     /// Remove all jobs that are both notified AND in a terminal state
     /// (Done or Terminated).
     ///
-    /// Before removal, each job's wait-style status is recorded in the
-    /// reaped-status map so `wait <pid>` on a known `$!` pid still
-    /// reports it after the job leaves the table (POSIX XCU wait).
+    /// Before removal, each member's OWN wait-style status is recorded
+    /// in the reaped-status map so `wait <pid>` on a known `$!` pid (or
+    /// any member pid of a pipeline job) still reports that process's
+    /// status after the job leaves the table (POSIX XCU wait). A
+    /// cleanable job's aggregate is terminal, which implies all members
+    /// are terminal; the aggregate fallback below is unreachable through
+    /// the real update paths and only guards direct status writes.
     pub fn cleanup_notified(&mut self) {
-        let to_remove: Vec<(JobId, Vec<nix::unistd::Pid>, Option<i32>)> = self
+        fn wait_style(status: super::JobStatus) -> Option<i32> {
+            match status {
+                super::JobStatus::Done(code) => Some(code),
+                super::JobStatus::Terminated(sig) => Some(128 + sig),
+                _ => None,
+            }
+        }
+        type ReapedMembers = Vec<(nix::unistd::Pid, Option<i32>)>;
+        let to_remove: Vec<(JobId, ReapedMembers)> = self
             .jobs
             .values()
             .filter(|j| is_cleanable(j))
             .map(|j| {
-                let code = match j.status {
-                    super::JobStatus::Done(code) => Some(code),
-                    super::JobStatus::Terminated(sig) => Some(128 + sig),
-                    _ => None,
-                };
-                (j.id, j.pids.clone(), code)
+                let members = j
+                    .pids
+                    .iter()
+                    .map(|&pid| {
+                        let code = j
+                            .member_status(pid)
+                            .and_then(wait_style)
+                            .or_else(|| wait_style(j.status));
+                        (pid, code)
+                    })
+                    .collect();
+                (j.id, members)
             })
             .collect();
-        for (id, pids, code) in to_remove {
-            if let Some(code) = code {
-                for pid in pids {
+        for (id, members) in to_remove {
+            for (pid, code) in members {
+                if let Some(code) = code {
                     self.record_reaped(pid, code);
                 }
             }
@@ -104,6 +122,7 @@ mod tests {
             id: 1,
             pgid: pid(1),
             pids: vec![pid(1)],
+            member_statuses: vec![status],
             command: "x".to_string(),
             status,
             notified,
@@ -215,15 +234,18 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_notified_records_all_pids_of_a_pipeline_job() {
+    fn test_cleanup_notified_records_each_member_own_status() {
         let mut table = JobTable::default();
         let id = table.add_job(pid(300), vec![pid(300), pid(301)], "a | b", false);
+        // `a` exits 0, `b` exits 4 — each member's OWN status must be
+        // remembered, not the job aggregate (previously both recorded 4).
+        table.update_status(pid(300), JobStatus::Done(0));
         table.update_status(pid(301), JobStatus::Done(4));
         table.mark_notified(id);
 
         table.cleanup_notified();
 
-        assert_eq!(table.reaped_status(pid(300)), Some(4));
+        assert_eq!(table.reaped_status(pid(300)), Some(0));
         assert_eq!(table.reaped_status(pid(301)), Some(4));
     }
 

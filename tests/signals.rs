@@ -296,7 +296,11 @@ fn test_repeated_signals_all_observed_between_commands() {
     // Ordering: first T before 'a', second T before 'b'.
     let a_idx = stdout.find('a').expect("stdout must contain 'a'");
     let first_t = stdout.find('T').expect("stdout must contain 'T'");
-    assert!(first_t < a_idx, "trap must fire before next command; stdout = {:?}", stdout);
+    assert!(
+        first_t < a_idx,
+        "trap must fire before next command; stdout = {:?}",
+        stdout
+    );
 }
 
 // Background reaping still works with the live-jobs fast path (audit P4a).
@@ -543,7 +547,8 @@ fn test_async_child_own_trap_still_works() {
 
 #[test]
 fn test_command_external_signal_exit_code() {
-    let (stdout, _stderr, code) = yosh_exec_timeout("command sh -c 'kill -TERM $$'; echo st=$?", 10);
+    let (stdout, _stderr, code) =
+        yosh_exec_timeout("command sh -c 'kill -TERM $$'; echo st=$?", 10);
     assert_eq!(code, Some(0));
     assert_eq!(
         stdout.trim(),
@@ -731,4 +736,115 @@ fn test_wait_pending_trapped_signal_beats_concurrent_child_exit() {
     );
     assert_eq!(code, Some(0));
     assert_eq!(stdout.trim(), "WAIT:143");
+}
+
+// ---------------------------------------------------------------------------
+// Async pipeline direct fork + per-member job status (2026-09-02): `a | b &`
+// forks its members directly from the shell (no wrapper subshell), `$!` is
+// the LAST member (bash parity), and each member's status is tracked
+// individually. See
+// docs/superpowers/specs/2026-09-02-job-member-status-async-pipeline-design.md.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_async_pipeline_dollar_bang_is_last_member() {
+    // bash: `$!` after `a | b &` is b's pid (empirical, bash 3.2).
+    let (stdout, _stderr, code) =
+        yosh_exec_timeout(": | /bin/sh -c 'echo last=$$' & echo bang=$!; wait", 10);
+    assert_eq!(code, Some(0));
+    let last = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("last="))
+        .expect("missing last= line")
+        .to_string();
+    let bang = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("bang="))
+        .expect("missing bang= line")
+        .to_string();
+    assert_eq!(bang, last, "$! must be the last pipeline member's pid");
+}
+
+#[test]
+fn test_async_pipeline_wait_dollar_bang_returns_last_member_status() {
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "/bin/sh -c 'exit 3' | /bin/sh -c 'exit 7' & wait $!; echo st=$?",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "st=7");
+}
+
+#[test]
+fn test_async_pipeline_wait_jobspec_returns_pipeline_status() {
+    // `wait %1` waits for the whole job and reports the pipeline's
+    // status — the last member's, even though the earlier member exits
+    // nonzero (bash parity, empirical 2026-09-02).
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "/bin/sh -c 'exit 3' | /bin/sh -c 'exit 5' & wait %1; echo st=$?",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "st=5");
+}
+
+#[test]
+fn test_async_pipeline_member_ppid_is_shell() {
+    // Simple-command members exec in place, so the external member is a
+    // direct child of the forking shell — no wrapper in between.
+    let (stdout, _stderr, code) =
+        yosh_exec_timeout("echo $$; : | /bin/sh -c 'echo $PPID' & wait", 10);
+    assert_eq!(code, Some(0));
+    let mut lines = stdout.lines();
+    let shell_pid = lines.next().expect("missing shell pid line");
+    let member_ppid = lines.next().expect("missing member ppid line");
+    assert_eq!(
+        shell_pid, member_ppid,
+        "async pipeline member must be a direct child of the shell"
+    );
+}
+
+#[test]
+fn test_async_pipeline_head_stdin_is_devnull() {
+    // POSIX §2.9.3.1: without job control, async commands read stdin
+    // from /dev/null — for a pipeline that applies to the head member
+    // (the rest read the pipes). Both cats see EOF and the job finishes.
+    let (stdout, _stderr, code) = yosh_exec_timeout("/bin/cat | /bin/cat & wait; echo done", 10);
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "done");
+}
+
+#[test]
+fn test_stopped_then_continued_bg_job_status_via_wait() {
+    // A background job that stops itself is later continued externally;
+    // `wait $!` must block through the stop and report the real exit
+    // status. Exercises WCONTINUED reaping + Stopped jobs staying
+    // waitable.
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "/bin/sh -c 'kill -STOP $$; exit 3' &\n/bin/sleep 0.2\nkill -CONT $!\nwait $!\necho st=$?",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "st=3");
+}
+
+#[test]
+fn test_bare_wait_blocks_on_stopped_job_until_termination() {
+    // POSIX: operandless wait waits until all known process IDs
+    // TERMINATE — a Stopped job has not terminated (dash agrees).
+    // Pre-fix, a job reaped as Stopped was skipped and `wait` returned
+    // immediately, so "after" could print before "resumed". The
+    // newline separators force complete-command boundaries so the
+    // reaper records the stop before `wait` runs.
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "/bin/sh -c 'kill -STOP $$; echo resumed; exit 0' &\n/bin/sleep 0.3\nkill -CONT $!\nwait\necho after",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["resumed", "after"],
+        "bare wait must block until the stopped-then-continued job terminates"
+    );
 }
