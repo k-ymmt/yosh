@@ -66,6 +66,22 @@
       then reports 127 although the bare wait never waited for the
       stopped job to terminate). Wrap-up review 2026-08-25 round 1
       minor finding (`src/exec/job_control.rs::builtin_wait`).
+      2026-09-02 addendum: more reachable since async exec-in-place
+      made background-external stops visible — a job that stops and is
+      later SIGCONT'd is also skipped by an operandless `wait` running
+      while it is Stopped (dash waits for its termination; wrap-up
+      review 2026-09-02 round 1 re-confirmation).
+- [ ] Reaper has no WCONTINUED handling — a background job stopped and
+      then resumed by an external `kill -CONT` stays displayed as
+      Stopped in `jobs` even though the process is running again
+      (repro: `sh -c 'kill -STOP $$; echo R; sleep 2' &` then
+      `kill -CONT $!` — second `jobs` still says Stopped(SIGSTOP)).
+      Newly observable since async exec-in-place made direct-child
+      stops visible; fix wants WaitPidFlag::WCONTINUED in
+      `reap_zombies`/`wait_for_foreground_job` plus a
+      Stopped→Running transition. Wrap-up review 2026-09-02 round 1
+      minor finding (`src/exec/control.rs::reap_zombies`,
+      `src/env/jobs/`).
 - [ ] The reaped-status map records the job's single aggregate status
       for every member pid of a multi-pid job, so `wait <member-pid>`
       after cleanup reports the aggregate rather than that member's
