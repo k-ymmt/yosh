@@ -469,6 +469,19 @@ the items below are deferred work, not policy:
 - [ ] `test_helpers::load_plugin_with_caps` no-allowlist ergonomics — nearly all callers in `tests/plugin.rs` (29 as of 2026-08-25) pass `&[]` for the new `allowed_commands` parameter introduced in T6. Consider a no-allowlist convenience method or a `Default` impl so common test setups are less verbose. Code-review follow-up from 2026-04-29 plugin commands:exec branch (`src/plugin/mod.rs`).
 ## Future: Code Quality Improvements
 
+- [ ] Serialize fd-manipulating unit tests to kill the
+      `redirect_only_returns_zero` flake — the `redirect_only_*` tests
+      (`src/exec/simple.rs::tests`) run `exec_program` on redirect-only
+      commands, which dup2-swap and restore the PROCESS-shared fd 1 with
+      save=true; under the parallel libtest harness two such tests can
+      interleave mid-swap and fail with `dup: Bad file descriptor`
+      (observed 2026-07-13 and 2026-09-01, always passes in isolation —
+      production is unaffected, the real shell is single-threaded). Fix:
+      a `static STDIO_LOCK: Mutex<()>` in the test module, locked at the
+      top of every test that redirects the shell process's own stdio
+      (audit for other `exec_program`-with-redirects unit tests while at
+      it); prefer the std Mutex over adding a serial_test dev-dependency.
+
 - [ ] Self-pipe fork race in remaining fork sites — a forked child inherits
       the parent's self-pipe handler and the shared pipe until
       `reset_shell_child_signals` runs (which since 2026-08-26 also swaps in
