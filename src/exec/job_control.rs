@@ -70,6 +70,62 @@ fn parse_options(args: &[String]) -> Result<JobsOpts, String> {
     })
 }
 
+/// One `wait` operand's resolved target: a bare pid, or a whole job
+/// (job-spec operand, or a pid that belongs to a live multi-pid job —
+/// bash waits for the entire job in both cases and reports the JOB's
+/// status, pipefail included; empirical 2026-09-02: `sleep 2 | true &
+/// wait $!` blocks the full 2s, and with pipefail returns 1).
+enum WaitTarget {
+    Pid(Pid),
+    /// Member pids in pipeline order.
+    Job(Vec<Pid>),
+    /// An operand that failed to resolve (unknown/ambiguous job spec).
+    /// The diagnostic has been printed; the operand contributes 127
+    /// but must NOT abort the remaining operands — POSIX XCU wait
+    /// treats unknown ids as terminated with status 127 and still
+    /// waits the rest (bash: `wait %999 "$p"` reports the error, then
+    /// blocks on $p and returns its status; empirical 2026-09-02,
+    /// adversarial review round 3).
+    Unknown,
+}
+
+/// Outcome of waiting for a single pid.
+enum PidWait {
+    /// The pid's own wait-style status (`code` or `128+sig`).
+    Status(i32),
+    /// Not a child and not remembered — the "not a child of this
+    /// shell" diagnostic has been printed.
+    Errored,
+    /// A trapped non-CHLD signal interrupted the wait: 128+sig, and
+    /// the whole `wait` builtin must return it immediately.
+    Interrupted(i32),
+}
+
+/// Compute a job's wait status from its members' wait statuses
+/// (pipeline order). POSIX: a pipeline's status is its last element's;
+/// with pipefail, the last nonzero member status (bash applies pipefail
+/// to background-job waits too — `set -o pipefail; false | true &
+/// wait %1` is 1, empirical 2026-09-02). Any `None` entry makes the
+/// whole job report 127 — see the body comment.
+fn job_wait_status(statuses: &[Option<i32>], pipefail: bool) -> i32 {
+    // A None entry is a member whose status could not be determined
+    // (waitpid error with nothing remembered — e.g. waiting a parent's
+    // job from a subshell): the job as a whole is then not waitable and
+    // reports 127, like bash (adversarial review round 3: [Some(0),
+    // None] must not collapse to the successful member's 0).
+    let mut resolved = Vec::with_capacity(statuses.len());
+    for s in statuses {
+        match s {
+            Some(code) => resolved.push(*code),
+            None => return 127,
+        }
+    }
+    if pipefail && let Some(&code) = resolved.iter().rev().find(|&&c| c != 0) {
+        return code;
+    }
+    resolved.last().copied().unwrap_or(127)
+}
+
 impl Executor {
     /// POSIX wait builtin: wait for background jobs.
     pub(super) fn builtin_wait(&mut self, args: &[String]) -> Result<i32, ShellError> {
@@ -79,7 +135,7 @@ impl Executor {
         // or job-spec operand is given. A >128 trapped-signal
         // interruption still overrides this via its early return.
         let no_operands = args.is_empty();
-        let target_pids: Vec<Pid> = if args.is_empty() {
+        let targets: Vec<WaitTarget> = if args.is_empty() {
             // POSIX: wait until all known process IDs TERMINATE — a
             // Stopped job has not terminated, so it must be waited for
             // too (dash agrees, blocking until the job is continued and
@@ -91,46 +147,63 @@ impl Executor {
                 .jobs
                 .all_jobs()
                 .filter(|j| matches!(j.status, JobStatus::Running | JobStatus::Stopped(_)))
-                .flat_map(|j| j.pids.iter().copied())
+                .map(|j| WaitTarget::Job(j.pids.clone()))
                 .collect()
         } else {
-            let mut pids = Vec::new();
+            let mut targets = Vec::new();
             for arg in args {
                 if arg.starts_with('%') {
+                    // A spec that fails to resolve contributes 127 but
+                    // does not abort the remaining operands (see
+                    // WaitTarget::Unknown).
                     match self.env.process.jobs.resolve_job_spec(arg) {
                         Ok(job_id) => {
                             if let Some(job) = self.env.process.jobs.get(job_id) {
-                                // All member pids in pipeline order: bash
-                                // waits for the whole job, and the final
-                                // reported status is then the LAST
-                                // member's — `wait %1` on `a | b` returns
-                                // b's status (empirical 2026-09-02).
-                                pids.extend(job.pids.iter().copied());
+                                targets.push(WaitTarget::Job(job.pids.clone()));
                             } else {
-                                return Err(ShellError::runtime(
-                                    RuntimeErrorKind::CommandNotFound,
-                                    format!("wait: {}: no such job", arg),
-                                ));
+                                eprintln!("yosh: wait: {}: no such job", arg);
+                                targets.push(WaitTarget::Unknown);
                             }
                         }
                         Err(JobSpecError::Ambiguous) => {
                             let display = strip_job_spec_prefix(arg);
-                            return Err(ShellError::runtime(
-                                RuntimeErrorKind::CommandNotFound,
-                                format!("wait: {}: ambiguous job spec", display),
-                            ));
+                            eprintln!("yosh: wait: {}: ambiguous job spec", display);
+                            targets.push(WaitTarget::Unknown);
                         }
                         Err(_) => {
-                            return Err(ShellError::runtime(
-                                RuntimeErrorKind::CommandNotFound,
-                                format!("wait: {}: no such job", arg),
-                            ));
+                            eprintln!("yosh: wait: {}: no such job", arg);
+                            targets.push(WaitTarget::Unknown);
                         }
                     }
                 } else {
                     match arg.parse::<i32>() {
-                        Ok(n) => pids.push(Pid::from_raw(n)),
-                        Err(_) => {
+                        // POSIX: a pid operand is an unsigned decimal
+                        // integer. 0 and negatives are rejected — passing
+                        // them through would make waitpid(2) wait a whole
+                        // process group (bash rejects them too;
+                        // adversarial review round 3).
+                        Ok(n) if n > 0 => {
+                            let pid = Pid::from_raw(n);
+                            // A pid that names a member of a live job
+                            // targets the whole job (bash: `wait $!`
+                            // on `a | b &` waits for a too and reports
+                            // the job's status). A pid outside the
+                            // table stays a bare-pid wait — including
+                            // reaped-map lookups, which remember each
+                            // member's OWN status once the job is gone.
+                            let job_pids = self
+                                .env
+                                .process
+                                .jobs
+                                .all_jobs()
+                                .find(|j| j.pids.contains(&pid))
+                                .map(|j| j.pids.clone());
+                            match job_pids {
+                                Some(pids) => targets.push(WaitTarget::Job(pids)),
+                                None => targets.push(WaitTarget::Pid(pid)),
+                            }
+                        }
+                        Ok(_) | Err(_) => {
                             return Err(ShellError::runtime(
                                 RuntimeErrorKind::InvalidArgument,
                                 format!("wait: {}: not a pid or valid job spec", arg),
@@ -139,10 +212,10 @@ impl Executor {
                     }
                 }
             }
-            pids
+            targets
         };
 
-        if target_pids.is_empty() {
+        if targets.is_empty() {
             // No operands and nothing running: POSIX no-operand wait
             // exits 0 (previously leaked $?, so `false; wait` was 1).
             // Completing a no-operand wait discards remembered statuses
@@ -152,46 +225,75 @@ impl Executor {
             return Ok(0);
         }
 
+        let pipefail = self.env.mode.options.pipefail;
         let mut last_status = 0;
 
-        for pid in &target_pids {
-            // Check if already completed: first the live jobs table,
-            // then — when the interactive notification pass has already
-            // reaped, reported, and dropped the job — the retained
-            // reaped-status map (POSIX XCU wait: known `$!` pids stay
-            // waitable until consumed by a no-operand wait). The map is
-            // consulted only when the pid is absent from the table —
-            // matched against every member pid, not just the leader, so
-            // a recycled pid backing any live process cannot resolve to
-            // a stale status. The MEMBER's own tracked status is what
-            // gets reported, not the job aggregate: `wait <member-pid>`
-            // of a pipeline job must return that process's status.
-            let table_status = self
-                .env
-                .process
-                .jobs
-                .all_jobs()
-                .find(|j| j.pids.contains(pid))
-                .and_then(|j| j.member_status(*pid));
-            match table_status {
-                Some(JobStatus::Done(code)) => {
-                    last_status = code;
-                    continue;
-                }
-                Some(JobStatus::Terminated(sig)) => {
-                    last_status = 128 + sig;
-                    continue;
-                }
-                Some(_) => {}
-                None => {
-                    if let Some(s) = self.env.process.jobs.reaped_status(*pid) {
-                        last_status = s;
-                        continue;
+        for target in &targets {
+            match target {
+                WaitTarget::Pid(pid) => match self.wait_one_pid(*pid) {
+                    PidWait::Status(s) => last_status = s,
+                    PidWait::Errored => last_status = 127,
+                    PidWait::Interrupted(s) => return Ok(s),
+                },
+                WaitTarget::Job(pids) => {
+                    let mut statuses: Vec<Option<i32>> = Vec::with_capacity(pids.len());
+                    for pid in pids {
+                        match self.wait_one_pid(*pid) {
+                            PidWait::Status(s) => statuses.push(Some(s)),
+                            PidWait::Errored => statuses.push(None),
+                            PidWait::Interrupted(s) => return Ok(s),
+                        }
                     }
+                    last_status = job_wait_status(&statuses, pipefail);
+                }
+                WaitTarget::Unknown => last_status = 127,
+            }
+        }
+
+        if no_operands {
+            // Completed no-operand wait: discard remembered statuses of
+            // already-forgotten jobs (bash behavior; the >128 trapped-
+            // signal early return above intentionally skips this).
+            self.env.process.jobs.clear_reaped();
+        }
+        Ok(if no_operands { 0 } else { last_status })
+    }
+
+    /// Wait for a single pid to terminate, reporting its own wait-style
+    /// status. Consults, in order: the live job table (that MEMBER's
+    /// tracked status), the reaped-status map (POSIX XCU wait: known
+    /// `$!` pids stay waitable after the notification pass drops the
+    /// job — non-consuming until a no-operand wait clears it), then a
+    /// blocking waitpid poll loop that services trapped signals
+    /// (returning `Interrupted` for non-CHLD ones).
+    fn wait_one_pid(&mut self, pid: Pid) -> PidWait {
+        // The map is consulted only when the pid is absent from the
+        // table — matched against every member pid, not just the
+        // leader, so a recycled pid backing any live process cannot
+        // resolve to a stale status.
+        let table_status = self
+            .env
+            .process
+            .jobs
+            .all_jobs()
+            .find(|j| j.pids.contains(&pid))
+            .and_then(|j| j.member_status(pid));
+        match table_status {
+            Some(JobStatus::Done(code)) => {
+                return PidWait::Status(code);
+            }
+            Some(JobStatus::Terminated(sig)) => {
+                return PidWait::Status(128 + sig);
+            }
+            Some(_) => {}
+            None => {
+                if let Some(s) = self.env.process.jobs.reaped_status(pid) {
+                    return PidWait::Status(s);
                 }
             }
+        }
 
-            loop {
+        loop {
                 // Drain pending signals BEFORE reaping: when a trapped
                 // signal and the child's exit are both already pending
                 // (e.g. the child signaled this shell and exited while
@@ -234,27 +336,23 @@ impl Executor {
                     }
                     self.run_signal_traps(&signals);
                     if let Some(sig) = interrupt_sig {
-                        last_status = 128 + sig;
-                        return Ok(last_status);
+                        return PidWait::Interrupted(128 + sig);
                     }
                 }
-                match waitpid(*pid, Some(WaitPidFlag::WNOHANG)) {
+                match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
                     Ok(WaitStatus::Exited(p, code)) => {
                         self.env
                             .process
                             .jobs
                             .update_status(p, JobStatus::Done(code));
-                        last_status = code;
-                        break;
+                        return PidWait::Status(code);
                     }
                     Ok(WaitStatus::Signaled(p, sig, _)) => {
-                        let code = 128 + sig as i32;
                         self.env
                             .process
                             .jobs
                             .update_status(p, JobStatus::Terminated(sig as i32));
-                        last_status = code;
-                        break;
+                        return PidWait::Status(128 + sig as i32);
                     }
                     Ok(WaitStatus::StillAlive) => {
                         // Poll the self-pipe with a short timeout so a signal
@@ -280,44 +378,32 @@ impl Executor {
                             .process
                             .jobs
                             .all_jobs()
-                            .find(|j| j.pids.contains(pid))
-                            .and_then(|j| j.member_status(*pid))
+                            .find(|j| j.pids.contains(&pid))
+                            .and_then(|j| j.member_status(pid))
                             .and_then(|s| match s {
                                 JobStatus::Done(code) => Some(code),
                                 JobStatus::Terminated(sig) => Some(128 + sig),
                                 _ => None,
                             });
                         if let Some(s) = reaped {
-                            last_status = s;
-                            break;
+                            return PidWait::Status(s);
                         }
                         // Or a notification pass mid-wait may have
                         // reaped AND removed the job — consult the
                         // retained reaped-status map before erroring.
-                        if let Some(s) = self.env.process.jobs.reaped_status(*pid) {
-                            last_status = s;
-                            break;
+                        if let Some(s) = self.env.process.jobs.reaped_status(pid) {
+                            return PidWait::Status(s);
                         }
                         let err = ShellError::runtime(
                             RuntimeErrorKind::CommandNotFound,
                             format!("wait: pid {} is not a child of this shell", pid),
                         );
                         eprintln!("{}", err);
-                        last_status = 127;
-                        break;
+                        return PidWait::Errored;
                     }
-                    Err(_) | Ok(_) => break,
+                    Err(_) | Ok(_) => return PidWait::Status(0),
                 }
             }
-        }
-
-        if no_operands {
-            // Completed no-operand wait: discard remembered statuses of
-            // already-forgotten jobs (bash behavior; the >128 trapped-
-            // signal early return above intentionally skips this).
-            self.env.process.jobs.clear_reaped();
-        }
-        Ok(if no_operands { 0 } else { last_status })
     }
 
     pub(super) fn builtin_jobs(&mut self, args: &[String]) -> Result<i32, ShellError> {
@@ -424,7 +510,7 @@ impl Executor {
             }
         };
 
-        let (pgid, command) = {
+        let (pgid, command, pids, mut member_wait_statuses) = {
             let job = match self.env.process.jobs.get(job_id) {
                 Some(j) => j,
                 None => {
@@ -434,7 +520,23 @@ impl Executor {
                     ));
                 }
             };
-            (job.pgid, job.command.clone())
+            // Snapshot members already terminal BEFORE resuming: for a
+            // pipeline job, members reaped earlier (by the notification
+            // reaper or a prior foreground wait) never report through
+            // the wait below, but their statuses still shape the job's
+            // final status (adversarial review 2026-09-02 round 2:
+            // `sleep 2 | false & fg` must exit 1, the last MEMBER's
+            // status, not the last-reaped process's 0; bash agrees).
+            let pre: Vec<Option<i32>> = job
+                .pids
+                .iter()
+                .map(|&p| match job.member_status(p) {
+                    Some(JobStatus::Done(code)) => Some(code),
+                    Some(JobStatus::Terminated(sig)) => Some(128 + sig),
+                    _ => None,
+                })
+                .collect();
+            (job.pgid, job.command.clone(), job.pids.clone(), pre)
         };
 
         // Print the command being foregrounded
@@ -480,7 +582,21 @@ impl Executor {
 
         // Wait for the job
         let result = self.wait_for_foreground_job(job_id);
-        let status = result.last_status;
+        let status = if result.stopped {
+            // Stopped again: report 128+sig like any foreground stop.
+            result.last_status
+        } else {
+            // Merge this wait's reaps over the pre-captured terminal
+            // members and report the JOB's status in pipeline order —
+            // pipefail-aware, like the foreground pipeline path and
+            // `wait %job` (bash parity, empirical 2026-09-02).
+            for (pid, code) in &result.process_statuses {
+                if let Some(i) = pids.iter().position(|p| p == pid) {
+                    member_wait_statuses[i] = Some(*code);
+                }
+            }
+            job_wait_status(&member_wait_statuses, self.env.mode.options.pipefail)
+        };
 
         // Take terminal back
         jobs::take_terminal(self.env.process.shell_pgid).ok();
@@ -896,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn wait_matches_non_leader_member_pid_in_table() {
+    fn wait_job_with_unwaitable_member_reports_127() {
         use crate::env::jobs::JobStatus;
         use nix::unistd::Pid;
         let mut exec = Executor::new("yosh", vec![]);
@@ -911,17 +1027,51 @@ mod tests {
             .jobs
             .update_status(member, JobStatus::Done(4));
 
-        // The already-done fast path must match member pids, not just the
-        // pgid leader — previously this fell through to waitpid/ECHILD and
-        // errored 127 ("not a child of this shell").
+        // Waiting a member pid targets the whole job. The leader here is
+        // a fake pid this process never spawned: its waitpid errors with
+        // nothing remembered, so the JOB is not fully waitable and must
+        // report 127 (bash parity; a Done member's 0/4 must not leak
+        // through — adversarial review round 3). The member's own Done(4)
+        // is still consulted via the fast path (no error for it).
         let status = exec
             .builtin_wait(&["88891".to_string()])
-            .expect("wait on a member pid of a Done job must not error");
-        assert_eq!(status, 4);
+            .expect("wait on a member pid must not hard-error");
+        assert_eq!(status, 127);
     }
 
     #[test]
-    fn wait_reports_each_member_own_status() {
+    fn wait_unknown_jobspec_does_not_abort_later_operands() {
+        use crate::env::jobs::JobStatus;
+        use nix::unistd::Pid;
+        let mut exec = Executor::new("yosh", vec![]);
+        let pid = Pid::from_raw(88895);
+        let id = exec.env.process.jobs.add_job(pid, vec![pid], "cmd", false);
+        exec.env.process.jobs.update_status(pid, JobStatus::Done(5));
+        let _ = id;
+
+        // POSIX XCU wait: unknown ids are treated as terminated with 127
+        // and the REMAINING operands are still waited; the last operand
+        // determines the status (bash: `wait %999 "$p"` prints the error,
+        // waits $p, returns its status — empirical 2026-09-02;
+        // previously the bad spec aborted the whole builtin with 127).
+        let status = exec
+            .builtin_wait(&["%999".to_string(), "88895".to_string()])
+            .expect("an unknown job spec must not abort wait");
+        assert_eq!(status, 5);
+    }
+
+    #[test]
+    fn wait_rejects_nonpositive_pid_operands() {
+        let mut exec = Executor::new("yosh", vec![]);
+        // A negative operand must not reach waitpid(2), where it would
+        // wait an arbitrary process GROUP (adversarial review round 3;
+        // bash rejects it too).
+        assert!(exec.builtin_wait(&["-123".to_string()]).is_err());
+        assert!(exec.builtin_wait(&["0".to_string()]).is_err());
+    }
+
+    #[test]
+    fn wait_member_pid_of_live_job_reports_job_status() {
         use crate::env::jobs::JobStatus;
         use nix::unistd::Pid;
         let mut exec = Executor::new("yosh", vec![]);
@@ -940,17 +1090,54 @@ mod tests {
             .jobs
             .update_status(member, JobStatus::Done(6));
 
-        // Per-member tracking: each pid reports its OWN status, not the
-        // job aggregate (previously the last update overwrote a single
-        // shared status field).
+        // A pid naming a member of a LIVE job waits for the whole job
+        // and reports the JOB's status — the last member's (bash:
+        // `wait $!` on `a | b &` blocks until a finishes too and
+        // returns the pipeline status; empirical 2026-09-02).
         let status = exec
             .builtin_wait(&["88900".to_string()])
             .expect("wait on the leader must not error");
-        assert_eq!(status, 2);
+        assert_eq!(status, 6);
         let status = exec
             .builtin_wait(&["88901".to_string()])
             .expect("wait on the member must not error");
         assert_eq!(status, 6);
+    }
+
+    #[test]
+    fn wait_job_status_respects_pipefail() {
+        use crate::env::jobs::JobStatus;
+        use nix::unistd::Pid;
+        let mut exec = Executor::new("yosh", vec![]);
+        let leader = Pid::from_raw(88920);
+        let member = Pid::from_raw(88921);
+        exec.env
+            .process
+            .jobs
+            .add_job(leader, vec![leader, member], "false | true", false);
+        exec.env
+            .process
+            .jobs
+            .update_status(leader, JobStatus::Done(2));
+        exec.env
+            .process
+            .jobs
+            .update_status(member, JobStatus::Done(0));
+
+        // Without pipefail: the last member's status.
+        let status = exec
+            .builtin_wait(&["%1".to_string()])
+            .expect("wait %1 must not error");
+        assert_eq!(status, 0);
+
+        // With pipefail: the last NONZERO member status (bash:
+        // `set -o pipefail; false | true & wait %1` is 1, empirical
+        // 2026-09-02 — pre-fix the direct-fork path returned 0).
+        exec.env.mode.options.pipefail = true;
+        let status = exec
+            .builtin_wait(&["%1".to_string()])
+            .expect("wait %1 must not error");
+        assert_eq!(status, 2);
     }
 
     #[test]

@@ -63,18 +63,49 @@ job's aggregate being terminal implies all members terminal).
 
 ### 2. Member-aware `wait` (`src/exec/job_control.rs`)
 
-- The already-done fast path and the ECHILD fallback consult
-  `member_status(pid)` instead of the job aggregate, so
-  `wait <member-pid>` reports that member's own status.
-- Operandless `wait` targets all member pids of `Running` **and**
-  `Stopped` jobs (POSIX: wait until all known process IDs terminate; a
-  stopped job has not terminated — dash agrees, blocking until it is
-  continued and exits). The premature `clear_reaped` disappears with
-  the early return.
-- `%jobspec` operands push **all** member pids of the job (bash waits
-  for the whole job); pids are pushed in pipeline order so the final
-  reported status is the last member's — `wait %1` on `a | b` returns
-  b's status (bash parity, verified).
+Reworked after adversarial review round 1 (2026-09-02): `wait`
+operands resolve to `WaitTarget`s — a whole job (`%jobspec`, or a pid
+that names a member of a LIVE job) or a bare pid (anything else,
+including reaped-map lookups).
+
+- **Job targets** wait for every member pid in pipeline order and
+  report the JOB's status via `job_wait_status`: with pipefail, the
+  last nonzero member status; otherwise the last member's. Both match
+  bash empirically (`sleep 2 | true & wait $!` blocks the full 2s;
+  `set -o pipefail; false | true & wait %1` → 1). Review round 1
+  caught both as regressions of the initial per-member design, which
+  waited only the named member and ignored pipefail.
+- **Bare pids** report that process's own status — the fast path and
+  the ECHILD fallback consult `member_status(pid)`, and the
+  reaped-status map remembers each member's own status after cleanup.
+- Operandless `wait` targets all `Running` **and** `Stopped` jobs
+  (POSIX: wait until all known process IDs terminate; a stopped job
+  has not terminated — dash agrees, blocking until it is continued
+  and exits). The premature `clear_reaped` disappears with the early
+  return.
+
+Round 3 additions: a job with an unwaitable member (`PidWait::Errored`
+→ `None` status) reports 127 as a whole, like bash — a Done member's
+status must not leak through when waiting a parent's job from a
+subshell; unknown/ambiguous job-spec operands print their diagnostic
+and contribute 127 WITHOUT aborting the remaining operands (POSIX XCU
+wait; bash waits the rest and the last operand rules); non-positive
+numeric operands are rejected before they can reach waitpid(2) as a
+process-group wait. `fg` reports the pipefail-aware job status by
+merging a pre-wait snapshot of already-terminal members with the
+wait's own reaps (round 2: `sleep 1 | false & fg` must exit 1, the
+last member's status, even though `false` was reaped by the
+notification pass before `fg` ran).
+
+DEVIATION (recorded, TODO): once the notification pass drops a job,
+the flat reaped map loses the job grouping, so a later `wait $!` on a
+pipefail pipeline reports the last member's own status instead of the
+pipefail-adjusted job status. bash keeps the dead job in its table
+until waited and would report the job status. Affects interactive
+shells only (the notification pass is what drops jobs). Further
+review deferrals recorded in TODO.md: first-stop early return of
+`wait_for_foreground_job` with self-stopping pipeline members, and
+the reentrant bare-`wait` reaped-map discard corner.
 
 ### 3. WCONTINUED (`src/exec/control.rs::reap_zombies`)
 
@@ -130,8 +161,10 @@ foreground job uses it instead of the `"(pipeline)"` placeholder
 ## Observable changes (intended)
 
 - `a | b &`: `$!` = last member pid; direct children (no wrapper);
-  member stops visible to `jobs`/`bg`; `wait $!` = b's own status;
-  `jobs` shows `a | b`.
+  member stops visible to `jobs`/`bg`; `wait $!` waits for the whole
+  job and reports the pipeline status (pipefail-aware); `jobs` shows
+  `a | b` (first member alone when a later member is redirect-only or
+  dynamic).
 - `wait <member-pid>` after notification cleanup reports that member's
   own status.
 - `jobs` shows Running again after an externally continued job.

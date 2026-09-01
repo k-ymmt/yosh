@@ -848,3 +848,66 @@ fn test_bare_wait_blocks_on_stopped_job_until_termination() {
         "bare wait must block until the stopped-then-continued job terminates"
     );
 }
+
+#[test]
+fn test_wait_member_pid_blocks_for_whole_job() {
+    // bash: `wait $!` where `$!` is the last member of `a | b &` blocks
+    // until EVERY member terminates (empirical 2026-09-02: `sleep 2 |
+    // true & wait $!` takes the full 2s). The marker file written by
+    // the slow first member must exist once wait returns.
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "m=/tmp/yosh-waitjob-$$; rm -f \"$m\"; \
+         /bin/sh -c \"/bin/sleep 0.4; : > $m\" | /bin/sh -c 'exit 0' & wait $!; \
+         if [ -e \"$m\" ]; then echo blocked; else echo early; fi; rm -f \"$m\"",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.trim(),
+        "blocked",
+        "wait on a member pid must wait for the whole job"
+    );
+}
+
+#[test]
+fn test_wait_job_respects_pipefail() {
+    // bash: pipefail applies to background-job waits — both `wait %1`
+    // and `wait $!` report the last nonzero member status (empirical
+    // 2026-09-02; adversarial review round 1 finding).
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "set -o pipefail; /bin/sh -c 'exit 3' | /bin/sh -c 'exit 0' & wait $!; echo bang=$?",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "bang=3");
+
+    // Job-spec form, in its own shell: a waited-for background job
+    // lingers in the non-interactive job table (pre-existing), so a
+    // second `%1` in the same shell would resolve the old job.
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "set -o pipefail; /bin/sh -c 'exit 4' | /bin/sh -c 'exit 0' & wait %1; echo spec=$?",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "spec=4");
+}
+
+#[test]
+fn test_async_pipeline_redirect_only_member_keeps_first_member_preview() {
+    // A redirect-only member cannot be rendered, but the job command
+    // must fall back to the FIRST member (pre-2026-09-02 behavior) so
+    // `%string` job specs still resolve (adversarial review round 1
+    // finding: `(background)` broke `wait %sleep`).
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "sleep 10 | >/dev/null & kill %sleep 2>/dev/null || echo unresolved; \
+         wait; echo done",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert!(
+        !stdout.contains("unresolved"),
+        "%sleep must resolve via the first-member fallback: {:?}",
+        stdout
+    );
+    assert!(stdout.contains("done"), "wait must return: {:?}", stdout);
+}

@@ -2046,3 +2046,32 @@ fn test_pty_externally_continued_job_shows_running_again() {
     wait_for_prompt(&mut s);
     exit_shell(&mut s);
 }
+
+#[test]
+fn test_pty_fg_background_pipeline_reports_pipeline_status() {
+    // Adversarial review 2026-09-02 round 2: `fg` used to return the
+    // status of the LAST-REAPED process. For `sleep 1 | false &`, the
+    // notification reaper collects false's 1 before fg runs, and the
+    // fg wait then only sees sleep's 0 — the pipeline status (last
+    // member's 1) was lost. bash returns 1 (verified via PTY probe).
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("sleep 1 | false &\r").unwrap();
+    wait_for_prompt(&mut s);
+    // Let false exit and get reaped before fg, so its status only
+    // survives via the pre-fg per-member snapshot.
+    s.send("sleep 0.3\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    s.send("fg\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("echo RC=$?\r").unwrap();
+    expect_output(
+        &mut s,
+        "RC=1",
+        "fg must report the pipeline status (last member's exit 1)",
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}

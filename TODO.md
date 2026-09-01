@@ -121,6 +121,57 @@
       (empirical bash 3.2, 2026-09-02). Cosmetic; per-member statuses
       are tracked since 2026-09-02 so only the formatter needs work
       (`src/env/jobs/format.rs::format_job_long`)
+- [ ] DEVIATION (recorded 2026-09-02 adversarial review): once the
+      interactive notification pass drops a finished job, the flat
+      reaped-status map loses the job grouping, so `wait $!` on a
+      pipefail pipeline whose job already left the table reports the
+      last member's OWN status instead of the pipefail-adjusted job
+      status (bash keeps the dead job in its table until waited).
+      Fixing it means remembering member→job grouping (or the computed
+      job status per member) in the reaped map. Interactive-only —
+      scripts never run the notification pass before `wait`
+      (`src/env/jobs/mod.rs::record_reaped`,
+      `src/exec/job_control.rs::wait_one_pid`)
+- [ ] `wait_for_foreground_job` returns at the FIRST member stop
+      (WUNTRACED report), so a pipeline member that stops ITSELF while
+      other members keep running ends the foreground wait early:
+      `/bin/sh -c 'sleep .2; kill -STOP $$' | /bin/sh -c 'sleep 1;
+      echo right' & fg %1` returns 128+STOP after 0.2s and
+      `stop_live_members` mis-marks the still-running member Stopped;
+      bash keeps waiting until every process is stopped or dead.
+      Pre-existing for foreground pipelines (terminal-generated stops
+      hit the whole pgrp, so it never showed); reachable via
+      self-stopping members since fg-of-pipeline exists. Fix wants the
+      wait loop to keep collecting until all live members have stopped
+      or terminated. Adversarial review 2026-09-02 round 3 finding
+      (`src/exec/job_control.rs::wait_for_foreground_job`)
+- [ ] Reentrant operandless `wait` (run from a trap that fires while an
+      outer `wait <pid>` is blocked) discards the reaped-status map that
+      the OUTER wait still needs once the `-b` notification pass has
+      dropped the job — repro: `set -b; trap "wait" CHLD; sleep 0.1 &
+      p=$!; wait "$p"` errors "not a child" / 127 where bash prints 0.
+      POSIX permits discarding known pids after a no-operand wait
+      completes, so this is a bash-compat corner, not a conformance
+      bug; all involved pieces (clear_reaped on bare wait, notification
+      cleanup) predate 2026-09-02. A fix wants an "in-flight wait pids"
+      guard on clear_reaped. Adversarial review 2026-09-02 round 2
+      finding (`src/exec/job_control.rs::builtin_wait`,
+      `src/env/jobs/mod.rs::clear_reaped`)
+- [ ] A background job collected by the `wait` builtin lingers in the
+      job table as Done in NON-interactive shells (cleanup_notified
+      runs only from the interactive notification pass), so a later
+      `%1` in the same script resolves the already-waited job and
+      `$(jobs)` keeps listing it; bash deletes a job once waited.
+      Pre-existing, surfaced while writing the 2026-09-02 pipefail
+      wait tests (`src/exec/job_control.rs::wait_one_pid`,
+      `src/env/jobs/notification.rs::cleanup_notified`)
+- [ ] Async-pipeline members that are syntactically simple but dispatch
+      to `command`/builtins/functions run their nested externals one
+      fork down (the exec-in-place flag is consumed and ignored), so
+      such a grandchild's stop is invisible to job control — same class
+      as the single-command `command cmd &` residual already listed in
+      the async-wrapper-residuals item above; noted per adversarial
+      review round 1 (`src/exec/pipeline.rs::exec_async_pipeline`)
 - [ ] Task 7 (`fg` job-termios replay) has no direct PTY assertion — Task 9/10 verify end-state only (Task 6 shell-restore). On macOS/BSD, `/bin/cat`'s `read()` inherits `SIG_DFL` for SIGCONT and BSD does not auto-restart `read()` without `SA_RESTART`, so cat exits with EINTR immediately after `fg`. Linux auto-restarts `read()` on terminals for `SIG_DFL` signals, masking this asymmetry. Revisit by using a sleep/read-loop helper that retries on EINTR, or by reading `tcgetattr` directly via the PTY master between `fg\r` and cat's exit (the diagnosis details currently live in the `DEVIATION` comment of `test_pty_termios_preserved_across_suspend_fg` in `tests/pty_interactive.rs`).
 - [ ] `JobTable.shell_tmodes` is a one-time startup snapshot — `stty` invoked at the interactive prompt modifies the real terminal but not the cached snapshot, so the post-foreground shell-restore overwrites user-applied `stty` changes (`src/interactive/mod.rs` + `src/env/jobs/mod.rs`). Matches glibc manual behavior; revisit if user reports surface.
 
@@ -474,7 +525,7 @@ the items below are deferred work, not policy:
 - [ ] `expand_assignment_builtin_args` string round-trip — helper builds `"NAME=value"` strings that the builtin re-parses with `find('=')`. Lossless today, but couples the helper shape to the legacy builtin API. When a future refactor touches `builtin_export`/`builtin_readonly` signatures, consider passing `Vec<(String, Option<String>)>` directly to skip the round-trip (`src/exec/simple.rs`, `src/builtin/special.rs`).
 - [ ] `exec_function_call` residual overhead vs arithmetic loop (§4.2) — 2026-08-26: two of the four suspected causes fixed (per-call `catch_unwind` replaced with a `ScopeGuard` Drop popper in `src/exec/function.rs`; the call-site deep clone removed by storing `Rc<FunctionDef>` in `env.functions`). Remaining candidates if the gap still matters: `exec_function_call_cached_environ`, `exec_function_call_smallvec_scope` sub-benches per `performance.md` §4.2 candidate #1. Re-measure before acting — the ~50 µs/call figure predates the 2026-08-26 fixes (`src/exec/function.rs`).
 - [ ] Multi-byte IFS support in UTF-8 locale (bash-extension parity) — `field_split::split` currently matches IFS as an ASCII byte-set. `IFS="日"; set -- $"a日b"` yields `[a] [b]` under bash in UTF-8 locale (character-level match) but is silently ignored (post-fix A) or produces garbled bytes (pre-fix A) in yosh. POSIX leaves this locale-dependent; bash uses character-level matching when locale is multi-byte. Plan: introduce a `char`-level IFS match path (`char_indices` in `split_field`, char-mode `ifs` set) gated by locale detection. Deferred from the 2026-04-21 `append_byte` UTF-8 panic fix to keep scope minimal. See the brainstorming log for that fix; reference bash 3.2 behavior under `LC_ALL=en_US.UTF-8` as the target semantics.
-- [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard. Observed in the wild 2026-08-26: with TWO full `cargo test` runs racing on one machine, the in-process command-sub unit tests (`exec::simple::tests::standalone_true_cmd_sub_propagates_zero` and neighbors) deadlocked — the fork child froze on the libtest main thread's fork-frozen stdout lock inside `exit_child`'s `stdout().flush()`, and the test thread blocked forever in the command-sub pipe `read_to_end`. Single-suite runs (8+ consecutive) never reproduce; avoid running two suites concurrently, or move these fork tests to integration binaries if it recurs.
+- [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard. Observed in the wild 2026-08-26: with TWO full `cargo test` runs racing on one machine, the in-process command-sub unit tests (`exec::simple::tests::standalone_true_cmd_sub_propagates_zero` and neighbors) deadlocked — the fork child froze on the libtest main thread's fork-frozen stdout lock inside `exit_child`'s `stdout().flush()`, and the test thread blocked forever in the command-sub pipe `read_to_end`. Single-suite runs (8+ consecutive) never reproduce; avoid running two suites concurrently, or move these fork tests to integration binaries if it recurs. RECURRENCE 2026-09-02: hung THREE times in one session (`cmd_sub_followed_by_echo_dollarquestion_outputs_status` twice, `standalone_true_cmd_sub_propagates_zero` once) during SINGLE `cargo test --lib` runs whose stdout was piped through grep/tail (machine load ~2-2.6); interleaved identical runs passed. Piped stdout + loaded machine widen the window substantially — DO the remedy next session: move the three in-process command-sub fork tests (`standalone_{false,true}_cmd_sub_*`, `cmd_sub_followed_by_*`, `src/exec/simple.rs::tests`) to `yosh -c` integration tests (e2e already covers `$?` propagation semantics), or make `exit_child` fork-safe by skipping the std stdout/stderr lock acquisition after fork.
 - [ ] `Parser::current_token` API shape — `interactive/parse_status.rs:61` compares the result against `&Token::Newline` literally, which forces every caller to construct a borrowed `Token` value just for equality. Consider a predicate `fn is_token(&self, t: &Token) -> bool` (or an enum-tag helper) that hides the borrow. Discovered during the 2026-05-05 visibility-tightening spec follow-up (`docs/superpowers/specs/2026-05-05-parser-visibility-tightening-design.md` §4.2-1, `src/parser/mod.rs`).
 - [ ] Bench API surface — `Parser::new` and `parse_program` are the only two `Parser` items required to stay `pub`; their sole external consumers are `benches/parser_bench.rs` and `benches/exec_bench.rs`. Wrapping them in a bench-only helper module (e.g. an internal `pub(crate) fn parse_for_bench(s: &str) -> Program` reachable through a `#[cfg(any(test, feature = "internal_api"))]` shim) would let both `Parser::new` and `parse_program` drop to `pub(crate)`, shrinking the public Parser surface from 10 to 8. Requires bench-side refactor. Discovered during the 2026-05-05 visibility-tightening spec follow-up (§4.2-3, `benches/parser_bench.rs`, `benches/exec_bench.rs`).
 - [ ] `ulimit` `-f` block arithmetic assumes `libc::rlim_t == u64` — `BLOCK_SIZE: libc::rlim_t = 512` and `SetBlocks(n: u64).saturating_mul(BLOCK_SIZE)` (`src/builtin/regular.rs`) compile only where `rlim_t` is `u64` (macOS, 64-bit Linux). On 32-bit Linux `rlim_t` is `u32`, making the `u64 * u32` a type error. Not a runtime risk and the project has no Linux CI / targets macOS, but if a 32-bit target is ever added, type `BLOCK_SIZE` as `u64` and cast at the `set_fsize` / `format_fsize_limit` call sites. Final-review follow-up from 2026-05-26 ulimit native -f branch.

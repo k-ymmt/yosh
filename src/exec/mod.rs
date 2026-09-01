@@ -52,48 +52,57 @@ pub(crate) fn shell_exit(status: i32) -> ! {
     std::process::exit(status);
 }
 
-/// Reconstruct a human-readable preview of a whole pipeline for `jobs`
-/// output: every member must be a simple command whose words are purely
-/// literal; members are joined with " | ". Returns `None` when any member
-/// is a compound command or contains unexpanded parameters / command
-/// substitutions (rendering those would require expansion).
-fn preview_pipeline(pipeline: &crate::parser::ast::Pipeline) -> Option<String> {
-    let mut members = Vec::with_capacity(pipeline.commands.len());
-    for cmd in &pipeline.commands {
-        let Command::Simple(sc) = cmd else {
-            return None;
-        };
-        if sc.words.is_empty() {
-            return None;
-        }
-        let mut words = Vec::with_capacity(sc.words.len());
-        for w in &sc.words {
-            let mut s = String::new();
-            for part in &w.parts {
-                match part {
-                    WordPart::Literal(lit) => s.push_str(lit),
-                    WordPart::EscapedLiteral(lit) => s.push_str(lit),
-                    WordPart::SingleQuoted(lit) => {
-                        s.push('\'');
-                        s.push_str(lit);
-                        s.push('\'');
-                    }
-                    _ => return None,
-                }
-            }
-            words.push(s);
-        }
-        members.push(words.join(" "));
+/// Render one pipeline member when it is a simple command with purely
+/// literal words. `None` otherwise (compound commands, redirect-only
+/// commands without words, unexpanded parameters / command substitutions
+/// — rendering those would require expansion).
+fn preview_member(cmd: &Command) -> Option<String> {
+    let Command::Simple(sc) = cmd else {
+        return None;
+    };
+    if sc.words.is_empty() {
+        return None;
     }
-    Some(members.join(" | "))
+    let mut words = Vec::with_capacity(sc.words.len());
+    for w in &sc.words {
+        let mut s = String::new();
+        for part in &w.parts {
+            match part {
+                WordPart::Literal(lit) => s.push_str(lit),
+                WordPart::EscapedLiteral(lit) => s.push_str(lit),
+                WordPart::SingleQuoted(lit) => {
+                    s.push('\'');
+                    s.push_str(lit);
+                    s.push('\'');
+                }
+                _ => return None,
+            }
+        }
+        words.push(s);
+    }
+    Some(words.join(" "))
+}
+
+/// Human-readable preview of a pipeline for `jobs` output: the whole
+/// pipeline joined with " | " when every member renders; otherwise the
+/// FIRST member alone (the pre-2026-09-02 behavior, kept as a fallback
+/// so `%string` job specs still resolve when a later member is
+/// redirect-only or has dynamic words — `sleep 10 | >/dev/null &` must
+/// stay addressable as `%sleep`); `None` when even that fails.
+fn preview_pipeline(pipeline: &crate::parser::ast::Pipeline) -> Option<String> {
+    pipeline
+        .commands
+        .iter()
+        .map(preview_member)
+        .collect::<Option<Vec<String>>>()
+        .map(|members| members.join(" | "))
+        .or_else(|| pipeline.commands.first().and_then(preview_member))
 }
 
 /// Reconstruct a short, human-readable preview of an AndOrList for display in
 /// `jobs` output and for `%string` / `%?string` job-spec matching against
-/// `Job.command`. Uses the literal rendering of the first pipeline when every
-/// member is a simple command with purely literal words; falls back to
-/// "(background)" otherwise (compound commands, unexpanded parameters, command
-/// substitutions, etc.).
+/// `Job.command`. Uses the literal rendering of the first pipeline (see
+/// `preview_pipeline`); falls back to "(background)" otherwise.
 fn preview_command(and_or: &AndOrList) -> String {
     preview_pipeline(&and_or.first).unwrap_or_else(|| "(background)".to_string())
 }
@@ -535,9 +544,17 @@ mod tests {
     }
 
     #[test]
-    fn preview_command_pipeline_with_unpreviewable_member_falls_back() {
+    fn preview_command_pipeline_with_unpreviewable_member_uses_first() {
+        // A later member with dynamic words cannot be rendered, but the
+        // preview falls back to the first member (pre-2026-09-02
+        // behavior) so `%string` job specs keep resolving.
         assert_eq!(
             preview_command(&first_and_or("echo hi | grep $x")),
+            "echo hi"
+        );
+        // An unpreviewable FIRST member still falls back to the marker.
+        assert_eq!(
+            preview_command(&first_and_or("grep $x | cat")),
             "(background)"
         );
     }
