@@ -2,6 +2,11 @@
 crates/*/target
 tests/**/target
 
+# cargo-component regenerates these on every build (WIT package version
+# is embedded); the test plugins get their guest bindings from the SDK's
+# wit_bindgen::generate! macro instead, so these files are never compiled.
+tests/plugins/*/src/bindings.rs
+
 /.claude/settings.local.json
 /.claude/scheduled_tasks.lock
 mise.local.toml
