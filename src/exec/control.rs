@@ -280,6 +280,23 @@ impl Executor {
                     None,
                 );
 
+                // bash's nofork optimization: a `&` payload shaped like a
+                // single simple command may exec in place (no grandchild
+                // fork) if it dispatches to an external utility, so the
+                // parent's job-table entry — this child's pid — IS the
+                // command: stops become visible to job control and the
+                // exec'd command's $PPID is the forking shell.
+                // exec_simple_command takes the flag at entry and ignores
+                // it for builtins/functions, which keep the wrapper-
+                // subshell semantics below.
+                if and_or.rest.is_empty()
+                    && !and_or.first.negated
+                    && and_or.first.commands.len() == 1
+                    && matches!(and_or.first.commands[0], Command::Simple(_))
+                {
+                    self.env.exec.async_exec_in_place = true;
+                }
+
                 let status = self.exec_and_or(and_or);
                 exit_child(status);
             }

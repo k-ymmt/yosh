@@ -568,3 +568,78 @@ fn test_pipeline_member_sigpipe_default() {
     assert_eq!(code, Some(0));
     assert_eq!(stdout.trim(), "y");
 }
+
+// ---------------------------------------------------------------------------
+// Async exec-in-place (2026-09-01): a `&` payload that is a single external
+// simple command is exec'd directly in the async child (no grandchild fork),
+// so the job pid IS the command. See
+// docs/superpowers/specs/2026-09-01-async-exec-in-place-design.md.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_async_external_ppid_is_shell() {
+    // The exec'd background command's parent is the forking shell itself,
+    // not an intermediate async wrapper (bash/dash parity).
+    let output = yosh_exec("echo $$; /bin/sh -c 'echo $PPID' & wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    let shell_pid = lines.next().expect("missing shell pid line");
+    let sh_ppid = lines.next().expect("missing sh ppid line");
+    assert_eq!(
+        shell_pid, sh_ppid,
+        "async external must be a direct child of the shell"
+    );
+}
+
+#[test]
+fn test_async_external_exit_status_via_wait() {
+    let output = yosh_exec("/bin/sh -c 'exit 7' & wait $!; echo st=$?");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "st=7");
+}
+
+#[test]
+fn test_async_external_term_signal_status_via_wait() {
+    // TERM lands either before the exec (async shell child, SIG_DFL) or
+    // after (the exec'd sleep); both die by SIGTERM and wait reports 143.
+    let (stdout, _stderr, code) =
+        yosh_exec_timeout("sleep 5 & kill -TERM $!; wait $!; echo st=$?", 10);
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "st=143");
+}
+
+#[test]
+fn test_async_exec_in_place_redirect_failure_status() {
+    // Redirect failure exits the async child with 1 before the exec,
+    // same as the old grandchild path.
+    let output = yosh_exec("/bin/echo hi >/nonexistent-yosh-dir/f & wait $!; echo st=$?");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "st=1");
+}
+
+#[test]
+fn test_async_external_prefix_assignment_exported() {
+    let output = yosh_exec("YOSH_INPLACE_MARK=v1 /usr/bin/env & wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.lines().any(|l| l == "YOSH_INPLACE_MARK=v1"),
+        "prefix assignment must reach the exec'd environment: {:?}",
+        stdout
+    );
+}
+
+#[test]
+fn test_async_list_payload_keeps_wrapper_semantics() {
+    // `a && b &` is not a single simple command: it still runs in the
+    // wrapper subshell and the final status propagates through wait.
+    let output = yosh_exec("true && /bin/sh -c 'exit 3' & wait $!; echo st=$?");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "st=3");
+}
+
+#[test]
+fn test_async_not_found_status_via_wait() {
+    let output = yosh_exec("nonexistent-cmd-yosh-xyz & wait $!; echo st=$?");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "st=127");
+}

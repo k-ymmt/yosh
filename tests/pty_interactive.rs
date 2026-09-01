@@ -1458,6 +1458,46 @@ fn test_pty_dash_m_with_redirected_stdin_keeps_job_control() {
 }
 
 #[test]
+fn test_pty_background_external_stop_visible_in_jobs() {
+    // Async exec-in-place (2026-09-01): `cmd &` with a single external
+    // simple command execs directly in the async child, so the job-table
+    // pid IS the command. A background /bin/cat reading the tty stops
+    // with SIGTTIN; `jobs` must report it Stopped (pre-fix: the async
+    // wrapper stayed Running and the stopped grandchild was invisible to
+    // job control), and `fg` must resume it as a working foreground job.
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("/bin/cat &\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    // cat execs and its background-pgrp tty read raises SIGTTIN
+    // immediately; the sleep just gives the exec a moment, and the next
+    // prompt's reap records the stop before `jobs` runs.
+    s.send("sleep 0.5\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("jobs\r").unwrap();
+    s.expect("Stopped")
+        .expect("background cat's SIGTTIN stop must be visible in jobs");
+    wait_for_prompt(&mut s);
+
+    // `bg %1` must accept the stopped job (pre-fix it failed with
+    // "bg: job 1 not stopped" because the wrapper was still Running).
+    // The resumed cat re-reads the tty from the background pgrp and
+    // stops again; no fg roundtrip here — on macOS a SIGCONT'd /bin/cat
+    // exits on EINTR immediately (see the TODO.md Task 7 note), which
+    // is orthogonal to what this test pins.
+    s.send("bg %1\r").unwrap();
+    s.expect(Regex(r"\[1\]\+ /bin/cat &"))
+        .expect("bg must resume the stopped background cat");
+    wait_for_prompt(&mut s);
+
+    s.send("kill -9 %1\r").unwrap();
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_backgrounded_repl_stops_until_foregrounded() {
     // Regression (2026-08-25 wrap-up review round 3): an interactive
     // yosh launched in the background of a job-controlling shell
@@ -1487,11 +1527,12 @@ fn test_pty_backgrounded_repl_stops_until_foregrounded() {
     wait_for_prompt(&mut s);
 
     // The background REPL must stop itself (SIGTTIN) instead of racing
-    // the outer shell for terminal reads. `yosh cmd &` double-forks
-    // (async subshell, then fork+exec), so the stopped grandchild is
-    // invisible to the outer shell's `jobs`; every member of the job
-    // shares the job's pgid though, so observe the stop from outside
-    // the PTY: some process in that pgrp must reach state T.
+    // the outer shell for terminal reads. Since async exec-in-place
+    // (2026-09-01) the single-external `yosh &` payload execs directly
+    // in the async child, so the stop is also visible to the outer
+    // shell's job table; the ps-based observation below is kept because
+    // it verifies the actual OS-level stop state independent of the
+    // outer shell's reaping.
     let deadline = std::time::Instant::now() + TIMEOUT;
     loop {
         let ps = std::process::Command::new("ps")

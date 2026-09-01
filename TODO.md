@@ -91,27 +91,23 @@
       code when a user targets one. Wrap-up review 2026-08-25 round 3
       residual (`src/signal.rs`, `src/env/jobs/terminal.rs`,
       `src/exec/redirect.rs`).
-- [ ] Async double-fork hides grandchild stops from job control —
-      `cmd &` forks a subshell which forks+execs the command, so the
-      job table tracks the wrapper subshell: when the grandchild stops
-      (e.g. a backgrounded `yosh &` REPL self-stopping with SIGTTIN in
-      its startup foreground-wait loop), `jobs` still reports Running
-      and `bg %1` fails with "job not stopped". `fg` works because it
-      operates on the whole pgrp (SIGCONT + terminal handoff). A fix
-      wants bash's optimization — exec the command directly in the
-      async child when the payload is a single external simple command
-      — or pgrp-wide WUNTRACED status probing. Wrap-up review
-      2026-08-25 round 2 finding, pre-existing
+- [ ] Async wrapper residuals after the 2026-09-01 exec-in-place fix —
+      `cmd &` with a single external simple command now execs directly
+      in the async child (no grandchild; stops visible to `jobs`/`bg`,
+      `$PPID` correct — see
+      `docs/superpowers/specs/2026-09-01-async-exec-in-place-design.md`),
+      but other async payload shapes (pipelines, `a && b &`, compounds,
+      `command cmd &`, builtins/functions with nested externals) still
+      run in a wrapper subshell whose grandchild stops remain invisible
+      to job control and whose exec'd commands still see the wrapper as
+      `$PPID`. Extending coverage wants per-member pid tracking in the
+      job table (pipelines) or pgrp-wide WUNTRACED status probing.
+      Revisit if real scripts hit the remaining shapes
       (`src/exec/control.rs::exec_async`, `src/env/jobs/`).
-      2026-08-26 addendum: the same double fork also skews `$PPID`
-      seen by the exec'd command — `sh -c 'kill -USR1 $PPID' &` in a
-      command substitution signals the intermediate async wrapper
-      (which dies at SIG_DFL) instead of the substitution child, where
-      bash/dash's exec-in-place optimization makes `$PPID` the
-      substitution child itself. Found while fixing the fork-child
-      self-pipe-handler retention bug (signals targeted at the
-      subst/subshell child itself now kill it immediately; see
-      `signal::reset_shell_child_signals`).
+      DEVIATION note (2026-09-01, recorded in the spec): plugins'
+      post_exec hook does not fire for an exec-in-place background
+      external — pre-optimization it ran inside the discarded forked
+      wrapper, so only external side effects are lost.
 - [ ] `wait_until_foreground` untestable-order residuals — the two
       backgrounded-REPL PTY tests pin the stop and the fg recovery but
       not (a) the spin-detector reset semantics (a regression that

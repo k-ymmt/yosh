@@ -51,4 +51,13 @@ pub struct ExecState {
     /// contrast, exports the live numeric value. This divergence is
     /// accepted rather than fixed.
     pub lineno: usize,
+    /// One-shot exec-in-place marker set by `exec_async` in the forked
+    /// async child when the `&` payload is a single simple command.
+    /// `exec_simple_command` takes it (read + clear) at entry — before
+    /// any expansion can fork command-substitution children that would
+    /// inherit it via the `ShellEnv` clone — and honors it only on the
+    /// external-utility dispatch: the async child then `exec`s the
+    /// command in place instead of forking a grandchild, so the job
+    /// table tracks the real command pid (bash's nofork optimization).
+    pub async_exec_in_place: bool,
 }

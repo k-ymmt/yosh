@@ -52,6 +52,11 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                     loop_depth: 0,
                     indirection_level: 0,
                     lineno: env.exec.lineno,
+                    // Never inherited: a command-sub child of an async
+                    // exec-in-place candidate must not itself exec in
+                    // place (defense in depth — exec_simple_command also
+                    // takes the flag before expansion runs).
+                    async_exec_in_place: false,
                 },
                 process: crate::env::ProcessState {
                     shell_pid: env.process.shell_pid,

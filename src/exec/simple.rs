@@ -208,6 +208,15 @@ impl Executor {
     pub(crate) fn exec_simple_command(&mut self, cmd: &SimpleCommand) -> Result<i32, ShellError> {
         self.env.exec.lineno = cmd.line;
 
+        // Take (read + clear) the async exec-in-place marker BEFORE any
+        // expansion: command substitutions below fork children whose
+        // cloned ShellEnv must not inherit a set flag, and nested
+        // exec_simple_command calls (function bodies, `command`) must
+        // not consume it. Only the external-utility dispatch at the
+        // bottom honors it; every other dispatch ignores it and keeps
+        // wrapper-subshell semantics.
+        let async_exec_in_place = std::mem::take(&mut self.env.exec.async_exec_in_place);
+
         // Expand ONLY the command name first, so we can dispatch to an
         // assignment-aware expansion for export/readonly. A single early
         // expansion of `cmd.words[..]` would fire side effects (command
@@ -622,11 +631,19 @@ impl Executor {
                 let env_vars = self.build_env_vars(&cmd.assignments).inspect_err(|_| {
                     self.env.exec.last_exit_status = 1;
                 })?;
+                // DEVIATION (async exec-in-place, 2026-09-01): plugins'
+                // post_exec does not fire for a background external
+                // simple command — the async child is replaced by the
+                // exec. pre_exec fired above, as it always did in the
+                // wrapper. Pre-optimization, post_exec ran inside the
+                // forked wrapper whose plugin state was discarded on
+                // exit, so only external side effects are lost.
                 let status = self.exec_external_with_redirects(
                     &command_name,
                     &args,
                     &env_vars,
                     &cmd.redirects,
+                    async_exec_in_place,
                 );
                 self.plugins
                     .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
@@ -679,12 +696,19 @@ impl Executor {
     /// cmd`) is honored for this resolution too — it takes precedence
     /// over the shell's own `$PATH`, matching what a setenv'd child's
     /// `execvp` would have searched pre-branch (see `effective_path_override`).
+    /// With `in_place` (async exec-in-place, see `exec_async`), the
+    /// resolved command is exec'd directly in the current process — this
+    /// process is already the forked async child in its own process
+    /// group, so replacing it makes the parent's job-table entry track
+    /// the real command. Never returns in that case unless resolution
+    /// fails (127/126 fall through to the normal wrapper exit).
     pub(crate) fn exec_external_with_redirects(
         &mut self,
         cmd: &str,
         args: &[String],
         env_overrides: &[(String, String)],
         redirects: &[crate::parser::ast::Redirect],
+        in_place: bool,
     ) -> i32 {
         let effective_path = effective_path_override(env_overrides);
         let resolved = resolve_exec_path(
@@ -713,6 +737,32 @@ impl Executor {
                 126
             }
             ResolvedExec::Executable(path) => {
+                if in_place {
+                    let (c_cmd, c_args) = match build_exec_cstrings_for_path(&path, cmd, args) {
+                        Ok(v) => v,
+                        Err(ExecCStringError::CommandName) => {
+                            eprintln!("yosh: {}: invalid command name", cmd);
+                            return 127;
+                        }
+                        Err(ExecCStringError::Argument(arg)) => {
+                            eprintln!("yosh: {}: invalid argument", arg);
+                            return 1;
+                        }
+                    };
+                    // Same pre-exec dispositions the forked grandchild
+                    // used to get: everything to SIG_DFL except trap-
+                    // ignored signals (in the non-monitor async child
+                    // `ignored` already carries the SIGINT/SIGQUIT
+                    // entries exec_async inserted), and the inherited
+                    // self-pipe fds closed. The explicit reset matters
+                    // for SIG_IGN dispositions, which survive exec —
+                    // notably the background shell child's SIGTTIN
+                    // ignore: the exec'd command must be stoppable so
+                    // the now correctly tracked stop is visible.
+                    let ignored = self.env.traps.ignored_signals();
+                    signal::reset_child_signals(&ignored);
+                    self.exec_child_prepared(&c_cmd, &c_args, cmd, env_overrides, redirects);
+                }
                 self.spawn_external_at_path(&path, cmd, args, env_overrides, redirects)
             }
         }
@@ -771,94 +821,7 @@ impl Executor {
                     signal::reset_child_signals(&ignored);
                 }
 
-                // Apply redirects (no need to save, we're in the child)
-                let mut redir_state = RedirectState::new();
-                if let Err(e) = redir_state.apply(redirects, &mut self.env, false) {
-                    // Empty message = diagnostic already printed (heredoc
-                    // `${x:?}`/nounset failure inside this child).
-                    if !e.is_empty() {
-                        eprintln!("yosh: {}", e);
-                    }
-                    super::exit_child(1);
-                }
-
-                // Set environment variables using libc::setenv directly.
-                // SAFETY: single-threaded child after fork. We must NOT use
-                // std::env::set_var here because it acquires Rust's internal
-                // ENV_LOCK (RwLock). If another thread in the parent held
-                // that lock at fork() time, the child inherits the locked
-                // state and deadlocks — the lock holder thread does not exist
-                // in the child.
-                //
-                // The exported environ is applied first, then `env_overrides`
-                // (command prefix assignments) on top, so overrides win —
-                // matching the previous merged-Vec's replace-or-push order.
-                // Names/values are byteenc-encoded; decode so children see
-                // the original raw bytes for non-UTF-8 environment data.
-                for (k, v) in self.env.vars.environ() {
-                    if let (Ok(c_key), Ok(c_val)) = (
-                        CString::new(crate::byteenc::decode_bytes(k).into_owned()),
-                        CString::new(crate::byteenc::decode_bytes(v).into_owned()),
-                    ) {
-                        unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
-                    }
-                }
-                for (k, v) in env_overrides {
-                    if let (Ok(c_key), Ok(c_val)) = (
-                        CString::new(crate::byteenc::decode_bytes(k).into_owned()),
-                        CString::new(crate::byteenc::decode_bytes(v).into_owned()),
-                    ) {
-                        unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
-                    }
-                }
-
-                // execv (not execvp): the path was already resolved via
-                // PATH search in the parent (resolve_exec_path), so the
-                // child does not need to re-walk PATH. A TOCTOU race
-                // (file removed/permissions changed between the parent's
-                // check and this exec) is still possible, so errno is
-                // handled the same way execvp's failure was handled
-                // before this change.
-                let err = execv(&c_cmd, &c_args).unwrap_err();
-                use nix::errno::Errno;
-                let exit_code = match err {
-                    Errno::ENOENT => {
-                        eprintln!("yosh: {}: command not found", cmd);
-                        127
-                    }
-                    Errno::EACCES => {
-                        eprintln!("yosh: {}: permission denied", cmd);
-                        126
-                    }
-                    Errno::ENOEXEC => {
-                        // POSIX execvp fallback that execv does not do
-                        // for us: an executable file the kernel refuses
-                        // to exec (no `#!` line / unrecognized format)
-                        // is re-run as a shell script:
-                        //   /bin/sh <resolved-path> <args...>
-                        // c_cmd is the resolved path; c_args[0] is the
-                        // display-name argv[0], replaced by the script
-                        // path in the sh invocation (matching libc
-                        // execvp, which passes the *file* to sh).
-                        match CString::new("/bin/sh") {
-                            Ok(sh) => {
-                                let mut sh_args = Vec::with_capacity(c_args.len() + 1);
-                                sh_args.push(sh.clone());
-                                sh_args.push(c_cmd.clone());
-                                sh_args.extend_from_slice(&c_args[1..]);
-                                let err2 = execv(&sh, &sh_args).unwrap_err();
-                                eprintln!("yosh: {}: {}", cmd, err2);
-                            }
-                            Err(_) => unreachable!("/bin/sh has no NUL"),
-                        }
-                        126
-                    }
-                    _ => {
-                        eprintln!("yosh: {}: {}", cmd, err);
-                        127
-                    }
-                };
-                super::exit_child(exit_code);
+                self.exec_child_prepared(&c_cmd, &c_args, cmd, env_overrides, redirects);
             }
             Ok(ForkResult::Parent { child }) => {
                 if monitor {
@@ -895,6 +858,116 @@ impl Executor {
                 }
             }
         }
+    }
+
+    /// Child-side / in-place tail of external execution: apply redirects,
+    /// merge the exported environ with prefix-assignment overrides, and
+    /// `execv` the already-resolved command (with the POSIX ENOEXEC
+    /// `/bin/sh` fallback). Never returns — on failure the process exits
+    /// with the classic codes (redirect failure 1, ENOENT 127,
+    /// EACCES/ENOEXEC 126).
+    ///
+    /// Callers do the fork-specific setup first (process group, signal
+    /// dispositions): the fork path in [`Self::spawn_external_at_path`],
+    /// and the async exec-in-place path in
+    /// [`Self::exec_external_with_redirects`], where the current process
+    /// is the forked async child itself.
+    fn exec_child_prepared(
+        &mut self,
+        c_cmd: &CString,
+        c_args: &[CString],
+        cmd: &str,
+        env_overrides: &[(String, String)],
+        redirects: &[crate::parser::ast::Redirect],
+    ) -> ! {
+        // Apply redirects (no need to save — this process is replaced)
+        let mut redir_state = RedirectState::new();
+        if let Err(e) = redir_state.apply(redirects, &mut self.env, false) {
+            // Empty message = diagnostic already printed (heredoc
+            // `${x:?}`/nounset failure inside this child).
+            if !e.is_empty() {
+                eprintln!("yosh: {}", e);
+            }
+            super::exit_child(1);
+        }
+
+        // Set environment variables using libc::setenv directly.
+        // SAFETY: single-threaded child after fork (or the async child
+        // about to exec). We must NOT use std::env::set_var here because
+        // it acquires Rust's internal ENV_LOCK (RwLock). If another
+        // thread in the parent held that lock at fork() time, the child
+        // inherits the locked state and deadlocks — the lock holder
+        // thread does not exist in the child.
+        //
+        // The exported environ is applied first, then `env_overrides`
+        // (command prefix assignments) on top, so overrides win —
+        // matching the previous merged-Vec's replace-or-push order.
+        // Names/values are byteenc-encoded; decode so children see
+        // the original raw bytes for non-UTF-8 environment data.
+        for (k, v) in self.env.vars.environ() {
+            if let (Ok(c_key), Ok(c_val)) = (
+                CString::new(crate::byteenc::decode_bytes(k).into_owned()),
+                CString::new(crate::byteenc::decode_bytes(v).into_owned()),
+            ) {
+                unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
+            }
+        }
+        for (k, v) in env_overrides {
+            if let (Ok(c_key), Ok(c_val)) = (
+                CString::new(crate::byteenc::decode_bytes(k).into_owned()),
+                CString::new(crate::byteenc::decode_bytes(v).into_owned()),
+            ) {
+                unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
+            }
+        }
+
+        // execv (not execvp): the path was already resolved via
+        // PATH search in the parent (resolve_exec_path), so the
+        // child does not need to re-walk PATH. A TOCTOU race
+        // (file removed/permissions changed between the parent's
+        // check and this exec) is still possible, so errno is
+        // handled the same way execvp's failure was handled
+        // before this change.
+        let err = execv(c_cmd, c_args).unwrap_err();
+        use nix::errno::Errno;
+        let exit_code = match err {
+            Errno::ENOENT => {
+                eprintln!("yosh: {}: command not found", cmd);
+                127
+            }
+            Errno::EACCES => {
+                eprintln!("yosh: {}: permission denied", cmd);
+                126
+            }
+            Errno::ENOEXEC => {
+                // POSIX execvp fallback that execv does not do
+                // for us: an executable file the kernel refuses
+                // to exec (no `#!` line / unrecognized format)
+                // is re-run as a shell script:
+                //   /bin/sh <resolved-path> <args...>
+                // c_cmd is the resolved path; c_args[0] is the
+                // display-name argv[0], replaced by the script
+                // path in the sh invocation (matching libc
+                // execvp, which passes the *file* to sh).
+                match CString::new("/bin/sh") {
+                    Ok(sh) => {
+                        let mut sh_args = Vec::with_capacity(c_args.len() + 1);
+                        sh_args.push(sh.clone());
+                        sh_args.push(c_cmd.clone());
+                        sh_args.extend_from_slice(&c_args[1..]);
+                        let err2 = execv(&sh, &sh_args).unwrap_err();
+                        eprintln!("yosh: {}: {}", cmd, err2);
+                    }
+                    Err(_) => unreachable!("/bin/sh has no NUL"),
+                }
+                126
+            }
+            _ => {
+                eprintln!("yosh: {}: {}", cmd, err);
+                127
+            }
+        };
+        super::exit_child(exit_code);
     }
 
     /// Apply prefix assignments temporarily, returning saved values for later restoration.
