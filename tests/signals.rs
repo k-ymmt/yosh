@@ -643,3 +643,92 @@ fn test_async_not_found_status_via_wait() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "st=127");
 }
+
+#[test]
+fn test_wait_trapped_signal_operandless_exit_propagates_128_sig() {
+    // POSIX XCU wait: interrupted by a trapped signal, wait returns
+    // 128+sig — and the trap action starts with $? already at that
+    // value (bash runs the trap after wait returns), so an operandless
+    // `exit` inside the trap exits 143 here, not the pre-wait $?.
+    // Wrap-up review 2026-09-02 round 1 finding (pre-existing).
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "trap 'exit' TERM; (/bin/sleep 0.2; kill -TERM $$) & wait $!; echo after=$?",
+        10,
+    );
+    assert_eq!(
+        code,
+        Some(143),
+        "operandless exit in the interrupting trap must propagate 128+SIGTERM"
+    );
+    assert!(
+        !stdout.contains("after="),
+        "the trap's exit must terminate the shell before the next command: {:?}",
+        stdout
+    );
+}
+
+#[test]
+fn test_wait_trapped_signal_returns_128_sig_and_continues() {
+    // Same interruption with a non-exiting trap: wait itself reports
+    // 128+sig and execution continues.
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "trap : TERM; (/bin/sleep 0.2; kill -TERM $$) & wait $!; echo st=$?",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "st=143");
+}
+
+#[test]
+fn test_wait_multi_signal_interruption_reports_first_signal() {
+    // Two signals sent back-to-back and (usually) drained together: the
+    // FIRST-delivered one interrupted wait, so its 128+sig is what the
+    // first trap action sees and what its operandless `exit`
+    // propagates. Delivery order of two *different* signals that become
+    // pending simultaneously is kernel-unspecified, so the assertion
+    // pins the pairing (whichever trap ran first must carry ITS OWN
+    // signal's status) rather than a fixed order — the pre-fix `rfind`
+    // bug produced a mismatched pairing (USR1 trap exiting with TERM's
+    // 143). Wrap-up review 2026-09-02 round 2 finding.
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "trap 'echo U; exit' USR1; trap 'echo T; exit' TERM; \
+         /bin/sh -c 'sleep .05; kill -USR1 $PPID; kill -TERM $PPID; sleep .1' & \
+         wait $!; echo after",
+        10,
+    );
+    let first = stdout.lines().next().unwrap_or("").to_string();
+    let expected = match first.as_str() {
+        "U" => 128 + libc::SIGUSR1,
+        "T" => 128 + libc::SIGTERM,
+        other => panic!("unexpected first trap marker: {:?}", other),
+    };
+    assert_eq!(
+        code,
+        Some(expected),
+        "the first-run trap must exit with its own signal's 128+sig (first={})",
+        first
+    );
+    assert!(
+        !stdout.contains("after"),
+        "the trap's exit must terminate the shell: {:?}",
+        stdout
+    );
+}
+
+#[test]
+fn test_wait_pending_trapped_signal_beats_concurrent_child_exit() {
+    // The child signals the shell while it is stopped and then exits:
+    // on resume, both the trapped TERM and the reapable child are
+    // pending at once. The signal interruption must win — wait returns
+    // 128+SIGTERM and the pid stays waitable (bash agrees; pre-fix the
+    // waitpid reap ran first and wait returned the child's 0). Wrap-up
+    // review 2026-09-02 round 3 finding.
+    let (stdout, _stderr, code) = yosh_exec_timeout(
+        "trap : TERM; \
+         /bin/sh -c 'p=$PPID; (sleep .05; kill -CONT $p) & kill -STOP $p; kill -TERM $p' & \
+         c=$!; wait \"$c\"; echo WAIT:$?",
+        10,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(stdout.trim(), "WAIT:143");
+}

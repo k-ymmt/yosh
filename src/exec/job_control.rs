@@ -179,6 +179,53 @@ impl Executor {
             }
 
             loop {
+                // Drain pending signals BEFORE reaping: when a trapped
+                // signal and the child's exit are both already pending
+                // (e.g. the child signaled this shell and exited while
+                // the shell was stopped), the signal interruption must
+                // win — POSIX wait returns 128+sig and the pid stays
+                // waitable; bash agrees (wrap-up review 2026-09-02
+                // round 3 finding). The pipe is drained directly, so a
+                // later process_pending_signals finds it empty and does
+                // nothing.
+                let signals = signal::drain_pending_signals();
+                if !signals.is_empty() {
+                    // SIGCHLD is the child-exit notification itself,
+                    // not an interruption of wait — after the traps run
+                    // below, loop and re-poll waitpid, which then reaps
+                    // the exited child. This holds even when the user
+                    // trapped CHLD: bash/dash both return the child's
+                    // status from `trap 'echo T' CHLD; cmd & wait $!`
+                    // rather than 128+SIGCHLD (empirical, 2026-08-25).
+                    // Only other signals interrupt wait with 128+sig.
+                    // `find`, not `rfind`: the self-pipe preserves
+                    // delivery order, and the FIRST non-CHLD signal is
+                    // the one that interrupted wait — with several
+                    // drained together (`kill -USR1; kill -TERM`),
+                    // bash/dash report 128+first (158), and the first
+                    // trap action must see that status, not the last
+                    // signal's (wrap-up review 2026-09-02 round 2
+                    // finding).
+                    let interrupt_sig =
+                        signals.iter().find(|&&s| s != libc::SIGCHLD).copied();
+                    // POSIX XCU wait: interrupted by a signal for which
+                    // a trap is set, wait returns 128+sig — and bash
+                    // runs the trap only AFTER wait has returned, so
+                    // the action starts with `$?` already 128+sig and
+                    // an operandless `exit` inside it propagates that
+                    // status via trap_context_status (`trap 'exit'
+                    // TERM; cmd & wait` exits 143, not the pre-wait
+                    // `$?`; wrap-up review 2026-09-02 round 1 finding).
+                    // Expose it before running the actions.
+                    if let Some(sig) = interrupt_sig {
+                        self.env.exec.last_exit_status = 128 + sig;
+                    }
+                    self.run_signal_traps(&signals);
+                    if let Some(sig) = interrupt_sig {
+                        last_status = 128 + sig;
+                        return Ok(last_status);
+                    }
+                }
                 match waitpid(*pid, Some(WaitPidFlag::WNOHANG)) {
                     Ok(WaitStatus::Exited(p, code)) => {
                         self.env
@@ -201,51 +248,15 @@ impl Executor {
                         // Poll the self-pipe with a short timeout so a signal
                         // arriving mid-wait is noticed promptly. In monitor
                         // mode SIGCHLD is registered on the self-pipe too, so
-                        // a child exit also wakes this poll.
+                        // a child exit also wakes this poll. Readable data is
+                        // left in the pipe — the drain at the top of the loop
+                        // consumes and handles it on the next iteration.
                         let pipe_fd = signal::self_pipe_read_fd();
                         let mut fds = [nix::poll::PollFd::new(
                             unsafe { std::os::fd::BorrowedFd::borrow_raw(pipe_fd) },
                             nix::poll::PollFlags::POLLIN,
                         )];
-                        match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16)) {
-                            Ok(_)
-                                if fds[0]
-                                    .revents()
-                                    .is_some_and(|r| r.contains(nix::poll::PollFlags::POLLIN)) =>
-                            {
-                                let signals = signal::drain_pending_signals();
-                                if !signals.is_empty() {
-                                    // The self-pipe is already drained, so run
-                                    // the trap actions for the drained signals
-                                    // directly (process_pending_signals would
-                                    // find an empty pipe and do nothing).
-                                    self.run_signal_traps(&signals);
-                                    // SIGCHLD is the child-exit notification
-                                    // itself, not an interruption of wait —
-                                    // fall through and re-poll waitpid, which
-                                    // now reaps the exited child. This holds
-                                    // even when the user trapped CHLD: the
-                                    // trap action ran above, and bash/dash
-                                    // both return the child's status from
-                                    // `trap 'echo T' CHLD; cmd & wait $!`
-                                    // rather than 128+SIGCHLD (empirical,
-                                    // 2026-08-25). Only other signals
-                                    // interrupt wait with 128+sig.
-                                    if let Some(&sig) =
-                                        signals.iter().rfind(|&&s| s != libc::SIGCHLD)
-                                    {
-                                        last_status = 128 + sig;
-                                        return Ok(last_status);
-                                    }
-                                }
-                            }
-                            Err(nix::errno::Errno::EINTR) => {
-                                // Interrupted — retry waitpid
-                            }
-                            _ => {
-                                // Timeout or no self-pipe data — retry waitpid
-                            }
-                        }
+                        let _ = nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16));
                     }
                     Err(nix::errno::Errno::ECHILD) => {
                         // A trap action run mid-wait (e.g. a CHLD trap
