@@ -1,13 +1,13 @@
 use std::os::unix::io::RawFd;
 
 use nix::sys::wait::{WaitStatus, waitpid};
-use nix::unistd::{ForkResult, Pid, fork, setpgid};
+use nix::unistd::{ForkResult, Pid, setpgid};
 
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::parser::ast::{Command, Pipeline};
 use crate::signal;
 
-use super::Executor;
+use super::{Executor, fork_shell};
 
 impl Executor {
     /// Execute a pipeline.
@@ -59,7 +59,7 @@ impl Executor {
         let mut pgid = Pid::from_raw(0);
 
         for (i, cmd) in pipeline.commands.iter().enumerate() {
-            match unsafe { fork() } {
+            match unsafe { fork_shell() } {
                 Err(e) => {
                     close_all_pipes(&pipes);
                     // A mid-pipeline fork failure leaves the elements
@@ -293,7 +293,7 @@ impl Executor {
         let mut pgid = Pid::from_raw(0);
 
         for (i, cmd) in pipeline.commands.iter().enumerate() {
-            match unsafe { fork() } {
+            match unsafe { fork_shell() } {
                 Err(e) => {
                     // Mid-pipeline fork failure: terminate and reap the
                     // members forked so far before propagating (see

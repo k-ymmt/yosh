@@ -2,7 +2,9 @@ use std::io::Read;
 use std::os::fd::FromRawFd;
 
 use nix::sys::wait::{WaitStatus, waitpid};
-use nix::unistd::{ForkResult, fork};
+use nix::unistd::ForkResult;
+
+use crate::exec::fork_shell;
 
 use crate::env::ShellEnv;
 use crate::exec::Executor;
@@ -22,7 +24,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
     let pipe_read = pipe_fds[0];
     let pipe_write = pipe_fds[1];
 
-    match unsafe { fork() } {
+    match unsafe { fork_shell() } {
         Err(e) => {
             eprintln!("yosh: fork: {}", e);
             unsafe {

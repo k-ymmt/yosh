@@ -1,6 +1,6 @@
-use nix::unistd::{ForkResult, fork};
+use nix::unistd::ForkResult;
 
-use super::{Executor, exit_child, preview_command};
+use super::{Executor, exit_child, fork_shell, preview_command};
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::parser::ast::{
     AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, SeparatorOp,
@@ -231,7 +231,7 @@ impl Executor {
             prev_mask_opt.as_mut(),
         );
         let prev_mask = prev_mask_opt.unwrap();
-        match unsafe { fork() } {
+        match unsafe { fork_shell() } {
             Err(e) => {
                 let _ = nix::sys::signal::sigprocmask(
                     nix::sys::signal::SigmaskHow::SIG_SETMASK,

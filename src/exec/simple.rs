@@ -1,6 +1,6 @@
 use std::ffi::CString;
 
-use nix::unistd::{ForkResult, execv, fork};
+use nix::unistd::{ForkResult, execv};
 
 use crate::builtin::special::exec_special_builtin;
 use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
@@ -12,9 +12,9 @@ use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
 use crate::parser::try_parse_assignment;
 use crate::signal;
 
-use super::Executor;
 use super::command::wait_child;
 use super::redirect::RedirectState;
+use super::{Executor, fork_shell};
 
 /// For export/readonly, re-process each Word argument by trying to parse
 /// it as an Assignment first. Words that successfully parse as `NAME=value`
@@ -804,7 +804,7 @@ impl Executor {
         let shell_pgid = self.env.process.shell_pgid;
         let ignored = self.env.traps.ignored_signals();
 
-        match unsafe { fork() } {
+        match unsafe { fork_shell() } {
             Err(e) => {
                 eprintln!("yosh: fork: {}", e);
                 1

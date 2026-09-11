@@ -1,4 +1,4 @@
-use nix::unistd::{ForkResult, fork};
+use nix::unistd::ForkResult;
 
 use crate::env::FlowControl;
 use crate::error::{RuntimeErrorKind, ShellError};
@@ -8,9 +8,9 @@ use crate::parser::ast::{
 };
 use crate::signal;
 
-use super::Executor;
 use super::command;
 use super::redirect::RedirectState;
+use super::{Executor, fork_shell};
 
 impl Executor {
     /// Execute a compound command, applying any redirects around it.
@@ -93,7 +93,7 @@ impl Executor {
     }
 
     fn exec_subshell(&mut self, body: &[CompleteCommand]) -> Result<i32, ShellError> {
-        match unsafe { fork() } {
+        match unsafe { fork_shell() } {
             Err(e) => Err(ShellError::runtime(
                 RuntimeErrorKind::IoError,
                 format!("fork: {}", e),
