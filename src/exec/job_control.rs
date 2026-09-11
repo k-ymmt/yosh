@@ -294,116 +294,116 @@ impl Executor {
         }
 
         loop {
-                // Drain pending signals BEFORE reaping: when a trapped
-                // signal and the child's exit are both already pending
-                // (e.g. the child signaled this shell and exited while
-                // the shell was stopped), the signal interruption must
-                // win — POSIX wait returns 128+sig and the pid stays
-                // waitable; bash agrees (wrap-up review 2026-09-02
-                // round 3 finding). The pipe is drained directly, so a
-                // later process_pending_signals finds it empty and does
-                // nothing.
-                let signals = signal::drain_pending_signals();
-                if !signals.is_empty() {
-                    // SIGCHLD is the child-exit notification itself,
-                    // not an interruption of wait — after the traps run
-                    // below, loop and re-poll waitpid, which then reaps
-                    // the exited child. This holds even when the user
-                    // trapped CHLD: bash/dash both return the child's
-                    // status from `trap 'echo T' CHLD; cmd & wait $!`
-                    // rather than 128+SIGCHLD (empirical, 2026-08-25).
-                    // Only other signals interrupt wait with 128+sig.
-                    // `find`, not `rfind`: the self-pipe preserves
-                    // delivery order, and the FIRST non-CHLD signal is
-                    // the one that interrupted wait — with several
-                    // drained together (`kill -USR1; kill -TERM`),
-                    // bash/dash report 128+first (158), and the first
-                    // trap action must see that status, not the last
-                    // signal's (wrap-up review 2026-09-02 round 2
-                    // finding).
-                    let interrupt_sig = signals.iter().find(|&&s| s != libc::SIGCHLD).copied();
-                    // POSIX XCU wait: interrupted by a signal for which
-                    // a trap is set, wait returns 128+sig — and bash
-                    // runs the trap only AFTER wait has returned, so
-                    // the action starts with `$?` already 128+sig and
-                    // an operandless `exit` inside it propagates that
-                    // status via trap_context_status (`trap 'exit'
-                    // TERM; cmd & wait` exits 143, not the pre-wait
-                    // `$?`; wrap-up review 2026-09-02 round 1 finding).
-                    // Expose it before running the actions.
-                    if let Some(sig) = interrupt_sig {
-                        self.env.exec.last_exit_status = 128 + sig;
-                    }
-                    self.run_signal_traps(&signals);
-                    if let Some(sig) = interrupt_sig {
-                        return PidWait::Interrupted(128 + sig);
-                    }
+            // Drain pending signals BEFORE reaping: when a trapped
+            // signal and the child's exit are both already pending
+            // (e.g. the child signaled this shell and exited while
+            // the shell was stopped), the signal interruption must
+            // win — POSIX wait returns 128+sig and the pid stays
+            // waitable; bash agrees (wrap-up review 2026-09-02
+            // round 3 finding). The pipe is drained directly, so a
+            // later process_pending_signals finds it empty and does
+            // nothing.
+            let signals = signal::drain_pending_signals();
+            if !signals.is_empty() {
+                // SIGCHLD is the child-exit notification itself,
+                // not an interruption of wait — after the traps run
+                // below, loop and re-poll waitpid, which then reaps
+                // the exited child. This holds even when the user
+                // trapped CHLD: bash/dash both return the child's
+                // status from `trap 'echo T' CHLD; cmd & wait $!`
+                // rather than 128+SIGCHLD (empirical, 2026-08-25).
+                // Only other signals interrupt wait with 128+sig.
+                // `find`, not `rfind`: the self-pipe preserves
+                // delivery order, and the FIRST non-CHLD signal is
+                // the one that interrupted wait — with several
+                // drained together (`kill -USR1; kill -TERM`),
+                // bash/dash report 128+first (158), and the first
+                // trap action must see that status, not the last
+                // signal's (wrap-up review 2026-09-02 round 2
+                // finding).
+                let interrupt_sig = signals.iter().find(|&&s| s != libc::SIGCHLD).copied();
+                // POSIX XCU wait: interrupted by a signal for which
+                // a trap is set, wait returns 128+sig — and bash
+                // runs the trap only AFTER wait has returned, so
+                // the action starts with `$?` already 128+sig and
+                // an operandless `exit` inside it propagates that
+                // status via trap_context_status (`trap 'exit'
+                // TERM; cmd & wait` exits 143, not the pre-wait
+                // `$?`; wrap-up review 2026-09-02 round 1 finding).
+                // Expose it before running the actions.
+                if let Some(sig) = interrupt_sig {
+                    self.env.exec.last_exit_status = 128 + sig;
                 }
-                match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::Exited(p, code)) => {
-                        self.env
-                            .process
-                            .jobs
-                            .update_status(p, JobStatus::Done(code));
-                        return PidWait::Status(code);
-                    }
-                    Ok(WaitStatus::Signaled(p, sig, _)) => {
-                        self.env
-                            .process
-                            .jobs
-                            .update_status(p, JobStatus::Terminated(sig as i32));
-                        return PidWait::Status(128 + sig as i32);
-                    }
-                    Ok(WaitStatus::StillAlive) => {
-                        // Poll the self-pipe with a short timeout so a signal
-                        // arriving mid-wait is noticed promptly. In monitor
-                        // mode SIGCHLD is registered on the self-pipe too, so
-                        // a child exit also wakes this poll. Readable data is
-                        // left in the pipe — the drain at the top of the loop
-                        // consumes and handles it on the next iteration.
-                        let pipe_fd = signal::self_pipe_read_fd();
-                        let mut fds = [nix::poll::PollFd::new(
-                            unsafe { std::os::fd::BorrowedFd::borrow_raw(pipe_fd) },
-                            nix::poll::PollFlags::POLLIN,
-                        )];
-                        let _ = nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16));
-                    }
-                    Err(nix::errno::Errno::ECHILD) => {
-                        // A trap action run mid-wait (e.g. a CHLD trap
-                        // calling `wait` itself) may have already reaped
-                        // this pid and recorded its status in the jobs
-                        // table — report that status instead of an error.
-                        let reaped = self
-                            .env
-                            .process
-                            .jobs
-                            .all_jobs()
-                            .find(|j| j.pids.contains(&pid))
-                            .and_then(|j| j.member_status(pid))
-                            .and_then(|s| match s {
-                                JobStatus::Done(code) => Some(code),
-                                JobStatus::Terminated(sig) => Some(128 + sig),
-                                _ => None,
-                            });
-                        if let Some(s) = reaped {
-                            return PidWait::Status(s);
-                        }
-                        // Or a notification pass mid-wait may have
-                        // reaped AND removed the job — consult the
-                        // retained reaped-status map before erroring.
-                        if let Some(s) = self.env.process.jobs.reaped_status(pid) {
-                            return PidWait::Status(s);
-                        }
-                        let err = ShellError::runtime(
-                            RuntimeErrorKind::CommandNotFound,
-                            format!("wait: pid {} is not a child of this shell", pid),
-                        );
-                        eprintln!("{}", err);
-                        return PidWait::Errored;
-                    }
-                    Err(_) | Ok(_) => return PidWait::Status(0),
+                self.run_signal_traps(&signals);
+                if let Some(sig) = interrupt_sig {
+                    return PidWait::Interrupted(128 + sig);
                 }
             }
+            match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                Ok(WaitStatus::Exited(p, code)) => {
+                    self.env
+                        .process
+                        .jobs
+                        .update_status(p, JobStatus::Done(code));
+                    return PidWait::Status(code);
+                }
+                Ok(WaitStatus::Signaled(p, sig, _)) => {
+                    self.env
+                        .process
+                        .jobs
+                        .update_status(p, JobStatus::Terminated(sig as i32));
+                    return PidWait::Status(128 + sig as i32);
+                }
+                Ok(WaitStatus::StillAlive) => {
+                    // Poll the self-pipe with a short timeout so a signal
+                    // arriving mid-wait is noticed promptly. In monitor
+                    // mode SIGCHLD is registered on the self-pipe too, so
+                    // a child exit also wakes this poll. Readable data is
+                    // left in the pipe — the drain at the top of the loop
+                    // consumes and handles it on the next iteration.
+                    let pipe_fd = signal::self_pipe_read_fd();
+                    let mut fds = [nix::poll::PollFd::new(
+                        unsafe { std::os::fd::BorrowedFd::borrow_raw(pipe_fd) },
+                        nix::poll::PollFlags::POLLIN,
+                    )];
+                    let _ = nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16));
+                }
+                Err(nix::errno::Errno::ECHILD) => {
+                    // A trap action run mid-wait (e.g. a CHLD trap
+                    // calling `wait` itself) may have already reaped
+                    // this pid and recorded its status in the jobs
+                    // table — report that status instead of an error.
+                    let reaped = self
+                        .env
+                        .process
+                        .jobs
+                        .all_jobs()
+                        .find(|j| j.pids.contains(&pid))
+                        .and_then(|j| j.member_status(pid))
+                        .and_then(|s| match s {
+                            JobStatus::Done(code) => Some(code),
+                            JobStatus::Terminated(sig) => Some(128 + sig),
+                            _ => None,
+                        });
+                    if let Some(s) = reaped {
+                        return PidWait::Status(s);
+                    }
+                    // Or a notification pass mid-wait may have
+                    // reaped AND removed the job — consult the
+                    // retained reaped-status map before erroring.
+                    if let Some(s) = self.env.process.jobs.reaped_status(pid) {
+                        return PidWait::Status(s);
+                    }
+                    let err = ShellError::runtime(
+                        RuntimeErrorKind::CommandNotFound,
+                        format!("wait: pid {} is not a child of this shell", pid),
+                    );
+                    eprintln!("{}", err);
+                    return PidWait::Errored;
+                }
+                Err(_) | Ok(_) => return PidWait::Status(0),
+            }
+        }
     }
 
     pub(super) fn builtin_jobs(&mut self, args: &[String]) -> Result<i32, ShellError> {

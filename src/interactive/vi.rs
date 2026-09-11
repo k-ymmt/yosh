@@ -124,9 +124,7 @@ pub enum ViMotion {
     MatchPair,
     /// vim `ge` / `gE` — end of the previous word / WORD. Inclusive
     /// under an operator.
-    WordEndBack {
-        big: bool,
-    },
+    WordEndBack { big: bool },
 }
 
 /// Operator commands that pair with a motion (`d` / `c` / `y`).
@@ -310,7 +308,10 @@ pub enum VisualCmd {
     /// `~` — toggle case of the selection.
     ToggleCase,
     /// `i`/`a` + object char — select or extend by the text object.
-    TextObject { around: bool, obj: char },
+    TextObject {
+        around: bool,
+        obj: char,
+    },
     /// `o` — swap cursor and anchor.
     SwapEnds,
     /// `v` / `V` — same kind exits, other kind switches (§2.3).
@@ -589,7 +590,14 @@ impl ViEngine {
             Pending::TextObject { op, around } => {
                 self.pending = Pending::None;
                 let n = self.take_count();
-                return ViOutcome::Cmd(ViCmd::OpObject { op, around, obj: ch }, n);
+                return ViOutcome::Cmd(
+                    ViCmd::OpObject {
+                        op,
+                        around,
+                        obj: ch,
+                    },
+                    n,
+                );
             }
             Pending::G(op) => {
                 self.pending = Pending::None;

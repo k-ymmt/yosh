@@ -1334,7 +1334,10 @@ mod tests {
         let state_before = std::sync::Arc::as_ptr(&mgr.tick_thread.as_ref().unwrap().state);
         mgr.ensure_engine();
         let state_after = std::sync::Arc::as_ptr(&mgr.tick_thread.as_ref().unwrap().state);
-        assert_eq!(state_before, state_after, "ensure_engine must be idempotent");
+        assert_eq!(
+            state_before, state_after,
+            "ensure_engine must be idempotent"
+        );
     }
 
     #[test]

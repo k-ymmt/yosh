@@ -222,7 +222,10 @@ fn match_tokens(tokens: &[PatternToken], s: &str) -> bool {
         // recent `*` by one char and retry the tail from there.
         match star_ti {
             Some(st) if star_si < s.len() => {
-                let c = s[star_si..].chars().next().expect("star_si on char boundary");
+                let c = s[star_si..]
+                    .chars()
+                    .next()
+                    .expect("star_si on char boundary");
                 star_si += c.len_utf8();
                 si = star_si;
                 ti = st;

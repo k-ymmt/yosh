@@ -576,11 +576,7 @@ fn builtin_exec(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
         match crate::exec::command::lookup_in_path(&cmd, &path_var, &mut env.utility_hash) {
             PathLookup::Executable(p) => p,
             PathLookup::NotExecutable(_) => {
-                return exec_failure(
-                    executor,
-                    format!("exec: {}: permission denied", cmd),
-                    126,
-                );
+                return exec_failure(executor, format!("exec: {}: permission denied", cmd), 126);
             }
             PathLookup::NotFound => {
                 return exec_failure(executor, format!("exec: {}: not found", cmd), 127);

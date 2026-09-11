@@ -2030,8 +2030,8 @@ impl LineEditor {
         // dispatch, commit one unit after iff the buffer changed. Only
         // at the outermost depth — a `.` replay must yield exactly one
         // unit, committed by the outer Repeat invocation.
-        let pre = (!replaying && self.vi.flavor == ViFlavor::Vim)
-            .then(|| (self.buf.clone(), self.pos));
+        let pre =
+            (!replaying && self.vi.flavor == ViFlavor::Vim).then(|| (self.buf.clone(), self.pos));
         let action = self.execute_vi_cmd_arm(cmd, count, history);
         if !replaying {
             // Entering insert mode starts a new insert session (for the
@@ -2824,8 +2824,7 @@ impl LineEditor {
                 // position (or the new last line when the tail was
                 // deleted; 0 on an empty buffer).
                 self.pos = start.min(self.buf.len().saturating_sub(1));
-                if let Some(fnb) =
-                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                if let Some(fnb) = vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
                 {
                     self.pos = fnb;
                 }
@@ -3061,8 +3060,7 @@ impl LineEditor {
                 let (start, end) = vim::linewise_delete_range(&self.buf, ls, le);
                 self.buf.drain(start..end);
                 self.pos = start.min(self.buf.len().saturating_sub(1));
-                if let Some(fnb) =
-                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                if let Some(fnb) = vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
                 {
                     self.pos = fnb;
                 }
@@ -3121,8 +3119,7 @@ impl LineEditor {
                 // emptied line slot.
                 self.buf.splice(s..s, reg_chars.iter().copied());
                 self.pos = s;
-                if let Some(fnb) =
-                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                if let Some(fnb) = vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
                 {
                     self.pos = fnb;
                 }
@@ -3142,8 +3139,7 @@ impl LineEditor {
                 let first = s + 1;
                 self.buf.splice(s..s, ins);
                 self.pos = first;
-                if let Some(fnb) =
-                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                if let Some(fnb) = vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
                 {
                     self.pos = fnb;
                 }
@@ -3154,8 +3150,7 @@ impl LineEditor {
                 let ins = &reg_chars[..reg_chars.len().saturating_sub(1)];
                 self.buf.splice(s..s, ins.iter().copied());
                 self.pos = s;
-                if let Some(fnb) =
-                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                if let Some(fnb) = vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
                 {
                     self.pos = fnb;
                 }
@@ -3220,8 +3215,7 @@ impl LineEditor {
                     self.buf.splice(ls..ls, block);
                     self.pos = ls;
                 }
-                if let Some(fnb) =
-                    vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
+                if let Some(fnb) = vi::motion_move(&self.buf, self.pos, ViMotion::FirstNonBlank, 1)
                 {
                     self.pos = fnb;
                 }

@@ -342,10 +342,7 @@ mod tests {
         // `;&` is one operator span, not `;` followed by a stray `&`.
         let mut scanner = test_scanner();
         let spans = scan_input(&mut scanner, "a) echo x ;&");
-        let op = spans
-            .iter()
-            .find(|s| s.start == 10)
-            .expect("span at `;&`");
+        let op = spans.iter().find(|s| s.start == 10).expect("span at `;&`");
         assert_eq!(
             (op.start, op.end, op.style),
             (10, 12, HighlightStyle::Operator),

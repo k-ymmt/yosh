@@ -134,9 +134,8 @@ pub fn match_pair_target(buf: &[char], pos: usize) -> Option<usize> {
         return None;
     }
     let le = vi::line_end(buf, pos);
-    let origin = (pos..le).find(|&i| {
-        matches!(buf[i], '(' | ')' | '[' | ']' | '{' | '}') && !in_string(buf, i)
-    })?;
+    let origin = (pos..le)
+        .find(|&i| matches!(buf[i], '(' | ')' | '[' | ']' | '{' | '}') && !in_string(buf, i))?;
     let (open, close, forward) = match buf[origin] {
         '(' => ('(', ')', true),
         ')' => ('(', ')', false),

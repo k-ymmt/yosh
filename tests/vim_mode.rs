@@ -496,12 +496,7 @@ fn vim_linewise_put_with_count_repeats_block() {
 
 #[test]
 fn vim_linewise_put_cursor_on_first_non_blank_of_pasted_line() {
-    let line = vim_read(seq![
-        chars("  ab"),
-        [esc()],
-        chars("yypx"),
-        [enter()]
-    ]);
+    let line = vim_read(seq![chars("  ab"), [esc()], chars("yypx"), [enter()]]);
     // Pasted "  ab" below; cursor on its 'a'; x deletes it.
     assert_eq!(line.as_deref(), Some("  ab\n  b"));
 }
@@ -587,12 +582,7 @@ fn vim_p_after_merged_emacs_kills_puts_merged_whole() {
 #[test]
 fn vim_visual_motion_extends_and_d_deletes() {
     // v at 'e', e to end of "echo": selection "echo"; d deletes it.
-    let line = vim_read(seq![
-        chars("echo hello"),
-        [esc()],
-        chars("0ved"),
-        [enter()]
-    ]);
+    let line = vim_read(seq![chars("echo hello"), [esc()], chars("0ved"), [enter()]]);
     assert_eq!(line.as_deref(), Some(" hello"));
 }
 
@@ -681,7 +671,14 @@ fn vim_visual_same_kind_toggle_exits() {
 
 #[test]
 fn vim_visual_esc_exits_to_command() {
-    let line = vim_read(seq![chars("abc"), [esc()], chars("0v"), [esc()], chars("x"), [enter()]]);
+    let line = vim_read(seq![
+        chars("abc"),
+        [esc()],
+        chars("0v"),
+        [esc()],
+        chars("x"),
+        [enter()]
+    ]);
     assert_eq!(line.as_deref(), Some("bc"));
 }
 
@@ -837,7 +834,10 @@ fn vim_visual_selection_to_buffer_end_cleans_up_reverse() {
         .expect("read failed");
     assert_eq!(line.as_deref(), Some("ab"));
     let all = term.output().join("");
-    assert!(all.contains("[REV]b[/REV]"), "no boundary cleanup in: {all}");
+    assert!(
+        all.contains("[REV]b[/REV]"),
+        "no boundary cleanup in: {all}"
+    );
 }
 
 #[test]
@@ -1034,12 +1034,7 @@ fn vim_ci_quote_changes_quoted_string() {
 
 #[test]
 fn vim_di_quote_before_first_quote_targets_next_span() {
-    let line = vim_read(seq![
-        chars("say 'hi'"),
-        [esc()],
-        chars("0di'"),
-        [enter()]
-    ]);
+    let line = vim_read(seq![chars("say 'hi'"), [esc()], chars("0di'"), [enter()]]);
     assert_eq!(line.as_deref(), Some("say ''"));
 }
 
@@ -1058,12 +1053,7 @@ fn vim_ci_paren_on_empty_pair_enters_insert_inside() {
 
 #[test]
 fn vim_di_paren_nested_resolves_enclosing() {
-    let line = vim_read(seq![
-        chars("f(a(b)c)"),
-        [esc()],
-        chars("02ldi("),
-        [enter()]
-    ]);
+    let line = vim_read(seq![chars("f(a(b)c)"), [esc()], chars("02ldi("), [enter()]]);
     // Cursor on 'a' (index 2): the enclosing pair is the outer one.
     assert_eq!(line.as_deref(), Some("f()"));
 }
@@ -1091,12 +1081,7 @@ fn vim_unknown_object_char_bells() {
 fn vim_percent_jumps_to_match() {
     // Oracle-verified: 0%x on `{ "}" }` deletes the final }, not the
     // quoted one.
-    let line = vim_read(seq![
-        chars("{ \"}\" }"),
-        [esc()],
-        chars("0%x"),
-        [enter()]
-    ]);
+    let line = vim_read(seq![chars("{ \"}\" }"), [esc()], chars("0%x"), [enter()]]);
     assert_eq!(line.as_deref(), Some("{ \"}\" "));
 }
 
@@ -1140,24 +1125,14 @@ fn vim_g_plus_other_key_bells() {
 
 #[test]
 fn vim_dot_repeats_diw() {
-    let line = vim_read(seq![
-        chars("aa bb"),
-        [esc()],
-        chars("0diww."),
-        [enter()]
-    ]);
+    let line = vim_read(seq![chars("aa bb"), [esc()], chars("0diww."), [enter()]]);
     // diw deletes "aa"; w moves to "bb"; . repeats diw.
     assert_eq!(line.as_deref(), Some(" "));
 }
 
 #[test]
 fn vim_visual_iw_selects_word_from_single_char() {
-    let line = vim_read(seq![
-        chars("one two"),
-        [esc()],
-        chars("0wviwd"),
-        [enter()]
-    ]);
+    let line = vim_read(seq![chars("one two"), [esc()], chars("0wviwd"), [enter()]]);
     assert_eq!(line.as_deref(), Some("one "));
 }
 
@@ -1189,12 +1164,7 @@ fn vim_visual_ge_extends_selection() {
 fn vim_visual_empty_inner_object_bells_keeps_selection() {
     // i" on "" leaves the selection unchanged with a bell; d then
     // deletes the original one-char selection.
-    let line = vim_read(seq![
-        chars("x \"\" y"),
-        [esc()],
-        chars("0vi\"d"),
-        [enter()]
-    ]);
+    let line = vim_read(seq![chars("x \"\" y"), [esc()], chars("0vi\"d"), [enter()]]);
     assert_eq!(line.as_deref(), Some(" \"\" y"));
 }
 

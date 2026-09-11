@@ -355,8 +355,11 @@ fn strip_suffix(value: &str, pat: &str, longest: bool) -> String {
     // O(n) full parses for a value with n char boundaries). `start` is a
     // char-boundary byte offset; the suffix is `value[start..]`.
     let compiled = pattern::compile(pat);
-    let cut =
-        |start: usize| compiled.matches(&value[start..]).then(|| value[..start].to_string());
+    let cut = |start: usize| {
+        compiled
+            .matches(&value[start..])
+            .then(|| value[..start].to_string())
+    };
     let found = if longest {
         // smallest start = longest suffix first
         boundaries(value).find_map(cut)
@@ -410,7 +413,11 @@ fn strip_prefix(value: &str, pat: &str, longest: bool) -> String {
     // across the per-cut loop (see strip_suffix). `end` is a
     // char-boundary byte offset; the prefix is `value[..end]`.
     let compiled = pattern::compile(pat);
-    let cut = |end: usize| compiled.matches(&value[..end]).then(|| value[end..].to_string());
+    let cut = |end: usize| {
+        compiled
+            .matches(&value[..end])
+            .then(|| value[end..].to_string())
+    };
     let found = if longest {
         // largest end = longest prefix first
         boundaries(value).rev().find_map(cut)

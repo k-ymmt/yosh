@@ -498,7 +498,9 @@ pub fn apply_trap_disposition(sig: i32, disposition: TrapDisposition, monitor: b
     let restart = sig != libc::SIGHUP && sig != libc::SIGTERM;
     let sa = match disposition {
         TrapDisposition::Command => self_pipe_handler(restart),
-        TrapDisposition::Ignore => SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty()),
+        TrapDisposition::Ignore => {
+            SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty())
+        }
         TrapDisposition::Default => {
             if HANDLED_SIGNALS.iter().any(|&(n, _)| n == sig) {
                 // The shell always keeps its own handler on these.

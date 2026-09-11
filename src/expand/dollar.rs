@@ -107,9 +107,8 @@ pub(super) fn expand_string(env: &mut ShellEnv, s: &str) -> crate::error::Result
                         b'0' => crate::parser::ast::SpecialParam::Zero,
                         _ => unreachable!(),
                     };
-                    result.push_str(
-                        &param::expand(env, &ParamExpr::Special(sp)).unwrap_or_default(),
-                    );
+                    result
+                        .push_str(&param::expand(env, &ParamExpr::Special(sp)).unwrap_or_default());
                     i += 1;
                 }
                 ch if (b'1'..=b'9').contains(&ch) => {
@@ -329,10 +328,7 @@ mod tests {
         let mut env = make_env();
         assert_eq!(expand_string(&mut env, "[${x:-{}]").unwrap(), "[{]");
         // Nested `${` still spans to the matching outer `}`.
-        assert_eq!(
-            expand_string(&mut env, "[${x:-${y:-a}}]").unwrap(),
-            "[a]"
-        );
+        assert_eq!(expand_string(&mut env, "[${x:-${y:-a}}]").unwrap(), "[a]");
     }
 
     #[test]
