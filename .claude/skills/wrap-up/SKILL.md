@@ -15,7 +15,7 @@ Wrap-up is the last quality gate before the session ends — invest in the revie
 digraph wrap_up {
     "Session ending" [shape=doublecircle];
     "Any changes this session?" [shape=diamond];
-    "Adversarial Codex review round\n(mcp__codex__codex)" [shape=box];
+    "Adversarial Codex review round\n(codex exec)" [shape=box];
     "New confirmed findings?" [shape=diamond];
     "Fix critical/major\n+ add regression tests" [shape=box];
     "Review session work" [shape=box];
@@ -27,11 +27,11 @@ digraph wrap_up {
     "Done" [shape=doublecircle];
 
     "Session ending" -> "Any changes this session?";
-    "Any changes this session?" -> "Adversarial Codex review round\n(mcp__codex__codex)" [label="yes"];
+    "Any changes this session?" -> "Adversarial Codex review round\n(codex exec)" [label="yes"];
     "Any changes this session?" -> "Review session work" [label="no"];
-    "Adversarial Codex review round\n(mcp__codex__codex)" -> "New confirmed findings?";
+    "Adversarial Codex review round\n(codex exec)" -> "New confirmed findings?";
     "New confirmed findings?" -> "Fix critical/major\n+ add regression tests" [label="yes"];
-    "Fix critical/major\n+ add regression tests" -> "Adversarial Codex review round\n(mcp__codex__codex)" [label="next round\n(fresh conversation)"];
+    "Fix critical/major\n+ add regression tests" -> "Adversarial Codex review round\n(codex exec)" [label="next round\n(fresh conversation)"];
     "New confirmed findings?" -> "Review session work" [label="round came up dry"];
     "Review session work" -> "Deferred items?";
     "Deferred items?" -> "Report & update TODO.md" [label="yes"];
@@ -47,9 +47,12 @@ digraph wrap_up {
 ## Phase 1: Adversarial Codex Review
 
 Get an independent **adversarial** review of this session's changes from
-Codex via the `codex` MCP server before committing. The reviewer's job is
-to break the changes, not to approve them: it must assume the diff contains
-at least one real bug and hunt for it until the hunt comes up dry.
+Codex before committing. Codex runs as the `codex` CLI in non-interactive
+mode (`codex exec`) driven from Bash. There is no MCP server any more
+(`codex mcp-server` was removed in codex 0.154.0), so do not look for
+`mcp__codex__*` tools. The reviewer's job is to break the changes, not to
+approve them: it must assume the diff contains at least one real bug and
+hunt for it until the hunt comes up dry.
 
 ### Step 1: Determine Review Scope
 
@@ -63,26 +66,49 @@ If nothing changed this session, skip to Phase 2.
 
 Run review rounds until a round produces **no new confirmed findings**
 (max 3 rounds — defer anything still open after that to TODO.md).
-Start each round as a **fresh `mcp__codex__codex` conversation** so rounds
-stay independent; reuse `mcp__codex__codex-reply` only for follow-up
-questions *within* a round. Codex runs in the repo working directory and
-can read files and run read-only commands itself — describe the scope,
-do not paste the whole diff.
+Start each round as a **fresh `codex exec` invocation** so rounds stay
+independent. Codex runs in the repo working directory and can read files
+and run read-only commands itself — describe the scope, do not paste the
+whole diff.
 
-Tool parameters for every round:
-- `sandbox`: `"read-only"` — the review must not modify the working tree.
-- `approval-policy`: `"never"` — the review runs unattended.
-- `cwd`: the repo root.
+Write the round's brief to a scratch file, then launch:
 
-The `prompt` must be a self-contained adversarial brief. Include:
+```bash
+codex exec --ephemeral -s read-only --color never \
+  -C "$(git rev-parse --show-toplevel)" \
+  -o "$SCRATCH/codex-round1.md" - < "$SCRATCH/codex-round1-prompt.md"
+```
+
+- `-s read-only` — the review must not modify the working tree. Always pass
+  it explicitly: the user's `~/.codex/config.toml` defaults to
+  `danger-full-access`.
+- `-C` — the repo root.
+- `-o` — the reviewer's final message lands in this file; read the findings
+  from there (stdout is only a progress log).
+- `-` + stdin — pass the brief through stdin so backticks and quotes in it
+  need no shell escaping.
+- `--ephemeral` — nothing is persisted. Drop it only when a follow-up
+  question *within* a round is needed: then note the `session id: <uuid>`
+  line at the top of stdout and continue with
+  `codex exec resume <uuid> -o <file> - < follow-up.md`.
+- A real review takes 3–10 minutes. Run it in the background with a Bash
+  timeout of at least 600000 ms; do not abort it early.
+- Wording: OpenAI's safety filter has rejected briefs phrased as "attack",
+  "make the code misbehave", or "steal the tty". Keep the skeptical stance
+  but use neutral vocabulary ("independent skeptical review", "construct
+  inputs under which the code behaves incorrectly", "routine
+  software-quality review of the maintainer's own repository").
+
+The brief must be a self-contained adversarial review request. Include:
 - The review scope from Step 1 (e.g. "review `git diff HEAD` plus commits abc123..HEAD")
 - One sentence of task context (what the session set out to do)
 - **The adversarial stance**: "Assume this diff contains at least one real
-  bug. Your job is to find it, not to approve the change. Actively try to
-  construct inputs and states that make the new code misbehave. Attack the
-  author's assumptions rather than checking their reasoning for plausibility."
-- **The round's attack lenses** — rotate emphasis across rounds so each
-  fresh conversation hunts differently, e.g.:
+  bug. Your job is to find it, not to approve the change. Actively
+  construct inputs and states under which the new code behaves
+  incorrectly. Question the author's assumptions rather than checking
+  their reasoning for plausibility."
+- **The round's review lenses** — rotate emphasis across rounds so each
+  fresh invocation hunts differently, e.g.:
   - Round 1: correctness and edge cases — boundary values, empty/huge input,
     invalid UTF-8, off-by-one, error paths, unhandled `Result`s
   - Round 2: interactions and regressions — how the diff interacts with
@@ -102,9 +128,10 @@ In later rounds, also list the previous rounds' findings (including ones
 judged false positives, with the refutation) so the fresh reviewer hunts
 for *new* bugs instead of re-reporting known ones.
 
-**Fallback:** if the codex MCP tools are unavailable (server not connected,
-`codex` CLI missing), tell the user the review was skipped and why, then
-continue with Phase 2. Do not block wrap-up on it.
+**Fallback:** if the `codex` CLI is missing, not logged in, or `codex exec`
+fails (network, or a safety-filter rejection that rewording does not fix),
+tell the user the review was skipped and why, then continue with Phase 2.
+Do not block wrap-up on it.
 
 ### Step 3: Verify and Triage Findings
 
@@ -181,7 +208,9 @@ Then proceed to commit the "should commit" items without waiting for confirmatio
 | Accepting a finding without a failure scenario | Require exact input/state → wrong behavior; reproduce it yourself before fixing |
 | Blindly applying every Codex finding | Verify each finding against the code before fixing; triage by severity |
 | Fixing a bug without pinning it | Add a regression test (unit or e2e) alongside every confirmed fix |
-| Reusing one conversation for all rounds | Start each round fresh; carry prior findings forward in the prompt instead |
+| Reusing one session for all rounds | Start each round as a fresh `codex exec`; carry prior findings forward in the brief instead |
+| Calling `codex exec` without `-s read-only` | The user's codex config defaults to full access; always pass the sandbox flag |
+| Looking for `mcp__codex__*` tools | They no longer exist (codex ≥ 0.154.0); run `codex exec` from Bash |
 | Stopping after one clean-looking round | A round only ends the loop when it produces zero new confirmed findings |
 | Endless review loops | Cap at 3 rounds; defer anything still open to TODO.md |
 | Skipping the review silently when codex is unavailable | Tell the user it was skipped and why, then continue |
