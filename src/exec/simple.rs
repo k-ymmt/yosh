@@ -1,6 +1,6 @@
 use std::ffi::CString;
 
-use nix::unistd::{ForkResult, execv};
+use nix::unistd::{ForkResult, execve};
 
 use crate::builtin::special::exec_special_builtin;
 use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
@@ -97,6 +97,33 @@ enum ExecCStringError {
 /// syscall's file argument, while `argv[0]` (the first entry of the
 /// returned Vec) stays `display_name` (the original, unresolved command
 /// name) — matching what `execvp(cmd, ...)` would have set argv[0] to.
+/// Overlay prefix-assignment `overrides` on the cached exported envp:
+/// entries whose key is overridden are dropped, then the overrides are
+/// appended (decoded from byteenc). Only built when overrides exist.
+fn merge_envp(base: &[CString], overrides: &[(String, String)]) -> Vec<CString> {
+    let keys: Vec<Vec<u8>> = overrides
+        .iter()
+        .map(|(k, _)| {
+            let mut b = crate::byteenc::decode_bytes(k).into_owned();
+            b.push(b'=');
+            b
+        })
+        .collect();
+    let mut out: Vec<CString> = base
+        .iter()
+        .filter(|c| !keys.iter().any(|k| c.as_bytes().starts_with(k)))
+        .cloned()
+        .collect();
+    for ((_, v), key) in overrides.iter().zip(&keys) {
+        let mut bytes = key.clone();
+        bytes.extend_from_slice(&crate::byteenc::decode_bytes(v));
+        if let Ok(c) = CString::new(bytes) {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn build_exec_cstrings_for_path(
     path: &std::path::Path,
     display_name: &str,
@@ -904,31 +931,18 @@ impl Executor {
         // matching the previous merged-Vec's replace-or-push order.
         // Names/values are byteenc-encoded; decode so children see
         // the original raw bytes for non-UTF-8 environment data.
-        for (k, v) in self.env.vars.environ() {
-            if let (Ok(c_key), Ok(c_val)) = (
-                CString::new(crate::byteenc::decode_bytes(k).into_owned()),
-                CString::new(crate::byteenc::decode_bytes(v).into_owned()),
-            ) {
-                unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
-            }
-        }
-        for (k, v) in env_overrides {
-            if let (Ok(c_key), Ok(c_val)) = (
-                CString::new(crate::byteenc::decode_bytes(k).into_owned()),
-                CString::new(crate::byteenc::decode_bytes(v).into_owned()),
-            ) {
-                unsafe { libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1) };
-            }
-        }
+        // Exec with a prebuilt envp (cached in the parent across spawns)
+        // instead of `setenv` per exported variable after the fork.
+        let base = self.env.vars.envp();
+        let merged;
+        let envp: &[CString] = if env_overrides.is_empty() {
+            base
+        } else {
+            merged = merge_envp(base, env_overrides);
+            &merged
+        };
 
-        // execv (not execvp): the path was already resolved via
-        // PATH search in the parent (resolve_exec_path), so the
-        // child does not need to re-walk PATH. A TOCTOU race
-        // (file removed/permissions changed between the parent's
-        // check and this exec) is still possible, so errno is
-        // handled the same way execvp's failure was handled
-        // before this change.
-        let err = execv(c_cmd, c_args).unwrap_err();
+        let err = execve(c_cmd, c_args, envp).unwrap_err();
         use nix::errno::Errno;
         let exit_code = match err {
             Errno::ENOENT => {
@@ -955,7 +969,7 @@ impl Executor {
                         sh_args.push(sh.clone());
                         sh_args.push(c_cmd.clone());
                         sh_args.extend_from_slice(&c_args[1..]);
-                        let err2 = execv(&sh, &sh_args).unwrap_err();
+                        let err2 = execve(&sh, &sh_args, envp).unwrap_err();
                         eprintln!("yosh: {}: {}", cmd, err2);
                     }
                     Err(_) => unreachable!("/bin/sh has no NUL"),

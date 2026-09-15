@@ -1,6 +1,7 @@
 pub mod command;
 pub mod getopts;
 pub mod hash;
+pub mod printf;
 pub mod read;
 pub mod regular;
 pub mod resolve;
@@ -16,7 +17,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "break", ":", "continue", ".", "eval", "exec", "exit", "export", "readonly", "return", "set",
     "shift", "times", "trap", "unset", "fc", // Regular builtins
     "cd", "command", "echo", "true", "false", "alias", "unalias", "kill", "wait", "fg", "bg",
-    "jobs", "umask", "ulimit", "test", "[", "type", "hash", "read", "getopts",
+    "jobs", "umask", "ulimit", "test", "[", "type", "hash", "read", "getopts", "printf",
 ];
 
 /// Classification of a command name as a POSIX builtin kind.
@@ -38,7 +39,7 @@ pub fn classify_builtin(name: &str) -> BuiltinKind {
         | "return" | "set" | "shift" | "times" | "trap" | "unset" | "fc" => BuiltinKind::Special,
         "cd" | "command" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait"
         | "fg" | "bg" | "jobs" | "umask" | "ulimit" | "test" | "[" | "type" | "hash" | "read"
-        | "getopts" => BuiltinKind::Regular,
+        | "getopts" | "printf" => BuiltinKind::Regular,
         _ => BuiltinKind::NotBuiltin,
     }
 }
@@ -50,6 +51,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "true" => Ok(0),
         "false" => Ok(1),
         "echo" => regular::builtin_echo(args),
+        "printf" => printf::builtin_printf(args),
         "umask" => regular::builtin_umask(args),
         "ulimit" => regular::builtin_ulimit(args),
         "alias" => regular::builtin_alias(args, env),

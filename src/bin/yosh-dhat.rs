@@ -59,7 +59,7 @@ fn run_script(script_path: &str) -> i32 {
     yosh::signal::init_signal_handling();
     let mut executor = yosh::exec::Executor::new("yosh-dhat", vec![]);
     yosh::env::default_path::ensure_default_path(&mut executor.env);
-    executor.load_plugins();
+    executor.load_plugins(true);
 
     let program = match yosh::parser::Parser::new(&input).parse_program() {
         Ok(p) => p,
@@ -95,7 +95,7 @@ fn run_exec_loop(args: &[String]) -> i32 {
     yosh::signal::init_signal_handling();
     let mut executor = yosh::exec::Executor::new("yosh-dhat", vec![]);
     yosh::env::default_path::ensure_default_path(&mut executor.env);
-    executor.load_plugins();
+    executor.load_plugins(true);
 
     let mut last_status = 0;
     for _ in 0..n {
@@ -123,7 +123,7 @@ fn run_pre_prompt_loop(args: &[String]) -> i32 {
     yosh::signal::init_signal_handling();
     let mut executor = yosh::exec::Executor::new("yosh-dhat", vec![]);
     yosh::env::default_path::ensure_default_path(&mut executor.env);
-    executor.load_plugins();
+    executor.load_plugins(true);
 
     for _ in 0..n {
         executor.plugins.call_pre_prompt(&mut executor.env);

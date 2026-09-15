@@ -31,6 +31,11 @@ impl Variable {
 struct Scope {
     vars: HashMap<String, Variable>,
     positional_params: Vec<String>,
+    /// Number of leading `positional_params` entries consumed by `shift`.
+    /// Keeping an offset makes `shift` O(1) instead of re-cloning the
+    /// remaining parameters (a `while [ $# -gt 0 ]; do ...; shift; done`
+    /// loop over 5000 parameters was O(n²) and 14× slower than dash).
+    positional_offset: usize,
     /// POSIX `getopts` cursor within a stacked argv element (e.g. `-abc`).
     /// `0` means "advance to the next argv element on the next call."
     getopts_subindex: usize,
@@ -56,6 +61,12 @@ struct Scope {
 pub struct VarStore {
     scopes: Vec<Scope>,
     environ_cache: Option<Vec<(String, String)>>,
+    /// `KEY=VALUE` C strings for `execve`, derived from `environ_cache`
+    /// and invalidated together with it. Lets a forked child exec with
+    /// a prebuilt `envp` instead of decoding + `setenv`-ing every
+    /// exported variable after the fork (which was O(n²) in libc and
+    /// allocated per spawn).
+    envp_cache: Option<Vec<std::ffi::CString>>,
 }
 
 impl VarStore {
@@ -65,12 +76,14 @@ impl VarStore {
             scopes: vec![Scope {
                 vars: HashMap::new(),
                 positional_params: Vec::new(),
+                positional_offset: 0,
                 getopts_subindex: 0,
                 optind_write_generation: 0,
                 getopts_observed_optind_generation: 0,
                 saved_optind: None,
             }],
             environ_cache: None,
+            envp_cache: None,
         }
     }
 
@@ -91,12 +104,14 @@ impl VarStore {
             scopes: vec![Scope {
                 vars,
                 positional_params: Vec::new(),
+                positional_offset: 0,
                 getopts_subindex: 0,
                 optind_write_generation: 0,
                 getopts_observed_optind_generation: 0,
                 saved_optind: None,
             }],
             environ_cache: None,
+            envp_cache: None,
         }
     }
 
@@ -110,11 +125,13 @@ impl VarStore {
     /// stacked-options subcursor starts at `0`.
     pub fn push_scope(&mut self, positional_params: Vec<String>) {
         self.environ_cache = None;
+        self.envp_cache = None;
         // Snapshot caller's OPTIND (may be unset → None).
         let saved_optind = self.get("OPTIND").map(|s| s.to_string());
         self.scopes.push(Scope {
             vars: HashMap::new(),
             positional_params,
+            positional_offset: 0,
             getopts_subindex: 0,
             optind_write_generation: 0,
             getopts_observed_optind_generation: 0,
@@ -138,6 +155,7 @@ impl VarStore {
     /// already holds OPTIND, or creating it in the new top scope).
     pub fn pop_scope(&mut self) {
         self.environ_cache = None;
+        self.envp_cache = None;
         assert!(self.scopes.len() > 1, "cannot pop the global scope");
         let popped = self.scopes.pop().unwrap();
         if let Some(prev_optind) = popped.saved_optind {
@@ -186,12 +204,35 @@ impl VarStore {
 
     /// Get the current scope's positional parameters.
     pub fn positional_params(&self) -> &[String] {
-        &self.scopes.last().unwrap().positional_params
+        let scope = self.scopes.last().unwrap();
+        &scope.positional_params[scope.positional_offset..]
     }
 
     /// Set the current scope's positional parameters.
     pub fn set_positional_params(&mut self, params: Vec<String>) {
-        self.scopes.last_mut().unwrap().positional_params = params;
+        let scope = self.scopes.last_mut().unwrap();
+        scope.positional_params = params;
+        scope.positional_offset = 0;
+    }
+
+    /// Drop the first `n` positional parameters (POSIX `shift n`).
+    /// Returns `false` (and changes nothing) when `n` exceeds `$#`.
+    pub fn shift_positional_params(&mut self, n: usize) -> bool {
+        let scope = self.scopes.last_mut().unwrap();
+        let remaining = scope.positional_params.len() - scope.positional_offset;
+        if n > remaining {
+            return false;
+        }
+        scope.positional_offset += n;
+        // Reclaim consumed strings once they dominate the buffer so a
+        // long-running loop does not pin the whole original argv.
+        if scope.positional_offset >= 64
+            && scope.positional_offset * 2 >= scope.positional_params.len()
+        {
+            scope.positional_params.drain(..scope.positional_offset);
+            scope.positional_offset = 0;
+        }
+        true
     }
 
     // ── Variable access ─────────────────────────────────────────────────
@@ -246,6 +287,7 @@ impl VarStore {
                 }
                 if existing.exported {
                     self.environ_cache = None;
+                    self.envp_cache = None;
                 }
                 existing.value = value;
                 existing.readonly = false;
@@ -266,6 +308,7 @@ impl VarStore {
                 }
                 if existing.exported {
                     self.environ_cache = None;
+                    self.envp_cache = None;
                 }
                 existing.value = value;
                 existing.readonly = false;
@@ -309,6 +352,7 @@ impl VarStore {
                 let exported = existing.exported || allexport;
                 if exported {
                     self.environ_cache = None;
+                    self.envp_cache = None;
                 }
                 existing.value = value;
                 existing.exported = exported;
@@ -322,6 +366,7 @@ impl VarStore {
         if allexport {
             var.exported = true;
             self.environ_cache = None;
+            self.envp_cache = None;
         }
         self.scopes[0].vars.insert(name.to_string(), var);
         self.note_optind_write(name);
@@ -347,6 +392,7 @@ impl VarStore {
                 }
                 if existing.exported {
                     self.environ_cache = None;
+                    self.envp_cache = None;
                 }
                 scope.vars.remove(name);
                 return Ok(());
@@ -364,12 +410,14 @@ impl VarStore {
             if let Some(var) = scope.vars.get_mut(name) {
                 if !var.exported {
                     self.environ_cache = None;
+                    self.envp_cache = None;
                     var.exported = true;
                 }
                 return;
             }
         }
         self.environ_cache = None;
+        self.envp_cache = None;
         self.scopes[0]
             .vars
             .insert(name.to_string(), Variable::new_exported(""));
@@ -404,6 +452,31 @@ impl VarStore {
             }
         }
         false
+    }
+
+    /// Exported variables as `KEY=VALUE` C strings ready for `execve`,
+    /// with byteenc escapes decoded back to raw bytes. Entries whose
+    /// key or value contains NUL are skipped. Cached like [`environ`].
+    ///
+    /// [`environ`]: Self::environ
+    pub fn envp(&mut self) -> &[std::ffi::CString] {
+        if self.envp_cache.is_none() {
+            if self.environ_cache.is_none() {
+                self.environ_cache = Some(self.build_environ());
+            }
+            let pairs = self.environ_cache.as_ref().unwrap();
+            let mut v = Vec::with_capacity(pairs.len());
+            for (k, val) in pairs {
+                let mut bytes = crate::byteenc::decode_bytes(k).into_owned();
+                bytes.push(b'=');
+                bytes.extend_from_slice(&crate::byteenc::decode_bytes(val));
+                if let Ok(c) = std::ffi::CString::new(bytes) {
+                    v.push(c);
+                }
+            }
+            self.envp_cache = Some(v);
+        }
+        self.envp_cache.as_ref().unwrap()
     }
 
     /// Return only exported variables as (name, value) pairs.
@@ -464,6 +537,57 @@ impl Default for VarStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shift_positional_params_is_offset_based_and_compacts() {
+        let mut vs = VarStore::new();
+        let params: Vec<String> = (0..200).map(|i| i.to_string()).collect();
+        vs.set_positional_params(params);
+        assert!(vs.shift_positional_params(1));
+        assert_eq!(vs.positional_params()[0], "1");
+        assert_eq!(vs.positional_params().len(), 199);
+        for _ in 0..150 {
+            assert!(vs.shift_positional_params(1));
+        }
+        assert_eq!(vs.positional_params().len(), 49);
+        assert_eq!(vs.positional_params()[0], "151");
+        assert_eq!(vs.positional_params()[48], "199");
+        assert!(
+            !vs.shift_positional_params(50),
+            "over-shift must be rejected"
+        );
+        assert_eq!(vs.positional_params().len(), 49);
+        assert!(vs.shift_positional_params(49));
+        assert!(vs.positional_params().is_empty());
+        assert!(vs.shift_positional_params(0));
+        vs.set_positional_params(vec!["x".into()]);
+        assert_eq!(vs.positional_params(), ["x".to_string()]);
+    }
+
+    #[test]
+    fn envp_tracks_environ_and_decodes_bytes() {
+        let mut vs = VarStore::new();
+        vs.set("A", "1").unwrap();
+        vs.export("A");
+        let raw = format!("x{}y", crate::byteenc::escape_char(0xff));
+        vs.set("B", raw).unwrap();
+        vs.export("B");
+        vs.set("C", "unexported").unwrap();
+        let mut got: Vec<Vec<u8>> = vs.envp().iter().map(|c| c.as_bytes().to_vec()).collect();
+        got.sort();
+        assert_eq!(got, vec![b"A=1".to_vec(), b"B=x\xffy".to_vec()]);
+        // Cached until the next exported-var mutation.
+        assert!(vs.envp_cache.is_some());
+        vs.set("C", "still unexported").unwrap();
+        assert!(vs.envp_cache.is_some());
+        vs.set("A", "2").unwrap();
+        assert!(vs.envp_cache.is_none());
+        assert!(vs.envp().iter().any(|c| c.as_bytes() == b"A=2"));
+        // NUL-containing values are skipped rather than truncated.
+        vs.set("N", "a\0b").unwrap();
+        vs.export("N");
+        assert!(!vs.envp().iter().any(|c| c.as_bytes().starts_with(b"N=")));
+    }
 
     #[test]
     fn test_get_set() {

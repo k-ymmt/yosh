@@ -48,9 +48,11 @@ preserved for child processes but interpreted as C internally."
   variable is preserved for child processes.
 - **`LC_MONETARY`** / **`LC_TIME`**: variable preserved; no yosh
   builtin currently consults them.
-- **`LC_NUMERIC`**: yosh has no native `printf` builtin, so the
-  variable affects only child processes (e.g., `/usr/bin/printf`).
-  yosh exports `LC_NUMERIC` unchanged.
+- **`LC_NUMERIC`**: the native `printf` builtin always uses `.` as the
+  radix character (C-locale semantics, consistent with the rest of
+  yosh's internal locale handling); `LC_NUMERIC` affects only child
+  processes such as `/usr/bin/printf`. yosh exports `LC_NUMERIC`
+  unchanged.
 - **`NLSPATH`**: yosh does not call `catopen(3)` or `catgets(3)`;
   the variable is preserved for child processes.
 

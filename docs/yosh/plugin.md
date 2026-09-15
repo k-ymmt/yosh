@@ -374,7 +374,16 @@ environment, so calling `read_settings` there returns
 
 ### Hooks
 
-Hooks let your plugin respond to shell events without the user explicitly invoking a command. Declare the corresponding capability, implement the hook method, **and** list the hook in `implemented_hooks()`:
+Hooks let your plugin respond to shell events without the user explicitly invoking a command.
+
+Hooks are an **interactive-shell** feature (like zsh's `preexec`): a
+non-interactive yosh (`yosh script.sh`, `yosh -c '...'`, piped stdin)
+never dispatches them, and it only instantiates plugins that provide
+custom commands — a plugin whose lockfile entry records `commands = []`
+is skipped entirely, so scripts do not pay its startup cost. The
+`commands` list is cached in `plugins.lock` by `yosh-plugin sync`; a
+lockfile written before that field existed loads the plugin
+unconditionally until the next `sync`. Declare the corresponding capability, implement the hook method, **and** list the hook in `implemented_hooks()`:
 
 ```rust
 fn required_capabilities(&self) -> &[Capability] {
@@ -575,8 +584,9 @@ The plugin system has two layers:
   precompiles to `~/.yosh/plugins/<name>/<basename>.cwasm` (mode 0600,
   parent dir 0700), and writes `plugins.lock` with a four-tuple cache key
   `(wasm_sha256, wasmtime_version, target_triple, engine_config_hash)`
-  plus cached `required_capabilities` and `implemented_hooks` for fast
-  `yosh-plugin list`. Calls each plugin's `metadata` once per sync via an
+  plus cached `required_capabilities`, `implemented_hooks`, and
+  `commands` for fast `yosh-plugin list` and for the shell's
+  non-interactive load policy (see "Hooks"). Calls each plugin's `metadata` once per sync via an
   all-deny linker (5-second epoch watchdog) — `metadata` is contractually
   forbidden from using host APIs.
 

@@ -336,7 +336,7 @@ impl PluginManager {
     /// normal no-plugins case and stays silent; a corrupted/unreadable
     /// one is reported — otherwise every plugin would vanish with zero
     /// diagnostics.
-    pub fn load_from_config(&mut self, config_path: &Path, env: &mut ShellEnv) {
+    pub fn load_from_config(&mut self, config_path: &Path, env: &mut ShellEnv, interactive: bool) {
         let config = match config::read_config_for_load(config_path) {
             Ok(Some(c)) => c,
             Ok(None) => return,
@@ -347,6 +347,14 @@ impl PluginManager {
         };
         for entry in &config.plugin {
             if !entry.enabled {
+                continue;
+            }
+            // Non-interactive shells never dispatch hooks, so a plugin
+            // that provides no custom commands has nothing a script can
+            // reach: skip its instantiation entirely. A lockfile written
+            // before `commands` was recorded (`None`) is treated as
+            // "may provide commands" and still loads.
+            if !interactive && entry.commands.as_ref().is_some_and(|c| c.is_empty()) {
                 continue;
             }
             let path = expand_tilde(&entry.path);
@@ -1322,6 +1330,53 @@ mod tests {
         let mgr = PluginManager::new();
         assert!(mgr.engine.is_none(), "engine must be lazy");
         assert!(mgr.tick_thread.is_none(), "tick thread must be lazy");
+    }
+
+    #[test]
+    fn non_interactive_load_skips_plugins_without_commands() {
+        // A lockfile entry that records `commands = []` has nothing a
+        // script can reach (hooks are interactive-only), so a
+        // non-interactive load must not even build the engine. The
+        // interactive load of the same entry attempts the load (and
+        // fails on the missing wasm, which is fine for this test).
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("plugins.lock");
+        std::fs::write(
+            &lock,
+            r#"[[plugin]]
+name = "noop"
+path = "/nonexistent/noop.wasm"
+sha256 = "00"
+commands = []
+"#,
+        )
+        .unwrap();
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let mut mgr = PluginManager::new();
+        mgr.load_from_config(&lock, &mut env, false);
+        assert!(
+            mgr.engine.is_none(),
+            "non-interactive must skip a command-less plugin"
+        );
+        assert!(mgr.plugins.is_empty());
+
+        // Without the `commands` field (older lockfile) the entry is
+        // treated as "may provide commands" and the load is attempted.
+        std::fs::write(
+            &lock,
+            r#"[[plugin]]
+name = "noop"
+path = "/nonexistent/noop.wasm"
+sha256 = "00"
+"#,
+        )
+        .unwrap();
+        let mut mgr = PluginManager::new();
+        mgr.load_from_config(&lock, &mut env, false);
+        assert!(
+            mgr.engine.is_some(),
+            "unknown command list must still attempt the load"
+        );
     }
 
     #[test]

@@ -610,3 +610,37 @@ The original report (§1–§3, §4.2–§4.5) is measurement-only. **No product
 **Amendment 2026-04-21 (§4.7):** The `field_split::split` fast path was implemented at commit `ff7cd21` per `docs/superpowers/specs/2026-04-21-field-split-fast-path-design.md`. W2 total allocation fell from 11.39 MB to 6.78 MB (−40.5%); the `field_split::emit:180:9` hotspot (pre-fix ranks #1/#2/#7 totaling 4.63 MB) collapsed to a single rank #5 entry at 209.5 KB. `pattern::matches` (§4.4) is promoted to P0 in the §5.2 queue. Regression testing also exposed a pre-existing slow-path UTF-8 slicing bug in `append_byte`, recorded under TODO.md `## Known Bugs`.
 
 **Amendment 2026-05-27 (§4.4):** The W2 dhat profile was re-captured at HEAD (the §1–§3 figures date to 2026-04-21; ~5 weeks of builtin work had landed since). `pattern::matches` was confirmed as the #1 allocation site by both bytes and calls (~1.66 MB / ~66,000 calls, ~20 % of the 8.34 MB W2 total). Reading the code corrected the §4.4 diagnosis: the two allocations are `chars().collect()` of the pattern and the *subject string* — not pattern compilation — so the originally-proposed LRU pattern cache would not have touched the dominant (subject-string) site. The fix (commits `e77c9a9` + `1f9f4b4`, spec/plan dated 2026-05-27) rewrote `match_pat` / `parse_bracket` / `try_parse_posix_class` to operate on `&str` via char-boundary byte offsets, removing both per-call `Vec<char>` allocations with no new dependency. W2 total allocation fell from 8.34 MB to 6.50 MB (−22.0 %); blocks 264,143 → 193,080 (−26.9 %); `pattern::matches` left the dhat Top-12 entirely; W2 stdout/stderr bit-identical. The §5.2 queue now heads with §4.2 (function-call sub-benches), and a new §4.4-derived follow-up (`strip_prefix` / `strip_suffix` Layer-2 amplifier) was added to §5.3 and TODO.md. Unlike the original measurement-only report, this amendment modified production code (`src/expand/pattern.rs`).
+
+**Amendment 2026-09-16 (shell-comparison pass):** A new wall-clock
+harness, `scripts/perf/compare_shells.py`, runs the workloads under
+`benches/data/workloads/` (12 interpreter/fork mixes) and
+`benches/data/workloads_probe/` (12 suspected-pathological cases) against
+`/bin/dash` and `/bin/bash` and prints medians plus yosh/dash ratios. It
+replaces the Criterion-only view for "is yosh slow *compared to a real
+shell*" questions. Findings and fixes, in measured-impact order:
+
+| Finding | Before (yosh / dash, ms) | After | Fix |
+|---|---|---|---|
+| `printf` was an external command (fork+exec ≈ 1.3 ms per call): `echo_output.sh` (20k `printf`) | 28,749 / 97 (295×) | 80 / 99 (0.81×) | Native POSIX `printf` builtin (`src/builtin/printf.rs`: all conversions incl. `%b`, `*` width/precision, `\c`, byteenc-safe raw bytes). |
+| An installed prompt plugin (`rich-prompt-plugin`, runs `whoami`/`hostname`/`git status`) was loaded by every *non-interactive* invocation: `yosh -c ':'` | 36.9 / 1.6 | 3.9 / 1.6 (no-plugin baseline 4.5) | Non-interactive shells load only plugins whose lockfile entry lists custom `commands`; hooks are interactive-only. `yosh-plugin sync` now records `commands` (and backfills it for existing entries). **Every earlier "yosh is 1.3–1.6× slower than dash" figure in this pass was this plugin tax**; the harness got `--no-plugins`. |
+| `ExpandedField::push_quoted` set protection masks one bit per byte, so `s="$s$i,"` loops were quadratic (77 % self time in samply) | 266 / 47 (5.6×) | 15.6 / 47 (0.33×) | Word-aligned `set_mask_range` fill and word-shifted `append_field` (`src/expand/mod.rs`). |
+| `shift` re-cloned every remaining positional parameter (`while [ $# -gt 0 ]; do …; shift; done` over 5000 args) | 249 / 18 (13.8×) | 16.7 / 18 (0.92×) | Per-scope `positional_offset`; `shift` is O(1) with periodic compaction (`src/env/vars.rs::shift_positional_params`). |
+| Forked children rebuilt the environment with libc `setenv` per exported variable (O(n²) scans, per-spawn `CString` allocation) | `export_env_spawn.sh` 458 / 386 (1.19×) | 413 / 401 (1.03×) | `VarStore::envp()` caches `KEY=VALUE` C strings alongside `environ_cache`; the child calls `execve` with it (`src/exec/simple.rs`). |
+
+With the plugin excluded, every interpreter-bound workload now runs
+faster than dash (arith 0.71×, case 0.90×, function calls 0.74×,
+parameter expansion 0.70×, `read` loops 0.49×, `for` word lists 0.74×,
+`if`/`test` 0.88×) and the fork-bound ones sit at parity with dash and
+within ~5 % of bash (`cmd_sub.sh` 0.89× dash, `pipeline.sh` 0.77×,
+`external.sh` 0.99×, subshells 0.90×). Startup without plugins is
+3.7 ms vs 3.2 ms for an empty Rust binary, so the shell's own
+initialisation is ~0.5 ms.
+
+Methodology notes recorded for the next pass: `samply` on macOS cannot
+profile a 4 ms process (zero samples) or system binaries, and it is a
+mise shim here (changing `HOME` breaks it) — use a self-built `execv`
+wrapper to stage `HOME`; `--rate 10000` gives usable sample counts on
+the 30–80 ms workloads; the per-leaf caller aggregator is
+`scripts/perf/samply_callers.py`. Remaining measured gap: fork+execve
+1.13 ms vs `posix_spawn` 0.77 ms per spawn (`scripts/perf/spawnbench.c`),
+tracked in TODO.md.

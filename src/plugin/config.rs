@@ -49,6 +49,17 @@ pub struct PluginEntry {
     /// permitted; matching is OR across the list.
     #[serde(default)]
     pub allowed_commands: Option<Vec<String>>,
+    /// Plugin-self-reported hook names cached by `yosh-plugin sync`.
+    /// Informational for the shell; hooks are only dispatched by
+    /// interactive shells.
+    #[serde(default)]
+    pub implemented_hooks: Option<Vec<String>>,
+    /// Plugin-self-reported custom command names cached by
+    /// `yosh-plugin sync`. `None` (lockfile written before this field
+    /// existed) means "unknown", which the shell treats as "may provide
+    /// commands" so the plugin is still loaded by non-interactive runs.
+    #[serde(default)]
+    pub commands: Option<Vec<String>>,
     /// Optional confinement root for the `files:read` / `files:write`
     /// capabilities. When set, every `files` host call is restricted to
     /// paths inside this directory (symlink-escape safe). When unset,

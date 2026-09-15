@@ -1,0 +1,7 @@
+# subshells in a loop
+i=0
+while [ "$i" -lt 1000 ]; do
+    ( : )
+    i=$((i + 1))
+done
+echo "$i"

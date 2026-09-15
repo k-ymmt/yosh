@@ -780,14 +780,12 @@ fn builtin_shift(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError>
             }
         }
     };
-    if n > env.vars.positional_params().len() {
+    if !env.vars.shift_positional_params(n) {
         return Err(ShellError::runtime(
             RuntimeErrorKind::IoError,
             "shift: shift count out of range".to_string(),
         ));
     }
-    env.vars
-        .set_positional_params(env.vars.positional_params()[n..].to_vec());
     Ok(0)
 }
 

@@ -131,7 +131,7 @@ impl Repl {
         executor.env.history.load(std::path::Path::new(&histfile));
 
         // Load plugins
-        executor.load_plugins();
+        executor.load_plugins(true);
 
         // Source ~/.yoshrc (yosh-specific startup file)
         if !home.is_empty() {

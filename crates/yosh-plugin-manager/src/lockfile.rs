@@ -62,6 +62,12 @@ pub struct LockEntry {
     /// caching rationale as `required_capabilities`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub implemented_hooks: Option<Vec<String>>,
+    /// Plugin-self-reported custom command names extracted at sync
+    /// time. The shell reads this to decide whether a non-interactive
+    /// run needs the plugin at all: hooks are interactive-only, so a
+    /// plugin with no commands is never instantiated by scripts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commands: Option<Vec<String>>,
     /// Per-plugin runtime resource limits, passed through verbatim from
     /// `plugins.toml`. `None` means the host applies its built-in default
     /// for that limit.
@@ -130,6 +136,7 @@ mod tests {
             engine_config_hash: None,
             required_capabilities: None,
             implemented_hooks: None,
+            commands: None,
             max_memory_mb: None,
             hook_timeout_ms: None,
             command_timeout_ms: None,
@@ -201,6 +208,7 @@ mod tests {
             engine_config_hash: None,
             required_capabilities: None,
             implemented_hooks: None,
+            commands: None,
             max_memory_mb: None,
             hook_timeout_ms: None,
             command_timeout_ms: None,

@@ -17,16 +17,6 @@
       `docs/superpowers/specs/2026-05-21-locale-support-design.md`
       §2.3 documents this as the intended branch point.
 
-### 2026-05-23 literal-argv word-splitting follow-ups (non-blocking)
-
-- [ ] `set_mask_range` (`src/expand/mod.rs:130-143`) has a per-bit
-      inner loop with no word-aligned fast path. For long literal /
-      quoted runs (common in real shell input) the `/64 + %64 +
-      shift` per byte is wasted. Switch to a word-aligned middle
-      block plus head/tail edges — measurably faster if/when
-      `cargo bench` shows expand pressure. Code-review follow-up
-      from Task 1 (Important).
-
 ### 2026-07-03 selector-UI follow-ups
 
 - [ ] Selector UI `colors_enabled()` reads NO_COLOR / CLICOLOR_FORCE / CLICOLOR
@@ -225,13 +215,30 @@
       eagerly: side effects in the right operand (assignments,
       `$((0 && (x=5)))`) are not short-circuited the way C semantics and
       bash/dash prescribe (`src/expand/arith.rs::{logical_or,logical_and}`).
-- [ ] Perf follow-ups (measure before acting, audit notes): variable
-      lookups clone values on several expansion paths — a `Cow<str>`
-      return could avoid per-expansion allocation (`src/env/vars.rs`,
-      `src/expand/param.rs`); arithmetic expressions are re-lexed and
-      re-parsed on every evaluation — an AST cache would help hot loops
+- [ ] Perf follow-ups (measure before acting, audit notes; re-measured
+      2026-09-16 with `scripts/perf/compare_shells.py --no-plugins`, where
+      every interpreter-bound workload now runs at 0.3–0.9× dash's wall
+      time, so these are low priority): variable lookups clone values on
+      several expansion paths — a `Cow<str>` return could avoid
+      per-expansion allocation (`src/env/vars.rs`, `src/expand/param.rs`);
+      arithmetic expressions are re-lexed and re-parsed on every
+      evaluation — an AST cache would help hot loops
       (`src/expand/arith.rs`); command-substitution children clone the
-      full `ShellEnv` before forking (`src/expand/command_sub.rs`).
+      full `ShellEnv` before forking (`src/expand/command_sub.rs`;
+      `cmd_sub.sh` measured 0.89× dash, so the clone is not dominant).
+- [ ] `posix_spawn` for plain external commands (measured 2026-09-16 on
+      macOS with `spawnbench.c`: fork+execve 1.13 ms vs posix_spawn 0.77 ms
+      per `/usr/bin/true`; yosh's `external.sh` workload is 1.24 ms/spawn
+      vs bash 1.16). Candidate subset: no redirects, no monitor mode —
+      signal dispositions via `POSIX_SPAWN_SETSIGDEF`/`SETSIGMASK`, envp
+      from `VarStore::envp()`. Redirects would need file actions that
+      replicate `RedirectState` (heredocs, fd saves, noclobber), so keep
+      the fork path for those (`src/exec/simple.rs::spawn_external_at_path`).
+- [ ] Remaining probe-workload gaps vs dash (2026-09-16,
+      `benches/data/workloads_probe/`, final run): `heredoc_big.sh` 1.19×,
+      `ifs_split_big.sh` 1.18×, `recursion.sh` 1.13×, `export_env_spawn.sh`
+      1.03× (was 1.19× before the envp cache). All fork- or
+      allocation-bound; none pathological.
 
 ## History: Known Limitations
 
@@ -523,7 +530,6 @@ the items below are deferred work, not policy:
 - [ ] `highlight_scanner` `KEYWORDS` duplicates POSIX §2.4 list — `src/interactive/highlight_scanner/helpers.rs` defines its own copy of the 16 reserved words, separate from the canonical `crate::lexer::reserved::RESERVED_WORDS`. Consolidate once the contextual subsets (`COMMAND_POSITION_KEYWORDS` includes `"time"`, command-position restoration logic) are re-expressed in terms of the canonical list (`src/interactive/highlight_scanner/helpers.rs`)
 - [ ] `try_parse_assignment` `other.clone()` deep-copies CommandSub — the non-Literal branch clones each remaining `WordPart`, which for `$(...)` substitutions clones the embedded `Program`. Same inefficiency as the prior `extend_from_slice`, so not a regression, but consider consuming `Word` (take ownership) or draining `word.parts` to avoid the copy (`src/parser/simple.rs`).
 - [ ] `expand_assignment_builtin_args` string round-trip — helper builds `"NAME=value"` strings that the builtin re-parses with `find('=')`. Lossless today, but couples the helper shape to the legacy builtin API. When a future refactor touches `builtin_export`/`builtin_readonly` signatures, consider passing `Vec<(String, Option<String>)>` directly to skip the round-trip (`src/exec/simple.rs`, `src/builtin/special.rs`).
-- [ ] `exec_function_call` residual overhead vs arithmetic loop (§4.2) — 2026-08-26: two of the four suspected causes fixed (per-call `catch_unwind` replaced with a `ScopeGuard` Drop popper in `src/exec/function.rs`; the call-site deep clone removed by storing `Rc<FunctionDef>` in `env.functions`). Remaining candidates if the gap still matters: `exec_function_call_cached_environ`, `exec_function_call_smallvec_scope` sub-benches per `performance.md` §4.2 candidate #1. Re-measure before acting — the ~50 µs/call figure predates the 2026-08-26 fixes (`src/exec/function.rs`).
 - [ ] Multi-byte IFS support in UTF-8 locale (bash-extension parity) — `field_split::split` currently matches IFS as an ASCII byte-set. `IFS="日"; set -- $"a日b"` yields `[a] [b]` under bash in UTF-8 locale (character-level match) but is silently ignored (post-fix A) or produces garbled bytes (pre-fix A) in yosh. POSIX leaves this locale-dependent; bash uses character-level matching when locale is multi-byte. Plan: introduce a `char`-level IFS match path (`char_indices` in `split_field`, char-mode `ifs` set) gated by locale detection. Deferred from the 2026-04-21 `append_byte` UTF-8 panic fix to keep scope minimal. See the brainstorming log for that fix; reference bash 3.2 behavior under `LC_ALL=en_US.UTF-8` as the target semantics.
 - [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard. The stdout-lock deadlock this hazard produced in the test harness (2026-08-26, ESCALATED 2026-09-02: three hangs per session in piped `cargo test --lib` runs — the fork child inherited libtest's stdout `ReentrantLock` locked and hung in `exit_child`'s `stdout().flush()`) was FIXED 2026-09-11: every fork site now goes through `src/exec/mod.rs::fork_shell`, which holds the std stdout/stderr locks (flushed) across `fork()` and releases them in both processes — the `pthread_atfork` prepare/parent/child pattern for the two std handles. Pinned by `exec::tests::fork_shell_child_exits_despite_stdio_lock_contention` (plain `fork` under the same lock-hog thread: 20/20 children killed; `fork_shell`: 0/20). Other std-internal locks (allocator, `stack_overflow::thread_info`) remain out of scope of the wrapper; `exit_child`'s `_exit` covers the exit path, but a child stall pre-exit in the MT harness is still theoretically possible.
 - [ ] `Parser::current_token` API shape — `interactive/parse_status.rs:61` compares the result against `&Token::Newline` literally, which forces every caller to construct a borrowed `Token` value just for equality. Consider a predicate `fn is_token(&self, t: &Token) -> bool` (or an enum-tag helper) that hides the borrow. Discovered during the 2026-05-05 visibility-tightening spec follow-up (`docs/superpowers/specs/2026-05-05-parser-visibility-tightening-design.md` §4.2-1, `src/parser/mod.rs`).

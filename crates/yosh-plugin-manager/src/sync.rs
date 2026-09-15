@@ -211,7 +211,14 @@ fn sync_one(
                             .map(config::expand_tilde_path)
                             .map(|p| p.exists())
                             .unwrap_or(false);
-                        if existing.required_capabilities.is_some() && cwasm_present {
+                        // `commands` was added to the lockfile later;
+                        // an entry without it falls through so the
+                        // metadata pass backfills the field (no
+                        // re-download: the local file is trusted).
+                        if existing.required_capabilities.is_some()
+                            && existing.commands.is_some()
+                            && cwasm_present
+                        {
                             return Ok(with_decl_limits(existing, decl));
                         }
                     }
@@ -297,6 +304,7 @@ fn sync_one(
                 engine_config_hash: Some(pre.cache_key.engine_config_hash.clone()),
                 required_capabilities: Some(metadata.required_capabilities),
                 implemented_hooks: Some(metadata.implemented_hooks),
+                commands: Some(metadata.commands),
                 max_memory_mb: decl.max_memory_mb,
                 hook_timeout_ms: decl.hook_timeout_ms,
                 command_timeout_ms: decl.command_timeout_ms,
@@ -346,6 +354,7 @@ fn sync_one(
                 .as_ref()
                 .map(|m| m.required_capabilities.clone());
             let implemented_hooks = meta_fields.as_ref().map(|m| m.implemented_hooks.clone());
+            let commands = meta_fields.as_ref().map(|m| m.commands.clone());
 
             Ok(LockEntry {
                 name: decl.name.clone(),
@@ -362,6 +371,7 @@ fn sync_one(
                 engine_config_hash,
                 required_capabilities,
                 implemented_hooks,
+                commands,
                 max_memory_mb: decl.max_memory_mb,
                 hook_timeout_ms: decl.hook_timeout_ms,
                 command_timeout_ms: decl.command_timeout_ms,
@@ -636,6 +646,7 @@ mod tests {
             engine_config_hash: None,
             required_capabilities: None,
             implemented_hooks: None,
+            commands: None,
             max_memory_mb: None,
             hook_timeout_ms: None,
             command_timeout_ms: None,
@@ -701,6 +712,7 @@ mod tests {
             engine_config_hash: Some("hash".into()),
             required_capabilities: Some(vec!["io".into()]),
             implemented_hooks: Some(vec!["pre_exec".into()]),
+            commands: None,
             max_memory_mb: Some(32),
             hook_timeout_ms: Some(500),
             command_timeout_ms: Some(10_000),

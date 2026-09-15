@@ -551,7 +551,7 @@ enabled = true
 
         let mut env = ShellEnv::new("yosh", Vec::new());
         let mut mgr = PluginManager::new();
-        mgr.load_from_config(&lock_path, &mut env);
+        mgr.load_from_config(&lock_path, &mut env, true);
 
         let exec = mgr.exec_command(&mut env, "test_cmd", &["smoke".into()]);
         if should_load {
@@ -1036,7 +1036,7 @@ capabilities = ["variables:read", "hooks:pre_prompt", "hooks:pre_exec", "hooks:p
 
     let mut env = fresh_env();
     let mut mgr = PluginManager::new();
-    mgr.load_from_config(&lock_path, &mut env);
+    mgr.load_from_config(&lock_path, &mut env, true);
 
     // Hooks must dispatch without panic against all three instances. The
     // absence of a panic / trap is the observable assertion — perf_plugin

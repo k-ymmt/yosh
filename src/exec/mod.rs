@@ -186,9 +186,21 @@ impl Executor {
     }
 
     /// Load plugins from the lock file (~/.config/yosh/plugins.lock).
-    pub fn load_plugins(&mut self) {
+    /// Load the plugins recorded in `plugins.lock`.
+    ///
+    /// `interactive` selects the load policy: interactive shells load
+    /// every enabled plugin (hooks and prompt integration need them),
+    /// while non-interactive runs (`yosh script.sh`, `yosh -c`) only
+    /// load plugins that can be reached from a script — those that
+    /// provide custom commands. Hooks are an interactive-shell feature,
+    /// like zsh's `preexec`; skipping them in scripts avoids paying a
+    /// plugin's startup work (measured 2026-09-16: ~32 ms per script
+    /// invocation for a prompt plugin that runs external commands in
+    /// its init/pre-exec path) on every script run.
+    pub fn load_plugins(&mut self, interactive: bool) {
         let config_path = plugin_config_path();
-        self.plugins.load_from_config(&config_path, &mut self.env);
+        self.plugins
+            .load_from_config(&config_path, &mut self.env, interactive);
     }
 
     /// Source a file in the current shell context.

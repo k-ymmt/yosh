@@ -432,7 +432,7 @@ fn run_string(
     if executor.env.mode.options.monitor && !signal::try_enable_monitor_mode() {
         executor.env.mode.options.monitor = false;
     }
-    executor.load_plugins();
+    executor.load_plugins(interactive);
     executor.env.mode.options.cmd_string = cmd_string;
     executor.env.mode.options.stdin_reads = stdin_reads;
     if interactive {
