@@ -192,6 +192,17 @@
       but real-world scripts still use them, so this is a known
       compatibility risk. The portable forms `[ a ] && [ b ]` /
       `[ a ] || [ b ]` work (`src/builtin/test.rs`).
+- [ ] DEVIATION (decided 2026-09-16, printf builtin wrap-up review):
+      `printf` `%s` / `%b` / `%c` precision and field width count
+      *characters* (UTF-8 sequences, invalid bytes as one each), matching
+      bash in a UTF-8 locale and yosh's own `${#var}`; dash and
+      `/usr/bin/printf` count bytes. Example: `printf '%.1b' '\0303\0251'`
+      prints `c3 a9` here, `c3` in dash. Also: an invalid directive
+      (`%q`, `%5%`, `%l`) exits 1 like bash where dash exits 2, and `%a`
+      of a subnormal prints the glibc form `0x0.0000000000001p-1022`
+      where macOS libc normalises to `0x1p-1074`. Revisit only if a
+      real script depends on the byte-counting behaviour
+      (`src/builtin/printf.rs`).
 - [ ] Parser executes commands preceding a syntax error on the same `-c`
       input (`yosh -c 'echo hi; if'` prints hi before the diagnostic);
       sh/dash parse the whole input first and execute nothing (audit L5,

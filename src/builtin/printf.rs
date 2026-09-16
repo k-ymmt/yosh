@@ -33,13 +33,11 @@ struct Run {
 }
 
 pub fn builtin_printf(args: &[String]) -> Result<i32, ShellError> {
-    let run = run(args);
-    if !run.out.is_empty() {
-        use std::io::Write;
-        let stdout = std::io::stdout();
-        let mut h = stdout.lock();
-        let _ = h.write_all(&run.out);
-        let _ = h.flush();
+    let mut run = run(args);
+    if !run.out.is_empty()
+        && let Err(e) = write_all_stdout(&run.out)
+    {
+        run.diags.push(format!("write error: {}", e));
     }
     for d in &run.diags {
         eprintln!("yosh: printf: {}", d);
@@ -51,6 +49,26 @@ pub fn builtin_printf(args: &[String]) -> Result<i32, ShellError> {
     } else {
         1
     })
+}
+
+/// Write `buf` to fd 1 with `write(2)` directly. `std::io::Stdout`
+/// silently swallows `EBADF` (a closed stdout, `printf x >&-`), but
+/// POSIX requires `printf` to report a write failure with status 1.
+fn write_all_stdout(buf: &[u8]) -> std::io::Result<()> {
+    let _lock = std::io::stdout().lock();
+    let mut rest = buf;
+    while !rest.is_empty() {
+        let n = unsafe { libc::write(1, rest.as_ptr().cast(), rest.len()) };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        rest = &rest[n as usize..];
+    }
+    Ok(())
 }
 
 /// Evaluate `printf` over byteenc-encoded `args` without performing I/O.
@@ -171,18 +189,26 @@ impl<'a> State<'a> {
             }
             i += 1;
         }
+        // Width and precision are C `int`s: values outside that range
+        // are diagnosed ("Result too large", like bash) and ignored
+        // instead of being turned into a multi-gigabyte allocation.
         if fmt.get(i) == Some(&b'*') {
             i += 1;
-            let w = self.int_arg();
-            if w < 0 {
-                spec.left = true;
-                spec.width = Some(w.unsigned_abs().min(usize::MAX as u64) as usize);
-            } else {
-                spec.width = Some(w as usize);
+            match self.star_arg() {
+                Some(w) if w < 0 => {
+                    spec.left = true;
+                    spec.width = Some(w.unsigned_abs() as usize);
+                }
+                Some(w) => spec.width = Some(w as usize),
+                None => {}
             }
         } else {
             let (n, len) = digits(&fmt[i..]);
             if len > 0 {
+                if n > i32::MAX as usize {
+                    let shown = String::from_utf8_lossy(&fmt[start..i + len]).into_owned();
+                    return Err(format!("{}: field width too large", shown));
+                }
                 spec.width = Some(n);
             }
             i += len;
@@ -191,10 +217,16 @@ impl<'a> State<'a> {
             i += 1;
             if fmt.get(i) == Some(&b'*') {
                 i += 1;
-                let p = self.int_arg();
-                spec.prec = if p < 0 { None } else { Some(p as usize) };
+                spec.prec = match self.star_arg() {
+                    Some(p) if p >= 0 => Some(p as usize),
+                    _ => None,
+                };
             } else {
                 let (n, len) = digits(&fmt[i..]);
+                if n > i32::MAX as usize {
+                    let shown = String::from_utf8_lossy(&fmt[start..i + len]).into_owned();
+                    return Err(format!("{}: precision too large", shown));
+                }
                 spec.prec = Some(n);
                 i += len;
             }
@@ -207,7 +239,16 @@ impl<'a> State<'a> {
             b'd' | b'i' => {
                 let v = self.signed_arg();
                 let body = v.unsigned_abs().to_string();
-                self.emit_number(&spec, v < 0, "", body, NumKind::Int { octal_alt: false });
+                self.emit_number(
+                    &spec,
+                    v < 0,
+                    "",
+                    body,
+                    NumKind::Int {
+                        octal_alt: false,
+                        signed: true,
+                    },
+                );
             }
             b'u' => {
                 let v = self.unsigned_arg();
@@ -216,7 +257,10 @@ impl<'a> State<'a> {
                     false,
                     "",
                     v.to_string(),
-                    NumKind::Int { octal_alt: false },
+                    NumKind::Int {
+                        octal_alt: false,
+                        signed: false,
+                    },
                 );
             }
             b'o' => {
@@ -232,6 +276,7 @@ impl<'a> State<'a> {
                     body,
                     NumKind::Int {
                         octal_alt: spec.alt,
+                        signed: false,
                     },
                 );
             }
@@ -252,7 +297,10 @@ impl<'a> State<'a> {
                     false,
                     prefix,
                     body,
-                    NumKind::Int { octal_alt: false },
+                    NumKind::Int {
+                        octal_alt: false,
+                        signed: false,
+                    },
                 );
             }
             b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => {
@@ -338,28 +386,50 @@ impl<'a> State<'a> {
         Ok(Some(i))
     }
 
-    fn int_arg(&mut self) -> i64 {
-        self.signed_arg()
+    /// `*` width/precision operand. Values outside C `int` range are
+    /// diagnosed and ignored (`None`: the field is treated as unspecified).
+    fn star_arg(&mut self) -> Option<i32> {
+        let Some(a) = self.next_arg() else {
+            return Some(0);
+        };
+        let (v, err) = parse_int(a);
+        if let Some(e) = err {
+            self.r.diags.push(e);
+        }
+        if v < i32::MIN as i128 || v > i32::MAX as i128 {
+            self.r.diags.push(format!("{}: Result too large", shown(a)));
+            return None;
+        }
+        Some(v as i32)
     }
 
+    /// `%d` / `%i` operand: `strtoimax` semantics — out-of-range values
+    /// are clamped with a "Result too large" diagnostic.
     fn signed_arg(&mut self) -> i64 {
         let Some(a) = self.next_arg() else { return 0 };
         let (v, err) = parse_int(a);
         if let Some(e) = err {
             self.r.diags.push(e);
+        } else if v < i64::MIN as i128 || v > i64::MAX as i128 {
+            self.r.diags.push(format!("{}: Result too large", shown(a)));
         }
         v.clamp(i64::MIN as i128, i64::MAX as i128) as i64
     }
 
+    /// `%u` / `%o` / `%x` operand: `strtoumax` semantics — a negative
+    /// value within `-(2^64-1)..=0` wraps modulo 2^64 (`-1` → `u64::MAX`),
+    /// anything beyond `±(2^64-1)` is clamped with a diagnostic.
     fn unsigned_arg(&mut self) -> u64 {
         let Some(a) = self.next_arg() else { return 0 };
         let (v, err) = parse_int(a);
         if let Some(e) = err {
             self.r.diags.push(e);
+        } else if v > u64::MAX as i128 || v < -(u64::MAX as i128) {
+            self.r.diags.push(format!("{}: Result too large", shown(a)));
         }
         if v < 0 {
-            // C reinterpretation of a negative value as unsigned.
-            (v.max(i64::MIN as i128) as i64) as u64
+            let m = v.max(-(u64::MAX as i128));
+            (m + (1i128 << 64)) as u64
         } else {
             v.min(u64::MAX as i128) as u64
         }
@@ -377,11 +447,12 @@ impl<'a> State<'a> {
     /// Emit a numeric conversion: `sign prefix [zeros] body`, honouring
     /// precision (minimum digits, integers only), `0` flag and width.
     fn emit_number(&mut self, spec: &Spec, neg: bool, prefix: &str, body: String, kind: NumKind) {
+        let signed = !matches!(kind, NumKind::Int { signed: false, .. });
         let sign: &str = if neg {
             "-"
-        } else if spec.plus {
+        } else if spec.plus && signed {
             "+"
-        } else if spec.space {
+        } else if spec.space && signed {
             " "
         } else {
             ""
@@ -390,7 +461,7 @@ impl<'a> State<'a> {
         // C: the 0 flag pads finite numbers only, and is ignored for
         // integers when a precision is given.
         let mut zero_ok = spec.zero && !spec.left && !matches!(kind, NumKind::NonFinite);
-        if let NumKind::Int { octal_alt } = kind
+        if let NumKind::Int { octal_alt, .. } = kind
             && let Some(p) = spec.prec
         {
             if p == 0 && digits == "0" {
@@ -448,9 +519,11 @@ impl<'a> State<'a> {
 
 #[derive(Clone, Copy)]
 enum NumKind {
-    /// Integer conversion; `octal_alt` marks `%#o` (0 keeps its digit).
+    /// Integer conversion; `octal_alt` marks `%#o` (0 keeps its digit),
+    /// `signed` whether the `+` / space flags apply (`%d` / `%i` only).
     Int {
         octal_alt: bool,
+        signed: bool,
     },
     Float,
     NonFinite,
@@ -589,9 +662,17 @@ fn quoted_char_value(rest: &[u8]) -> i128 {
     }
 }
 
-/// Parse an integer operand like `strtoimax(s, base 0)`.
-/// Returns (value, diagnostic). The value is the longest valid prefix.
+/// Parse an integer operand like `strto[iu]max(s, base 0)`.
+/// Returns (value, diagnostic). The value is the longest valid prefix,
+/// exact while `|value| <= 2^64` (callers apply the conversion's own
+/// range rule); beyond that it saturates with a "Result too large"
+/// diagnostic.
 fn parse_int(a: &[u8]) -> (i128, Option<String>) {
+    // An empty operand is 0 without complaint; a blank-only one is not
+    // a number (strtoimax consumes nothing).
+    if a.is_empty() {
+        return (0, None);
+    }
     let s = trim_leading_space(a);
     if let Some(&q) = s.first()
         && (q == b'\'' || q == b'"')
@@ -599,7 +680,7 @@ fn parse_int(a: &[u8]) -> (i128, Option<String>) {
         return (quoted_char_value(&s[1..]), None);
     }
     if s.is_empty() {
-        return (0, None);
+        return (0, Some(format!("{}: expected numeric value", shown(a))));
     }
     let mut i = 0;
     let mut neg = false;
@@ -630,7 +711,7 @@ fn parse_int(a: &[u8]) -> (i128, Option<String>) {
         };
         if !overflow {
             v = v * base as i128 + d as i128;
-            if v > u64::MAX as i128 + 1 {
+            if v > (u64::MAX as i128) * 2 {
                 overflow = true;
             }
         }
@@ -658,6 +739,9 @@ fn parse_int(a: &[u8]) -> (i128, Option<String>) {
 
 /// Parse a floating-point operand like `strtod`.
 fn parse_float(a: &[u8]) -> (f64, Option<String>) {
+    if a.is_empty() {
+        return (0.0, None);
+    }
     let s = trim_leading_space(a);
     if let Some(&q) = s.first()
         && (q == b'\'' || q == b'"')
@@ -665,7 +749,7 @@ fn parse_float(a: &[u8]) -> (f64, Option<String>) {
         return (quoted_char_value(&s[1..]) as f64, None);
     }
     if s.is_empty() {
-        return (0.0, None);
+        return (0.0, Some(format!("{}: expected numeric value", shown(a))));
     }
     let text = String::from_utf8_lossy(s);
     let bytes = text.as_bytes();
@@ -673,11 +757,36 @@ fn parse_float(a: &[u8]) -> (f64, Option<String>) {
     if matches!(bytes.first(), Some(b'+') | Some(b'-')) {
         i = 1;
     }
+    if bytes.len() > i + 1
+        && bytes[i] == b'0'
+        && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X')
+        && let Some((v, end)) = parse_hex_float(bytes, i + 2)
+    {
+        let v = if bytes[0] == b'-' { -v } else { v };
+        if end != bytes.len() {
+            return (v, Some(format!("{}: not completely converted", shown(a))));
+        }
+        return (v, None);
+    }
     let lower = text[i..].to_ascii_lowercase();
     let word_len = if lower.starts_with("infinity") {
         8
-    } else if lower.starts_with("inf") || lower.starts_with("nan") {
+    } else if lower.starts_with("inf") {
         3
+    } else if let Some(rest) = lower.strip_prefix("nan") {
+        // strtod also accepts `nan(n-char-sequence)`.
+        let rest = rest.as_bytes();
+        let close = rest.iter().position(|c| *c == b')');
+        match (rest.first(), close) {
+            (Some(b'('), Some(k))
+                if rest[1..k]
+                    .iter()
+                    .all(|c| c.is_ascii_alphanumeric() || *c == b'_') =>
+            {
+                3 + k + 1
+            }
+            _ => 3,
+        }
     } else {
         0
     };
@@ -715,7 +824,11 @@ fn parse_float(a: &[u8]) -> (f64, Option<String>) {
         }
         j
     };
-    let v: f64 = text[..end].parse().unwrap_or(0.0);
+    let v: f64 = if word_len > 3 {
+        f64::NAN
+    } else {
+        text[..end].parse().unwrap_or(0.0)
+    };
     if v.is_infinite() && word_len == 0 {
         return (v, Some(format!("{}: Result too large", shown(a))));
     }
@@ -723,6 +836,101 @@ fn parse_float(a: &[u8]) -> (f64, Option<String>) {
         return (v, Some(format!("{}: not completely converted", shown(a))));
     }
     (v, None)
+}
+
+/// Parse the part of a C99 hexadecimal float after `0x`: hex digits with
+/// an optional point and an optional binary exponent (`p±ddd`). Returns
+/// the magnitude and the index just past the parsed text, or `None`
+/// when no hex digit was present.
+fn parse_hex_float(b: &[u8], mut i: usize) -> Option<(f64, usize)> {
+    // Accumulate at most 16 significant hex digits (64 bits, more than
+    // f64's 53) so a long operand cannot overflow the mantissa; extra
+    // integer digits only raise the binary exponent, extra fraction
+    // digits are dropped (like strtod's rounding of excess digits).
+    const MAX_SIG: u32 = 16;
+    let mut mant: f64 = 0.0;
+    let mut exp: i32 = 0;
+    let mut digits = 0;
+    let mut sig = 0;
+    while let Some(d) = b.get(i).and_then(|c| (*c as char).to_digit(16)) {
+        if sig < MAX_SIG {
+            mant = mant * 16.0 + d as f64;
+            if mant != 0.0 {
+                sig += 1;
+            }
+        } else {
+            exp = exp.saturating_add(4);
+        }
+        i += 1;
+        digits += 1;
+    }
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        while let Some(d) = b.get(i).and_then(|c| (*c as char).to_digit(16)) {
+            if sig < MAX_SIG {
+                mant = mant * 16.0 + d as f64;
+                exp -= 4;
+                if mant != 0.0 {
+                    sig += 1;
+                }
+            }
+            i += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        return None;
+    }
+    if matches!(b.get(i), Some(b'p') | Some(b'P')) {
+        let mut j = i + 1;
+        let neg = match b.get(j) {
+            Some(b'-') => {
+                j += 1;
+                true
+            }
+            Some(b'+') => {
+                j += 1;
+                false
+            }
+            _ => false,
+        };
+        let start = j;
+        let mut e: i32 = 0;
+        while let Some(c) = b.get(j).filter(|c| c.is_ascii_digit()) {
+            e = e.saturating_mul(10).saturating_add((c - b'0') as i32);
+            j += 1;
+        }
+        if j > start {
+            exp = exp.saturating_add(if neg { -e } else { e });
+            i = j;
+        }
+    }
+    Some((scale_pow2(mant, exp), i))
+}
+
+/// `mant * 2^exp` without intermediate overflow/underflow: `powi`
+/// alone underflows to 0 for exponents below -1022 (`0x1p-1074`) and
+/// makes `0 * inf` for huge positive exponents (`0x0p1024`).
+fn scale_pow2(mant: f64, mut exp: i32) -> f64 {
+    if mant == 0.0 {
+        return 0.0;
+    }
+    let mut v = mant;
+    while exp > 1000 {
+        v *= 2f64.powi(1000);
+        exp -= 1000;
+        if v.is_infinite() {
+            return v;
+        }
+    }
+    while exp < -1000 {
+        v *= 2f64.powi(-1000);
+        exp += 1000;
+        if v == 0.0 {
+            return 0.0;
+        }
+    }
+    v * 2f64.powi(exp)
 }
 
 fn trim_leading_space(a: &[u8]) -> &[u8] {
@@ -931,6 +1139,13 @@ mod tests {
         assert_eq!(out(&["%d", "'A"]), "65");
         assert_eq!(out(&["%d", "\"€"]), "8364");
         assert_eq!(out(&["%d", " 12"]), "12");
+        assert_eq!(
+            out(&["%+u|% x|%+o|%+d|% i", "12", "12", "12", "12", "12"]),
+            "12|c|14|+12| 12"
+        );
+        let (o, st, d) = pf(&["%d|%f|", " ", "\t"]);
+        assert_eq!((o.as_str(), st), ("0|0.000000|", 1));
+        assert_eq!(d.len(), 2);
     }
 
     #[test]
@@ -957,6 +1172,22 @@ mod tests {
             "    3|3    |3.14"
         );
         assert_eq!(out(&["%*d|", "-4", "3"]), "3   |");
+        // Out-of-int-range `*` operands are diagnosed and ignored, never
+        // allocated (a 99999999999-column pad hung the shell before).
+        let (o, st, d) = pf(&["%*d|%.*s|", "99999999999", "1", "-99999999999", "abc"]);
+        assert_eq!(o, "1|abc|");
+        assert_eq!(st, 1);
+        assert_eq!(d.len(), 2);
+        assert!(d[0].contains("Result too large"));
+        let (o, st, d) = pf(&["%18446744073709551616s|", "x"]);
+        assert_eq!((o.as_str(), st), ("", 1));
+        assert!(d[0].contains("field width too large"), "{d:?}");
+        let (o, st, d) = pf(&["%99999999999d|", "1"]);
+        assert_eq!((o.as_str(), st), ("", 1));
+        assert!(d[0].contains("field width too large"), "{d:?}");
+        let (_, st, d) = pf(&["%.99999999999d|", "1"]);
+        assert_eq!(st, 1);
+        assert!(d[0].contains("precision too large"), "{d:?}");
     }
 
     #[test]
@@ -1008,6 +1239,15 @@ mod tests {
         let (o, st, _) = pf(&["%f", "1.5x"]);
         assert_eq!((o.as_str(), st), ("1.500000", 1));
         assert_eq!(out(&["%.2f", "'A"]), "65.00");
+        // C99 hexadecimal floats are accepted like strtod.
+        assert_eq!(
+            out(&["%f|%g|%.1f|%a", "0x1.8p+1", "-0x10", "0xAp-2", "0x.8"]),
+            "3.000000|-16|2.5|0x1p-1"
+        );
+        let (o, st, _) = pf(&["%f", "0x1.8z"]);
+        assert_eq!((o.as_str(), st), ("1.500000", 1));
+        let (o, st, _) = pf(&["%f", "0x"]);
+        assert_eq!((o.as_str(), st), ("0.000000", 1));
     }
 
     #[test]
