@@ -114,7 +114,13 @@ fn merge_envp(base: &[CString], overrides: &[(String, String)]) -> Vec<CString> 
         .filter(|c| !keys.iter().any(|k| c.as_bytes().starts_with(k)))
         .cloned()
         .collect();
-    for ((_, v), key) in overrides.iter().zip(&keys) {
+    // `A=one A=two cmd`: the last assignment for a name wins, and the
+    // name must appear once (a duplicate entry makes `getenv` return
+    // whichever comes first).
+    for (idx, ((_, v), key)) in overrides.iter().zip(&keys).enumerate() {
+        if keys[idx + 1..].contains(key) {
+            continue;
+        }
         let mut bytes = key.clone();
         bytes.extend_from_slice(&crate::byteenc::decode_bytes(v));
         if let Ok(c) = CString::new(bytes) {
@@ -1302,6 +1308,25 @@ mod tests {
             !exec.env.utility_hash.contains_key("sh"),
             "a default-PATH hit must not be reusable by later $PATH lookups"
         );
+    }
+
+    #[test]
+    fn merge_envp_last_duplicate_prefix_assignment_wins() {
+        let base = vec![
+            CString::new("A=base").unwrap(),
+            CString::new("AB=keep").unwrap(),
+            CString::new("Z=1").unwrap(),
+        ];
+        let overrides = vec![
+            ("A".to_string(), "one".to_string()),
+            ("B".to_string(), "b".to_string()),
+            ("A".to_string(), "two".to_string()),
+        ];
+        let got: Vec<String> = merge_envp(&base, &overrides)
+            .into_iter()
+            .map(|c| c.into_string().unwrap())
+            .collect();
+        assert_eq!(got, vec!["AB=keep", "Z=1", "B=b", "A=two"]);
     }
 
     #[test]
