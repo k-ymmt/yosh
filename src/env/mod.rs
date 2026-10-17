@@ -4,6 +4,7 @@ pub mod exec_state;
 pub mod jobs;
 pub mod locale;
 pub mod shell_mode;
+pub mod startup_pwd;
 pub mod traps;
 pub mod vars;
 

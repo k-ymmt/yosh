@@ -418,6 +418,8 @@ fn run_string(
     signal::init_signal_handling();
     let mut executor = Executor::new(shell_name, positional);
     env::default_path::ensure_default_path(&mut executor.env);
+    // POSIX §2.5.3: adopt the inherited PWD only if it names the cwd.
+    env::startup_pwd::ensure_pwd(&mut executor.env);
     // Invocation-time set options (-e, -x, -o name, ...), validated at
     // parse time in main; applied before any command runs.
     executor
