@@ -21,6 +21,7 @@
 //! bytes on entry and the assembled output is written to stdout as raw
 //! bytes, so invalid-UTF-8 input round-trips unchanged.
 
+use crate::builtin::output::write_stdout_bytes;
 use crate::byteenc;
 use crate::error::ShellError;
 
@@ -35,7 +36,7 @@ struct Run {
 pub fn builtin_printf(args: &[String]) -> Result<i32, ShellError> {
     let mut run = run(args);
     if !run.out.is_empty()
-        && let Err(e) = write_all_stdout(&run.out)
+        && let Err(e) = write_stdout_bytes(&run.out)
     {
         run.diags.push(format!("write error: {}", e));
     }
@@ -49,30 +50,6 @@ pub fn builtin_printf(args: &[String]) -> Result<i32, ShellError> {
     } else {
         1
     })
-}
-
-/// Write `buf` to fd 1 with `write(2)` directly. `std::io::Stdout`
-/// silently swallows `EBADF` (a closed stdout, `printf x >&-`), but
-/// POSIX requires `printf` to report a write failure with status 1.
-pub(crate) fn write_all_stdout(buf: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut lock = std::io::stdout().lock();
-    // Anything still sitting in std's buffer must go out first so the
-    // raw write below cannot overtake it.
-    let _ = lock.flush();
-    let mut rest = buf;
-    while !rest.is_empty() {
-        let n = unsafe { libc::write(1, rest.as_ptr().cast(), rest.len()) };
-        if n < 0 {
-            let e = std::io::Error::last_os_error();
-            if e.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(e);
-        }
-        rest = &rest[n as usize..];
-    }
-    Ok(())
 }
 
 /// Evaluate `printf` over byteenc-encoded `args` without performing I/O.

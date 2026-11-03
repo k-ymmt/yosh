@@ -5,6 +5,8 @@
 //! obsolescent `-a`/`-o` and deep `(` `)` nesting are deliberately not
 //! — see the design doc for rationale.
 
+use crate::builtin::path::os_path;
+
 /// Error returned by `evaluate`. Always produces exit status 2 plus a
 /// message prefixed by `yosh: {name}: ` in the caller.
 ///
@@ -96,7 +98,7 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
 
     // File operands are byteenc-encoded shell strings; decode so
     // non-UTF-8 path names reach the OS as their original raw bytes.
-    let path = operand_path(arg);
+    let path = os_path(arg);
     let path = path.as_path();
 
     match op {
@@ -182,19 +184,11 @@ fn is_binary_primary(op: &str) -> bool {
     )
 }
 
-/// Byteenc-decode a file operand into an OS path carrying its raw bytes.
-fn operand_path(arg: &str) -> std::path::PathBuf {
-    use std::os::unix::ffi::OsStrExt;
-    std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&crate::byteenc::decode_bytes(
-        arg,
-    )))
-}
-
 /// Last data-modification time `(sec, nsec)` of the file `arg`
 /// resolves to (symlinks followed), or `None` if it cannot be resolved.
 fn mtime_of(arg: &str) -> Option<(i64, i64)> {
     use std::os::unix::fs::MetadataExt;
-    let m = std::fs::metadata(operand_path(arg)).ok()?;
+    let m = std::fs::metadata(os_path(arg)).ok()?;
     Some((m.mtime(), m.mtime_nsec()))
 }
 
@@ -232,8 +226,8 @@ fn eval_binary(lhs: &str, op: &str, rhs: &str) -> Result<bool, TestError> {
             use std::os::unix::fs::MetadataExt;
             Ok(
                 match (
-                    std::fs::metadata(operand_path(lhs)),
-                    std::fs::metadata(operand_path(rhs)),
+                    std::fs::metadata(os_path(lhs)),
+                    std::fs::metadata(os_path(rhs)),
                 ) {
                     (Ok(l), Ok(r)) => l.dev() == r.dev() && l.ino() == r.ino(),
                     _ => false,

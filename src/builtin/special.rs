@@ -1,5 +1,6 @@
 use std::ffi::CString;
 
+use crate::builtin::path::os_path;
 use crate::env::{FlowControl, ShellEnv, TrapAction};
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::exec::Executor;
@@ -261,7 +262,7 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
             .collect();
         exported.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in exported {
-            crate::builtin::regular::write_stdout_decoded(
+            crate::builtin::output::write_stdout_decoded(
                 &reinput_declaration("export", &name, value.as_deref()),
                 true,
             );
@@ -292,7 +293,7 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
             // `export -p name`: print only this variable (if exported).
             if let Some(v) = env.vars.get_var(name).filter(|v| v.exported) {
                 let line = reinput_declaration("export", name, v.value());
-                crate::builtin::regular::write_stdout_decoded(&line, true);
+                crate::builtin::output::write_stdout_decoded(&line, true);
             }
         } else {
             env.vars.export(name);
@@ -376,7 +377,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         let mut sorted = readonly_vars;
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in sorted {
-            crate::builtin::regular::write_stdout_decoded(
+            crate::builtin::output::write_stdout_decoded(
                 &reinput_declaration("readonly", &name, value.as_deref()),
                 true,
             );
@@ -409,7 +410,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
             // `readonly -p name`: print only this variable (if readonly).
             if let Some(v) = env.vars.get_var(name).filter(|v| v.readonly) {
                 let line = reinput_declaration("readonly", name, v.value());
-                crate::builtin::regular::write_stdout_decoded(&line, true);
+                crate::builtin::output::write_stdout_decoded(&line, true);
             }
         } else {
             env.vars.set_readonly(name);
@@ -521,7 +522,7 @@ fn builtin_set(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
             .collect();
         vars.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in vars {
-            crate::builtin::regular::write_stdout_decoded(
+            crate::builtin::output::write_stdout_decoded(
                 &format!("{}={}", name, quote_for_reinput(&value)),
                 true,
             );
@@ -614,9 +615,7 @@ fn builtin_exec(args: &[String], executor: &mut Executor) -> Result<i32, ShellEr
     // a relative or absolute path (byteenc-decoded so non-UTF-8 paths
     // reach the OS as their original bytes). Otherwise walk $PATH.
     let resolved_path: std::path::PathBuf = if cmd.contains('/') {
-        use std::os::unix::ffi::OsStrExt;
-        let bytes = crate::byteenc::decode_bytes(&cmd);
-        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&bytes))
+        os_path(&cmd)
     } else {
         let env = &mut executor.env;
         let path_var = env
@@ -792,19 +791,13 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> Result<i32, Shell
     let filename = &args[0];
     // Decode byteenc-escaped bytes so non-UTF-8 script paths resolve to
     // the real on-disk names.
-    let decode_path = |s: &str| {
-        use std::os::unix::ffi::OsStrExt;
-        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&crate::byteenc::decode_bytes(
-            s,
-        )))
-    };
     let path = if filename.contains('/') {
-        decode_path(filename)
+        os_path(filename)
     } else {
         if let Some(path_var) = executor.env.vars.get("PATH") {
             let mut found = None;
             for dir in path_var.split(':') {
-                let candidate = decode_path(dir).join(decode_path(filename));
+                let candidate = os_path(dir).join(os_path(filename));
                 if candidate.is_file() {
                     found = Some(candidate);
                     break;
@@ -820,7 +813,7 @@ fn builtin_source(args: &[String], executor: &mut Executor) -> Result<i32, Shell
                 }
             }
         } else {
-            decode_path(filename)
+            os_path(filename)
         }
     };
     match executor.source_file(&path) {

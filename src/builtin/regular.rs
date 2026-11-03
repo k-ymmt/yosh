@@ -1,19 +1,9 @@
+use crate::builtin::output::{
+    report_write_error, try_write_stdout_decoded, write_stdout_decoded, write_stdout_or_report,
+};
+use crate::builtin::path::{encode_path, os_path};
 use crate::env::ShellEnv;
 use crate::error::{RuntimeErrorKind, ShellError};
-use std::os::unix::ffi::OsStrExt;
-
-/// Convert a byteenc-encoded shell path string into an `OsStr`-backed path
-/// carrying the original raw bytes for OS calls.
-fn os_path(s: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&crate::byteenc::decode_bytes(
-        s,
-    )))
-}
-
-/// Encode an OS path back into the shell's internal (byteenc) string form.
-fn encode_path(p: &std::path::Path) -> String {
-    crate::byteenc::encode_bytes(p.as_os_str().as_bytes()).into_owned()
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CdMode {
@@ -79,42 +69,11 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
     Ok(0)
 }
 
-/// Write a byteenc-encoded string to stdout as raw bytes (escape
-/// codepoints become their original bytes), optionally newline-terminated.
-/// Write errors are ignored; output builtins whose exit status must
-/// reflect a failed write use [`try_write_stdout_decoded`].
-pub(crate) fn write_stdout_decoded(s: &str, newline: bool) {
-    let _ = try_write_stdout_decoded(s, newline);
-}
-
-/// Like [`write_stdout_decoded`] but reports write failures. Goes through
-/// `write(2)` on fd 1 (via the printf helper) because `std::io::Stdout`
-/// silently swallows `EBADF`, so `echo hi >&-` would otherwise succeed;
-/// POSIX/dash/bash report the failure with status 1.
-pub(crate) fn try_write_stdout_decoded(s: &str, newline: bool) -> std::io::Result<()> {
-    let mut buf = crate::byteenc::decode_bytes(s).into_owned();
-    if newline {
-        buf.push(b'\n');
-    }
-    crate::builtin::printf::write_all_stdout(&buf)
-}
-
-/// Report a stdout write failure for builtin `name` (`yosh: name: write
-/// error: …`) and return the status the builtin must exit with.
-pub(crate) fn report_write_error(name: &str, e: &std::io::Error) -> i32 {
-    eprintln!("yosh: {}: write error: {}", name, e);
-    1
-}
-
 pub fn builtin_echo(args: &[String]) -> Result<i32, ShellError> {
-    let res = if args.first().map(|a| a.as_str()) == Some("-n") {
-        try_write_stdout_decoded(&args[1..].join(" "), false)
+    Ok(if args.first().map(|a| a.as_str()) == Some("-n") {
+        write_stdout_or_report("echo", &args[1..].join(" "), false)
     } else {
-        try_write_stdout_decoded(&args.join(" "), true)
-    };
-    Ok(match res {
-        Ok(()) => 0,
-        Err(e) => report_write_error("echo", &e),
+        write_stdout_or_report("echo", &args.join(" "), true)
     })
 }
 
@@ -373,10 +332,7 @@ fn kill_list(args: &[String]) -> Result<i32, ShellError> {
             }
         }
     }
-    Ok(match try_write_stdout_decoded(&out, false) {
-        Ok(()) => 0,
-        Err(e) => report_write_error("kill", &e),
-    })
+    Ok(write_stdout_or_report("kill", &out, false))
 }
 
 pub fn builtin_umask(args: &[String]) -> Result<i32, ShellError> {
@@ -414,10 +370,7 @@ pub fn builtin_umask(args: &[String]) -> Result<i32, ShellError> {
         } else {
             format!("{:04o}", current)
         };
-        return Ok(match try_write_stdout_decoded(&line, true) {
-            Ok(()) => 0,
-            Err(e) => report_write_error("umask", &e),
-        });
+        return Ok(write_stdout_or_report("umask", &line, true));
     };
 
     // Try octal parse first
@@ -964,10 +917,7 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
             }
             out.push('\n');
         }
-        return Ok(match try_write_stdout_decoded(&out, false) {
-            Ok(()) => 0,
-            Err(e) => report_write_error("ulimit", &e),
-        });
+        return Ok(write_stdout_or_report("ulimit", &out, false));
     };
 
     if req.all {

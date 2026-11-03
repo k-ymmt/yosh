@@ -60,9 +60,9 @@ pub fn builtin_type(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     for name in args {
         let (stdout_line, stderr_line, per_exit) = format_type_line(env, name);
         if !stdout_line.is_empty()
-            && let Err(e) = crate::builtin::regular::try_write_stdout_decoded(&stdout_line, true)
+            && let Err(e) = crate::builtin::output::try_write_stdout_decoded(&stdout_line, true)
         {
-            return Ok(crate::builtin::regular::report_write_error("type", &e));
+            return Ok(crate::builtin::output::report_write_error("type", &e));
         }
         if let Some(s) = stderr_line {
             eprintln!("{}", s);

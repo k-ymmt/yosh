@@ -188,7 +188,7 @@ impl TrapStore {
     /// In subshells, displays the saved parent traps (POSIX requirement).
     pub fn display_all(&self) {
         for line in self.listing(None) {
-            crate::builtin::regular::write_stdout_decoded(&line, true);
+            crate::builtin::output::write_stdout_decoded(&line, true);
         }
     }
 
@@ -198,7 +198,7 @@ impl TrapStore {
     /// their default action print nothing.
     pub fn display_conditions(&self, conditions: &[String]) {
         for line in self.listing(Some(conditions)) {
-            crate::builtin::regular::write_stdout_decoded(&line, true);
+            crate::builtin::output::write_stdout_decoded(&line, true);
         }
     }
 

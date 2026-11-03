@@ -2,6 +2,8 @@ pub mod command;
 pub mod fc;
 pub mod getopts;
 pub mod hash;
+pub(crate) mod output;
+pub(crate) mod path;
 pub mod printf;
 pub mod read;
 pub mod regular;
