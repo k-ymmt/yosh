@@ -11,10 +11,10 @@ use std::rc::Rc;
 use crate::parser::ast::WordPart;
 use token::SpannedToken;
 
+/// A full look-ahead snapshot: the cursor plus the alias-substitution
+/// state (see `Lexer::save_state`).
 pub struct LexerState {
-    pub pos: usize,
-    pub line: usize,
-    pub column: usize,
+    cursor: CursorState,
     alias_state: alias::AliasState,
 }
 
@@ -94,8 +94,14 @@ fn is_name_char(ch: u8) -> bool {
 
 impl Lexer {
     pub fn new(input: &str) -> Self {
+        Self::over(Rc::from(input.as_bytes()))
+    }
+
+    /// A lexer at the start of `input`, with no aliases, no pending
+    /// here-documents and no nesting.
+    fn over(input: Rc<[u8]>) -> Self {
         Lexer {
-            input: Rc::from(input.as_bytes()),
+            input,
             pos: 0,
             line: 1,
             column: 1,
@@ -116,21 +122,10 @@ impl Lexer {
     /// with no aliases and no pending here-documents (the body is a
     /// separate program), one nesting level deeper.
     pub(crate) fn sub_lexer(&self) -> Lexer {
-        Lexer {
-            input: Rc::clone(&self.input),
-            pos: self.pos,
-            line: self.line,
-            column: self.column,
-            pending_heredocs: Vec::new(),
-            heredoc_bodies: Vec::new(),
-            next_heredoc_id: 0,
-            aliases: HashMap::new(),
-            no_join: 0,
-            nest_depth: self.nest_depth + crate::parser::SUBPARSE_NEST_COST,
-            subparse_count: 0,
-            token_cache: HashMap::new(),
-            alias_state: alias::AliasState::default(),
-        }
+        let mut lexer = Lexer::over(Rc::clone(&self.input));
+        lexer.restore_cursor(self.save_cursor());
+        lexer.nest_depth = self.nest_depth + crate::parser::SUBPARSE_NEST_COST;
+        lexer
     }
 
     /// A fresh lexer over `input` that inherits this lexer's nesting depth
@@ -150,9 +145,7 @@ impl Lexer {
 
     pub fn new_with_aliases(input: &str, aliases: &crate::env::aliases::AliasStore) -> Self {
         let mut lexer = Self::new(input);
-        for (name, value) in aliases.sorted_iter() {
-            lexer.aliases.insert(name.to_string(), value.to_string());
-        }
+        lexer.set_aliases(aliases);
         lexer
     }
 
@@ -189,17 +182,13 @@ impl Lexer {
 
     pub fn save_state(&self) -> LexerState {
         LexerState {
-            pos: self.pos,
-            line: self.line,
-            column: self.column,
+            cursor: self.save_cursor(),
             alias_state: self.alias_state.clone(),
         }
     }
 
     pub fn restore_state(&mut self, state: LexerState) {
-        self.pos = state.pos;
-        self.line = state.line;
-        self.column = state.column;
+        self.restore_cursor(state.cursor);
         self.alias_state = state.alias_state;
     }
 
