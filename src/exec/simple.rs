@@ -898,8 +898,9 @@ impl Executor {
         if !monitor
             && redirects.is_empty()
             && let Some(sigdef) = signal::spawn_default_sigset(&ignored)
+            && let Some(status) = self.spawn_plain(&c_cmd, &c_args, env_overrides, &sigdef)
         {
-            return self.spawn_plain(&c_cmd, &c_args, cmd, env_overrides, &sigdef);
+            return status;
         }
 
         match unsafe { fork_shell() } {
@@ -962,17 +963,21 @@ impl Executor {
     /// equivalent of the non-monitor, redirect-free fork path. The child
     /// gets the same argv/envp, the inherited signal mask, `sigdef`
     /// signals at SIG_DFL (see [`signal::spawn_default_sigset`]) and the
-    /// shell's fds (the self-pipe is CLOEXEC). Exec failures come back
-    /// as the spawn error and get the diagnostics and statuses the
-    /// forked child would have produced (see `exec_child_prepared`).
+    /// shell's fds (the self-pipe is CLOEXEC).
+    ///
+    /// Returns `None` when the spawn itself fails (ENOENT, EACCES,
+    /// E2BIG, EAGAIN, ...): the caller then takes the fork path, so the
+    /// diagnostic, the exit status and the SIGCHLD all come from a
+    /// failed-exec child exactly as before. Reporting in the shell
+    /// process instead would let a closed stderr pipe SIGPIPE-kill the
+    /// shell and would skip a `trap ... CHLD`.
     fn spawn_plain(
         &mut self,
         c_cmd: &CString,
         c_args: &[CString],
-        cmd: &str,
         env_overrides: &[(String, String)],
         sigdef: &libc::sigset_t,
-    ) -> i32 {
+    ) -> Option<i32> {
         use nix::errno::Errno;
         {
             // Like `fork_shell`: nothing buffered may be written after
@@ -1031,18 +1036,6 @@ impl Executor {
 
         let child = match spawn(c_cmd, c_args) {
             Ok(pid) => pid,
-            Err(Errno::EAGAIN) => {
-                eprintln!("yosh: fork: {}", Errno::EAGAIN);
-                return 1;
-            }
-            Err(Errno::ENOENT) => {
-                eprintln!("yosh: {}: command not found", cmd);
-                return 127;
-            }
-            Err(Errno::EACCES) => {
-                eprintln!("yosh: {}: permission denied", cmd);
-                return 126;
-            }
             Err(Errno::ENOEXEC) => {
                 // POSIX execvp fallback (see `exec_child_prepared`):
                 // run the file as a script with /bin/sh.
@@ -1051,20 +1044,11 @@ impl Executor {
                 sh_args.push(sh.clone());
                 sh_args.push(c_cmd.clone());
                 sh_args.extend_from_slice(&c_args[1..]);
-                match spawn(&sh, &sh_args) {
-                    Ok(pid) => pid,
-                    Err(err2) => {
-                        eprintln!("yosh: {}: {}", cmd, err2);
-                        return 126;
-                    }
-                }
+                spawn(&sh, &sh_args).ok()?
             }
-            Err(err) => {
-                eprintln!("yosh: {}: {}", cmd, err);
-                return 127;
-            }
+            Err(_) => return None,
         };
-        wait_child(child).unwrap_or(1)
+        Some(wait_child(child).unwrap_or(1))
     }
 
     /// Child-side / in-place tail of external execution: apply redirects,
@@ -1152,9 +1136,12 @@ impl Executor {
                 }
                 126
             }
+            // Found but not executable for another reason (E2BIG,
+            // ETXTBSY, ENOMEM, ...): POSIX 2.8.2 status 126, as in
+            // dash and bash. Only ENOENT means "not found" (127).
             _ => {
                 eprintln!("yosh: {}: {}", cmd, err);
-                127
+                126
             }
         };
         super::exit_child(exit_code);
