@@ -20,8 +20,11 @@ fn default_prompt(var_name: &str) -> &'static str {
 /// Expand a prompt variable (PS1 or PS2) through the shell's word expander.
 ///
 /// If the variable is not set, the POSIX default is used.
-/// The raw value is parsed as a double-quoted word so that parameter
-/// expansion, command substitution, and arithmetic expansion are performed.
+/// The raw value undergoes parameter expansion, command substitution,
+/// and arithmetic expansion (here-document-body rules, so a `"` in the
+/// value is literal). `$?` and pending flow control are untouched, and
+/// an expansion error is diagnosed and the raw value shown instead —
+/// see [`crate::expand::expand_dquoted`].
 pub fn expand_prompt(env: &mut ShellEnv, var_name: &str) -> String {
     // 1. Get the raw value, or use the default.
     let raw = match env.vars.get(var_name) {
@@ -35,7 +38,8 @@ pub fn expand_prompt(env: &mut ShellEnv, var_name: &str) -> String {
     }
 
     // 3. Expand as a double-quoted string (param/command-sub/arith).
-    //    Errors are non-fatal: expand_dquoted falls back to the raw value.
+    //    Errors are non-fatal: expand_dquoted reports them and falls back
+    //    to the raw value without cancelling the next command.
     crate::expand::expand_dquoted(env, &raw)
 }
 

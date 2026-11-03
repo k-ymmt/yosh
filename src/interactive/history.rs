@@ -50,9 +50,17 @@ fn unescape_entry(line: &str) -> String {
 ///
 /// Stores commands in chronological order (oldest first) and supports
 /// cursor-based navigation for ↑/↓ arrow key traversal.
+///
+/// Every entry has a stable *history number* (POSIX `fc`: "the number
+/// of a command shall not change"): `entries()[i]` is number
+/// `first_number() + i`. Trimming the oldest entries to honor
+/// `HISTSIZE` advances `first_number()` instead of renumbering.
 #[derive(Debug, Clone, Default)]
 pub struct History {
     entries: Vec<String>,
+    /// Number of entries ever dropped from the front, so the history
+    /// number of `entries[i]` is `base + i + 1`.
+    base: usize,
     cursor: Option<usize>,
     saved_line: String,
 }
@@ -61,6 +69,7 @@ impl History {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            base: 0,
             cursor: None,
             saved_line: String::new(),
         }
@@ -68,6 +77,29 @@ impl History {
 
     pub fn entries(&self) -> &[String] {
         &self.entries
+    }
+
+    /// History number of the oldest retained entry (`entries()[0]`).
+    /// Starts at 1 and only grows as old entries are trimmed. When the
+    /// list is empty this is the number the next added entry will get.
+    pub fn first_number(&self) -> usize {
+        self.base + 1
+    }
+
+    /// History number of `entries()[idx]` (what `fc -l` prints).
+    // Consumed by the `fc` builtin's listing; the binary crate does not
+    // call it yet.
+    #[allow(dead_code)]
+    pub fn number_of(&self, idx: usize) -> usize {
+        self.base + idx + 1
+    }
+
+    /// Index into `entries()` of history number `number`, or `None`
+    /// when that command was trimmed or does not exist yet.
+    pub fn index_of_number(&self, number: usize) -> Option<usize> {
+        number
+            .checked_sub(self.first_number())
+            .filter(|&idx| idx < self.entries.len())
     }
 
     /// Return the suffix of the most recent history entry that starts with `prefix`.
@@ -101,11 +133,23 @@ impl History {
         }
 
         self.entries.push(line.to_string());
+        self.truncate_to(histsize);
+    }
 
-        // Truncate to histsize (remove oldest entries)
-        if histsize > 0 && self.entries.len() > histsize {
+    /// Keep at most `histsize` most-recent entries (`0` keeps none,
+    /// bash's HISTSIZE=0; callers map "unlimited" to `usize::MAX`).
+    /// Dropped entries advance the numbering base so the numbers of the
+    /// survivors do not change.
+    fn truncate_to(&mut self, histsize: usize) {
+        if self.entries.len() > histsize {
             let excess = self.entries.len() - histsize;
             self.entries.drain(..excess);
+            self.base += excess;
+            // Keep a recalled entry's cursor pointing at the same entry;
+            // one that was itself dropped ends navigation.
+            if let Some(c) = self.cursor {
+                self.cursor = c.checked_sub(excess);
+            }
         }
     }
 
@@ -203,7 +247,17 @@ impl History {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut file = fs::File::create(path)?;
+        // History can hold secrets typed at the prompt: create the file
+        // owner-only (bash uses 0600). An existing file keeps its mode.
+        let mut file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)?
+        };
         writeln!(file, "{}", FILE_HEADER_V2)?;
         let start = if histfilesize > 0 && self.entries.len() > histfilesize {
             self.entries.len() - histfilesize
@@ -303,6 +357,51 @@ mod tests {
         h.add("cmd3", 3, "");
         h.add("cmd4", 3, "");
         assert_eq!(h.entries(), &["cmd2", "cmd3", "cmd4"]);
+    }
+
+    #[test]
+    fn test_numbers_stable_across_truncation() {
+        // POSIX fc: a command's number shall not change.
+        let mut h = History::new();
+        assert_eq!(h.first_number(), 1);
+        h.add("cmd1", 3, "");
+        h.add("cmd2", 3, "");
+        h.add("cmd3", 3, "");
+        assert_eq!(h.index_of_number(2), Some(1));
+        h.add("cmd4", 3, "");
+        h.add("cmd5", 3, "");
+        assert_eq!(h.first_number(), 3);
+        assert_eq!(h.index_of_number(2), None);
+        assert_eq!(h.index_of_number(3), Some(0));
+        assert_eq!(h.entries()[h.index_of_number(5).unwrap()], "cmd5");
+        assert_eq!(h.index_of_number(6), None);
+        assert_eq!(h.index_of_number(0), None);
+        assert_eq!(h.number_of(0), 3);
+        assert_eq!(h.number_of(2), 5);
+    }
+
+    #[test]
+    fn test_histsize_zero_keeps_nothing() {
+        let mut h = History::new();
+        h.add("cmd1", 0, "");
+        h.add("cmd2", 0, "");
+        assert!(h.entries().is_empty());
+        // Numbering still advances: the next kept command is number 3.
+        h.add("cmd3", 500, "");
+        assert_eq!(h.first_number(), 3);
+        assert_eq!(h.index_of_number(3), Some(0));
+    }
+
+    #[test]
+    fn test_save_creates_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("hist");
+        let mut h = History::new();
+        h.add("secret", 500, "");
+        h.save(&path, 500).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

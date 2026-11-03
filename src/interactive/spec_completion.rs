@@ -633,7 +633,7 @@ pub fn try_complete(
 fn complete_path_word(word: &str, ctx: &CompletionContext) -> (Vec<String>, String) {
     let (dir_part, prefix) = completion::split_path(word, &ctx.home);
     let resolved_dir = completion::resolve_dir(&dir_part, &ctx.cwd);
-    let candidates = completion::generate_candidates(&resolved_dir, prefix, ctx.show_dotfiles);
+    let candidates = completion::generate_candidates(&resolved_dir, &prefix, ctx.show_dotfiles);
     (candidates, completion::dir_prefix_of(word))
 }
 

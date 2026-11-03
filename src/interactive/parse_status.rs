@@ -39,21 +39,17 @@ pub fn classify_parse(input: &str, aliases: &AliasStore) -> ParseStatus {
         return ParseStatus::Empty;
     }
 
-    // 2. If input ends with backslash-newline -> Incomplete
-    if input.ends_with("\\\n") {
+    // 2. A trailing line continuation (`\<newline>`) or a trailing
+    //    `|` / `&&` / `||` leaves the command open, but the parser cannot
+    //    report it: the lexer folds the continuation away and an operator
+    //    followed by end of input is indistinguishable from a syntax
+    //    error. Detect both with a quote-, escape- and comment-aware
+    //    scan so `echo a\\`, `echo a\|` and `echo hi # x \` run at once.
+    if ends_with_continuation(input) {
         return ParseStatus::Incomplete;
     }
 
-    // 3. If input ends with | or && or || (trimmed) -> Incomplete.
-    //    Comments are stripped first so a trailing operator *inside* a
-    //    comment (`echo hi #|`) doesn't classify as Incomplete forever.
-    let stripped = strip_comments(input);
-    let trimmed = stripped.trim_end_matches('\n').trim_end();
-    if trimmed.ends_with('|') || trimmed.ends_with("&&") || trimmed.ends_with("||") {
-        return ParseStatus::Incomplete;
-    }
-
-    // 4. Try parsing with Parser::new_with_aliases()
+    // 3. Try parsing with Parser::new_with_aliases()
     let mut parser = Parser::new_with_aliases(input, aliases);
     let mut commands = Vec::new();
 
@@ -102,69 +98,109 @@ pub fn classify_parse(input: &str, aliases: &AliasStore) -> ParseStatus {
         }
     }
 
-    // 5. If no commands collected -> Empty
+    // 4. If no commands collected -> Empty
     if commands.is_empty() {
         return ParseStatus::Empty;
     }
 
-    // 6. Otherwise -> Complete(commands)
+    // 5. Otherwise -> Complete(commands)
     ParseStatus::Complete(commands)
 }
 
-/// Remove comment text from `input` for the textual trailing-operator
-/// check above. Quote- and backslash-aware: `#` opens a comment only when
-/// unquoted and at the start of a word (input start, or after whitespace
-/// or an operator/redirect character), and runs to the end of the line.
-/// The terminating newline is kept so line structure is preserved.
-fn strip_comments(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
+/// Whether `input` ends in a way that continues the command on the next
+/// line: an unquoted, unescaped backslash immediately before the final
+/// newline (line continuation), or a trailing unquoted `|`, `&&` or `||`
+/// operator (possibly followed by blanks, newlines or a comment).
+///
+/// The scan follows the lexer's quoting rules: `\` escapes the next
+/// character outside single quotes (`echo a\\` and `echo a\|` end in
+/// literal characters, not a continuation or a pipe), and `#` at the
+/// start of an unquoted word opens a comment to end of line (`echo hi
+/// # x \` ends in a comment). Input that ends inside quotes returns
+/// `false` — the parser reports the unterminated quote itself.
+fn ends_with_continuation(input: &str) -> bool {
     let mut in_single = false;
     let mut in_double = false;
     let mut word_start = true;
-    let mut chars = input.chars().peekable();
+    let mut in_comment = false;
+    // Unquoted, unescaped operator characters since the last word
+    // character, with blanks between them collapsed to one space.
+    let mut tail_ops = String::new();
+    // The most recent character was the newline of a `\<newline>`.
+    let mut continuation = false;
+    let mut chars = input.chars();
     while let Some(c) = chars.next() {
+        continuation = false;
+        if in_comment {
+            if c == '\n' {
+                in_comment = false;
+                word_start = true;
+            }
+            continue;
+        }
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        if in_double {
+            match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => in_double = false,
+                _ => {}
+            }
+            continue;
+        }
         match c {
-            '\\' if !in_single => {
-                out.push(c);
-                if let Some(escaped) = chars.next() {
-                    out.push(escaped);
+            '\\' => match chars.next() {
+                Some('\n') => continuation = true,
+                Some(_) => {
+                    tail_ops.clear();
+                    word_start = false;
                 }
+                None => {
+                    tail_ops.clear();
+                    word_start = false;
+                }
+            },
+            '\'' => {
+                in_single = true;
+                tail_ops.clear();
                 word_start = false;
             }
-            '\'' if !in_double => {
-                in_single = !in_single;
-                out.push(c);
+            '"' => {
+                in_double = true;
+                tail_ops.clear();
                 word_start = false;
             }
-            '"' if !in_single => {
-                in_double = !in_double;
-                out.push(c);
-                word_start = false;
-            }
-            '#' if !in_single && !in_double && word_start => {
-                for rest in chars.by_ref() {
-                    if rest == '\n' {
-                        out.push('\n');
-                        break;
-                    }
+            '#' if word_start => in_comment = true,
+            ' ' | '\t' | '\n' => {
+                if !tail_ops.is_empty() && !tail_ops.ends_with(' ') {
+                    tail_ops.push(' ');
                 }
                 word_start = true;
             }
-            c if c.is_whitespace() => {
-                out.push(c);
+            '|' | '&' | ';' | '<' | '>' | '(' | ')' => {
+                tail_ops.push(c);
                 word_start = true;
             }
-            '|' | '&' | ';' | '(' | ')' | '<' | '>' => {
-                out.push(c);
-                word_start = true;
-            }
-            c => {
-                out.push(c);
+            _ => {
+                tail_ops.clear();
                 word_start = false;
             }
         }
     }
-    out
+    if continuation {
+        return true;
+    }
+    if in_single || in_double {
+        return false;
+    }
+    let ops = tail_ops.trim_end();
+    ops.ends_with("&&") || ops.ends_with("||") || (ops.ends_with('|') && !ops.ends_with(">|"))
 }
 
 /// Probe depth for `is_completable`: each level appends one closing-keyword
@@ -223,4 +259,66 @@ fn is_incomplete_error(kind: &ShellErrorKind) -> bool {
             // An unclosed heredoc body means the user is still typing it.
             | ShellErrorKind::Parse(ParseErrorKind::InvalidHereDoc)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn incomplete(input: &str) -> bool {
+        matches!(
+            classify_parse(input, &AliasStore::default()),
+            ParseStatus::Incomplete
+        )
+    }
+
+    #[test]
+    fn line_continuation_is_incomplete() {
+        assert!(incomplete("echo a\\\n"));
+        assert!(incomplete("echo a \\\n"));
+    }
+
+    #[test]
+    fn escaped_backslash_is_not_continuation() {
+        // `echo a\\` ends in a literal backslash (dash runs it at once).
+        assert!(!incomplete("echo a\\\\\n"));
+        assert!(incomplete("echo a\\\\\\\n"));
+    }
+
+    #[test]
+    fn backslash_in_comment_is_not_continuation() {
+        assert!(!incomplete("echo hi # x \\\n"));
+        assert!(!incomplete("echo hi #|\n"));
+        assert!(!incomplete("echo hi # a &&\n"));
+    }
+
+    #[test]
+    fn escaped_or_quoted_operator_is_not_continuation() {
+        assert!(!incomplete("echo a\\|\n"));
+        assert!(!incomplete("echo a\\&&\n"));
+        assert!(!incomplete("echo 'a|'\n"));
+        assert!(!incomplete("echo \"a&&\"\n"));
+        // `#` mid-word is literal, so the `|` after it is a real pipe.
+        assert!(incomplete("echo a#|\n"));
+    }
+
+    #[test]
+    fn trailing_operators_are_incomplete() {
+        assert!(incomplete("echo a |\n"));
+        assert!(incomplete("echo a|\n"));
+        assert!(incomplete("true &&\n"));
+        assert!(incomplete("false ||\n"));
+        assert!(incomplete("echo a | # comment\n"));
+        assert!(incomplete("echo a\\\\|\n"));
+        assert!(incomplete("echo a |\n\n"));
+    }
+
+    #[test]
+    fn single_ampersand_and_clobber_are_not_continuation() {
+        assert!(!incomplete("sleep 0 &\n"));
+        assert!(!matches!(
+            classify_parse("echo a >|\n", &AliasStore::default()),
+            ParseStatus::Incomplete
+        ));
+    }
 }

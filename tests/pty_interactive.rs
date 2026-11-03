@@ -2075,3 +2075,174 @@ fn test_pty_fg_background_pipeline_reports_pipeline_status() {
     wait_for_prompt(&mut s);
     exit_shell(&mut s);
 }
+
+// ── Prompt / startup / completion regressions (bug-fix round 1) ────────
+
+/// Spawn yosh under a PTY with `HOME` = a fresh temp dir, running in
+/// `cwd` with extra environment overrides.
+fn spawn_yosh_in(cwd: &std::path::Path, env: &[(&str, &str)]) -> (OsSession, helpers::TempDir) {
+    let tmpdir = helpers::TempDir::new();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_yosh"));
+    cmd.env("TERM", "dumb");
+    cmd.env("HOME", tmpdir.path());
+    cmd.current_dir(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut session = expectrl::Session::spawn(cmd).expect("failed to spawn yosh");
+    session.set_expect_timeout(Some(TIMEOUT));
+    (session, tmpdir)
+}
+
+#[test]
+fn test_pty_ps1_expansion_error_does_not_cancel_commands() {
+    // An expansion error in PS1 is diagnosed and the prompt shown
+    // literally; it must not leave a pending ExpansionError that
+    // silently cancels every later command (including `exit`).
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+    s.send("set -u; PS1='$NOPE> '\r").unwrap();
+    s.expect("$NOPE> ").expect("literal PS1 not shown");
+    wait_for_raw_mode(&s);
+    s.send("echo alive-$((40+2))\r").unwrap();
+    expect_output(&mut s, "alive-42", "command after PS1 error did not run");
+    s.expect("$NOPE> ").expect("literal PS1 not shown again");
+    wait_for_raw_mode(&s);
+    s.send("exit\r").unwrap();
+    s.expect(Eof).expect("exit after PS1 error did not exit");
+}
+
+#[test]
+fn test_pty_ps1_command_sub_keeps_exit_status() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+    s.send("PS1='$(true)P$ '\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("false\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("echo st=$?\r").unwrap();
+    expect_output(&mut s, "st=1", "PS1 command substitution clobbered $?");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_stale_inherited_pwd_is_corrected() {
+    // POSIX 2.5.3: an inherited PWD that does not name the cwd is
+    // replaced, so relative `cd` works in the interactive shell too.
+    let work = helpers::TempDir::new();
+    let d1 = work.path().join("d1");
+    let d2 = work.path().join("d2");
+    std::fs::create_dir_all(d1.join("sub")).unwrap();
+    std::fs::create_dir_all(&d2).unwrap();
+    let (mut s, _home) = spawn_yosh_in(&d1, &[("PWD", d2.to_str().unwrap())]);
+    wait_for_prompt(&mut s);
+    s.send("cd sub && echo cd-ok\r").unwrap();
+    expect_output(
+        &mut s,
+        "cd-ok",
+        "cd into a subdirectory of the real cwd failed",
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_tab_completion_escapes_metacharacters() {
+    let work = helpers::TempDir::new();
+    std::fs::create_dir(work.path().join("sub dir")).unwrap();
+    std::fs::write(work.path().join("x$(echo PWNED)y"), "").unwrap();
+    let (mut s, _home) = spawn_yosh_in(work.path(), &[]);
+    wait_for_prompt(&mut s);
+    // `su<Tab>` must insert `sub\ dir/` — one argument (unescaped it
+    // would print `[sub]` and `[dir/]`).
+    s.send("printf '[%s]\\n' su\t").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    s.send("\r").unwrap();
+    expect_output(
+        &mut s,
+        r"\[sub dir/\]",
+        "escaped completion did not round-trip",
+    );
+    wait_for_prompt(&mut s);
+    // A name containing `$(...)` must not be executed.
+    s.send("echo x\t\r").unwrap();
+    expect_output(
+        &mut s,
+        r"x\$\(echo PWNED\)y",
+        "completed name was expanded instead of taken literally",
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_no_spurious_ps2_for_escaped_backslash_or_comment() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+    // `echo a\\` ends in an escaped backslash, not a line continuation.
+    s.send("echo a\\\\\r").unwrap();
+    expect_output(
+        &mut s,
+        r"a\\\r?\n",
+        "escaped backslash was taken as continuation",
+    );
+    wait_for_prompt(&mut s);
+    // A trailing backslash inside a comment is not a continuation.
+    s.send("echo hi # x \\\r").unwrap();
+    expect_output(
+        &mut s,
+        r"hi\r?\n",
+        "backslash in a comment was taken as continuation",
+    );
+    wait_for_prompt(&mut s);
+    // An escaped `|` is a literal, not a pipe awaiting its right side.
+    s.send("echo b\\|\r").unwrap();
+    expect_output(&mut s, r"b\|\r?\n", "escaped | was taken as a pipe");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_exit_in_yoshrc_exits_before_first_prompt() {
+    let home = helpers::TempDir::new();
+    std::fs::write(home.path().join(".yoshrc"), "exit 5\n").unwrap();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_yosh"));
+    cmd.env("TERM", "dumb");
+    cmd.env("HOME", home.path());
+    let mut s = expectrl::Session::spawn(cmd).expect("failed to spawn yosh");
+    s.set_expect_timeout(Some(TIMEOUT));
+    let _ = s.expect(Eof);
+    let pid = s.get_process().pid();
+    let status = s.get_process().wait().expect("wait failed");
+    assert_eq!(
+        status,
+        expectrl::process::unix::WaitStatus::Exited(pid, 5),
+        "`exit 5` in ~/.yoshrc must end the shell before the first prompt"
+    );
+}
+
+#[test]
+fn test_pty_inherited_history_vars_kept() {
+    let work = helpers::TempDir::new();
+    let hf = work.path().join("hf");
+    let (mut s, _home) = spawn_yosh_in(
+        work.path(),
+        &[("HISTFILE", hf.to_str().unwrap()), ("HISTSIZE", "42")],
+    );
+    wait_for_prompt(&mut s);
+    s.send("echo \"[${HISTFILE##*/}][$HISTSIZE][${PS2-unset}]\"\r")
+        .unwrap();
+    expect_output(
+        &mut s,
+        r"\[hf\]\[42\]\[> \]",
+        "inherited HISTFILE/HISTSIZE overwritten or PS2 undefined",
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(&hf).unwrap().permissions().mode() & 0o777
+    };
+    assert_eq!(mode, 0o600, "history file must be created owner-only");
+}

@@ -2415,20 +2415,19 @@ impl LineEditor {
                 KeyAction::Continue
             }
             ViCmd::HistoryGoto => {
-                // G: count 0 = oldest entry; count n = entry n (1-based,
-                // oldest first).
-                let len = history.entries().len();
+                // G: no count = oldest entry; count n = history number n
+                // (POSIX vi `[count]G`). Numbers are stable across
+                // HISTSIZE trimming, so map through the history base.
                 let idx = if count == 0 {
-                    if len == 0 {
+                    if history.entries().is_empty() {
                         return self.bell();
                     }
                     0
                 } else {
-                    let idx = count as usize - 1;
-                    if idx >= len {
-                        return self.bell();
+                    match history.index_of_number(count as usize) {
+                        Some(idx) => idx,
+                        None => return self.bell(),
                     }
-                    idx
                 };
                 let current = self.buffer();
                 if let Some(line) = history.navigate_to(idx, &current).map(str::to_string) {
@@ -3990,9 +3989,10 @@ impl LineEditor {
         };
 
         let (candidates, common_prefix, dir_prefix) = if is_cmd_pos && !word.contains('/') {
-            // Command name completion
+            // Command name completion (matched against the unquoted word;
+            // the whole typed word is replaced, so dir_prefix is empty)
             let (cands, common) = cmd_ctx.completer.complete_common_prefix(
-                &word,
+                &completion::shell_unquote(&word),
                 cmd_ctx.path,
                 cmd_ctx.builtins,
                 cmd_ctx.aliases,
@@ -4020,29 +4020,24 @@ impl LineEditor {
         // cursor is at the end of the buffer.
         let at_end = self.pos == self.buf.len();
 
+        // Candidates are raw names; `completion_replacement` quotes them
+        // for the context open at the end of `dir_prefix` (backslash
+        // escapes when unquoted) so a name like `sub dir` or
+        // `x$(cmd)y` is read back literally, and closes an open quote +
+        // appends a space after a completed non-directory (bash-like).
         if self.tab_count == 1 {
             if candidates.len() == 1 {
                 // Single candidate: replace word
-                let candidate = &candidates[0];
-                let is_dir = candidate.ends_with('/');
-                let mut replacement = format!("{}{}", dir_prefix, candidate);
-                if !is_dir && at_end {
-                    // A quote opened in the kept prefix (`cd "/tmp/My D`)
-                    // is closed after a completed filename so the trailing
-                    // space ends the argument (bash-like). Directories
-                    // stay open for further completion.
-                    if let Some(q) = completion::unclosed_quote(&dir_prefix) {
-                        replacement.push(q);
-                    }
-                    replacement.push(' ');
-                }
+                let replacement =
+                    completion::completion_replacement(&dir_prefix, &candidates[0], at_end);
                 self.replace_word(word_start, &replacement);
             } else {
                 // Multiple candidates: replace with common prefix if longer
                 // (byte lengths on both sides: `word_start`/`byte_pos` are
                 // byte offsets into the rendered buffer).
                 let current_word_len = self.buffer()[word_start..byte_pos].len();
-                let new_word = format!("{}{}", dir_prefix, common_prefix);
+                let new_word =
+                    completion::completion_replacement(&dir_prefix, &common_prefix, false);
                 if new_word.len() > current_word_len {
                     self.replace_word(word_start, &new_word);
                 }
@@ -4053,14 +4048,7 @@ impl LineEditor {
             term.disable_raw_mode()?;
             let selected = CompletionUI::run(&candidates, term)?;
             if let Some(sel) = selected {
-                let is_dir = sel.ends_with('/');
-                let mut replacement = format!("{}{}", dir_prefix, sel);
-                if !is_dir && at_end {
-                    if let Some(q) = completion::unclosed_quote(&dir_prefix) {
-                        replacement.push(q);
-                    }
-                    replacement.push(' ');
-                }
+                let replacement = completion::completion_replacement(&dir_prefix, &sel, at_end);
                 self.replace_word(word_start, &replacement);
             }
             term.enable_raw_mode()?;

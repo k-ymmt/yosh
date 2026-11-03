@@ -89,6 +89,12 @@ impl ShellEnv {
         // POSIX §2.5.3: $PPID is the parent PID of the invoking shell,
         // captured once at startup. Subshells inherit the value.
         let _ = vars.set("PPID", getppid().as_raw().to_string());
+        // POSIX §2.5.3 gives PS4 the default "+ "; define it as a real
+        // variable (dash and bash both do) so `${PS4-unset}` and `set`
+        // see it. An inherited value is kept.
+        if vars.get("PS4").is_none() {
+            let _ = vars.set("PS4", "+ ");
+        }
         ShellEnv {
             vars,
             exec: ExecState {

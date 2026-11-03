@@ -16,7 +16,8 @@ use super::terminal::Terminal;
 /// separate logical lines of a multiline buffer), `|`, `;`, `&`, `<`, `>`,
 /// `(`, `)`. Inside quotes (single or double), whitespace does not act as
 /// a delimiter, but the quote character itself is included in the returned
-/// word.
+/// word. A backslash outside single quotes escapes the next character, so
+/// an escaped delimiter (`sub\ d`) stays inside the word.
 ///
 /// Returns `(word_start_index, word_slice)`.
 pub fn extract_completion_word(buf: &str, cursor: usize) -> (usize, &str) {
@@ -33,6 +34,13 @@ pub fn extract_completion_word(buf: &str, cursor: usize) -> (usize, &str) {
     while i < end {
         let ch = bytes[i];
         match ch {
+            b'\\' if !in_single_quote => {
+                // Skip the escaped byte (an ASCII delimiter or quote is
+                // a single byte; a multibyte char's continuation bytes
+                // never match any arm below).
+                i += 2;
+                continue;
+            }
             b'\'' if !in_double_quote => {
                 if !in_single_quote {
                     // Opening quote — this is the start of a new word
@@ -181,43 +189,143 @@ pub fn is_command_position(buf: &str, word_start: usize) -> bool {
 
 /// Split a completion word at the last `/` into (directory_part, prefix).
 ///
-/// - If the word starts with `~`, the tilde is expanded to `home`.
-/// - A leading quote character (`'` or `"`) is stripped before processing.
+/// The word is shell-unquoted first ([`shell_unquote`]), so quotes and
+/// backslash escapes the user typed (`"My D`, `sub\ d`, `it\'s`) do not
+/// take part in matching against file names.
+/// - If the word starts with an unquoted `~`, the tilde is expanded to `home`.
 /// - The directory part retains its trailing `/`.
 ///
-/// Returns `(directory_string, prefix_slice)`.
-pub fn split_path<'a>(word: &'a str, home: &str) -> (String, &'a str) {
-    // Strip leading quote character
-    let stripped = if word.starts_with('\'') || word.starts_with('"') {
-        &word[1..]
-    } else {
-        word
-    };
+/// Returns `(directory_string, prefix)`.
+pub fn split_path(word: &str, home: &str) -> (String, String) {
+    let tilde = word.starts_with('~');
+    let unquoted = shell_unquote(word);
 
-    match stripped.rfind('/') {
+    match unquoted.rfind('/') {
         Some(pos) => {
-            let dir_part = &stripped[..=pos]; // includes the '/'
-            let prefix = &stripped[pos + 1..];
-            // Expand tilde
-            let dir_expanded = if let Some(rest) = dir_part.strip_prefix('~') {
-                format!("{}{}", home, rest)
-            } else {
-                dir_part.to_string()
+            let dir_part = &unquoted[..=pos]; // includes the '/'
+            let prefix = unquoted[pos + 1..].to_string();
+            let dir_expanded = match dir_part.strip_prefix('~') {
+                Some(rest) if tilde => format!("{}{}", home, rest),
+                _ => dir_part.to_string(),
             };
-
-            // Map slice back to the original word's lifetime
-            // prefix is a slice of `stripped`, which is a sub-slice of `word`
             (dir_expanded, prefix)
         }
         None => {
             // No slash: expand lone tilde prefix
-            if stripped == "~" {
-                (format!("{}/", home), "")
+            if tilde && unquoted == "~" {
+                (format!("{}/", home), String::new())
             } else {
-                (String::new(), stripped)
+                (String::new(), unquoted)
             }
         }
     }
+}
+
+/// Remove shell quoting from a (possibly partial) word as the lexer
+/// would: `'...'` is literal, `"..."` keeps its content with `\`
+/// escaping only `$ \` backtick `"` newline, and an unquoted `\` escapes
+/// the next character. Unterminated quotes and a trailing lone `\` are
+/// tolerated (the word is still being typed).
+pub fn shell_unquote(word: &str) -> String {
+    let mut out = String::with_capacity(word.len());
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = word.chars();
+    while let Some(c) = chars.next() {
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            } else {
+                out.push(c);
+            }
+            continue;
+        }
+        match c {
+            '\'' if !in_double => in_single = true,
+            '"' => in_double = !in_double,
+            '\\' => match chars.next() {
+                None | Some('\n') => {}
+                Some(n) if in_double && !matches!(n, '$' | '`' | '"' | '\\') => {
+                    out.push('\\');
+                    out.push(n);
+                }
+                Some(n) => out.push(n),
+            },
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Quote `text` (a completion candidate or common prefix) for insertion
+/// right after `prefix`, the verbatim text kept before it, so the shell
+/// reads back exactly `text`:
+/// - inside an open `'` (per [`unclosed_quote`]): as-is, except that a
+///   `'` becomes `'\''`;
+/// - inside an open `"`: `"`, `$`, `` ` `` and `\` are backslash-escaped;
+/// - unquoted: every shell metacharacter is backslash-escaped (blanks,
+///   quotes, `\ $ ` | & ; < > ( ) * ? [ ] { } !`, plus `#` and `~` at
+///   the start of the word), and a newline is written as `'<newline>'`
+///   since `\<newline>` is a line continuation. `=` and `%` are left
+///   alone: they are not special inside an argument word, and spec
+///   candidates such as `--format=` must insert verbatim.
+pub fn quote_for_insertion(prefix: &str, text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 4);
+    match unclosed_quote(prefix) {
+        Some('\'') => {
+            for c in text.chars() {
+                if c == '\'' {
+                    out.push_str("'\\''");
+                } else {
+                    out.push(c);
+                }
+            }
+        }
+        Some(_) => {
+            for c in text.chars() {
+                if matches!(c, '"' | '$' | '`' | '\\') {
+                    out.push('\\');
+                }
+                out.push(c);
+            }
+        }
+        None => {
+            let at_word_start = prefix.is_empty();
+            for (i, c) in text.chars().enumerate() {
+                match c {
+                    '\n' => out.push_str("'\n'"),
+                    ' ' | '\t' | '\'' | '"' | '\\' | '$' | '`' | '|' | '&' | ';' | '<' | '>'
+                    | '(' | ')' | '*' | '?' | '[' | ']' | '{' | '}' | '!' => {
+                        out.push('\\');
+                        out.push(c);
+                    }
+                    '#' | '~' if i == 0 && at_word_start => {
+                        out.push('\\');
+                        out.push(c);
+                    }
+                    c => out.push(c),
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The full replacement for a completion word: `prefix` (kept verbatim)
+/// followed by `candidate` quoted for its context
+/// ([`quote_for_insertion`]). With `finish` set and a non-directory
+/// candidate, a quote left open by `prefix` is closed and a space ends
+/// the argument (bash-like: `cat "My D<Tab>` → `cat "My Doc.txt" `);
+/// directories stay open for further completion.
+pub fn completion_replacement(prefix: &str, candidate: &str, finish: bool) -> String {
+    let mut out = format!("{}{}", prefix, quote_for_insertion(prefix, candidate));
+    if finish && !candidate.ends_with('/') {
+        if let Some(q) = unclosed_quote(prefix) {
+            out.push(q);
+        }
+        out.push(' ');
+    }
+    out
 }
 
 /// Compute the longest common prefix of all candidate strings.
@@ -261,28 +369,27 @@ pub fn resolve_dir(dir_part: &str, cwd: &str) -> String {
 }
 
 /// The directory prefix of `word` exactly as the user typed it (up to
-/// and including the last `/`, no tilde expansion) — mirroring
-/// [`split_path`] so quoted words (`'sub/xy`, or the value part of
-/// `--file='sub/xy`) reconstruct their replacement text consistently.
+/// and including the last `/`, no tilde expansion or unquoting) —
+/// mirroring [`split_path`] so quoted or escaped words (`'sub/xy`,
+/// `sub\ dir/xy`, or the value part of `--file='sub/xy`) reconstruct
+/// their replacement text consistently.
 ///
-/// A single leading quote character is KEPT in the returned prefix:
-/// the completion word starts at the quote, so the replacement text
-/// must re-insert it or a space-containing match would be inserted
-/// unquoted (`cd "/tmp/My D<Tab>` must complete to `"/tmp/My Dir/`,
-/// not `/tmp/My Dir/`).
+/// A quote character that opens the file-name part is KEPT in the
+/// returned prefix: the completion word starts at the quote, so the
+/// replacement text must re-insert it or a space-containing match would
+/// be inserted unquoted (`cd "/tmp/My D<Tab>` must complete to
+/// `"/tmp/My Dir/`, not `/tmp/My Dir/`).
 pub fn dir_prefix_of(word: &str) -> String {
-    let (quote, stripped) = match word.as_bytes().first() {
-        Some(&q @ (b'\'' | b'"')) => (Some(q as char), &word[1..]),
-        _ => (None, word),
+    let mut dir = match word.rfind('/') {
+        Some(pos) => word[..=pos].to_string(),
+        None => String::new(),
     };
-    let dir = match stripped.rfind('/') {
-        Some(pos) => &stripped[..=pos],
-        None => "",
-    };
-    match quote {
-        Some(q) => format!("{q}{dir}"),
-        None => dir.to_string(),
+    if unclosed_quote(&dir).is_none()
+        && let Some(q @ ('\'' | '"')) = word[dir.len()..].chars().next()
+    {
+        dir.push(q);
     }
+    dir
 }
 
 /// If `prefix` (the verbatim re-inserted part of a completion
@@ -293,8 +400,14 @@ pub fn dir_prefix_of(word: &str) -> String {
 pub fn unclosed_quote(prefix: &str) -> Option<char> {
     let mut in_single = false;
     let mut in_double = false;
-    for ch in prefix.chars() {
+    let mut chars = prefix.chars();
+    while let Some(ch) = chars.next() {
         match ch {
+            // A backslash outside single quotes escapes the next char
+            // (`it\'s` or `"a\"b` leave no quote open).
+            '\\' if !in_single => {
+                chars.next();
+            }
             '\'' if !in_double => in_single = !in_single,
             '"' if !in_single => in_double = !in_double,
             _ => {}
@@ -384,7 +497,7 @@ pub fn complete(buf: &str, cursor: usize, ctx: &CompletionContext) -> Completion
     let (dir_part, prefix) = split_path(word, &ctx.home);
 
     let resolved_dir = resolve_dir(&dir_part, &ctx.cwd);
-    let candidates = generate_candidates(&resolved_dir, prefix, ctx.show_dotfiles);
+    let candidates = generate_candidates(&resolved_dir, &prefix, ctx.show_dotfiles);
     let common_prefix = longest_common_prefix(&candidates);
 
     CompletionResult {
@@ -576,6 +689,114 @@ mod tests {
         assert_eq!(unclosed_quote("\"done\" "), None);
         // A double quote inside single quotes does not open a string.
         assert_eq!(unclosed_quote("'a\"b' "), None);
+    }
+
+    // ── escaping / unquoting (tab completion of metachar names) ─────
+
+    #[test]
+    fn test_extract_escaped_space_stays_in_word() {
+        let buf = "ls sub\\ d";
+        let (start, word) = extract_completion_word(buf, buf.len());
+        assert_eq!(start, 3);
+        assert_eq!(word, "sub\\ d");
+    }
+
+    #[test]
+    fn test_shell_unquote() {
+        assert_eq!(shell_unquote("sub\\ d"), "sub d");
+        assert_eq!(shell_unquote("\"My D"), "My D");
+        assert_eq!(shell_unquote("'it'\\''s"), "it's");
+        assert_eq!(shell_unquote("\"a\\$b\\x"), "a$b\\x");
+        assert_eq!(shell_unquote("x\\$\\(y"), "x$(y");
+        assert_eq!(shell_unquote("trail\\"), "trail");
+    }
+
+    #[test]
+    fn test_split_path_unquotes() {
+        let (dir, prefix) = split_path("sub\\ dir/x\\$", "/h");
+        assert_eq!(dir, "sub dir/");
+        assert_eq!(prefix, "x$");
+        // A quoted tilde is not expanded.
+        let (dir, _) = split_path("'~'/a", "/h");
+        assert_eq!(dir, "~/");
+    }
+
+    #[test]
+    fn test_quote_for_insertion_unquoted() {
+        assert_eq!(quote_for_insertion("", "sub dir/"), "sub\\ dir/");
+        assert_eq!(
+            quote_for_insertion("", "x$(echo PWNED)y"),
+            "x\\$\\(echo\\ PWNED\\)y"
+        );
+        assert_eq!(quote_for_insertion("", "a'b\"c"), "a\\'b\\\"c");
+        assert_eq!(quote_for_insertion("", "#x~"), "\\#x~");
+        assert_eq!(quote_for_insertion("d/", "#x"), "#x");
+        assert_eq!(quote_for_insertion("", "--format="), "--format=");
+        assert_eq!(quote_for_insertion("", "a\nb"), "a'\n'b");
+        assert_eq!(
+            quote_for_insertion("", "*?[]&;|<>"),
+            "\\*\\?\\[\\]\\&\\;\\|\\<\\>"
+        );
+    }
+
+    #[test]
+    fn test_quote_for_insertion_in_quotes() {
+        assert_eq!(
+            quote_for_insertion("\"", "a $b\"`\\ c"),
+            "a \\$b\\\"\\`\\\\ c"
+        );
+        assert_eq!(quote_for_insertion("'", "it's $x"), "it'\\''s $x");
+        assert_eq!(quote_for_insertion("--file='sub/", "a b"), "a b");
+    }
+
+    #[test]
+    fn test_completion_replacement() {
+        assert_eq!(completion_replacement("", "sub dir/", true), "sub\\ dir/");
+        assert_eq!(completion_replacement("", "a b", true), "a\\ b ");
+        assert_eq!(completion_replacement("\"", "a b", true), "\"a b\" ");
+        assert_eq!(completion_replacement("'", "it's", true), "'it'\\''s' ");
+        assert_eq!(completion_replacement("", "a b", false), "a\\ b");
+    }
+
+    #[test]
+    fn test_dir_prefix_escaped_and_mid_quote() {
+        assert_eq!(dir_prefix_of("sub\\ dir/x"), "sub\\ dir/");
+        assert_eq!(dir_prefix_of("sub/\"fo"), "sub/\"");
+        assert_eq!(dir_prefix_of("su\"b"), "");
+    }
+
+    #[test]
+    fn test_unclosed_quote_ignores_escaped_quotes() {
+        assert_eq!(unclosed_quote("it\\'s/"), None);
+        assert_eq!(unclosed_quote("\"a\\\"b/"), Some('"'));
+    }
+
+    #[test]
+    fn test_complete_escaped_typed_word_matches() {
+        // `ls sub\ d<Tab>` must match `sub dir/` despite the escape.
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("sub dir")).unwrap();
+        File::create(tmp.path().join("x$(echo PWNED)y")).unwrap();
+        let ctx = CompletionContext {
+            cwd: tmp.path().to_str().unwrap().to_string(),
+            home: "/home/user".to_string(),
+            show_dotfiles: false,
+        };
+        let buf = "ls sub\\ d";
+        let result = complete(buf, buf.len(), &ctx);
+        assert_eq!(result.candidates, vec!["sub dir/"]);
+        assert_eq!(result.dir_prefix, "");
+        assert_eq!(
+            completion_replacement(&result.dir_prefix, &result.candidates[0], true),
+            "sub\\ dir/"
+        );
+        let buf = "echo x";
+        let result = complete(buf, buf.len(), &ctx);
+        assert_eq!(result.candidates, vec!["x$(echo PWNED)y"]);
+        assert_eq!(
+            completion_replacement(&result.dir_prefix, &result.candidates[0], true),
+            "x\\$\\(echo\\ PWNED\\)y "
+        );
     }
 
     // ── split_path ──────────────────────────────────────────────────

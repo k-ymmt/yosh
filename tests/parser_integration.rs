@@ -19,7 +19,7 @@ fn yosh_exec(input: &str) -> std::process::Output {
 fn yosh_exec_with_args(input: &str, args: &[&str]) -> std::process::Output {
     // POSIX: sh -c cmd [name [arg...]]
     // We pass "yosh" as $0 (name), then the test args as $1, $2, ...
-    let mut cmd_args = vec!["-c", input, "--", "yosh"];
+    let mut cmd_args = vec!["-c", input, "yosh"];
     cmd_args.extend_from_slice(args);
     Command::new(env!("CARGO_BIN_EXE_yosh"))
         .args(cmd_args)

@@ -59,15 +59,19 @@ fn expand_assignment_builtin_args(
 /// string, then its first character appears `indirection_level + 1` times
 /// total (the original plus one per nesting level) to indicate
 /// function/dot-script nesting (POSIX XCU 2.5.3).
-/// `$?` is preserved across any command substitution inside PS4.
+/// `$?` is preserved across any command substitution inside PS4, and an
+/// expansion error in PS4 is diagnosed without aborting (both handled by
+/// `expand_dquoted`).
 fn xtrace_prefix(env: &mut ShellEnv) -> String {
     let raw = env.vars.get("PS4").unwrap_or("+ ").to_string();
 
-    // Expand PS4 without letting a command substitution clobber $? for the
-    // command being traced (bash preserves it).
-    let saved_status = env.exec.last_exit_status;
+    // Expand PS4 with xtrace off: a command substitution in PS4
+    // (`PS4='$(echo X)> '`) runs in a forked child that inherits the
+    // options, and with xtrace still on its own commands would expand
+    // PS4 again — unbounded recursion. bash traces nothing inside PS4.
+    let saved_xtrace = std::mem::replace(&mut env.mode.options.xtrace, false);
     let expanded = crate::expand::expand_dquoted(env, &raw);
-    env.exec.last_exit_status = saved_status;
+    env.mode.options.xtrace = saved_xtrace;
 
     let level = env.exec.indirection_level;
     if level == 0 || expanded.is_empty() {

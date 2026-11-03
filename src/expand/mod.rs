@@ -335,27 +335,42 @@ pub fn expand_word_to_pattern(env: &mut ShellEnv, word: &Word) -> crate::error::
     Ok(result)
 }
 
-/// Parse `raw` as the body of a double-quoted word and expand it
-/// (parameter expansion, command substitution, arithmetic expansion;
-/// no field splitting, no pathname expansion). On lexer/parser or
-/// expansion error, fall back to returning `raw` unchanged.
+/// Expand a prompt-style string (PS1/PS2/PS4): parameter expansion,
+/// command substitution and arithmetic expansion; no field splitting,
+/// no pathname expansion, no tilde expansion.
 ///
-/// Shared by PS1/PS2 prompt expansion and `set -x` PS4 expansion.
+/// `raw` is scanned as the body of a here-document rather than wrapped
+/// in `"..."` and lexed as a word: a `"` in the value is an ordinary
+/// character (`PS4='say "hi" + '` traces `say "hi" + ...`), and `\`
+/// escapes only `$`, `` ` ``, `\` and newline — dash's `expandstr`
+/// semantics.
+///
+/// Prompt expansion is a side channel of the command being read or
+/// traced, so it must not disturb the shell state that command sees:
+/// `$?` survives a command substitution in the prompt (`PS1='$(true)$ '`
+/// keeps the status of the previous command), and an expansion error
+/// (`set -u` with an unset variable, `${x?msg}`, a bad arithmetic
+/// expression) is diagnosed but neither aborts the shell nor leaves a
+/// pending `FlowControl::ExpansionError` that would cancel the next
+/// command. On error the raw value is used literally, as dash and bash
+/// display it.
 pub fn expand_dquoted(env: &mut ShellEnv, raw: &str) -> String {
-    // Wrap in double quotes so the lexer yields a double-quoted Word.
-    // Note: a `raw` containing an unescaped `"` is silently truncated by the
-    // lexer rather than triggering the fallback; this matches historical
-    // prompt.rs behavior and is acceptable for prompt/PS4 values.
-    let input = format!("\"{}\"", raw);
-    let mut lexer = crate::lexer::Lexer::new(&input);
-    let word = match lexer.next_token() {
-        Ok(tok) => match tok.token {
-            crate::lexer::token::Token::Word(word) => word,
-            _ => return raw.to_string(),
-        },
-        Err(_) => return raw.to_string(),
-    };
-    expand_word_to_string(env, &word).unwrap_or_else(|_| raw.to_string())
+    let saved_status = env.exec.last_exit_status;
+    let saved_flow = env.exec.flow_control.take();
+    let result = dollar::expand_string(env, raw);
+    let raised = env.exec.flow_control.take();
+    env.exec.flow_control = saved_flow;
+    env.exec.last_exit_status = saved_status;
+    match result {
+        // `${x?msg}` / nounset failures print their own diagnostic and
+        // raise ExpansionError instead of returning Err.
+        Ok(_) if raised == Some(crate::env::FlowControl::ExpansionError) => raw.to_string(),
+        Ok(s) => s,
+        Err(e) => {
+            crate::byteenc::write_stderr_decoded_line(&e.to_string());
+            raw.to_string()
+        }
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -871,6 +886,43 @@ mod tests {
     fn expand_dquoted_arithmetic() {
         let mut env = make_env();
         assert_eq!(expand_dquoted(&mut env, "$((1+2))"), "3");
+    }
+
+    #[test]
+    fn expand_dquoted_double_quote_is_literal() {
+        // Here-document-like body: `"` is ordinary, `\` escapes only
+        // `$ \` backtick newline (dash expandstr semantics).
+        let mut env = make_env();
+        env.vars.set("x", "v").unwrap();
+        assert_eq!(expand_dquoted(&mut env, "say \"hi\" + "), "say \"hi\" + ");
+        assert_eq!(expand_dquoted(&mut env, r#"a\"b\$x $x"#), r#"a\"b$x v"#);
+    }
+
+    #[test]
+    fn expand_dquoted_nounset_error_is_contained() {
+        let mut env = make_env();
+        env.mode.options.nounset = true;
+        env.exec.last_exit_status = 7;
+        assert_eq!(expand_dquoted(&mut env, "$NOPE> "), "$NOPE> ");
+        assert_eq!(env.exec.flow_control, None);
+        assert_eq!(env.exec.last_exit_status, 7);
+    }
+
+    #[test]
+    fn expand_dquoted_param_error_is_contained() {
+        let mut env = make_env();
+        assert_eq!(expand_dquoted(&mut env, "${u?boom} "), "${u?boom} ");
+        assert_eq!(env.exec.flow_control, None);
+        assert_eq!(expand_dquoted(&mut env, "$((1/0)) "), "$((1/0)) ");
+        assert_eq!(env.exec.flow_control, None);
+    }
+
+    #[test]
+    fn expand_dquoted_preserves_exit_status() {
+        let mut env = make_env();
+        env.exec.last_exit_status = 1;
+        let _ = expand_dquoted(&mut env, "$(true)P$ ");
+        assert_eq!(env.exec.last_exit_status, 1);
     }
 
     // ── expand_word_to_pattern: quoted metachars match literally (H2) ──

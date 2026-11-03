@@ -53,6 +53,9 @@ impl Repl {
         signal::set_interactive_shell(true);
         let mut executor = Executor::new(shell_name, positional);
         crate::env::default_path::ensure_default_path(&mut executor.env);
+        // POSIX §2.5.3: adopt the inherited PWD only if it names the
+        // current directory (same check run_string performs).
+        crate::env::startup_pwd::ensure_pwd(&mut executor.env);
         executor.env.mode.is_interactive = true;
         executor.env.mode.options.monitor = true;
         // Interactive default editing mode is emacs (bash parity); an
@@ -106,17 +109,27 @@ impl Repl {
             executor.env.process.jobs.set_shell_tmodes(t);
         }
 
-        // Set history variable defaults
+        // History variable defaults. Only fill in what is unset: values
+        // inherited from the environment (`HISTFILE=/tmp/h yosh`) win,
+        // as in bash.
         let home = executor.env.vars.get("HOME").unwrap_or("").to_string();
-        let histfile = format!("{}/.yosh_history", home);
-        let _ = executor.env.vars.set("HISTFILE", &histfile);
-        let _ = executor.env.vars.set("HISTSIZE", "500");
-        let _ = executor.env.vars.set("HISTFILESIZE", "500");
-        let _ = executor.env.vars.set("HISTCONTROL", "ignoreboth");
+        let default_histfile = format!("{}/.yosh_history", home);
+        for (name, default) in [
+            ("HISTFILE", default_histfile.as_str()),
+            ("HISTSIZE", "500"),
+            ("HISTFILESIZE", "500"),
+            ("HISTCONTROL", "ignoreboth"),
+        ] {
+            if executor.env.vars.get(name).is_none() {
+                let _ = executor.env.vars.set(name, default);
+            }
+        }
+        let histfile = executor.env.vars.get("HISTFILE").unwrap_or("").to_string();
 
-        // POSIX XCU §2.5.3: PS1 has a default value for interactive shells.
-        // Set it as a real variable so observers like `[ -n "${PS1+x}" ]`
-        // see it. Defer to inherited / rc-set value if already present.
+        // POSIX XCU §2.5.3: PS1 and PS2 have default values for
+        // interactive shells. Set them as real variables so observers
+        // like `[ -n "${PS1+x}" ]` see them (dash and bash do). Defer to
+        // an inherited value if already present.
         if executor.env.vars.get("PS1").is_none() {
             // SAFETY: getuid() is always safe to call.
             let default = if unsafe { libc::getuid() } == 0 {
@@ -126,9 +139,14 @@ impl Repl {
             };
             let _ = executor.env.vars.set("PS1", default);
         }
+        if executor.env.vars.get("PS2").is_none() {
+            let _ = executor.env.vars.set("PS2", "> ");
+        }
 
         // Load history from file
-        executor.env.history.load(std::path::Path::new(&histfile));
+        if !histfile.is_empty() {
+            executor.env.history.load(std::path::Path::new(&histfile));
+        }
 
         // Load plugins
         executor.load_plugins(true);
@@ -139,8 +157,12 @@ impl Repl {
             executor.source_file(&rc_path); // Silent skip if absent
         }
 
-        // Source $ENV (POSIX: parameter-expanded path for interactive shells)
-        if let Some(env_val) = executor.env.vars.get("ENV").map(|s| s.to_string())
+        // Source $ENV (POSIX: parameter-expanded path for interactive shells).
+        // Skipped when the rc file already ran `exit`: the shell is about
+        // to terminate (`run` checks `exit_requested` before the first
+        // prompt), so nothing further may run.
+        if executor.exit_requested.is_none()
+            && let Some(env_val) = executor.env.vars.get("ENV").map(|s| s.to_string())
             && !env_val.is_empty()
         {
             // POSIX 2.6.1: tilde expansion occurs before parameter expansion
@@ -185,6 +207,13 @@ impl Repl {
         let mut input_buffer = String::new();
 
         loop {
+            // `exit` in ~/.yoshrc or $ENV terminates the shell before the
+            // first prompt (dash parity), not after the first typed command.
+            if let Some(code) = self.executor.exit_requested {
+                self.executor.env.exec.last_exit_status = code;
+                break;
+            }
+
             // Reap zombies and display job notifications before prompt
             self.executor.reap_zombies();
             self.executor.display_job_notifications();
@@ -480,11 +509,14 @@ impl Repl {
 
 /// The HISTSIZE / HISTCONTROL pair `History::add` wants, with the REPL
 /// defaults applied when the variables are unset or unparsable.
+/// HISTSIZE=0 keeps no entries and a negative HISTSIZE means unlimited
+/// (bash semantics).
 fn history_settings(env: &crate::env::ShellEnv) -> (usize, String) {
     let histsize: usize = env
         .vars
         .get("HISTSIZE")
-        .and_then(|s| s.parse().ok())
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
         .unwrap_or(500);
     let histcontrol = env
         .vars

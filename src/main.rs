@@ -254,12 +254,12 @@ fn main() {
         }
         // POSIX: sh -c cmd [name [arg...]]
         // After the script, the next arg is $0 (shell_name), remaining are $1, $2, ...
-        // Support `--` as an optional separator before positional args.
+        // Option processing ended at the command string, so a `--` after
+        // it is an ordinary operand: `sh -c cmd -- a` sets $0=-- and $1=a
+        // (dash and bash agree). `--` before the command string is the
+        // option terminator handled by the loop above.
         let command = args[idx].clone();
-        let mut rest_start = idx + 1;
-        if rest_start < args.len() && args[rest_start] == "--" {
-            rest_start += 1;
-        }
+        let rest_start = idx + 1;
         let sn = if rest_start < args.len() {
             args[rest_start].clone()
         } else {
@@ -550,7 +550,14 @@ fn run_file(
         Ok(c) => c,
         Err(e) => {
             eprintln!("yosh: {}: {}", path, e);
-            return 127;
+            // 127 is reserved for "not found"; a script that exists but
+            // cannot be read (a directory, no read permission) is 126,
+            // as in bash.
+            return if e.kind() == io::ErrorKind::NotFound {
+                127
+            } else {
+                126
+            };
         }
     };
     let content = byteenc::encode_bytes(&content).into_owned();

@@ -560,14 +560,38 @@ fn lone_dash_ends_option_parsing() {
 
 #[test]
 fn dash_c_positional_params_still_work() {
-    // Regression guard for the -c dispatch rewrite: $0 and $1 assignment
-    // with and without the optional `--` separator.
+    // Regression guard for the -c dispatch rewrite: $0 and $1 assignment,
+    // with `--` as the option terminator BEFORE the command string.
     for args in [
         vec!["-c", "echo $0:$1", "name", "arg1"],
-        vec!["-c", "echo $0:$1", "--", "name", "arg1"],
+        vec!["-c", "--", "echo $0:$1", "name", "arg1"],
     ] {
         let output = yosh_bin().args(&args).output().unwrap();
         let out = String::from_utf8_lossy(&output.stdout);
         assert_eq!(out.trim(), "name:arg1", "args {args:?} gave {out:?}");
     }
+}
+
+#[test]
+fn dash_c_double_dash_after_command_is_dollar_zero() {
+    // Option processing ends at the command string, so a later `--` is
+    // an ordinary operand that becomes $0 (dash and bash agree).
+    let output = yosh_bin()
+        .args(["-c", "echo \"[$0][$1][$#]\"", "--", "a", "b"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(out.trim(), "[--][a][2]");
+}
+
+#[test]
+fn unreadable_script_operand_exits_126() {
+    // 127 is reserved for "not found"; a directory operand exists but
+    // cannot be read as a script (bash: 126).
+    let dir = tempfile::tempdir().unwrap();
+    let output = yosh_bin().arg(dir.path()).output().unwrap();
+    assert_eq!(output.status.code(), Some(126));
+    let missing = dir.path().join("missing.sh");
+    let output = yosh_bin().arg(&missing).output().unwrap();
+    assert_eq!(output.status.code(), Some(127));
 }
