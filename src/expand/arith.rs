@@ -45,8 +45,14 @@ fn div_zero_err(msg: &str) -> ShellError {
 pub fn evaluate(env: &mut ShellEnv, expr: &str) -> crate::error::Result<String> {
     // Step 1: expand dollar references. Expansions substitute their
     // actual (possibly empty) text — `$((1${x}2))` with `x` unset is 12,
-    // matching bash/dash.
-    let expanded = super::dollar::expand_string(env, expr)?;
+    // matching bash/dash. Text without `$`, `\` or `` ` `` expands to
+    // itself, so the common `$((i + 1))` skips the copy.
+    let expanded: std::borrow::Cow<'_, str> =
+        if expr.bytes().any(|b| matches!(b, b'$' | b'\\' | b'`')) {
+            super::dollar::expand_string(env, expr)?.into()
+        } else {
+            expr.into()
+        };
 
     // An entirely blank expression evaluates to 0 (bash/dash: `$(( ))`
     // and `$(($x))` with `x` unset/empty both print 0).

@@ -187,12 +187,15 @@ pub(super) fn expand_string(env: &mut ShellEnv, s: &str) -> crate::error::Result
             i += 1; // skip closing `
             run_command_sub(env, &cmd_str, &mut result);
         } else {
-            // Copy the full (possibly multi-byte) character — indexing by
-            // byte and casting through `as char` would decode UTF-8 bytes
-            // as Latin-1 and corrupt non-ASCII text.
-            let ch = s[i..].chars().next().expect("i is on a char boundary");
-            result.push(ch);
-            i += ch.len_utf8();
+            // Copy the run of ordinary text up to the next `$`, `\` or
+            // `` ` `` (all ASCII, so the run ends on a char boundary;
+            // a trailing lone `$` or `\` is copied by its own branch).
+            let end = bytes[i + 1..]
+                .iter()
+                .position(|&b| matches!(b, b'$' | b'\\' | b'`'))
+                .map_or(bytes.len(), |k| i + 1 + k);
+            result.push_str(&s[i..end]);
+            i = end;
         }
     }
     Ok(result)
