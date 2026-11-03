@@ -1,0 +1,178 @@
+use crate::env::vars::Variable;
+use crate::error::{RuntimeErrorKind, ShellError};
+use crate::parser::ast::{Assignment, SimpleCommand, Word};
+
+use super::super::Executor;
+use super::super::redirect::{ExpandedRedirect, RedirectState};
+
+/// Variables saved before temporary prefix assignments, as `(name, the
+/// whole variable or None if it did not exist)`, for
+/// [`Executor::restore_assignments`].
+pub(crate) type SavedVars = Vec<(String, Option<Variable>)>;
+
+impl Executor {
+    /// Expand one prefix-assignment value. A braced-parameter failure
+    /// (`${x:?}`, `set -u`) only raises `FlowControl::ExpansionError`
+    /// while returning `Ok`; turn it into an error so the command is
+    /// not run (POSIX §2.8.1 expansion error).
+    pub(super) fn expand_assignment_value(&mut self, w: &Word) -> crate::error::Result<String> {
+        let value = crate::expand::expand_word_to_string(&mut self.env, w)?;
+        if self.env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError) {
+            return Err(ShellError::expansion_already_reported());
+        }
+        Ok(value)
+    }
+
+    /// Run `run` with the command's prefix assignments applied
+    /// temporarily and its (already expanded) redirections applied,
+    /// restoring both afterwards. Shared by the function, regular
+    /// built-in and Executor-hosted built-in dispatches.
+    pub(super) fn run_with_temp_assignments(
+        &mut self,
+        cmd: &SimpleCommand,
+        redirs: &[ExpandedRedirect],
+        name: &str,
+        args: &[String],
+        run: impl FnOnce(&mut Self) -> i32,
+    ) -> Result<i32, ShellError> {
+        let (saved, assigned) = self.apply_temp_assignments_with_values(&cmd.assignments)?;
+        self.xtrace_simple(&assigned, name, args);
+        let mut redirect_state = RedirectState::new();
+        if let Err(e) = redirect_state.apply_expanded(redirs, true) {
+            self.restore_assignments(saved);
+            return Err(e);
+        }
+        let status = run(self);
+        redirect_state.restore();
+        self.restore_assignments(saved);
+        Ok(status)
+    }
+
+    /// Expand command-specific prefix assignments to (name, value) pairs.
+    ///
+    /// This does NOT merge with the exported environ — that merge happens
+    /// just before `execv` in `exec_external_with_redirects`, so the
+    /// common case (no prefix assignments on the command) never clones
+    /// `environ()` at all. When there are assignments, they are applied
+    /// as overrides on top of `environ()` (last-wins, matching the
+    /// previous `iter_mut().find()` replace-or-push behavior).
+    ///
+    /// A readonly variable cannot be overridden even for one command:
+    /// that is a variable-assignment error (POSIX §2.8.1; dash refuses
+    /// `readonly r=1; r=2 cmd` and exits a non-interactive shell).
+    pub(crate) fn build_env_vars(
+        &mut self,
+        assignments: &[Assignment],
+    ) -> crate::error::Result<Vec<(String, String)>> {
+        let mut vars = Vec::with_capacity(assignments.len());
+        for assign in assignments {
+            let value = match assign.value.as_ref() {
+                Some(w) => self.expand_assignment_value(w)?,
+                None => String::new(),
+            };
+            if self.env.vars.is_readonly(&assign.name) {
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::ReadonlyVariable,
+                    format!("{}: readonly variable", assign.name),
+                ));
+            }
+            vars.push((assign.name.clone(), value));
+        }
+        Ok(vars)
+    }
+
+    /// Apply prefix assignments temporarily, returning saved values for later restoration.
+    pub(crate) fn apply_temp_assignments(
+        &mut self,
+        assignments: &[Assignment],
+    ) -> crate::error::Result<SavedVars> {
+        self.apply_temp_assignments_with_values(assignments)
+            .map(|(saved, _)| saved)
+    }
+
+    /// [`Self::apply_temp_assignments`], also returning the assigned
+    /// (name, value) pairs (for the `set -x` trace).
+    ///
+    /// On error every assignment applied so far is rolled back. A
+    /// readonly variable rejecting the temporary assignment is a
+    /// variable-assignment error (POSIX §2.8.1: the command is not run
+    /// and a non-interactive shell exits — dash agrees).
+    fn apply_temp_assignments_with_values(
+        &mut self,
+        assignments: &[Assignment],
+    ) -> crate::error::Result<(SavedVars, Vec<(String, String)>)> {
+        let mut saved = Vec::with_capacity(assignments.len());
+        let mut assigned = Vec::with_capacity(assignments.len());
+        for assignment in assignments {
+            let value = match assignment.value.as_ref() {
+                Some(w) => match self.expand_assignment_value(w) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.restore_assignments(saved);
+                        return Err(e);
+                    }
+                },
+                None => String::new(),
+            };
+            // The whole variable, not just its value: an exported name
+            // without a value (`export x` while unset) must get its
+            // export attribute back (dash/bash agree).
+            let old_val = self.env.vars.get_var(&assignment.name).cloned();
+            if let Err(e) = self.env.assign_var(&assignment.name, value.clone()) {
+                self.restore_assignments(saved);
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::ReadonlyVariable,
+                    e.to_string(),
+                ));
+            }
+            saved.push((assignment.name.clone(), old_val));
+            assigned.push((assignment.name.clone(), value));
+        }
+        Ok((saved, assigned))
+    }
+
+    /// Restore variables to their pre-assignment values. Restores in
+    /// reverse order so `a=1 a=2 cmd` ends with `a`'s original value.
+    pub(crate) fn restore_assignments(&mut self, saved: SavedVars) {
+        for (name, old_var) in saved.into_iter().rev() {
+            match old_var {
+                Some(Variable {
+                    value: Some(val), ..
+                }) => {
+                    let _ = self.env.assign_var(&name, val);
+                }
+                Some(Variable {
+                    value: None,
+                    exported,
+                    ..
+                }) => {
+                    let _ = self.env.unset_var(&name);
+                    if exported {
+                        self.env.vars.export(&name);
+                    }
+                }
+                None => {
+                    let _ = self.env.unset_var(&name);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Temporary prefix assignments are rolled back in reverse order, so a
+    /// duplicated name ends with its original value.
+    #[test]
+    fn duplicate_temp_assignment_restores_original_value() {
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+
+        let mut exec = Executor::new("yosh", vec![]);
+        let prog = Parser::new("a=orig; f() { :; }; a=1 a=2 f")
+            .parse_program()
+            .unwrap();
+        exec.exec_program(&prog);
+        assert_eq!(exec.env.vars.get("a"), Some("orig"));
+    }
+}
