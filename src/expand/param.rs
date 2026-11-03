@@ -175,49 +175,64 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
         // literally (POSIX §2.6.2: "the quoting shall prevent the pattern
         // characters from being treated as pattern characters").
 
-        // ── ${name%pattern} — remove shortest suffix ─────────────────────
-        ParamExpr::StripShortSuffix(name, pattern_word) => {
+        // ${name%pattern}, ${name%%pattern}, ${name#pattern},
+        // ${name##pattern}: remove the shortest / longest matching suffix
+        // or prefix.
+        ParamExpr::StripShortSuffix(name, pattern_word)
+        | ParamExpr::StripLongSuffix(name, pattern_word)
+        | ParamExpr::StripShortPrefix(name, pattern_word)
+        | ParamExpr::StripLongPrefix(name, pattern_word) => {
+            // `${@#pat}` / `${*%pat}` (unspecified by POSIX): as in dash
+            // and bash, each positional parameter loses the pattern, then
+            // they are joined the way `$@` / `$*` join here.
+            if let Some(star) = positional_name(name) {
+                let pat = expand_word_to_pattern(env, pattern_word)?;
+                let sep = if star {
+                    super::pipeline::ifs_join_separator(env)
+                } else {
+                    " ".to_string()
+                };
+                let parts: Vec<String> = env
+                    .vars
+                    .positional_params()
+                    .iter()
+                    .map(|p| apply_strip(param, p, &pat))
+                    .collect();
+                return Ok(parts.join(&sep));
+            }
             let Ok(value) = lookup_var_nounset(env, name) else {
                 return Ok(String::new());
             };
             let value = value.unwrap_or_default();
             let pat = expand_word_to_pattern(env, pattern_word)?;
-            Ok(strip_suffix(&value, &pat, false))
-        }
-
-        // ── ${name%%pattern} — remove longest suffix ──────────────────────
-        ParamExpr::StripLongSuffix(name, pattern_word) => {
-            let Ok(value) = lookup_var_nounset(env, name) else {
-                return Ok(String::new());
-            };
-            let value = value.unwrap_or_default();
-            let pat = expand_word_to_pattern(env, pattern_word)?;
-            Ok(strip_suffix(&value, &pat, true))
-        }
-
-        // ── ${name#pattern} — remove shortest prefix ─────────────────────
-        ParamExpr::StripShortPrefix(name, pattern_word) => {
-            let Ok(value) = lookup_var_nounset(env, name) else {
-                return Ok(String::new());
-            };
-            let value = value.unwrap_or_default();
-            let pat = expand_word_to_pattern(env, pattern_word)?;
-            Ok(strip_prefix(&value, &pat, false))
-        }
-
-        // ── ${name##pattern} — remove longest prefix ──────────────────────
-        ParamExpr::StripLongPrefix(name, pattern_word) => {
-            let Ok(value) = lookup_var_nounset(env, name) else {
-                return Ok(String::new());
-            };
-            let value = value.unwrap_or_default();
-            let pat = expand_word_to_pattern(env, pattern_word)?;
-            Ok(strip_prefix(&value, &pat, true))
+            Ok(apply_strip(param, &value, &pat))
         }
     }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// `Some(is_star)` when `name` is `@` or `*`.
+fn positional_name(name: &str) -> Option<bool> {
+    match name {
+        "*" => Some(true),
+        "@" => Some(false),
+        _ => None,
+    }
+}
+
+/// Apply the pattern removal of a `${name%pat}` / `${name%%pat}` /
+/// `${name#pat}` / `${name##pat}` expansion to `value`, with the pattern
+/// already expanded. Any other expression returns `value` unchanged.
+pub(super) fn apply_strip(param: &ParamExpr, value: &str, pat: &str) -> String {
+    match param {
+        ParamExpr::StripShortSuffix(..) => strip_suffix(value, pat, false),
+        ParamExpr::StripLongSuffix(..) => strip_suffix(value, pat, true),
+        ParamExpr::StripShortPrefix(..) => strip_prefix(value, pat, false),
+        ParamExpr::StripLongPrefix(..) => strip_prefix(value, pat, true),
+        _ => value.to_string(),
+    }
+}
 
 /// Resolve a variable by name, intercepting `LINENO` as a computed
 /// pseudo-variable backed by `env.exec.lineno` rather than a real

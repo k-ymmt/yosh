@@ -278,6 +278,27 @@ fn expand_param_to_fields(
             );
         }
 
+        // ${@#pat}, ${*%%pat}, …: POSIX leaves the result unspecified;
+        // like dash and bash, remove the pattern from each positional
+        // parameter and keep the bare `$@`/`$*` field shape
+        // (`"${@%/}"` strips a trailing slash from every argument).
+        ParamExpr::StripShortSuffix(name, pattern_word)
+        | ParamExpr::StripLongSuffix(name, pattern_word)
+        | ParamExpr::StripShortPrefix(name, pattern_word)
+        | ParamExpr::StripLongPrefix(name, pattern_word)
+            if positional_special(name).is_some() =>
+        {
+            let star = positional_special(name).unwrap_or_default();
+            let pattern = super::expand_word_to_pattern(env, pattern_word)?;
+            let params: Vec<String> = env
+                .vars
+                .positional_params()
+                .iter()
+                .map(|p| param::apply_strip(param, p, &pattern))
+                .collect();
+            push_positional_values(env, fields, &params, star, in_double_quote);
+        }
+
         // Everything else: expand to a string, then push.
         _ => {
             let value = param::expand(env, param)?;
@@ -336,13 +357,25 @@ fn push_positionals(
     star: bool,
     in_double_quote: bool,
 ) {
+    let params = env.vars.positional_params().to_vec();
+    push_positional_values(env, fields, &params, star, in_double_quote);
+}
+
+/// `push_positionals` for an explicit list of parameter values (the
+/// positional parameters after a per-parameter transformation).
+fn push_positional_values(
+    env: &ShellEnv,
+    fields: &mut Vec<ExpandedField>,
+    params: &[String],
+    star: bool,
+    in_double_quote: bool,
+) {
     if star && in_double_quote {
         let sep = ifs_join_separator(env);
-        let joined = env.vars.positional_params().join(&sep);
+        let joined = params.join(&sep);
         fields.last_mut().unwrap().push_quoted(&joined);
         return;
     }
-    let params = env.vars.positional_params().to_vec();
     if params.is_empty() {
         // "$@" with no params → produces nothing (not even an empty field).
         // Reset the accumulator (rather than popping it — later word parts
