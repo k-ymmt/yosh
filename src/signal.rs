@@ -281,7 +281,7 @@ pub fn is_ignored_on_entry(sig: i32) -> bool {
 }
 
 /// Like [`ignored_on_entry_set`] but returns `None` if the capture has not
-/// happened yet (useful for callers that must not panic, e.g. `display_all`).
+/// happened yet (useful for callers that must not panic, e.g. `TrapStore::listing`).
 pub fn ignored_on_entry_set_opt() -> Option<&'static HashSet<i32>> {
     IGNORED_ON_ENTRY.get()
 }

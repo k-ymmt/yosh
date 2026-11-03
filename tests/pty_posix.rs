@@ -54,7 +54,7 @@ mod fc {
         let out = capture_until_sentinel(&mut session, "fc -l -n");
 
         // -n suppresses leading line numbers; output lines start with a tab
-        // (per src/builtin/special.rs::fc_list).
+        // (per src/builtin/fc.rs::fc_list).
         assert!(out.contains("echo aaa"), "missing 'echo aaa' in: {:?}", out);
         assert!(out.contains("echo bbb"), "missing 'echo bbb' in: {:?}", out);
         assert!(out.contains("echo ccc"), "missing 'echo ccc' in: {:?}", out);

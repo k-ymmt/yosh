@@ -9,7 +9,7 @@
 //! spawned by a parallel test inherits the cwd at spawn time without
 //! taking this lock, and inheriting a soon-deleted tempdir leaves it
 //! with a dangling cwd (`/bin/sh` stalls trying to recover — see the
-//! history in `builtin::regular`'s `resolve_cdpath_empty_entry_is_dot`).
+//! history in `builtin::cd`'s `resolve_cdpath_empty_entry_is_dot`).
 
 use std::sync::{Mutex, MutexGuard};
 

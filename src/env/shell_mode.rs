@@ -243,7 +243,7 @@ pub struct ShellMode {
     /// `expand/command_sub.rs`), yet their `$-` must still report `m`
     /// like bash does in subshells. An explicit `set -m`/`set +m` in
     /// the child re-syncs this snapshot (see the `set` wrapper in
-    /// `builtin/special.rs`).
+    /// `builtin/set.rs`).
     pub flag_m: bool,
     pub in_dot_script: bool,
 }

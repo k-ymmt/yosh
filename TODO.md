@@ -282,7 +282,7 @@
       (bash style, re-input safe); POSIX and dash print bare
       `name=value`. `command -v` output and
       `tests/parser_integration.rs` rely on the prefix
-      (`src/builtin/regular.rs`).
+      (`src/builtin/alias.rs`).
 - [ ] DEVIATION (decided): `PS2='> '` is defined only for interactive
       shells (bash); dash also defines it non-interactively. `PS4='+ '`
       is always defined (`src/env/mod.rs::ShellEnv::new`).
@@ -405,7 +405,7 @@
         but `set -oerrexit` is rejected by the builtin's char-cluster
         walk (`unknown option: -o`); bash rejects both attached forms.
         Decide whether the builtin should share the invocation scanner
-        (`src/builtin/special.rs::builtin_set`, `src/main.rs`).
+        (`src/builtin/set.rs::apply_set`, `src/main.rs`).
   - [ ] Non-REPL monitor shells never capture a shell-termios snapshot,
         and `exec/terminal_state.rs` still probes fd 0 while the
         terminal handoffs now use the /dev/tty fd — so a `yosh -i -m
@@ -420,7 +420,7 @@
         lifecycle for non-REPL shells. Same family as the "full
         Repl::new terminal setup remains REPL-only" residual above
         (`src/exec/terminal_state.rs`, `src/main.rs::run_string`,
-        `src/builtin/special.rs`).
+        `src/builtin/set.rs`).
   - [ ] `test_apply_invocation_op_ordered_override`
         (`src/env/shell_mode.rs`) exercises only the set_by_char/
         set_by_name delegation; the ordering invariant it names (monitor
@@ -581,7 +581,7 @@ the items below are deferred work, not policy:
 
 - [ ] `exec_regular_builtin` "internal error" guards for `wait` / `fg`/`bg`/`jobs` / `command` are growing — consider factoring "Executor-requiring builtins" into an explicit classification or dispatch table instead of per-name guards (`src/builtin/mod.rs`)
 - [ ] `highlight_scanner` `KEYWORDS` duplicates POSIX §2.4 list — `src/interactive/highlight_scanner/helpers.rs` defines its own copy of the 16 reserved words, separate from the canonical `crate::lexer::reserved::RESERVED_WORDS`. Consolidate once the contextual subsets (`COMMAND_POSITION_KEYWORDS` includes `"time"`, command-position restoration logic) are re-expressed in terms of the canonical list (`src/interactive/highlight_scanner/helpers.rs`)
-- [ ] `expand_assignment_builtin_args` string round-trip — helper builds `"NAME=value"` strings that the builtin re-parses with `find('=')`. Lossless today, but couples the helper shape to the legacy builtin API. When a future refactor touches `builtin_export`/`builtin_readonly` signatures, consider passing `Vec<(String, Option<String>)>` directly to skip the round-trip (`src/exec/simple.rs`, `src/builtin/special.rs`).
+- [ ] `expand_assignment_builtin_args` string round-trip — helper builds `"NAME=value"` strings that the builtin re-parses with `find('=')`. Lossless today, but couples the helper shape to the legacy builtin API. When a future refactor touches `builtin_export`/`builtin_readonly` signatures, consider passing `Vec<(String, Option<String>)>` directly to skip the round-trip (`src/exec/simple.rs`, `src/builtin/vars.rs`).
 - [ ] Multi-byte IFS support in UTF-8 locale (bash-extension parity) — `field_split::split` currently matches IFS as an ASCII byte-set. `IFS="日"; set -- $"a日b"` yields `[a] [b]` under bash in UTF-8 locale (character-level match) but is silently ignored (post-fix A) or produces garbled bytes (pre-fix A) in yosh. POSIX leaves this locale-dependent; bash uses character-level matching when locale is multi-byte. Plan: introduce a `char`-level IFS match path (`char_indices` in `split_field`, char-mode `ifs` set) gated by locale detection. Deferred from the 2026-04-21 `append_byte` UTF-8 panic fix to keep scope minimal. See the brainstorming log for that fix; reference bash 3.2 behavior under `LC_ALL=en_US.UTF-8` as the target semantics.
 - [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard. The stdout-lock deadlock this hazard produced in the test harness (2026-08-26, ESCALATED 2026-09-02: three hangs per session in piped `cargo test --lib` runs — the fork child inherited libtest's stdout `ReentrantLock` locked and hung in `exit_child`'s `stdout().flush()`) was FIXED 2026-09-11: every fork site now goes through `src/exec/mod.rs::fork_shell`, which holds the std stdout/stderr locks (flushed) across `fork()` and releases them in both processes — the `pthread_atfork` prepare/parent/child pattern for the two std handles. Pinned by `exec::tests::fork_shell_child_exits_despite_stdio_lock_contention` (plain `fork` under the same lock-hog thread: 20/20 children killed; `fork_shell`: 0/20). Other std-internal locks (allocator, `stack_overflow::thread_info`) remain out of scope of the wrapper; `exit_child`'s `_exit` covers the exit path, but a child stall pre-exit in the MT harness is still theoretically possible.
 - [ ] `Parser::current_token` API shape — `interactive/parse_status.rs:61` compares the result against `&Token::Newline` literally, which forces every caller to construct a borrowed `Token` value just for equality. Consider a predicate `fn is_token(&self, t: &Token) -> bool` (or an enum-tag helper) that hides the borrow. Discovered during the 2026-05-05 visibility-tightening spec follow-up (`docs/superpowers/specs/2026-05-05-parser-visibility-tightening-design.md` §4.2-1, `src/parser/mod.rs`).
