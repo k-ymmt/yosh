@@ -496,6 +496,7 @@ impl Parser {
 /// Reserved words that close a compound command or one of its parts, and
 /// so may end a command list without a separator (`{ :; }`, `if a; then
 /// b; fi`, ...).
+#[inline]
 pub(super) fn is_closing_reserved_word(word: &str) -> bool {
     matches!(
         word,

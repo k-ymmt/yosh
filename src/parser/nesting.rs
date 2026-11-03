@@ -119,6 +119,7 @@ impl Drop for StackBudget {
 /// Check one word-level nesting level at `depth` (see `MAX_NEST_DEPTH`
 /// and `PARSE_STACK_BUDGET`). The returned guard keeps this level counted
 /// against the shared stack budget while it is alive.
+#[inline]
 pub(crate) fn enter_word_level(
     depth: usize,
     line: usize,

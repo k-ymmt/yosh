@@ -99,6 +99,7 @@ impl Lexer {
 
     /// A lexer at the start of `input`, with no aliases, no pending
     /// here-documents and no nesting.
+    #[inline]
     fn over(input: Rc<[u8]>) -> Self {
         Lexer {
             input,
