@@ -1,6 +1,7 @@
 pub mod aliases;
 pub mod default_path;
 pub mod exec_state;
+pub(crate) mod fxhash;
 pub mod jobs;
 pub mod locale;
 pub mod shell_mode;

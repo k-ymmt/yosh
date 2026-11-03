@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use super::fxhash::FxHashMap;
 
 /// A shell variable with its value and attributes.
 ///
@@ -39,7 +39,7 @@ impl Variable {
 /// A single scope in the scope chain.
 #[derive(Debug, Clone)]
 struct Scope {
-    vars: HashMap<String, Variable>,
+    vars: FxHashMap<String, Variable>,
     positional_params: Vec<String>,
     /// Number of leading `positional_params` entries consumed by `shift`.
     /// Keeping an offset makes `shift` O(1) instead of re-cloning the
@@ -84,7 +84,7 @@ impl VarStore {
     pub fn new() -> Self {
         VarStore {
             scopes: vec![Scope {
-                vars: HashMap::new(),
+                vars: FxHashMap::default(),
                 positional_params: Vec::new(),
                 positional_offset: 0,
                 getopts_subindex: 0,
@@ -104,7 +104,7 @@ impl VarStore {
     /// dropped, and re-exported byte-identically to children.
     pub fn from_environ() -> Self {
         use std::os::unix::ffi::OsStrExt;
-        let mut vars = HashMap::new();
+        let mut vars = FxHashMap::default();
         for (key, value) in std::env::vars_os() {
             let key = crate::byteenc::encode_bytes(key.as_bytes()).into_owned();
             let value = crate::byteenc::encode_bytes(value.as_bytes()).into_owned();
@@ -139,7 +139,7 @@ impl VarStore {
         // Snapshot caller's OPTIND (may be unset → None).
         let saved_optind = self.get("OPTIND").map(|s| s.to_string());
         self.scopes.push(Scope {
-            vars: HashMap::new(),
+            vars: FxHashMap::default(),
             positional_params,
             positional_offset: 0,
             getopts_subindex: 0,
