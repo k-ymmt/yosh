@@ -13,7 +13,7 @@ use super::scan::{skip_balanced_braces, skip_balanced_double_parens, skip_balanc
 use super::{arith, command_sub, param};
 use crate::env::ShellEnv;
 use crate::error::{ExpansionErrorKind, ShellError};
-use crate::parser::ast::{ParamExpr, WordPart};
+use crate::parser::ast::{ParamExpr, SpecialParam, WordPart};
 
 /// Build the error for a `$`-construct left open at end of input
 /// (`${x`, `$(cmd`, `$((1+`, `` `cmd ``). The lexer rejects these at
@@ -47,6 +47,11 @@ pub(super) fn expand_string(env: &mut ShellEnv, s: &str) -> crate::error::Result
     while i < bytes.len() {
         if bytes[i] == b'$' && i + 1 < bytes.len() {
             i += 1;
+            if let Some(sp) = SpecialParam::from_byte(bytes[i]) {
+                result.push_str(&param::expand(env, &ParamExpr::Special(sp)).unwrap_or_default());
+                i += 1;
+                continue;
+            }
             match bytes[i] {
                 b'{' => {
                     // ${...} — find matching } (quote-aware, skipping
@@ -94,22 +99,6 @@ pub(super) fn expand_string(env: &mut ShellEnv, s: &str) -> crate::error::Result
                         i += 1; // skip )
                         run_command_sub(env, cmd_str, &mut result);
                     }
-                }
-                b'@' | b'*' | b'#' | b'?' | b'-' | b'$' | b'!' | b'0' => {
-                    let sp = match bytes[i] {
-                        b'@' => crate::parser::ast::SpecialParam::At,
-                        b'*' => crate::parser::ast::SpecialParam::Star,
-                        b'#' => crate::parser::ast::SpecialParam::Hash,
-                        b'?' => crate::parser::ast::SpecialParam::Question,
-                        b'-' => crate::parser::ast::SpecialParam::Dash,
-                        b'$' => crate::parser::ast::SpecialParam::Dollar,
-                        b'!' => crate::parser::ast::SpecialParam::Bang,
-                        b'0' => crate::parser::ast::SpecialParam::Zero,
-                        _ => unreachable!(),
-                    };
-                    result
-                        .push_str(&param::expand(env, &ParamExpr::Special(sp)).unwrap_or_default());
-                    i += 1;
                 }
                 ch if (b'1'..=b'9').contains(&ch) => {
                     let n = (ch - b'0') as usize;

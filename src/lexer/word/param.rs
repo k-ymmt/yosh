@@ -29,6 +29,10 @@ impl Lexer {
         }
 
         let ch = self.current_byte();
+        if let Some(sp) = SpecialParam::from_byte(ch) {
+            self.advance();
+            return Ok(WordPart::Parameter(ParamExpr::Special(sp)));
+        }
         match ch {
             b'\'' if in_double_quote => Ok(WordPart::Literal("$".to_string())),
             b'\'' => self.read_dollar_single_quote(),
@@ -40,42 +44,6 @@ impl Lexer {
                 } else {
                     self.read_command_sub_dollar()
                 }
-            }
-            b'@' => {
-                self.advance();
-                Ok(WordPart::Parameter(ParamExpr::Special(SpecialParam::At)))
-            }
-            b'*' => {
-                self.advance();
-                Ok(WordPart::Parameter(ParamExpr::Special(SpecialParam::Star)))
-            }
-            b'#' => {
-                self.advance();
-                Ok(WordPart::Parameter(ParamExpr::Special(SpecialParam::Hash)))
-            }
-            b'?' => {
-                self.advance();
-                Ok(WordPart::Parameter(ParamExpr::Special(
-                    SpecialParam::Question,
-                )))
-            }
-            b'-' => {
-                self.advance();
-                Ok(WordPart::Parameter(ParamExpr::Special(SpecialParam::Dash)))
-            }
-            b'$' => {
-                self.advance();
-                Ok(WordPart::Parameter(ParamExpr::Special(
-                    SpecialParam::Dollar,
-                )))
-            }
-            b'!' => {
-                self.advance();
-                Ok(WordPart::Parameter(ParamExpr::Special(SpecialParam::Bang)))
-            }
-            b'0' => {
-                self.advance();
-                Ok(WordPart::Parameter(ParamExpr::Special(SpecialParam::Zero)))
             }
             b'1'..=b'9' => {
                 let digit = ch - b'0';
@@ -104,15 +72,12 @@ impl Lexer {
 
     /// Converts a name string to ParamExpr.
     fn classify_param_name(&self, name: &str) -> ParamExpr {
+        if let [b] = name.as_bytes()
+            && let Some(sp) = SpecialParam::from_byte(*b)
+        {
+            return ParamExpr::Special(sp);
+        }
         match name {
-            "@" => ParamExpr::Special(SpecialParam::At),
-            "*" => ParamExpr::Special(SpecialParam::Star),
-            "#" => ParamExpr::Special(SpecialParam::Hash),
-            "?" => ParamExpr::Special(SpecialParam::Question),
-            "-" => ParamExpr::Special(SpecialParam::Dash),
-            "$" => ParamExpr::Special(SpecialParam::Dollar),
-            "!" => ParamExpr::Special(SpecialParam::Bang),
-            "0" => ParamExpr::Special(SpecialParam::Zero),
             s if s.chars().all(|c| c.is_ascii_digit()) => {
                 // Leading zeros are decimal (`${01}` ≡ `$1`); all-zero
                 // digit strings denote `$0`.

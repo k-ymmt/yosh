@@ -210,6 +210,24 @@ pub enum SpecialParam {
     Zero,
 }
 
+impl SpecialParam {
+    /// The special parameter named by the single byte `b` (`@` `*` `#`
+    /// `?` `-` `$` `!` `0`), as in `$?` or `${?}`.
+    pub fn from_byte(b: u8) -> Option<SpecialParam> {
+        Some(match b {
+            b'@' => SpecialParam::At,
+            b'*' => SpecialParam::Star,
+            b'#' => SpecialParam::Hash,
+            b'?' => SpecialParam::Question,
+            b'-' => SpecialParam::Dash,
+            b'$' => SpecialParam::Dollar,
+            b'!' => SpecialParam::Bang,
+            b'0' => SpecialParam::Zero,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Redirect {
     pub fd: Option<i32>,
