@@ -119,7 +119,13 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
             let mut executor = Executor::from_env(child_env);
 
             let status = executor.exec_program(program);
-            crate::exec::exit_child(executor.child_exit_status(status));
+            let status = executor.child_exit_status(status);
+            // POSIX §2.12: an EXIT trap set inside the command
+            // substitution runs when its subshell exits (its output is
+            // part of the substitution, as in dash and bash).
+            executor.env.exec.last_exit_status = status;
+            executor.execute_exit_trap();
+            crate::exec::exit_child(status);
         }
         Ok(ForkResult::Parent { child }) => {
             // Close the write end in the parent

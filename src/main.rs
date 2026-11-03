@@ -493,6 +493,7 @@ fn run_string(
                     // with the expansion-error status (POSIX §2.8.1: non-zero).
                     Some(env::FlowControl::ExpansionError) => {
                         status = 1;
+                        executor.env.exec.last_exit_status = status;
                         break;
                     }
                     Some(_) => break,

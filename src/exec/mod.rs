@@ -360,11 +360,29 @@ impl Executor {
     pub fn execute_exit_trap(&mut self) {
         if let Some(crate::env::TrapAction::Command(cmd)) = self.env.traps.exit_trap.take() {
             let pending = self.exit_requested.take();
+            // The action sees the status the shell is exiting with as
+            // `$?`, not whatever a surrounding conditional left behind
+            // after the fatal error was deferred (`if r=2 true; then :;
+            // fi` with `r` readonly: `trap 'echo $?' EXIT` prints 1).
+            if let Some(code) = pending {
+                self.env.exec.last_exit_status = code;
+            }
+            // A fatal expansion error that is ending the shell is set
+            // aside the same way, or it would cancel the action's first
+            // command (`trap 'echo t' EXIT; : ${x:?}` prints t).
+            let pending_flow = self
+                .env
+                .exec
+                .flow_control
+                .take_if(|f| *f == crate::env::FlowControl::ExpansionError);
             self.run_trap_action(&cmd);
             match self.exit_requested {
                 Some(code) if !self.env.mode.is_interactive => shell_exit(code),
                 Some(_) => {}
                 None => self.exit_requested = pending,
+            }
+            if self.env.exec.flow_control.is_none() {
+                self.env.exec.flow_control = pending_flow;
             }
         }
     }
@@ -374,9 +392,19 @@ impl Executor {
     /// command: a pending exit request — a fatal special-builtin error, or
     /// `exit` / errexit in an interactive shell's child — wins over the
     /// status the interrupted command list reported, which `!` may have
-    /// inverted (`( ! unset -Z x )` exits 2, not 0).
+    /// inverted (`( ! unset -Z x )` exits 2, not 0). Likewise a fatal
+    /// expansion error still pending as `FlowControl::ExpansionError`
+    /// (`${x:?}`, a readonly `${x:=v}`) ends the child with status 1 even
+    /// if the aborted list reported 0 (`$( ! echo ${x:=v} )` with `x`
+    /// readonly is not a success).
     pub(crate) fn child_exit_status(&self, status: i32) -> i32 {
-        self.exit_requested.unwrap_or(status)
+        if let Some(code) = self.exit_requested {
+            return code;
+        }
+        if self.env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError) {
+            return 1;
+        }
+        status
     }
 
     /// Process any pending signals from the self-pipe.

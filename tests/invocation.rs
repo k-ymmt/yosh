@@ -104,6 +104,30 @@ fn dash_i_ignores_untrapped_term() {
     assert_eq!(code, 143, "non-interactive shell must die on TERM");
 }
 
+/// A subshell, pipeline member, or async list of an interactive shell is
+/// not itself interactive: a special-builtin error or errexit ends it
+/// (POSIX 2.8.1; dash and bash agree), while the top-level shell keeps
+/// running and `$-` in the child still reports `i`.
+#[test]
+fn subshells_of_interactive_shell_are_not_interactive_for_errors() {
+    let run = |script: &str| {
+        let output = yosh_bin().args(["-i", "-c", script]).output().unwrap();
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            output.status.code(),
+        )
+    };
+    let (out, _) = run(
+        "(unset -Z x; echo child); { unset -Z x; echo member; } | cat; \
+         { unset -Z x; echo async; } & wait; echo parent",
+    );
+    assert_eq!(out, "parent\n");
+    let (out, code) = run("set -e; (trap false EXIT; :); echo after");
+    assert_eq!((out.as_str(), code), ("", Some(1)));
+    let (out, _) = run("(case $- in *i*) echo hasi;; esac)");
+    assert_eq!(out, "hasi\n");
+}
+
 #[test]
 fn command_sub_dollar_dash_keeps_i() {
     // The command-sub child runs with is_interactive=false (behavioral)

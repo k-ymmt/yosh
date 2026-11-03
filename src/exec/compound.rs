@@ -100,6 +100,7 @@ impl Executor {
             )),
             Ok(ForkResult::Child) => {
                 super::mark_forked_child();
+                self.env.mode.enter_subshell();
                 let ignored = self.env.traps.ignored_signals();
                 self.env.traps.reset_for_subshell();
                 // A subshell has no children yet: the parent's remembered
@@ -123,12 +124,10 @@ impl Executor {
                 // reporting `m` via the flag_m snapshot (bash-like).
                 self.env.mode.flag_m = self.env.mode.options.monitor || self.env.mode.flag_m;
                 self.env.mode.options.monitor = false;
-                let mut status = self.exec_body(body);
-                // A fatal expansion error ends the subshell with a
-                // non-zero status even if the failing command reported 0.
-                if self.env.exec.flow_control == Some(FlowControl::ExpansionError) {
-                    status = 1;
-                }
+                // A fatal expansion error ends the subshell with a non-zero
+                // status even if the failing command reported 0 (see
+                // `child_exit_status`).
+                let status = self.exec_body(body);
                 // POSIX §2.12: EXIT pseudo-signal handler runs on shell exit,
                 // including subshell exit. Fire BEFORE _exit so the action runs
                 // in the child's environment.

@@ -85,6 +85,7 @@ impl Executor {
                 }
                 Ok(ForkResult::Child) => {
                     super::mark_forked_child();
+                    self.env.mode.enter_subshell();
                     // Job control only: put the pipeline in its own process
                     // group. Without monitor mode, members must STAY in the
                     // shell's process group so a terminal-generated SIGINT
@@ -316,6 +317,7 @@ impl Executor {
                 }
                 Ok(ForkResult::Child) => {
                     super::mark_forked_child();
+                    self.env.mode.enter_subshell();
                     // Async jobs always run in their own process group,
                     // monitor or not (exec_async parity).
                     let my_pid = nix::unistd::getpid();

@@ -245,6 +245,7 @@ impl Executor {
             }
             Ok(ForkResult::Child) => {
                 super::mark_forked_child();
+                self.env.mode.enter_subshell();
                 // Set process group BEFORE signal setup to ensure proper isolation.
                 let pid = nix::unistd::getpid();
                 nix::unistd::setpgid(pid, pid).ok();

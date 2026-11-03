@@ -249,6 +249,17 @@ pub struct ShellMode {
 }
 
 impl ShellMode {
+    /// Turn a forked subshell child (`( )`, pipeline member, async list)
+    /// of an interactive shell into a non-interactive one, as command
+    /// substitutions already are: a subshell is not itself interactive, so
+    /// POSIX §2.8.1 fatal errors (a special-builtin error, errexit from a
+    /// trap) end it, and untrapped TERM/QUIT/INT are not ignored. `$-`
+    /// keeps reporting `i` through the `flag_i` snapshot.
+    pub fn enter_subshell(&mut self) {
+        self.flag_i = self.is_interactive || self.flag_i;
+        self.is_interactive = false;
+    }
+
     /// Full `$-` flag string: the option letters plus `i` when the shell
     /// is interactive (POSIX XCU 2.5.2 special parameters). `i` is
     /// invocation state, not a settable option, so it lives here rather
