@@ -13,8 +13,8 @@
 //! `Executor` for redirects/assignments.
 
 use crate::builtin::BuiltinKind;
+use crate::builtin::alias::alias_line;
 use crate::builtin::quote::single_quote;
-use crate::builtin::regular::alias_line;
 use crate::builtin::resolve::{CommandKind, resolve_command_kind};
 use crate::env::ShellEnv;
 
