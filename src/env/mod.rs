@@ -167,6 +167,18 @@ impl ShellEnv {
         Ok(())
     }
 
+    /// Undo a temporary prefix assignment: put `name` back exactly as
+    /// `saved` (attributes included; `None` = it did not exist), without
+    /// going through `set -a`. See [`VarStore::restore`]. Clears the
+    /// utility hash on PATH (POSIX §2.5.3).
+    pub fn restore_var(&mut self, name: &str, saved: Option<vars::Variable>) -> Result<(), String> {
+        self.vars.restore(name, saved)?;
+        if name == "PATH" {
+            self.utility_hash.clear();
+        }
+        Ok(())
+    }
+
     /// Unset a shell variable. If `name == "PATH"`, the utility hash
     /// table is cleared after the successful unset.
     pub fn unset_var(&mut self, name: &str) -> Result<(), String> {

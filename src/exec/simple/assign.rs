@@ -153,30 +153,17 @@ impl Executor {
         Ok(())
     }
 
-    /// Restore variables to their pre-assignment values. Restores in
+    /// Restore variables to their pre-assignment state. Restores in
     /// reverse order so `a=1 a=2 cmd` ends with `a`'s original value.
+    /// The saved variable comes back verbatim — not re-assigned, which
+    /// under `set -a` would permanently export a previously unexported
+    /// variable (`X=old; set -a; X=new true` must leave `X` unexported;
+    /// dash and bash agree) — and an export attribute added by the
+    /// command (a function running `export X`) is dropped (dash agrees).
+    /// A variable the command made readonly keeps its current value.
     pub(crate) fn restore_assignments(&mut self, saved: SavedVars) {
         for (name, old_var) in saved.into_iter().rev() {
-            match old_var {
-                Some(Variable {
-                    value: Some(val), ..
-                }) => {
-                    let _ = self.env.assign_var(&name, val);
-                }
-                Some(Variable {
-                    value: None,
-                    exported,
-                    ..
-                }) => {
-                    let _ = self.env.unset_var(&name);
-                    if exported {
-                        self.env.vars.export(&name);
-                    }
-                }
-                None => {
-                    let _ = self.env.unset_var(&name);
-                }
-            }
+            let _ = self.env.restore_var(&name, old_var);
         }
     }
 }

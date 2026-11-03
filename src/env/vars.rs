@@ -410,6 +410,34 @@ impl VarStore {
         Ok(())
     }
 
+    /// Put a variable back exactly as it was saved (`None`: it did not
+    /// exist), attributes included — the undo of a temporary prefix
+    /// assignment. Unlike an assignment this never exports through
+    /// `set -a` and drops an export attribute the command added (dash
+    /// agrees). Returns an error, changing nothing, if the variable is
+    /// now readonly. Replaces the variable in the scope that holds it,
+    /// else creates it in the global scope.
+    pub fn restore(&mut self, name: &str, saved: Option<Variable>) -> Result<(), String> {
+        let Some(saved) = saved else {
+            return self.unset(name);
+        };
+        let idx = (0..self.scopes.len())
+            .rev()
+            .find(|&i| self.scopes[i].vars.contains_key(name))
+            .unwrap_or(0);
+        let current = self.scopes[idx].vars.get(name);
+        if current.is_some_and(|v| v.readonly) {
+            return Err(format!("{}: readonly variable", name));
+        }
+        if saved.exported || current.is_some_and(|v| v.exported) {
+            self.environ_cache = None;
+            self.envp_cache = None;
+        }
+        self.scopes[idx].vars.insert(name.to_string(), saved);
+        self.note_optind_write(name);
+        Ok(())
+    }
+
     /// Mark a variable as exported. Walks scopes to find it; if not found,
     /// creates in global scope an exported name *without a value* (it
     /// stays unset until assigned, and is not passed to children until
