@@ -1,4 +1,5 @@
 use std::os::fd::RawFd;
+use std::os::unix::io::IntoRawFd;
 
 use nix::fcntl::{OFlag, open};
 use nix::sys::stat::Mode;
@@ -16,6 +17,17 @@ fn open_decoded(path: &str, flags: OFlag, mode: Mode) -> nix::Result<std::os::fd
     open(std::ffi::OsStr::from_bytes(&bytes), flags, mode)
 }
 
+/// [`open_decoded`] as a raw fd, with the error formatted as the
+/// redirection diagnostic (`path: reason`).
+fn open_path(path: &str, flags: OFlag, mode: Mode) -> Result<RawFd, String> {
+    open_decoded(path, flags, mode)
+        .map(|fd| fd.into_raw_fd())
+        .map_err(|e| format!("{}: {}", path, e))
+}
+
+/// Mode for files created by `>`, `>>` and `<>`.
+const CREATE_MODE: Mode = Mode::from_bits_truncate(0o644);
+
 /// Open `path` for `>` output under `set -C` (noclobber) without the
 /// TOCTOU race of a separate exists() check: O_CREAT|O_EXCL atomically
 /// fails with EEXIST if anything (including a symlink) already occupies
@@ -24,7 +36,7 @@ fn open_decoded(path: &str, flags: OFlag, mode: Mode) -> nix::Result<std::os::fd
 /// protects regular files.
 fn open_noclobber(path: &str) -> Result<RawFd, String> {
     let create_flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL;
-    match open_decoded(path, create_flags, Mode::from_bits_truncate(0o644)) {
+    match open_decoded(path, create_flags, CREATE_MODE) {
         Ok(fd) => Ok(fd.into_raw_fd()),
         Err(nix::errno::Errno::EEXIST) => {
             // stat() follows symlinks: a dangling link errors here, and a
@@ -35,9 +47,7 @@ fn open_noclobber(path: &str) -> Result<RawFd, String> {
                     &crate::byteenc::decode_bytes(path),
                 ))
             }) {
-                Ok(md) if !md.is_file() => open_decoded(path, OFlag::O_WRONLY, Mode::empty())
-                    .map(|fd| fd.into_raw_fd())
-                    .map_err(|e| format!("{}: {}", path, e)),
+                Ok(md) if !md.is_file() => open_path(path, OFlag::O_WRONLY, Mode::empty()),
                 _ => Err(format!("{}: cannot overwrite existing file", path)),
             }
         }
@@ -284,31 +294,22 @@ impl RedirectState {
         let target_fd = redirect.fd;
         match &redirect.op {
             ExpandedOp::Input(path) => self.install(target_fd, save, || {
-                open_decoded(path, OFlag::O_RDONLY, Mode::empty())
-                    .map(|fd| fd.into_raw_fd())
-                    .map_err(|e| format!("{}: {}", path, e))
+                open_path(path, OFlag::O_RDONLY, Mode::empty())
             }),
             ExpandedOp::Output { path, noclobber } => self.install(target_fd, save, || {
                 if *noclobber {
                     open_noclobber(path)
                 } else {
                     let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
-                    open_decoded(path, flags, Mode::from_bits_truncate(0o644))
-                        .map(|fd| fd.into_raw_fd())
-                        .map_err(|e| format!("{}: {}", path, e))
+                    open_path(path, flags, CREATE_MODE)
                 }
             }),
             ExpandedOp::Append(path) => self.install(target_fd, save, || {
                 let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_APPEND;
-                open_decoded(path, flags, Mode::from_bits_truncate(0o644))
-                    .map(|fd| fd.into_raw_fd())
-                    .map_err(|e| format!("{}: {}", path, e))
+                open_path(path, flags, CREATE_MODE)
             }),
             ExpandedOp::ReadWrite(path) => self.install(target_fd, save, || {
-                let flags = OFlag::O_RDWR | OFlag::O_CREAT;
-                open_decoded(path, flags, Mode::from_bits_truncate(0o644))
-                    .map(|fd| fd.into_raw_fd())
-                    .map_err(|e| format!("{}: {}", path, e))
+                open_path(path, OFlag::O_RDWR | OFlag::O_CREAT, CREATE_MODE)
             }),
             ExpandedOp::Dup(src) => {
                 if src == "-" {
@@ -407,9 +408,6 @@ impl Drop for RedirectState {
         }
     }
 }
-
-// Bring IntoRawFd into scope for the `.into_raw_fd()` calls on OwnedFd
-use std::os::unix::io::IntoRawFd;
 
 #[cfg(test)]
 mod tests {
