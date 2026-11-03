@@ -72,37 +72,26 @@ pub fn builtin_return(args: &[String], executor: &mut Executor) -> Result<i32, S
 }
 
 pub fn builtin_break(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
-    if env.exec.loop_depth == 0 {
-        eprintln!("yosh: break: only meaningful in a `for', `while', or `until' loop");
-        return Ok(1);
-    }
-    let n = if args.is_empty() {
-        1
-    } else {
-        match args[0].parse::<usize>() {
-            Ok(0) => {
-                return Err(ShellError::runtime(
-                    RuntimeErrorKind::InvalidArgument,
-                    "break: loop count must be > 0".to_string(),
-                ));
-            }
-            Ok(n) => n,
-            Err(_) => {
-                return Err(ShellError::runtime(
-                    RuntimeErrorKind::InvalidArgument,
-                    format!("break: {}: numeric argument required", args[0]),
-                ));
-            }
-        }
-    };
-    let clamped = n.min(env.exec.loop_depth);
-    env.exec.flow_control = Some(FlowControl::Break(clamped));
-    Ok(0)
+    loop_control("break", args, env, FlowControl::Break)
 }
 
 pub fn builtin_continue(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+    loop_control("continue", args, env, FlowControl::Continue)
+}
+
+/// Shared body of `break [n]` / `continue [n]`: validate the loop count
+/// and request `flow(n)`, with `n` clamped to the enclosing loop depth.
+fn loop_control(
+    name: &str,
+    args: &[String],
+    env: &mut ShellEnv,
+    flow: fn(usize) -> FlowControl,
+) -> Result<i32, ShellError> {
     if env.exec.loop_depth == 0 {
-        eprintln!("yosh: continue: only meaningful in a `for', `while', or `until' loop");
+        eprintln!(
+            "yosh: {}: only meaningful in a `for', `while', or `until' loop",
+            name
+        );
         return Ok(1);
     }
     let n = if args.is_empty() {
@@ -112,20 +101,19 @@ pub fn builtin_continue(args: &[String], env: &mut ShellEnv) -> Result<i32, Shel
             Ok(0) => {
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::InvalidArgument,
-                    "continue: loop count must be > 0".to_string(),
+                    format!("{}: loop count must be > 0", name),
                 ));
             }
             Ok(n) => n,
             Err(_) => {
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::InvalidArgument,
-                    format!("continue: {}: numeric argument required", args[0]),
+                    format!("{}: {}: numeric argument required", name, args[0]),
                 ));
             }
         }
     };
-    let clamped = n.min(env.exec.loop_depth);
-    env.exec.flow_control = Some(FlowControl::Continue(clamped));
+    env.exec.flow_control = Some(flow(n.min(env.exec.loop_depth)));
     Ok(0)
 }
 
