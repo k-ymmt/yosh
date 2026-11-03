@@ -419,14 +419,12 @@ mod tests {
         ShellEnv::new("yosh", vec![])
     }
 
-    /// Tests that manipulate process-wide file descriptors (fd 0, fd 1, fd 2) must
-    /// hold this lock for their entire duration so that cargo test's parallel threads
-    /// do not corrupt each other's fd table.
-    static FD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Tests that manipulate process-wide file descriptors (fd 0, fd 1,
+    // fd 2) hold `test_sync::lock_stdio_fds` for their entire duration.
 
     #[test]
     fn test_redirect_output_and_restore() {
-        let _guard = FD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_sync::lock_stdio_fds();
         let mut env = make_env();
         let tmp = std::env::temp_dir().join("yosh_redirect_test_output.txt");
         let path_str = tmp.to_str().unwrap().to_string();
@@ -461,7 +459,7 @@ mod tests {
 
     #[test]
     fn test_redirect_input() {
-        let _guard = FD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_sync::lock_stdio_fds();
         use std::io::Read;
         use std::os::unix::io::FromRawFd;
 
@@ -493,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_apply_rolls_back_on_second_redirect_failure() {
-        let _guard = FD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_sync::lock_stdio_fds();
         // Two redirects: first targets a valid tmp file (fd 1), second targets
         // a path whose parent directory does not exist (fd 2) so open() fails.
         // Pre-fix: saved_fds is non-empty after Err and fd 1 remains dup2'd over
@@ -560,11 +558,20 @@ mod tests {
     /// itself (the file must not leak past the command).
     #[test]
     fn closed_target_fd_is_closed_again_on_restore() {
-        let _guard = FD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_sync::lock_stdio_fds();
         let mut env = make_env();
-        // A high fd nobody else in the test process uses.
-        let target: RawFd = 77;
-        unsafe { libc::close(target) };
+        // The highest fd the process may open: parallel tests allocate
+        // fds lowest-first, so none of them owns this number (a fixed
+        // mid-range number such as 77 could be a parallel test's pipe,
+        // which closing here would break).
+        let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) }, 0);
+        let target: RawFd = (lim.rlim_cur.min(1024) - 1) as RawFd;
+        assert_eq!(
+            unsafe { libc::fcntl(target, libc::F_GETFD) },
+            -1,
+            "fd {target} unexpectedly open"
+        );
         let tmp = std::env::temp_dir().join("yosh_redirect_closed_target.txt");
         let redirects = vec![Redirect {
             fd: Some(target),

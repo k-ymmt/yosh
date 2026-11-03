@@ -124,17 +124,9 @@ fn param_has_command_sub(p: &ParamExpr) -> bool {
 mod tests {
     use super::*;
 
-    /// Serializes tests that redirect the PROCESS-shared stdio (fd 1)
-    /// via `exec_program` on redirect-only commands: the redirect is
-    /// applied to the shell process itself with save=true, and two such
-    /// tests interleaving mid-dup2-swap under the parallel libtest
-    /// harness fail with `dup: Bad file descriptor` (observed
-    /// 2026-07-13, 2026-09-01, 2026-09-02; always passes in isolation —
-    /// production is unaffected, the real shell is single-threaded).
-    /// Lock at the top of every test that redirects the process's own
-    /// stdio. Poisoning only means another such test's assert failed;
-    /// the fd state itself was restored by `exec_program`, so continue.
-    static STDIO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Tests that redirect the PROCESS-shared stdio via `exec_program` on
+    // redirect-only commands (the redirect is applied to the shell
+    // process itself with save=true) hold `test_sync::lock_stdio_fds`.
 
     // ── word_has_command_sub: CmdSub-only predicate (SP5) ──
 
@@ -206,7 +198,7 @@ mod tests {
 
     #[test]
     fn redirect_only_creates_file() {
-        let _stdio = STDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _stdio = crate::test_sync::lock_stdio_fds();
         use crate::exec::Executor;
         use crate::parser::Parser;
 
@@ -236,7 +228,7 @@ mod tests {
 
     #[test]
     fn redirect_only_truncates_existing_file() {
-        let _stdio = STDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _stdio = crate::test_sync::lock_stdio_fds();
         use crate::exec::Executor;
         use crate::parser::Parser;
 
@@ -259,7 +251,7 @@ mod tests {
 
     #[test]
     fn redirect_only_returns_zero() {
-        let _stdio = STDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _stdio = crate::test_sync::lock_stdio_fds();
         use crate::exec::Executor;
         use crate::parser::Parser;
 
@@ -276,7 +268,7 @@ mod tests {
 
     #[test]
     fn redirect_only_with_readonly_assignment_errors_cleanly() {
-        let _stdio = STDIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _stdio = crate::test_sync::lock_stdio_fds();
         use crate::exec::Executor;
         use crate::parser::Parser;
 

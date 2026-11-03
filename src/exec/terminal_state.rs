@@ -42,6 +42,8 @@ mod tests {
 
     #[test]
     fn capture_tty_termios_returns_none_when_stdin_redirected() {
+        // fd 0 must not be mid-swap in a parallel redirect test.
+        let _fds = crate::test_sync::lock_stdio_fds();
         let result = capture_tty_termios();
         assert!(
             matches!(result, Ok(None)),
@@ -52,6 +54,7 @@ mod tests {
 
     #[test]
     fn apply_tty_termios_noop_when_non_tty() {
+        let _fds = crate::test_sync::lock_stdio_fds();
         let zeroed: libc::termios = unsafe { std::mem::zeroed() };
         let tmodes: nix::sys::termios::Termios = zeroed.into();
         let result = apply_tty_termios(&tmodes);
