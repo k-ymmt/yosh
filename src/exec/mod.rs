@@ -298,7 +298,7 @@ impl Executor {
     /// Print the line if verbose mode is enabled.
     pub fn verbose_print(&self, line: &str) {
         if self.env.mode.options.verbose {
-            eprintln!("{}", line);
+            crate::byteenc::write_stderr_decoded_line(line);
         }
     }
 }
