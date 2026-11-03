@@ -46,25 +46,6 @@ pub struct PendingHereDoc {
     pub quoted: bool,
 }
 
-/// Maximum nesting depth of word-level constructs before the lexer gives
-/// up with a syntax error instead of overflowing the native stack.
-///
-/// Each `read_word_parts` level (a `${x-word}` word, a double-quoted
-/// string, a word inside `$(...)`) costs 1; entering a nested command
-/// substitution body costs `SUBPARSE_NEST_COST` more, since it also
-/// recurses through the parser. Measured on a debug build (8 MiB main
-/// stack): ~11 KiB of stack per unit for `${x:-${x:-...}}` (overflow at
-/// ~750 levels) and ~32 KiB per `$(echo $(echo ...))` level (overflow at
-/// ~250). 400 units keeps the worst case near 4.4 MiB in debug builds
-/// (far less in release), leaving room for the executor frames below a
-/// nested parse (`eval`, `.`, functions). Real scripts nest a handful of
-/// levels.
-pub(crate) const MAX_NEST_DEPTH: usize = 400;
-
-/// Extra nesting cost of a command substitution body (see
-/// `MAX_NEST_DEPTH`).
-const SUBPARSE_NEST_COST: usize = 4;
-
 pub struct Lexer {
     /// Shared so a `$(...)` body can be parsed by a sub-lexer over the
     /// same buffer without copying the rest of the input.
@@ -79,7 +60,8 @@ pub struct Lexer {
     /// While non-zero, `\<newline>` line continuations are NOT removed by
     /// `advance` (single quotes, `$'...'`, here-document bodies).
     no_join: u32,
-    /// Current word-construct nesting depth (see `MAX_NEST_DEPTH`).
+    /// Current word-construct nesting depth (see
+    /// `parser::nesting::MAX_NEST_DEPTH`).
     nest_depth: usize,
     /// Number of nested command-substitution bodies parsed so far; a
     /// token whose lexing bumped it is expensive and gets cached.
@@ -144,7 +126,7 @@ impl Lexer {
             next_heredoc_id: 0,
             aliases: HashMap::new(),
             no_join: 0,
-            nest_depth: self.nest_depth + SUBPARSE_NEST_COST,
+            nest_depth: self.nest_depth + crate::parser::SUBPARSE_NEST_COST,
             subparse_count: 0,
             token_cache: HashMap::new(),
             alias_state: alias::AliasState::default(),
@@ -155,23 +137,15 @@ impl Lexer {
     /// (for re-parsing a backquoted command body).
     pub(crate) fn nested_lexer(&self, input: &str) -> Lexer {
         let mut lexer = Lexer::new(input);
-        lexer.nest_depth = self.nest_depth + SUBPARSE_NEST_COST;
+        lexer.nest_depth = self.nest_depth + crate::parser::SUBPARSE_NEST_COST;
         lexer
     }
 
-    /// Error out once nesting gets too deep (see `MAX_NEST_DEPTH` and
-    /// `parser::PARSE_STACK_BUDGET`). The returned guard keeps this level
-    /// counted against the shared stack budget while it is alive.
+    /// Error out once word-level nesting gets too deep (see
+    /// `parser::nesting`). The returned guard keeps this level counted
+    /// against the shared stack budget while it is alive.
     pub(crate) fn check_nest_depth(&self) -> crate::error::Result<crate::parser::StackBudget> {
-        if self.nest_depth > MAX_NEST_DEPTH {
-            return Err(crate::error::ShellError::parse(
-                crate::error::ParseErrorKind::UnexpectedToken,
-                self.line,
-                self.column,
-                "syntax error: nesting too deep",
-            ));
-        }
-        crate::parser::StackBudget::enter(self.line, self.column)
+        crate::parser::enter_word_level(self.nest_depth, self.line, self.column)
     }
 
     pub fn new_with_aliases(input: &str, aliases: &crate::env::aliases::AliasStore) -> Self {

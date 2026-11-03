@@ -777,7 +777,7 @@ mod tests {
     fn nesting_below_the_limit_parses() {
         on_main_sized_stack(|| {
             // parse_program itself takes one level.
-            let depth = super::super::MAX_NESTING_DEPTH - 1;
+            let depth = super::super::nesting::MAX_NESTING_DEPTH - 1;
             let src = format!("{}echo d{}", "(".repeat(depth), ")".repeat(depth));
             assert!(Parser::new(&src).parse_program().is_ok());
         });
