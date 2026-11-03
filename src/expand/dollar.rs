@@ -194,13 +194,13 @@ pub(super) fn expand_string(env: &mut ShellEnv, s: &str) -> crate::error::Result
 /// verbatim (trailing newlines are already stripped by
 /// `command_sub::execute` — the standard command-substitution strip; no
 /// further trimming, so `$((1$(printf ' ')2))` sees `1 2` and fails like
-/// bash/dash instead of collapsing to `12`). An unparsable body
-/// substitutes nothing.
+/// bash/dash instead of collapsing to `12`). A body with a syntax error is
+/// diagnosed and substitutes nothing, the command still runs (bash; dash
+/// does the same for backquotes).
 fn run_command_sub(env: &mut ShellEnv, cmd_str: &str, result: &mut String) {
-    if let Ok(program) =
-        crate::parser::Parser::new_with_aliases(cmd_str, &env.aliases).parse_program()
-    {
-        result.push_str(&command_sub::execute(env, &program));
+    match crate::parser::Parser::new_with_aliases(cmd_str, &env.aliases).parse_program() {
+        Ok(program) => result.push_str(&command_sub::execute(env, &program)),
+        Err(e) => eprintln!("{}", e),
     }
 }
 
