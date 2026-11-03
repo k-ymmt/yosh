@@ -289,7 +289,11 @@ pub fn generate_candidates(dir: &str, prefix: &str, show_dotfiles: bool) -> Vec<
     let mut results: Vec<String> = entries
         .filter_map(|e| e.ok())
         .filter_map(|entry| {
-            let name = entry.file_name().into_string().ok()?;
+            // byteenc-encode so a name that is not valid UTF-8 is still
+            // offered (quote_for_insertion writes its raw bytes back as
+            // `$'\xHH'`) instead of being silently dropped.
+            use std::os::unix::ffi::OsStrExt;
+            let name = crate::byteenc::encode_bytes(entry.file_name().as_bytes()).into_owned();
             // Filter hidden files
             if name.starts_with('.') && !include_hidden {
                 return None;

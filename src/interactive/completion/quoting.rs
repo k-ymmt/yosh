@@ -50,20 +50,39 @@ pub fn shell_unquote(word: &str) -> String {
 ///   since `\<newline>` is a line continuation. `=` and `%` are left
 ///   alone: they are not special inside an argument word, and spec
 ///   candidates such as `--format=` must insert verbatim.
+///
+/// A raw byte that is not valid UTF-8 (a byteenc escape char, as glob
+/// matches and directory listings carry for such file names) is written
+/// as a `$'\xHH'` segment, closing and reopening an enclosing quote.
+/// The escape char itself must never reach the edit buffer: the REPL
+/// re-encodes typed text, so it would read back as different bytes.
 pub fn quote_for_insertion(prefix: &str, text: &str) -> String {
+    fn raw_byte(c: char, quote: Option<char>) -> Option<String> {
+        let b = crate::byteenc::unescape_char(c)?;
+        Some(match quote {
+            Some(q) => format!("{q}$'\\x{b:02x}'{q}"),
+            None => format!("$'\\x{b:02x}'"),
+        })
+    }
     let mut out = String::with_capacity(text.len() + 4);
     match unclosed_quote(prefix) {
         Some('\'') => {
             for c in text.chars() {
                 if c == '\'' {
                     out.push_str("'\\''");
+                } else if let Some(seg) = raw_byte(c, Some('\'')) {
+                    out.push_str(&seg);
                 } else {
                     out.push(c);
                 }
             }
         }
-        Some(_) => {
+        Some(q) => {
             for c in text.chars() {
+                if let Some(seg) = raw_byte(c, Some(q)) {
+                    out.push_str(&seg);
+                    continue;
+                }
                 if matches!(c, '"' | '$' | '`' | '\\') {
                     out.push('\\');
                 }
@@ -73,6 +92,10 @@ pub fn quote_for_insertion(prefix: &str, text: &str) -> String {
         None => {
             let at_word_start = prefix.is_empty();
             for (i, c) in text.chars().enumerate() {
+                if let Some(seg) = raw_byte(c, None) {
+                    out.push_str(&seg);
+                    continue;
+                }
                 match c {
                     '\n' => out.push_str("'\n'"),
                     ' ' | '\t' | '\'' | '"' | '\\' | '$' | '`' | '|' | '&' | ';' | '<' | '>'
@@ -274,6 +297,16 @@ mod tests {
         );
         assert_eq!(quote_for_insertion("'", "it's $x"), "it'\\''s $x");
         assert_eq!(quote_for_insertion("--file='sub/", "a b"), "a b");
+    }
+
+    /// A raw non-UTF-8 byte (byteenc escape char) is inserted as
+    /// `$'\xHH'`, never as the escape char itself.
+    #[test]
+    fn test_quote_for_insertion_raw_bytes() {
+        let name = format!("a{}b", crate::byteenc::escape_char(0xff));
+        assert_eq!(quote_for_insertion("", &name), "a$'\\xff'b");
+        assert_eq!(quote_for_insertion("\"", &name), "a\"$'\\xff'\"b");
+        assert_eq!(quote_for_insertion("'", &name), "a'$'\\xff''b");
     }
 
     #[test]

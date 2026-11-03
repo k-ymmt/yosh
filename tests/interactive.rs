@@ -2153,6 +2153,25 @@ fn test_keymap_ctrl_k() {
     assert_eq!(count, 1);
 }
 
+/// Keys as a real terminal delivers them through crossterm: Ctrl+_ is
+/// the byte 0x1F, decoded as Ctrl+7; Ctrl+H (BS) stays Ctrl+H; Ctrl+P /
+/// Ctrl+N are the emacs history keys. All four used to be no-ops.
+#[test]
+fn test_keymap_terminal_control_bytes() {
+    let ctrl = crossterm::event::KeyModifiers::CONTROL;
+    for (ch, want) in [
+        ('7', EditAction::Undo),
+        ('_', EditAction::Undo),
+        ('h', EditAction::DeleteBackward),
+        ('p', EditAction::HistoryPrev),
+        ('n', EditAction::HistoryNext),
+    ] {
+        let mut km = Keymap::new();
+        let (action, _) = km.resolve(key_event(KeyCode::Char(ch), ctrl), &default_state());
+        assert_eq!(action, want, "Ctrl+{ch}");
+    }
+}
+
 #[test]
 fn test_keymap_ctrl_u() {
     let mut km = Keymap::new();

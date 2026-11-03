@@ -86,14 +86,25 @@ impl Keymap {
             // CR to LF.  crossterm interprets a raw-mode LF as Ctrl+J rather
             // than Enter, so we map it explicitly to avoid dropped input.
             (KeyCode::Char('j'), true, false) => EditAction::Submit,
+            // Ctrl+H (BS, 0x08): the erase character of terminals set to
+            // `stty erase ^H` — crossterm reports it as Ctrl+H, not
+            // Backspace (readline: backward-delete-char).
+            (KeyCode::Char('h'), true, false) => EditAction::DeleteBackward,
             (KeyCode::Char('k'), true, false) => EditAction::KillToEnd,
             (KeyCode::Char('l'), true, false) => EditAction::ClearScreen,
+            // Ctrl+P / Ctrl+N: previous / next history line (readline,
+            // ksh and zsh emacs mode), the same as Up / Down.
+            (KeyCode::Char('n'), true, false) => EditAction::HistoryNext,
+            (KeyCode::Char('p'), true, false) => EditAction::HistoryPrev,
             (KeyCode::Char('r'), true, false) => EditAction::FuzzySearch,
             (KeyCode::Char('t'), true, false) => EditAction::TransposeChars,
             (KeyCode::Char('u'), true, false) => EditAction::KillToStart,
             (KeyCode::Char('w'), true, false) => EditAction::KillBackwardWord,
             (KeyCode::Char('y'), true, false) => EditAction::Yank,
-            (KeyCode::Char('_'), true, false) => EditAction::Undo,
+            // Ctrl+_ arrives from a terminal as the byte 0x1F, which
+            // crossterm decodes as Ctrl+7 (its 0x1C..=0x1F mapping); a
+            // terminal reporting the key itself sends Ctrl+_ or Ctrl+/.
+            (KeyCode::Char('_' | '7' | '/'), true, false) => EditAction::Undo,
 
             // --- Alt keybindings ---
             (KeyCode::Char('b'), false, true) => EditAction::MoveBackwardWord,

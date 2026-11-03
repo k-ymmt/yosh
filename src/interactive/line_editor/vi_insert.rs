@@ -13,6 +13,11 @@ use crate::interactive::vim::RegisterKind;
 fn literal_char_for(key: KeyEvent) -> Option<char> {
     match key.code {
         KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // crossterm decodes the bytes 0x1C..=0x1F (Ctrl+\ ] ^ _) as
+            // Ctrl+4..=Ctrl+7.
+            if let '4'..='7' = c {
+                return Some(((c as u8) - b'4' + 0x1C) as char);
+            }
             let up = c.to_ascii_uppercase();
             if up.is_ascii_uppercase() || ('@'..='_').contains(&up) {
                 Some(((up as u8) ^ 0x40) as char)
