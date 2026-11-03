@@ -159,7 +159,9 @@ pub enum WordPart {
     DoubleQuoted(Vec<WordPart>),
     DollarSingleQuoted(String),
     Parameter(ParamExpr),
-    CommandSub(Program),
+    /// Shared: tokens holding a parsed `$(...)` body are cloned by the
+    /// parser's look-ahead and the lexer's token cache.
+    CommandSub(Rc<Program>),
     ArithSub(String),
     Tilde(Option<String>),
 }

@@ -226,6 +226,14 @@ impl Lexer {
         }
     }
 
+    /// Drop cached command-substitution tokens (see `token_cache`); the
+    /// parser calls this where look-ahead can no longer rewind to them.
+    pub(crate) fn clear_token_cache(&mut self) {
+        if !self.token_cache.is_empty() {
+            self.token_cache.clear();
+        }
+    }
+
     pub fn save_state(&self) -> LexerState {
         LexerState {
             pos: self.pos,

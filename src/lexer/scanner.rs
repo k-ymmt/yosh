@@ -177,13 +177,16 @@ impl Lexer {
         // is replayed from the cache when the parser's look-ahead rewinds
         // and lexes it again.
         let start = self.pos;
-        if let Some(hit) = self.token_cache.get(&start)
-            && hit.line == self.line
-            && hit.column == self.column
+        // A hit is taken out of the cache: look-ahead re-lexes a token
+        // once, so this frees it early (a later re-lex just recomputes).
+        if !self.token_cache.is_empty()
+            && let Some(hit) = self.token_cache.remove(&start)
         {
-            let token = hit.token.clone();
-            (self.pos, self.line, self.column) = hit.end;
-            return Ok(token);
+            if hit.line == self.line && hit.column == self.column {
+                (self.pos, self.line, self.column) = hit.end;
+                return Ok(hit.token);
+            }
+            self.token_cache.insert(start, hit);
         }
         let (line, column) = (self.line, self.column);
         let subparses_before = self.subparse_count;

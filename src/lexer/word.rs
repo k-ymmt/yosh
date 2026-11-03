@@ -735,7 +735,7 @@ impl Lexer {
     /// Handles `$(...)` command substitution.
     fn read_command_sub_dollar(&mut self) -> error::Result<WordPart> {
         let (program, _) = self.parse_command_sub()?;
-        Ok(WordPart::CommandSub(program))
+        Ok(WordPart::CommandSub(std::rc::Rc::new(program)))
     }
 
     /// Parse the body of `$(...)` with the real grammar, as dash and ksh
@@ -1104,7 +1104,7 @@ impl Lexer {
         self.subparse_count += 1;
         let lexer = self.nested_lexer(&content);
         let program = crate::parser::Parser::parse_nested_program(lexer)?;
-        Ok(WordPart::CommandSub(program))
+        Ok(WordPart::CommandSub(std::rc::Rc::new(program)))
     }
 }
 

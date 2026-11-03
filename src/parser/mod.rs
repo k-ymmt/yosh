@@ -290,6 +290,9 @@ impl Parser {
     /// Callers consume it with `skip_newlines`.
     pub fn parse_complete_command(&mut self) -> error::Result<CompleteCommand> {
         self.take_init_error()?;
+        // Look-ahead never rewinds past a complete-command boundary, so
+        // tokens cached for an earlier command can no longer be replayed.
+        self.lexer.clear_token_cache();
         let mut items = Vec::new();
 
         loop {
