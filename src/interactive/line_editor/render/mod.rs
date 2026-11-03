@@ -5,9 +5,10 @@ mod multiline;
 mod single_line;
 
 use std::io;
+use unicode_width::UnicodeWidthChar;
 
 use super::LineEditor;
-use crate::interactive::highlight::{ColorSpan, HighlightStyle};
+use crate::interactive::highlight::{ColorSpan, HighlightStyle, apply_style};
 use crate::interactive::terminal::Terminal;
 use crate::interactive::vi::ViMode;
 use crate::interactive::vim;
@@ -55,6 +56,95 @@ fn style_diff_pos(old_spans: &[ColorSpan], new_spans: &[ColorSpan], limit: usize
         }
     }
     limit
+}
+
+/// Clamp a column/row count to the `u16` the terminal API takes.
+fn term_col(n: usize) -> u16 {
+    n.min(u16::MAX as usize) as u16
+}
+
+/// Total display width of a run of buffer characters.
+fn chars_width(chars: &[char]) -> usize {
+    chars
+        .iter()
+        .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+        .sum()
+}
+
+/// Incremental style state for painting buffer cells left to right: the
+/// highlight style currently applied (looked up through
+/// [`style_at_advancing`]) and whether reverse video (the VISUAL
+/// selection) is on. Every painter shares it so the escape sequences
+/// emitted around style and selection transitions stay identical.
+struct CellPainter<'a> {
+    spans: &'a [ColorSpan],
+    span_idx: usize,
+    current: HighlightStyle,
+    in_sel: bool,
+}
+
+impl<'a> CellPainter<'a> {
+    fn new(spans: &'a [ColorSpan]) -> Self {
+        Self {
+            spans,
+            span_idx: 0,
+            current: HighlightStyle::Default,
+            in_sel: false,
+        }
+    }
+
+    /// Start painting mid-buffer at char `start`: apply the style
+    /// covering it as if every earlier cell had been walked, without
+    /// re-emitting escapes for the unchanged prefix.
+    fn seed<T: Terminal>(&mut self, term: &mut T, start: usize) -> io::Result<()> {
+        if !self.spans.is_empty() {
+            self.current = style_at_advancing(self.spans, &mut self.span_idx, start);
+            apply_style(term, self.current)?;
+        }
+        Ok(())
+    }
+
+    /// Emit the style transitions needed before writing buffer char `i`;
+    /// `sel_here` says whether the cell lies inside the VISUAL selection.
+    /// `reset_style` clears reverse too, so a style transition inside the
+    /// selection re-asserts reverse after reapplying the color.
+    fn enter_buf_cell<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        i: usize,
+        sel_here: bool,
+    ) -> io::Result<()> {
+        let new_style = if self.spans.is_empty() {
+            HighlightStyle::Default
+        } else {
+            style_at_advancing(self.spans, &mut self.span_idx, i)
+        };
+        if new_style != self.current || (self.in_sel && !sel_here) {
+            if self.current != HighlightStyle::Default || self.in_sel {
+                term.reset_style()?;
+                self.in_sel = false;
+            }
+            apply_style(term, new_style)?;
+            self.current = new_style;
+        }
+        if sel_here && !self.in_sel {
+            term.set_reverse(true)?;
+            self.in_sel = true;
+        }
+        Ok(())
+    }
+
+    /// Drop any active highlight style / reverse video, e.g. before
+    /// unstyled output (row breaks, prompts, the suggestion) or at the
+    /// end of the buffer.
+    fn reset<T: Terminal>(&mut self, term: &mut T) -> io::Result<()> {
+        if self.current != HighlightStyle::Default || self.in_sel {
+            term.reset_style()?;
+            self.current = HighlightStyle::Default;
+            self.in_sel = false;
+        }
+        Ok(())
+    }
 }
 
 impl LineEditor {

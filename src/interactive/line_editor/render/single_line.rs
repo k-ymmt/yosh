@@ -4,8 +4,8 @@ use std::io;
 use unicode_width::UnicodeWidthChar;
 
 use super::super::LineEditor;
-use super::{style_at_advancing, style_diff_pos};
-use crate::interactive::highlight::{ColorSpan, HighlightStyle, apply_style};
+use super::{CellPainter, chars_width, style_diff_pos, term_col};
+use crate::interactive::highlight::ColorSpan;
 use crate::interactive::terminal::Terminal;
 use crate::interactive::vi::ViMode;
 
@@ -27,7 +27,6 @@ impl LineEditor {
     ) -> io::Result<()> {
         let tw = term_width as usize;
         let th = (term_height as usize).max(1);
-        let col = |n: usize| -> u16 { n.min(u16::MAX as usize) as u16 };
 
         // Precompute the width/row info both the dispatch decision and the
         // single-line renderer need.
@@ -72,11 +71,6 @@ impl LineEditor {
         if self.buf.contains(&'\n') || suggestion_multiline || (tw > 0 && worst_case_rows > th) {
             return self.redraw_multiline(term, prompt, prompt_width, cont_prompt, spans, tw, th);
         }
-        // If the *previous* render went through the multiline renderer, the
-        // diff-based partial repaint below would misinterpret its layout;
-        // the full clear + repaint path handles it fine (clearing only uses
-        // row counts).
-        let prev_was_multiline = self.prev_render_multiline;
 
         // A VISUAL selection changes on every cursor move, so the diff
         // path would buy nothing while one is active — and the first
@@ -84,201 +78,13 @@ impl LineEditor {
         // Bypass the partial repaint in both cases (keeps
         // `style_diff_pos` untouched by selection state).
         let sel_active = matches!(self.vi.mode, ViMode::Visual { .. });
-        let selection = self.visual_selection_range();
         let force_full = sel_active || self.prev_render_had_selection;
 
-        // Decide whether a partial repaint (from the first changed cell)
-        // is safe, or whether to fall back to the full clear+repaint.
-        //
-        // The repaint start column is capped by the first position where
-        // the *style* differs from the previous render, not just where the
-        // *character* differs: highlighting can retroactively recolor
-        // already-typed, unchanged characters (e.g. typing the closing
-        // quote of `echo 'hello` flips the whole `'hello` run from an
-        // unclosed-quote Error span to a normal String span even though
-        // none of those characters changed). Using only a character-level
-        // diff would miss that recoloring.
-        //
-        // The multi-row (wrapped) case positions by physical rows: the
-        // cursor sits on `prev_cursor_row`, the first changed cell is at
-        // `prefix_width / tw` (always within the previously rendered rows
-        // because the unchanged prefix has identical layout in both
-        // renders), and writing relies on terminal auto-wrap exactly like
-        // the full-repaint path.
-        let mut partial_repaint_start =
-            self.prev_render
-                .as_ref()
-                .and_then(|(prev_buf, prev_spans)| {
-                    if tw == 0 || prev_was_multiline || force_full {
-                        return None;
-                    }
-                    let char_diff = prev_buf
-                        .iter()
-                        .zip(self.buf.iter())
-                        .position(|(a, b)| a != b)
-                        .unwrap_or_else(|| prev_buf.len().min(self.buf.len()));
-                    let style_diff = style_diff_pos(prev_spans, spans, char_diff);
-                    Some(style_diff)
-                });
-
-        // A diff that starts exactly on a wrap boundary would have to write
-        // into the terminal's deferred-wrap cell (or onto a physical row
-        // that has not been created yet); fall back to the full repaint for
-        // that column rather than modeling deferred-wrap state.
-        if let Some(start) = partial_repaint_start {
-            let w = prompt_width
-                + self.buf[..start]
-                    .iter()
-                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                    .sum::<usize>();
-            if tw > 0 && w > 0 && w % tw == 0 {
-                partial_repaint_start = None;
+        match self.partial_repaint_start(spans, prompt_width, tw, force_full) {
+            Some(start) => {
+                self.paint_partial(term, start, prompt_width, tw, spans, suggestion_active)?
             }
-        }
-
-        if let Some(start) = partial_repaint_start {
-            // ---- Partial repaint: rewrite only from `start` onward ----
-            let prefix_width: usize = prompt_width
-                + self.buf[..start]
-                    .iter()
-                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                    .sum::<usize>();
-            let diff_row = prefix_width / tw;
-            let diff_col = prefix_width % tw;
-
-            // Move from the cursor's row to the first changed row.
-            if self.prev_cursor_row > diff_row {
-                term.move_up((self.prev_cursor_row - diff_row) as u16)?;
-            } else if diff_row > self.prev_cursor_row {
-                term.move_down((diff_row - self.prev_cursor_row) as u16)?;
-            }
-            term.move_to_column(col(diff_col))?;
-            term.clear_until_newline()?;
-
-            // Clear any previously rendered rows below the changed row, so
-            // shrinking content doesn't leave stale wrapped tails behind.
-            if self.prev_total_rows > diff_row {
-                for _ in diff_row..self.prev_total_rows {
-                    term.move_down(1)?;
-                    term.clear_current_line()?;
-                }
-                term.move_up((self.prev_total_rows - diff_row) as u16)?;
-                term.move_to_column(col(diff_col))?;
-            }
-
-            let mut span_idx = 0;
-            let mut current_style = HighlightStyle::Default;
-            if !spans.is_empty() {
-                // Seed span_idx/current_style as if we'd walked from 0, so
-                // the first char written at `start` gets the right style
-                // without re-walking (and re-emitting escapes for) the
-                // unchanged prefix.
-                current_style = style_at_advancing(spans, &mut span_idx, start);
-                if current_style != HighlightStyle::Default {
-                    apply_style(term, current_style)?;
-                }
-            }
-            for (i, ch) in self.buf.iter().enumerate().skip(start) {
-                if !spans.is_empty() {
-                    let new_style = style_at_advancing(spans, &mut span_idx, i);
-                    if new_style != current_style {
-                        if current_style != HighlightStyle::Default {
-                            term.reset_style()?;
-                        }
-                        apply_style(term, new_style)?;
-                        current_style = new_style;
-                    }
-                }
-                term.write_char(*ch)?;
-            }
-            if current_style != HighlightStyle::Default {
-                term.reset_style()?;
-            }
-
-            if suggestion_active {
-                term.set_dim(true)?;
-                term.write_str(self.suggestion.as_deref().unwrap_or(""))?;
-                term.set_dim(false)?;
-            }
-        } else {
-            // ---- Full clear + repaint (original behavior) ----
-            self.clear_prev_render(term)?;
-
-            // Repaint the prompt
-            term.write_str(prompt)?;
-
-            // Write the buffer with or without highlighting
-            if let Some((sel_s, sel_e)) = selection {
-                // VISUAL selection: per-char walk tracking both the
-                // highlight style and the reverse-video span. Because
-                // `reset_style` clears the reverse attribute too, every
-                // style transition inside the selection re-asserts
-                // reverse after reapplying the color; leaving the
-                // selection resets and reapplies the color style.
-                let mut current_style = HighlightStyle::Default;
-                let mut span_idx = 0;
-                let mut in_sel = false;
-                for (i, ch) in self.buf.iter().enumerate() {
-                    let new_style = if spans.is_empty() {
-                        HighlightStyle::Default
-                    } else {
-                        style_at_advancing(spans, &mut span_idx, i)
-                    };
-                    let sel_here = i >= sel_s && i < sel_e;
-                    if new_style != current_style || (in_sel && !sel_here) {
-                        if current_style != HighlightStyle::Default || in_sel {
-                            term.reset_style()?;
-                            in_sel = false;
-                        }
-                        if new_style != HighlightStyle::Default {
-                            apply_style(term, new_style)?;
-                        }
-                        current_style = new_style;
-                    }
-                    if sel_here && !in_sel {
-                        term.set_reverse(true)?;
-                        in_sel = true;
-                    }
-                    term.write_char(*ch)?;
-                }
-                // Boundary cleanup: a selection reaching the final
-                // buffer character never hits a "leaving" cell.
-                if current_style != HighlightStyle::Default || in_sel {
-                    term.reset_style()?;
-                }
-            } else if spans.is_empty() {
-                term.write_str(&self.buffer())?;
-            } else {
-                // Spans are produced in left-to-right scan order (sorted,
-                // non-overlapping — see HighlightScanner::scan_from), so a
-                // single advancing cursor into `spans` (see
-                // `style_at_advancing`) replaces the previous per-char
-                // `spans.iter().find(...)` linear search, turning
-                // classification from O(n*spans) into O(n + spans).
-                let mut current_style = HighlightStyle::Default;
-                let mut span_idx = 0;
-                for (i, ch) in self.buf.iter().enumerate() {
-                    let new_style = style_at_advancing(spans, &mut span_idx, i);
-                    if new_style != current_style {
-                        if current_style != HighlightStyle::Default {
-                            term.reset_style()?;
-                        }
-                        apply_style(term, new_style)?;
-                        current_style = new_style;
-                    }
-                    term.write_char(*ch)?;
-                }
-                if current_style != HighlightStyle::Default {
-                    term.reset_style()?;
-                }
-            }
-
-            // Draw suggestion
-            if suggestion_active {
-                term.set_dim(true)?;
-                term.write_str(self.suggestion.as_deref().unwrap_or(""))?;
-                term.set_dim(false)?;
-            }
+            None => self.paint_full(term, prompt, spans, suggestion_active)?,
         }
 
         self.prev_total_rows = total_rows;
@@ -297,13 +103,165 @@ impl LineEditor {
         if end_row > cursor_row {
             term.move_up((end_row - cursor_row) as u16)?;
         }
-        term.move_to_column(col(cursor_col))?;
+        term.move_to_column(term_col(cursor_col))?;
         // The physical row we just left the cursor on: `cursor_row`, except
         // when the cursor logically sits one past a content-final wrap
         // boundary — we never move down past the last rendered row, so the
         // physical row is clamped to it.
         self.prev_cursor_row = cursor_row.min(total_rows);
         term.flush()?;
+        Ok(())
+    }
+
+    /// Decide whether a partial repaint (from the first changed cell) is
+    /// safe, returning the char index to repaint from, or `None` to fall
+    /// back to the full clear+repaint.
+    ///
+    /// The repaint start column is capped by the first position where
+    /// the *style* differs from the previous render, not just where the
+    /// *character* differs: highlighting can retroactively recolor
+    /// already-typed, unchanged characters (e.g. typing the closing
+    /// quote of `echo 'hello` flips the whole `'hello` run from an
+    /// unclosed-quote Error span to a normal String span even though
+    /// none of those characters changed). Using only a character-level
+    /// diff would miss that recoloring.
+    ///
+    /// The multi-row (wrapped) case positions by physical rows: the
+    /// cursor sits on `prev_cursor_row`, the first changed cell is at
+    /// `prefix_width / tw` (always within the previously rendered rows
+    /// because the unchanged prefix has identical layout in both
+    /// renders), and writing relies on terminal auto-wrap exactly like
+    /// the full-repaint path.
+    fn partial_repaint_start(
+        &self,
+        spans: &[ColorSpan],
+        prompt_width: usize,
+        tw: usize,
+        force_full: bool,
+    ) -> Option<usize> {
+        // If the *previous* render went through the multiline renderer, the
+        // diff-based partial repaint would misinterpret its layout; the
+        // full clear + repaint path handles it fine (clearing only uses
+        // row counts).
+        if tw == 0 || self.prev_render_multiline || force_full {
+            return None;
+        }
+        let (prev_buf, prev_spans) = self.prev_render.as_ref()?;
+        let char_diff = prev_buf
+            .iter()
+            .zip(self.buf.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or_else(|| prev_buf.len().min(self.buf.len()));
+        let start = style_diff_pos(prev_spans, spans, char_diff);
+
+        // A diff that starts exactly on a wrap boundary would have to write
+        // into the terminal's deferred-wrap cell (or onto a physical row
+        // that has not been created yet); fall back to the full repaint for
+        // that column rather than modeling deferred-wrap state.
+        let w = prompt_width + chars_width(&self.buf[..start]);
+        if w > 0 && w % tw == 0 {
+            return None;
+        }
+        Some(start)
+    }
+
+    /// Partial repaint: rewrite only from buffer char `start` onward.
+    fn paint_partial<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        start: usize,
+        prompt_width: usize,
+        tw: usize,
+        spans: &[ColorSpan],
+        suggestion_active: bool,
+    ) -> io::Result<()> {
+        let prefix_width = prompt_width + chars_width(&self.buf[..start]);
+        let diff_row = prefix_width / tw;
+        let diff_col = prefix_width % tw;
+
+        // Move from the cursor's row to the first changed row.
+        if self.prev_cursor_row > diff_row {
+            term.move_up((self.prev_cursor_row - diff_row) as u16)?;
+        } else if diff_row > self.prev_cursor_row {
+            term.move_down((diff_row - self.prev_cursor_row) as u16)?;
+        }
+        term.move_to_column(term_col(diff_col))?;
+        term.clear_until_newline()?;
+
+        // Clear any previously rendered rows below the changed row, so
+        // shrinking content doesn't leave stale wrapped tails behind.
+        if self.prev_total_rows > diff_row {
+            for _ in diff_row..self.prev_total_rows {
+                term.move_down(1)?;
+                term.clear_current_line()?;
+            }
+            term.move_up((self.prev_total_rows - diff_row) as u16)?;
+            term.move_to_column(term_col(diff_col))?;
+        }
+
+        // Seed the painter as if it had walked from 0, so the first char
+        // written at `start` gets the right style without re-walking (and
+        // re-emitting escapes for) the unchanged prefix.
+        let mut painter = CellPainter::new(spans);
+        painter.seed(term, start)?;
+        for (i, ch) in self.buf.iter().enumerate().skip(start) {
+            painter.enter_buf_cell(term, i, false)?;
+            term.write_char(*ch)?;
+        }
+        painter.reset(term)?;
+
+        if suggestion_active {
+            self.paint_suggestion(term)?;
+        }
+        Ok(())
+    }
+
+    /// Full clear + repaint of the prompt, buffer and suggestion.
+    fn paint_full<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        spans: &[ColorSpan],
+        suggestion_active: bool,
+    ) -> io::Result<()> {
+        self.clear_prev_render(term)?;
+
+        // Repaint the prompt
+        term.write_str(prompt)?;
+
+        // Write the buffer with or without highlighting
+        let selection = self.visual_selection_range();
+        if selection.is_none() && spans.is_empty() {
+            term.write_str(&self.buffer())?;
+        } else {
+            // Spans are produced in left-to-right scan order (sorted,
+            // non-overlapping — see HighlightScanner::scan_from), so a
+            // single advancing cursor into `spans` (see
+            // `style_at_advancing`) replaces a per-char linear search,
+            // turning classification from O(n*spans) into O(n + spans).
+            // A VISUAL selection is overlaid as reverse video.
+            let mut painter = CellPainter::new(spans);
+            for (i, ch) in self.buf.iter().enumerate() {
+                let sel_here = selection.is_some_and(|(s, e)| i >= s && i < e);
+                painter.enter_buf_cell(term, i, sel_here)?;
+                term.write_char(*ch)?;
+            }
+            // Boundary cleanup: a selection reaching the final buffer
+            // character never hits a "leaving" cell.
+            painter.reset(term)?;
+        }
+
+        if suggestion_active {
+            self.paint_suggestion(term)?;
+        }
+        Ok(())
+    }
+
+    /// Draw the autosuggestion (dim) at the current terminal position.
+    fn paint_suggestion<T: Terminal>(&self, term: &mut T) -> io::Result<()> {
+        term.set_dim(true)?;
+        term.write_str(self.suggestion.as_deref().unwrap_or(""))?;
+        term.set_dim(false)?;
         Ok(())
     }
 }
