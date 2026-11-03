@@ -9,8 +9,11 @@
 //! - `suggestion`: history autosuggestion accept/update
 //! - `kill_undo`: kill-ring/unnamed-register writes and undo units
 //! - `emacs`: key dispatch and the keymap (emacs-flavored) actions
-//! - `vi_insert`, `vi_command`, `vi_history`, `vi_expand`: POSIX vi
-//! - `vim_ops`: vim-flavor linewise operations, puts and VISUAL mode
+//! - `vi_insert`: vi insert-mode keys, leaving insert mode, `.` replay
+//! - `vi_command`: vi command-mode dispatch and the `.`/undo wrapper
+//! - `vi_edit`: the POSIX vi command-mode buffer edits
+//! - `vi_history`, `vi_expand`: vi history search/recall, `=` `\` `*`
+//! - `vim_ops`, `vim_visual`: vim-flavor linewise ops/puts, VISUAL mode
 //! - `read_loop`: the read sessions and terminal event loop
 //! - `screen`: screen-level helpers around a read
 //! - `render`: the single-line and multiline renderers
@@ -27,10 +30,12 @@ mod screen;
 mod suggestion;
 mod tab_complete;
 mod vi_command;
+mod vi_edit;
 mod vi_expand;
 mod vi_history;
 mod vi_insert;
 mod vim_ops;
+mod vim_visual;
 
 use crossterm::event::KeyEvent;
 use std::collections::VecDeque;

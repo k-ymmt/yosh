@@ -1,13 +1,13 @@
 //! Key dispatch and the keymap-driven (emacs-flavored) edit actions,
 //! which vi insert mode shares.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyEvent;
 
-use super::{KeyAction, LineEditor, YankState};
+use super::{KeyAction, LineEditor};
 use crate::interactive::edit_action::EditAction;
 use crate::interactive::history::History;
 use crate::interactive::keymap::BufferState;
-use crate::interactive::vi::{self, ViMode};
+use crate::interactive::vi::ViMode;
 use crate::interactive::vim::RegisterKind;
 
 impl LineEditor {
@@ -21,79 +21,19 @@ impl LineEditor {
                 ViMode::Command => return self.handle_vi_command_key(key, history),
                 ViMode::Visual { .. } => return self.handle_vim_visual_key(key),
                 ViMode::Insert => {
-                    // Ctrl+V literal-next (POSIX vi insert mode): the next
-                    // key is inserted verbatim, ESC and control keys
-                    // included — so it must run before the ESC handling.
-                    if self.vi_literal_next {
-                        self.vi_literal_next = false;
-                        if let Some(ch) = Self::literal_char_for(key) {
-                            if self.vi.replace_overwrite
-                                && self.pos < vi::line_end(&self.buf, self.pos)
-                            {
-                                self.delete();
-                            }
-                            self.insert_char(ch);
-                        }
-                        return KeyAction::Continue;
+                    if let Some(action) = self.handle_vi_insert_key(key, history) {
+                        return action;
                     }
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('v')
-                    {
-                        self.vi_literal_next = true;
-                        return KeyAction::Continue;
-                    }
-                    if key.code == KeyCode::Esc {
-                        self.vi_leave_insert_mode();
-                        return KeyAction::Continue;
-                    }
-                    // POSIX vi insert-mode Ctrl+W: word-erase bounded by
-                    // the current logical line's start (the emacs
-                    // backward-kill crosses '\n' and would join lines).
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('w')
-                    {
-                        self.vi_insert_werase();
-                        return KeyAction::Continue;
-                    }
-                    // A fast ESC-then-key sequence arrives as Alt+key
-                    // (terminal ESC-prefix encoding): leave insert mode
-                    // and run the key as a command-mode command, exactly
-                    // like typing them slowly. This shadows the emacs
-                    // Alt-chords (Alt+f/b/d…) in vi insert mode — vi ESC
-                    // correctness wins; the plain Ctrl bindings all
-                    // remain. Alt+Ctrl+key is a fast ESC before a
-                    // control key (e.g. ESC then Ctrl-X): the control
-                    // modifier is preserved into command mode.
-                    if let KeyCode::Char(c) = key.code
-                        && key.modifiers.contains(KeyModifiers::ALT)
-                    {
-                        self.vi_leave_insert_mode();
-                        return self.handle_vi_command_key(
-                            KeyEvent::new(
-                                KeyCode::Char(c),
-                                key.modifiers.difference(KeyModifiers::ALT),
-                            ),
-                            history,
-                        );
-                    }
-                    // `R` replace mode: a plain character overwrites the
-                    // character under the cursor instead of shifting it
-                    // right. Delete first, then fall through to the normal
-                    // insert path (which handles undo bookkeeping).
-                    if self.vi.replace_overwrite
-                        && let KeyCode::Char(_) = key.code
-                        && !key
-                            .modifiers
-                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                        && self.pos < vi::line_end(&self.buf, self.pos)
-                    {
-                        self.delete();
-                    }
-                    // Everything else keeps the regular (emacs-flavored)
-                    // insert-mode bindings: fall through.
                 }
             }
         }
+        self.handle_keymap_key(key, history)
+    }
+
+    /// Resolve a key through the keymap and run the resulting
+    /// [`EditAction`]: emacs mode, and vi insert mode for every key it
+    /// does not handle itself.
+    fn handle_keymap_key(&mut self, key: KeyEvent, history: &mut History) -> KeyAction {
         let state = BufferState {
             is_empty: self.is_empty(),
             at_end: self.pos == self.buf.len(),
@@ -107,7 +47,26 @@ impl LineEditor {
             self.tab_count = 0;
         }
 
-        // Undo snapshot management
+        self.save_undo_before(action);
+
+        // Determine if consecutive kill for append
+        let is_consecutive_kill = action.is_kill() && self.last_action.is_kill();
+
+        // Execute action
+        let key_action = self.execute_action(action, count, history, is_consecutive_kill);
+
+        // Update tracking state
+        self.last_was_insert = matches!(action, EditAction::InsertChar(ch) if ch != ' ');
+        if !matches!(action, EditAction::Yank | EditAction::YankPop) {
+            self.yank_state = None;
+        }
+        self.last_action = action;
+
+        key_action
+    }
+
+    /// Save the undo snapshot `action` needs before it runs.
+    fn save_undo_before(&mut self, action: EditAction) {
         // - Insert group boundary: when transitioning from insert to non-insert, save once
         // - Destructive ops: always save pre-op state (once)
         // - Insert start: save when first insert after non-insert
@@ -152,21 +111,15 @@ impl LineEditor {
             }
             _ => {}
         }
+    }
 
-        // Determine if consecutive kill for append
-        let is_consecutive_kill = action.is_kill() && self.last_action.is_kill();
-
-        // Execute action
-        let key_action = self.execute_action(action, count, history, is_consecutive_kill);
-
-        // Update tracking state
-        self.last_was_insert = matches!(action, EditAction::InsertChar(ch) if ch != ' ');
-        if !matches!(action, EditAction::Yank | EditAction::YankPop) {
-            self.yank_state = None;
+    /// Run a buffer edit `count` times (the numeric argument) and keep
+    /// reading.
+    fn repeat(&mut self, count: u32, edit: fn(&mut Self)) -> KeyAction {
+        for _ in 0..count {
+            edit(self);
         }
-        self.last_action = action;
-
-        key_action
+        KeyAction::Continue
     }
 
     fn execute_action(
@@ -205,18 +158,8 @@ impl LineEditor {
                 }
                 KeyAction::Continue
             }
-            EditAction::MoveBackward => {
-                for _ in 0..count {
-                    self.move_cursor_left();
-                }
-                KeyAction::Continue
-            }
-            EditAction::MoveForward => {
-                for _ in 0..count {
-                    self.move_cursor_right();
-                }
-                KeyAction::Continue
-            }
+            EditAction::MoveBackward => self.repeat(count, Self::move_cursor_left),
+            EditAction::MoveForward => self.repeat(count, Self::move_cursor_right),
             EditAction::MoveToStart => {
                 self.move_to_start();
                 KeyAction::Continue
@@ -225,30 +168,10 @@ impl LineEditor {
                 self.move_to_end();
                 KeyAction::Continue
             }
-            EditAction::MoveBackwardWord => {
-                for _ in 0..count {
-                    self.move_backward_word();
-                }
-                KeyAction::Continue
-            }
-            EditAction::MoveForwardWord => {
-                for _ in 0..count {
-                    self.move_forward_word();
-                }
-                KeyAction::Continue
-            }
-            EditAction::DeleteBackward => {
-                for _ in 0..count {
-                    self.backspace();
-                }
-                KeyAction::Continue
-            }
-            EditAction::DeleteForward => {
-                for _ in 0..count {
-                    self.delete();
-                }
-                KeyAction::Continue
-            }
+            EditAction::MoveBackwardWord => self.repeat(count, Self::move_backward_word),
+            EditAction::MoveForwardWord => self.repeat(count, Self::move_forward_word),
+            EditAction::DeleteBackward => self.repeat(count, Self::backspace),
+            EditAction::DeleteForward => self.repeat(count, Self::delete),
             EditAction::KillToEnd => {
                 let killed = self.kill_to_end();
                 self.record_kill(&killed, consecutive_kill, RegisterKind::Charwise);
@@ -274,52 +197,18 @@ impl LineEditor {
                 KeyAction::Continue
             }
             EditAction::Yank => {
-                if let Some(text) = self.kill_ring.yank().map(|s| s.to_string()) {
-                    let (start, len) = self.insert_str(&text);
-                    self.yank_state = Some(YankState { start, len });
-                }
+                self.yank();
                 KeyAction::Continue
             }
             EditAction::YankPop => {
-                if let Some(ys) = self.yank_state.clone() {
-                    self.remove_range(ys.start, ys.len);
-                    if let Some(text) = self.kill_ring.yank_pop().map(|s| s.to_string()) {
-                        let (start, len) = self.insert_str(&text);
-                        self.yank_state = Some(YankState { start, len });
-                    }
-                }
+                self.yank_pop();
                 KeyAction::Continue
             }
-            EditAction::TransposeChars => {
-                for _ in 0..count {
-                    self.transpose_chars();
-                }
-                KeyAction::Continue
-            }
-            EditAction::TransposeWords => {
-                for _ in 0..count {
-                    self.transpose_words();
-                }
-                KeyAction::Continue
-            }
-            EditAction::UpcaseWord => {
-                for _ in 0..count {
-                    self.upcase_word();
-                }
-                KeyAction::Continue
-            }
-            EditAction::DowncaseWord => {
-                for _ in 0..count {
-                    self.downcase_word();
-                }
-                KeyAction::Continue
-            }
-            EditAction::CapitalizeWord => {
-                for _ in 0..count {
-                    self.capitalize_word();
-                }
-                KeyAction::Continue
-            }
+            EditAction::TransposeChars => self.repeat(count, Self::transpose_chars),
+            EditAction::TransposeWords => self.repeat(count, Self::transpose_words),
+            EditAction::UpcaseWord => self.repeat(count, Self::upcase_word),
+            EditAction::DowncaseWord => self.repeat(count, Self::downcase_word),
+            EditAction::CapitalizeWord => self.repeat(count, Self::capitalize_word),
             EditAction::Undo => {
                 for _ in 0..count {
                     if let Some((buf, pos)) = self.undo.undo() {
@@ -369,9 +258,7 @@ impl LineEditor {
                     if self.cursor_line_index() > 0 {
                         self.move_cursor_up();
                     } else if let Some(line) = history.navigate_up(&self.buffer()) {
-                        self.buf = line.chars().collect();
-                        self.pos = self.buf.len();
-                        self.invalidate_width_cache();
+                        self.replace_buffer(line);
                     }
                 }
                 self.suggestion = None;
@@ -384,9 +271,7 @@ impl LineEditor {
                     if self.cursor_line_index() + 1 < self.line_count() {
                         self.move_cursor_down();
                     } else if let Some(line) = history.navigate_down() {
-                        self.buf = line.chars().collect();
-                        self.pos = self.buf.len();
-                        self.invalidate_width_cache();
+                        self.replace_buffer(line);
                     }
                 }
                 self.suggestion = None;

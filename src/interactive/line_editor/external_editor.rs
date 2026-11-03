@@ -110,9 +110,7 @@ impl LineEditor {
             .unwrap_or_else(|_| std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string()));
         match self.run_external_editor(term, &content, &editor)? {
             Some(text) => {
-                self.buf = text.chars().collect();
-                self.pos = self.buf.len();
-                self.invalidate_width_cache();
+                self.replace_buffer(&text);
                 Ok(true)
             }
             None => Ok(false),
@@ -129,13 +127,11 @@ impl LineEditor {
         match self.run_external_editor(term, &content, &editor)? {
             Some(text) => {
                 let pre = (self.buf.clone(), self.pos);
-                self.buf = text.chars().collect();
-                self.pos = self.buf.len();
+                self.replace_buffer(&text);
                 // The buffer replacement is one undo unit (§7.2).
                 if self.buf != pre.0 {
                     self.vim_commit_undo(&pre.0, pre.1);
                 }
-                self.invalidate_width_cache();
                 self.clamp_vi_command_pos();
                 self.suggestion = None;
                 Ok(true)

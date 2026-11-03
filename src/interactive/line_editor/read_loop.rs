@@ -69,9 +69,7 @@ impl LineEditor {
                             self.suggestion = None;
                             term.disable_raw_mode()?;
                             if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
-                                self.buf = line.chars().collect();
-                                self.pos = self.buf.len();
-                                self.invalidate_width_cache();
+                                self.replace_buffer(&line);
                             }
                             term.enable_raw_mode()?;
                             // The screen was repainted outside of redraw's own
@@ -332,9 +330,7 @@ impl LineEditor {
                             term.reset_style()?;
                             term.disable_raw_mode()?;
                             if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
-                                self.buf = line.chars().collect();
-                                self.pos = self.buf.len();
-                                self.invalidate_width_cache();
+                                self.replace_buffer(&line);
                             }
                             term.enable_raw_mode()?;
                             self.repaint_prompt(term, prompt, upper_lines, false)?;

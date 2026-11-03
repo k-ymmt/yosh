@@ -335,6 +335,14 @@ impl LineEditor {
         });
     }
 
+    /// Replace the whole buffer with `text`, cursor at its end (history
+    /// recall, fuzzy search, external-editor results).
+    pub(super) fn replace_buffer(&mut self, text: &str) {
+        self.buf = text.chars().collect();
+        self.pos = self.buf.len();
+        self.invalidate_width_cache();
+    }
+
     /// Insert text at the current cursor position. Returns (start, len) for yank tracking.
     pub fn insert_str(&mut self, text: &str) -> (usize, usize) {
         let start = self.pos;

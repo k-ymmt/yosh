@@ -9,7 +9,7 @@ use crate::interactive::vi::{SearchDir, ViFlavor};
 impl LineEditor {
     /// Recall a history navigation result into the buffer, vi-style:
     /// cursor on the first character (POSIX), baseline updated for `U`.
-    pub(super) fn vi_recall(&mut self, line: String) {
+    fn vi_recall(&mut self, line: String) {
         self.buf = line.chars().collect();
         self.pos = 0;
         self.vi_line_base = self.buf.clone();
@@ -23,6 +23,45 @@ impl LineEditor {
         if self.vi.flavor == ViFlavor::Vim {
             self.undo.clear();
             self.vim_undo_staged = None;
+        }
+    }
+
+    /// `[count]G`: no count = oldest entry; count n = history number n
+    /// (POSIX vi). Numbers are stable across HISTSIZE trimming, so map
+    /// through the history base.
+    pub(super) fn vi_history_goto(&mut self, count: u32, history: &mut History) {
+        let idx = if count == 0 {
+            if history.entries().is_empty() {
+                self.pending_bell = true;
+                return;
+            }
+            0
+        } else {
+            match history.index_of_number(count as usize) {
+                Some(idx) => idx,
+                None => {
+                    self.pending_bell = true;
+                    return;
+                }
+            }
+        };
+        let current = self.buffer();
+        if let Some(line) = history.navigate_to(idx, &current).map(str::to_string) {
+            self.vi_recall(line);
+        }
+    }
+
+    /// `n` / `N`: repeat the last search in its own (or, `reverse`, the
+    /// opposite) direction.
+    pub(super) fn vi_search_again(&mut self, reverse: bool, history: &mut History) {
+        match self.vi_last_search.clone() {
+            Some((dir, pattern)) => {
+                let dir = if reverse { dir.reversed() } else { dir };
+                if !self.vi_history_search(dir, &pattern, history) {
+                    self.pending_bell = true;
+                }
+            }
+            None => self.pending_bell = true,
         }
     }
 
@@ -57,7 +96,7 @@ impl LineEditor {
 
     /// Execute a `/` / `?` history search. Returns whether a matching
     /// entry was recalled.
-    pub(super) fn vi_history_search(
+    fn vi_history_search(
         &mut self,
         dir: SearchDir,
         pattern: &str,

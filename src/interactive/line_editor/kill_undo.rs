@@ -1,7 +1,7 @@
 //! Kill-ring / unnamed-register writes and undo-unit bookkeeping
 //! shared by every editing mode.
 
-use super::LineEditor;
+use super::{LineEditor, YankState};
 use crate::interactive::vi::ViFlavor;
 use crate::interactive::vim::{RegisterKind, UnnamedRegister};
 
@@ -48,6 +48,27 @@ impl LineEditor {
                 text: front.to_string(),
                 kind,
             };
+        }
+    }
+
+    /// Emacs `C-y`: insert the kill ring's front entry, remembering where
+    /// it went so an immediately following `M-y` can replace it.
+    pub(super) fn yank(&mut self) {
+        if let Some(text) = self.kill_ring.yank().map(|s| s.to_string()) {
+            let (start, len) = self.insert_str(&text);
+            self.yank_state = Some(YankState { start, len });
+        }
+    }
+
+    /// Emacs `M-y` right after a yank: replace the yanked text with the
+    /// next-older kill ring entry.
+    pub(super) fn yank_pop(&mut self) {
+        if let Some(ys) = self.yank_state.clone() {
+            self.remove_range(ys.start, ys.len);
+            if let Some(text) = self.kill_ring.yank_pop().map(|s| s.to_string()) {
+                let (start, len) = self.insert_str(&text);
+                self.yank_state = Some(YankState { start, len });
+            }
         }
     }
 }
