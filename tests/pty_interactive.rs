@@ -2246,3 +2246,56 @@ fn test_pty_inherited_history_vars_kept() {
     };
     assert_eq!(mode, 0o600, "history file must be created owner-only");
 }
+
+#[test]
+fn test_pty_tab_completion_keeps_mid_word_quote_balanced() {
+    // Completing a word whose quote opens mid-word, with the closing
+    // quote already typed after the cursor, must re-open the quote in the
+    // replacement: `Ca"rgo.toml<Tab>"` -> `"Cargo.toml"`, not the
+    // unbalanced `Cargo.toml"` (which left the shell at PS2).
+    let work = helpers::TempDir::new();
+    std::fs::write(work.path().join("Cargo.toml"), "").unwrap();
+    let (mut s, _home) = spawn_yosh_in(work.path(), &[]);
+    wait_for_prompt(&mut s);
+    s.send("printf '[%s]\\n' Ca\"rgo.toml\"").unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    s.send("\x1b[D").unwrap(); // cursor before the closing quote
+    std::thread::sleep(Duration::from_millis(200));
+    s.send("\t").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    s.send("\r").unwrap();
+    expect_output(
+        &mut s,
+        r"\[Cargo\.toml\]",
+        "mid-word quote completion produced an unbalanced command",
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_startup_history_honors_inherited_histsize() {
+    // bash: an inherited HISTSIZE bounds the list loaded from HISTFILE,
+    // so HISTSIZE=0 starts with an empty history.
+    let work = helpers::TempDir::new();
+    let hf = work.path().join("hf");
+    std::fs::write(&hf, "echo OLD\n").unwrap();
+    let (mut s, _home) = spawn_yosh_in(
+        work.path(),
+        &[("HISTFILE", hf.to_str().unwrap()), ("HISTSIZE", "0")],
+    );
+    wait_for_prompt(&mut s);
+    // `fc` lines are never added to history, so nothing trims the list
+    // before `fc -l` reads it.
+    s.send("fc -l 2>&1; echo mark-$((40+2))\r").unwrap();
+    let caps = s
+        .expect(Regex(r"\r?\nmark-42"))
+        .expect("fc -l line did not finish");
+    let before = String::from_utf8_lossy(caps.before()).into_owned();
+    assert!(
+        !before.contains("echo OLD"),
+        "HISTSIZE=0 history still lists the loaded entry: {before:?}"
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}

@@ -146,6 +146,10 @@ impl Repl {
         // Load history from file
         if !histfile.is_empty() {
             executor.env.history.load(std::path::Path::new(&histfile));
+            // An inherited HISTSIZE bounds the loaded list too (bash:
+            // HISTSIZE=0 starts with an empty history).
+            let (histsize, _) = history::history_settings(&executor.env.vars);
+            executor.env.history.trim_to(histsize);
         }
 
         // Load plugins
@@ -406,7 +410,8 @@ impl Repl {
             // Try to parse
             match classify_parse(&input_buffer, &self.executor.env.aliases) {
                 ParseStatus::Complete(commands) => {
-                    let (histsize, histcontrol) = history_settings(&self.executor.env);
+                    let (histsize, histcontrol) =
+                        history::history_settings(&self.executor.env.vars);
                     let cmd_text = input_buffer.trim_end().to_string();
 
                     for cmd in &commands {
@@ -451,7 +456,8 @@ impl Repl {
                     // whose whole point is stashing the line in history).
                     let cmd_text = input_buffer.trim_end().to_string();
                     if cmd_text.trim_start().starts_with('#') {
-                        let (histsize, histcontrol) = history_settings(&self.executor.env);
+                        let (histsize, histcontrol) =
+                            history::history_settings(&self.executor.env.vars);
                         self.executor
                             .env
                             .history
@@ -505,25 +511,6 @@ impl Repl {
 
         self.executor.env.exec.last_exit_status
     }
-}
-
-/// The HISTSIZE / HISTCONTROL pair `History::add` wants, with the REPL
-/// defaults applied when the variables are unset or unparsable.
-/// HISTSIZE=0 keeps no entries and a negative HISTSIZE means unlimited
-/// (bash semantics).
-fn history_settings(env: &crate::env::ShellEnv) -> (usize, String) {
-    let histsize: usize = env
-        .vars
-        .get("HISTSIZE")
-        .and_then(|s| s.trim().parse::<i64>().ok())
-        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
-        .unwrap_or(500);
-    let histcontrol = env
-        .vars
-        .get("HISTCONTROL")
-        .unwrap_or("ignoreboth")
-        .to_string();
-    (histsize, histcontrol)
 }
 
 /// POSIX-strict `fc` history exclusion: the fc rationale says the fc

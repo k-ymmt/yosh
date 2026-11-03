@@ -46,6 +46,22 @@ fn unescape_entry(line: &str) -> String {
     out
 }
 
+/// The `(histsize, histcontrol)` pair [`History::add`] and
+/// [`History::trim_to`] want, read from `$HISTSIZE` / `$HISTCONTROL` with
+/// the REPL defaults (500, `ignoreboth`) when unset or unparsable.
+/// HISTSIZE=0 keeps no entries and a negative HISTSIZE means unlimited
+/// (bash semantics). Every place that adds to or trims the history list
+/// must use this so they agree on what HISTSIZE means.
+pub(crate) fn history_settings(vars: &crate::env::vars::VarStore) -> (usize, String) {
+    let histsize: usize = vars
+        .get("HISTSIZE")
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+        .unwrap_or(500);
+    let histcontrol = vars.get("HISTCONTROL").unwrap_or("ignoreboth").to_string();
+    (histsize, histcontrol)
+}
+
 /// Command history storage with navigation and persistence.
 ///
 /// Stores commands in chronological order (oldest first) and supports
@@ -125,6 +141,13 @@ impl History {
         }
 
         self.entries.push(line.to_string());
+        self.truncate_to(histsize);
+    }
+
+    /// Drop the oldest entries beyond `histsize` (see [`history_settings`]
+    /// for the mapping from `$HISTSIZE`). Used after loading the history
+    /// file, which must honor an inherited HISTSIZE as `add` does.
+    pub fn trim_to(&mut self, histsize: usize) {
         self.truncate_to(histsize);
     }
 

@@ -374,20 +374,30 @@ pub fn resolve_dir(dir_part: &str, cwd: &str) -> String {
 /// `sub\ dir/xy`, or the value part of `--file='sub/xy`) reconstruct
 /// their replacement text consistently.
 ///
-/// A quote character that opens the file-name part is KEPT in the
-/// returned prefix: the completion word starts at the quote, so the
-/// replacement text must re-insert it or a space-containing match would
-/// be inserted unquoted (`cd "/tmp/My D<Tab>` must complete to
-/// `"/tmp/My Dir/`, not `/tmp/My Dir/`).
+/// The returned prefix leaves the same quote open as the whole typed
+/// word does, because the text after the cursor (a closing quote the
+/// user already typed, or nothing) relies on it:
+///
+/// - A quote opened in the file-name part is re-opened: `cd "/tmp/My
+///   D<Tab>` must complete to `"/tmp/My Dir/`, not `/tmp/My Dir/`, and
+///   `Ca"rgo<Tab>"` to `"Cargo.toml"`, not the unbalanced `Cargo.toml"`.
+/// - A quote the directory part opened but the file-name part closed is
+///   closed again, so the candidate is quoted for the unquoted context
+///   the rest of the line expects.
 pub fn dir_prefix_of(word: &str) -> String {
     let mut dir = match word.rfind('/') {
         Some(pos) => word[..=pos].to_string(),
         None => String::new(),
     };
-    if unclosed_quote(&dir).is_none()
-        && let Some(q @ ('\'' | '"')) = word[dir.len()..].chars().next()
-    {
-        dir.push(q);
+    let dir_open = unclosed_quote(&dir);
+    let word_open = unclosed_quote(word);
+    if dir_open != word_open {
+        if let Some(q) = dir_open {
+            dir.push(q);
+        }
+        if let Some(q) = word_open {
+            dir.push(q);
+        }
     }
     dir
 }
@@ -674,6 +684,20 @@ mod tests {
     }
 
     #[test]
+    fn test_dir_prefix_mirrors_the_words_open_quote() {
+        // A quote opened mid-word is re-opened, so a closing quote after
+        // the cursor stays balanced: `Ca"rgo<Tab>"` -> `"Cargo.toml"`.
+        assert_eq!(dir_prefix_of("Ca\"rgo.toml"), "\"");
+        assert_eq!(dir_prefix_of("src/ma'i"), "src/'");
+        // A quote the directory part opened and the file part closed is
+        // closed again.
+        assert_eq!(dir_prefix_of("\"a/\"bc"), "\"a/\"");
+        assert_eq!(dir_prefix_of("\"a/\"b'c"), "\"a/\"'");
+        // A fully quoted file part leaves nothing open.
+        assert_eq!(dir_prefix_of("\"Car\""), "");
+    }
+
+    #[test]
     fn test_dir_prefix_unquoted_unchanged() {
         assert_eq!(dir_prefix_of("src/int"), "src/");
         assert_eq!(dir_prefix_of("foo"), "");
@@ -762,7 +786,9 @@ mod tests {
     fn test_dir_prefix_escaped_and_mid_quote() {
         assert_eq!(dir_prefix_of("sub\\ dir/x"), "sub\\ dir/");
         assert_eq!(dir_prefix_of("sub/\"fo"), "sub/\"");
-        assert_eq!(dir_prefix_of("su\"b"), "");
+        // The quote opened mid-word stays open in the replacement, so a
+        // closing quote after the cursor still balances (`"sub dir/`).
+        assert_eq!(dir_prefix_of("su\"b"), "\"");
     }
 
     #[test]

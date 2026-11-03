@@ -311,18 +311,7 @@ fn fc_substitute(operands: &[String], executor: &mut Executor) -> Result<i32, Sh
     // Informational output — not an error
     eprintln!("{}", cmd);
 
-    let histsize: usize = executor
-        .env
-        .vars
-        .get("HISTSIZE")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(500);
-    let histcontrol = executor
-        .env
-        .vars
-        .get("HISTCONTROL")
-        .unwrap_or("ignoreboth")
-        .to_string();
+    let (histsize, histcontrol) = crate::interactive::history::history_settings(&executor.env.vars);
     executor.env.history.add(&cmd, histsize, &histcontrol);
 
     executor.eval_string(&cmd);
@@ -367,6 +356,21 @@ mod tests {
 
     fn hist(n: usize) -> Vec<String> {
         (1..=n).map(|i| format!("cmd{i}")).collect()
+    }
+
+    /// `fc -s` must read HISTSIZE like the REPL does: a negative value
+    /// means unlimited, so re-adding the command trims nothing.
+    #[test]
+    fn fc_s_honors_negative_histsize_as_unlimited() {
+        let mut exec = Executor::new("yosh", vec![]);
+        for i in 0..505 {
+            exec.env.history.add(&format!("true {i}"), usize::MAX, "");
+        }
+        exec.env.vars.set("HISTSIZE", "-1").unwrap();
+        let status = builtin_fc(&["-s".to_string(), "1".to_string()], &mut exec).unwrap();
+        assert_eq!(status, 0);
+        assert_eq!(exec.env.history.entries().len(), 506);
+        assert_eq!(exec.env.history.first_number(), 1);
     }
 
     #[test]
@@ -432,7 +436,10 @@ mod tests {
         let h = hist(20);
         assert_eq!(fc_resolve_range(&[], true, &h, 1), Ok((4, 19)));
         assert_eq!(fc_resolve_range(&[], false, &h, 1), Ok((19, 19)));
-        assert_eq!(fc_resolve_range(&["0".to_string()], true, &h, 1), Ok((19, 19)));
+        assert_eq!(
+            fc_resolve_range(&["0".to_string()], true, &h, 1),
+            Ok((19, 19))
+        );
         assert_eq!(
             fc_resolve_range(&["0".to_string()], false, &h, 1),
             Ok((19, 19))
