@@ -5,7 +5,7 @@ mod scanner;
 pub mod token;
 mod word;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::parser::ast::WordPart;
@@ -15,20 +15,16 @@ pub struct LexerState {
     pub pos: usize,
     pub line: usize,
     pub column: usize,
-    alias_token_queue: VecDeque<alias::QueuedToken>,
-    check_alias: bool,
-    expanding_aliases: HashSet<String>,
-    alias_ctx: alias::AliasCtx,
-    last_alias_source: Option<Rc<str>>,
+    alias_state: alias::AliasState,
 }
 
 /// A cheap snapshot of only the byte-cursor fields (`pos`/`line`/`column`).
 ///
-/// Unlike `LexerState`, this does NOT capture `alias_token_queue`,
-/// `check_alias`, or `expanding_aliases`. It is only safe to use around a
-/// scan that provably never calls anything that can mutate those fields —
-/// i.e. no call to `Lexer::next_token` (the only place that dequeues the
-/// alias queue, flips `check_alias`, or touches `expanding_aliases`).
+/// Unlike `LexerState`, this does NOT capture the alias-substitution state
+/// (`alias::AliasState`: the token queue, command-name position, and the
+/// recursion guard). It is only safe to use around a scan that provably
+/// never calls anything that can mutate that state — i.e. no call to
+/// `Lexer::next_token` (the only place that touches it).
 /// Plain byte-level helpers (`advance`, `current_byte`, `at_end`, ...) are
 /// fine. See `Lexer::try_read_io_number` for the sole caller and its
 /// safety argument.
@@ -80,11 +76,6 @@ pub struct Lexer {
     heredoc_bodies: Vec<(u64, Vec<WordPart>)>,
     next_heredoc_id: u64,
     aliases: HashMap<String, String>,
-    expanding_aliases: HashSet<String>,
-    check_alias: bool,
-    /// Queue of tokens produced by alias expansion, to be returned before
-    /// reading more input. Each carries its spelling in the alias value.
-    alias_token_queue: VecDeque<alias::QueuedToken>,
     /// While non-zero, `\<newline>` line continuations are NOT removed by
     /// `advance` (single quotes, `$'...'`, here-document bodies).
     no_join: u32,
@@ -99,13 +90,9 @@ pub struct Lexer {
     /// cache each nesting level of `$(echo $(echo ...))` doubled the
     /// parse time.
     token_cache: HashMap<usize, CachedToken>,
-    /// Command-position / recursion-guard bookkeeping for alias substitution.
-    alias_ctx: alias::AliasCtx,
-    /// `Some(spelling)` when the token most recently returned by
-    /// `next_token` came from an alias replacement rather than directly
-    /// from the input (so the input text does not spell it): the token's
-    /// raw text in the alias value, leading blanks included.
-    last_alias_source: Option<Rc<str>>,
+    /// Alias-substitution state (token queue, command-name position,
+    /// recursion guard); saved and restored with the cursor.
+    alias_state: alias::AliasState,
 }
 
 struct CachedToken {
@@ -134,15 +121,11 @@ impl Lexer {
             heredoc_bodies: Vec::new(),
             next_heredoc_id: 0,
             aliases: HashMap::new(),
-            expanding_aliases: HashSet::new(),
-            check_alias: true,
-            alias_token_queue: VecDeque::new(),
             no_join: 0,
             nest_depth: 0,
             subparse_count: 0,
             token_cache: HashMap::new(),
-            alias_ctx: alias::AliasCtx::default(),
-            last_alias_source: None,
+            alias_state: alias::AliasState::default(),
         }
     }
 
@@ -160,15 +143,11 @@ impl Lexer {
             heredoc_bodies: Vec::new(),
             next_heredoc_id: 0,
             aliases: HashMap::new(),
-            expanding_aliases: HashSet::new(),
-            check_alias: true,
-            alias_token_queue: VecDeque::new(),
             no_join: 0,
             nest_depth: self.nest_depth + SUBPARSE_NEST_COST,
             subparse_count: 0,
             token_cache: HashMap::new(),
-            alias_ctx: alias::AliasCtx::default(),
-            last_alias_source: None,
+            alias_state: alias::AliasState::default(),
         }
     }
 
@@ -239,11 +218,7 @@ impl Lexer {
             pos: self.pos,
             line: self.line,
             column: self.column,
-            alias_token_queue: self.alias_token_queue.clone(),
-            check_alias: self.check_alias,
-            expanding_aliases: self.expanding_aliases.clone(),
-            alias_ctx: self.alias_ctx.clone(),
-            last_alias_source: self.last_alias_source.clone(),
+            alias_state: self.alias_state.clone(),
         }
     }
 
@@ -251,11 +226,7 @@ impl Lexer {
         self.pos = state.pos;
         self.line = state.line;
         self.column = state.column;
-        self.alias_token_queue = state.alias_token_queue;
-        self.check_alias = state.check_alias;
-        self.expanding_aliases = state.expanding_aliases;
-        self.alias_ctx = state.alias_ctx;
-        self.last_alias_source = state.last_alias_source;
+        self.alias_state = state.alias_state;
     }
 
     /// When the token most recently returned by `next_token` was produced
@@ -264,7 +235,7 @@ impl Lexer {
     /// the alias name, not the token. `None` for a token read directly
     /// from the input.
     pub(crate) fn last_token_alias_source(&self) -> Option<&str> {
-        self.last_alias_source.as_deref()
+        self.alias_state.last_source()
     }
 
     /// Cheap cursor-only snapshot; see `CursorState` for the safety contract.
@@ -830,8 +801,8 @@ mod tests {
     //
     // These lock in behavior around `try_read_io_number`'s `save_state`/
     // `restore_state` pair (src/lexer/scanner.rs) while it interacts with
-    // alias-expansion state (the token queue, `check_alias`, and the
-    // `expanding_aliases` recursion guard). They must stay green whether
+    // alias-expansion state (the token queue, command-name position, and
+    // the recursion guard). They must stay green whether
     // `save_state` does a full clone or a light pos/line/column-only
     // snapshot, because nothing between save and restore in
     // `try_read_io_number` can mutate the alias-related fields (only the
@@ -866,7 +837,7 @@ mod tests {
         // inside the sub-lexer used for `a`'s expansion must backtrack. The
         // second `a` in the expansion is scanned by that SAME sub-lexer
         // (still inside `next_token`'s alias-expansion block), while `a` is
-        // already in `expanding_aliases` — the recursion guard must still
+        // already being expanded — the recursion guard must still
         // correctly block it from expanding again, regardless of the
         // intervening io-number backtrack.
         use crate::env::aliases::AliasStore;
@@ -915,7 +886,7 @@ mod tests {
     fn io_number_lookahead_digit_redirect_inside_alias_expansion() {
         // Alias value itself contains a digit-then-redirect sequence, so
         // try_read_io_number's save/restore runs inside the sub-lexer used
-        // for alias expansion (which has non-empty `expanding_aliases`).
+        // for alias expansion (whose recursion guard is non-empty).
         use crate::env::aliases::AliasStore;
         let mut aliases = AliasStore::default();
         aliases.set("redir", "cmd 2>/dev/null");

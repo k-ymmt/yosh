@@ -5,7 +5,7 @@ mod redirect;
 mod simple;
 pub(crate) mod word;
 
-use simple::is_assignment_word;
+pub(crate) use simple::is_assignment_word;
 pub(crate) use simple::try_parse_assignment;
 
 use crate::error::{self, ParseErrorKind, ShellError};
@@ -460,9 +460,9 @@ impl Parser {
             // Full `save_state` (not the lexer's light `CursorState`) is
             // required here: the loop below calls `self.advance()`
             // (`Parser::advance`), which drives `Lexer::next_token()` and
-            // can dequeue `alias_token_queue` / flip `check_alias` / mutate
-            // `expanding_aliases` when the look-ahead words came from (or
-            // trigger) alias expansion. A cursor-only snapshot would lose
+            // can dequeue the alias token queue / flip command-name
+            // position / change the alias recursion guard when the
+            // look-ahead words came from (or trigger) alias expansion. A cursor-only snapshot would lose
             // that state on the restore path below and corrupt subsequent
             // alias expansion. See `Lexer::try_read_io_number` for the
             // contrasting call site where the light snapshot IS safe.
@@ -849,9 +849,9 @@ mod tests {
     // `parse_command`'s assignment-prefix lookahead (this file, around
     // `save_state`/`restore_state`) calls `self.advance()` inside the loop,
     // which is `Parser::advance` — it drives the lexer's `next_token()` and
-    // CAN dequeue from `alias_token_queue` / mutate `check_alias` /
-    // `expanding_aliases`. That means this call site must keep the FULL
-    // `save_state` (queue + HashSet clone), unlike the io-number lookahead
+    // CAN dequeue from the alias token queue / change command-name position
+    // or the recursion guard. That means this call site must keep the FULL
+    // `save_state` (alias-state clone), unlike the io-number lookahead
     // in the lexer. These tests exercise alias expansion across exactly
     // this save/restore pair on both outcomes (compound found, and
     // fallback/restore) to lock in correct behavior regardless of how

@@ -2,18 +2,18 @@
 //!
 //! Expansion is lazy: when a word in command-name position names an alias,
 //! the alias value is tokenized (without further expansion) and pushed onto
-//! the front of `alias_token_queue`. Queued tokens go through the same
+//! the front of the alias token queue (`AliasState::queue`). Queued tokens go through the same
 //! command-position check as raw input when they are dequeued, so an alias
 //! whose value starts with another alias, or contains several commands
 //! (`alias a='if true; then e x; fi'`), is substituted exactly as if its
 //! text had been typed.
 //!
-//! The recursion guard (`expanding_aliases`) holds an alias name only while
-//! its replacement tokens are still being consumed: an `AliasFrame` records
-//! the queue length below which the expansion is finished, and the name is
-//! released before the next token is read. `alias e='echo '` therefore turns
-//! `e e e` into `echo echo echo`, and `alias e=echo` keeps working for every
-//! later command.
+//! The recursion guard holds an alias name only while its replacement
+//! tokens are still being consumed: an `AliasFrame` records the queue
+//! length below which the expansion is finished, and the frame (with its
+//! name) is released before the next token is read. `alias e='echo '`
+//! therefore turns `e e e` into `echo echo echo`, and `alias e=echo` keeps
+//! working for every later command.
 //!
 //! Command-name position is tracked by a small grammar state machine in
 //! `update_check_alias_after`: it is re-enabled after control operators,
@@ -24,23 +24,33 @@
 //! redirect targets are not alias-substituted in command position.
 //!
 //! A trailing-blank alias (`alias e='echo '`) makes only the next token
-//! *eligible* for substitution (`AliasCtx::after_trailing_blank`); it does
+//! *eligible* for substitution (`AliasState::after_trailing_blank`); it does
 //! not put that word in command position, so `e case` does not open a
 //! case context and `e if` substitutes an alias named `if`.
 
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 use super::Lexer;
 use super::reserved::is_posix_reserved_word;
 use super::token::{SpannedToken, Token};
 use crate::error;
-use crate::parser::ast::{Word, WordPart};
+use crate::parser::is_assignment_word;
 
-/// Alias-substitution bookkeeping beyond the token queue and the guard set.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct AliasCtx {
+/// All alias-substitution state that look-ahead must save and restore
+/// with the cursor (see `Lexer::save_state`). The alias table itself is
+/// not part of it.
+#[derive(Clone, Debug)]
+pub(crate) struct AliasState {
+    /// Queue of tokens produced by alias expansion, to be returned before
+    /// reading more input. Each carries its spelling in the alias value.
+    queue: VecDeque<QueuedToken>,
+    /// The next word is in grammatical command-name position (and so
+    /// subject to alias substitution).
+    check_alias: bool,
     /// One frame per alias expansion whose replacement tokens have not all
-    /// been consumed yet (innermost last).
+    /// been consumed yet (innermost last). The frames' names are the
+    /// recursion guard: an alias is not substituted while it has a frame.
     frames: Vec<AliasFrame>,
     /// Nesting stack of case clauses being lexed (innermost last).
     case_stack: Vec<CaseState>,
@@ -54,6 +64,38 @@ pub(crate) struct AliasCtx {
     /// in command position, so it is not recognized as a reserved word and
     /// does not drive the grammar state machine.
     after_trailing_blank: bool,
+    /// `Some(spelling)` when the token most recently returned by
+    /// `next_token` came from an alias replacement rather than directly
+    /// from the input (so the input text does not spell it): the token's
+    /// raw text in the alias value, leading blanks included.
+    last_source: Option<Rc<str>>,
+}
+
+impl Default for AliasState {
+    fn default() -> Self {
+        AliasState {
+            queue: VecDeque::new(),
+            check_alias: true,
+            frames: Vec::new(),
+            case_stack: Vec::new(),
+            redirect_target: None,
+            after_trailing_blank: false,
+            last_source: None,
+        }
+    }
+}
+
+impl AliasState {
+    /// The recursion guard: `name` is being expanded and its replacement
+    /// tokens are not all consumed yet.
+    fn is_expanding(&self, name: &str) -> bool {
+        self.frames.iter().any(|f| f.name == name)
+    }
+
+    /// See `last_source`.
+    pub(crate) fn last_source(&self) -> Option<&str> {
+        self.last_source.as_deref()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -72,7 +114,7 @@ struct AliasFrame {
 #[derive(Clone, Debug)]
 pub(crate) struct QueuedToken {
     token: SpannedToken,
-    source: std::rc::Rc<str>,
+    source: Rc<str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -91,24 +133,12 @@ enum CaseState {
     Body,
 }
 
-/// True when `word` would be classified as an assignment in a command
-/// prefix (`NAME=...` with an unquoted literal `NAME=` lead).
-fn is_assignment_word(word: &Word) -> bool {
-    let Some(WordPart::Literal(s)) = word.parts.first() else {
-        return false;
-    };
-    let Some(eq) = s.find('=') else {
-        return false;
-    };
-    crate::parser::word::is_valid_name(&s[..eq])
-}
-
 impl Lexer {
     pub fn next_token(&mut self) -> error::Result<SpannedToken> {
         loop {
             self.release_finished_aliases();
 
-            let (tok, alias_source) = match self.alias_token_queue.pop_front() {
+            let (tok, alias_source) = match self.alias_state.queue.pop_front() {
                 Some(q) => (q.token, Some(q.source)),
                 None => (self.next_token_raw()?, None),
             };
@@ -116,11 +146,12 @@ impl Lexer {
             // `check_alias` is grammatical command-name position, where a
             // reserved-word spelling is a reserved word and never an alias.
             // After a trailing-blank alias the word is merely eligible.
-            if (self.check_alias || self.alias_ctx.after_trailing_blank)
+            let st = &self.alias_state;
+            if (st.check_alias || st.after_trailing_blank)
                 && let Token::Word(ref word) = tok.token
                 && let Some(word_text) = word.as_literal()
-                && !(self.check_alias && is_posix_reserved_word(word_text))
-                && !self.expanding_aliases.contains(word_text)
+                && !(st.check_alias && is_posix_reserved_word(word_text))
+                && !st.is_expanding(word_text)
                 && let Some(alias_value) = self.aliases.get(word_text).cloned()
             {
                 let name = word_text.to_string();
@@ -131,8 +162,8 @@ impl Lexer {
                 continue;
             }
 
-            self.last_alias_source = alias_source;
-            self.alias_ctx.after_trailing_blank = false;
+            self.alias_state.last_source = alias_source;
+            self.alias_state.after_trailing_blank = false;
             self.update_check_alias_after(&tok.token);
             return Ok(tok);
         }
@@ -141,13 +172,13 @@ impl Lexer {
     /// Drop from the recursion guard every alias whose replacement tokens
     /// have all been consumed, applying its trailing-blank rule.
     fn release_finished_aliases(&mut self) {
-        while let Some(frame) = self.alias_ctx.frames.last()
-            && self.alias_token_queue.len() <= frame.base_len
+        let st = &mut self.alias_state;
+        while let Some(frame) = st.frames.last()
+            && st.queue.len() <= frame.base_len
         {
-            let frame = self.alias_ctx.frames.pop().expect("checked above");
-            self.expanding_aliases.remove(&frame.name);
+            let frame = st.frames.pop().expect("checked above");
             if frame.trailing_blank {
-                self.alias_ctx.after_trailing_blank = true;
+                st.after_trailing_blank = true;
             }
         }
     }
@@ -179,11 +210,11 @@ impl Lexer {
             });
         }
 
-        let base_len = self.alias_token_queue.len();
-        queue.append(&mut self.alias_token_queue);
-        self.alias_token_queue = queue;
-        self.expanding_aliases.insert(name.clone());
-        self.alias_ctx.frames.push(AliasFrame {
+        let st = &mut self.alias_state;
+        let base_len = st.queue.len();
+        queue.append(&mut st.queue);
+        st.queue = queue;
+        st.frames.push(AliasFrame {
             base_len,
             name,
             trailing_blank,
@@ -194,10 +225,10 @@ impl Lexer {
     /// Decide whether the next word is in command-name position (and so
     /// subject to alias substitution) after producing `token`.
     pub(crate) fn update_check_alias_after(&mut self, token: &Token) {
-        let cmd_pos = self.check_alias;
-        let ctx = &mut self.alias_ctx;
+        let ctx = &mut self.alias_state;
+        let cmd_pos = ctx.check_alias;
         let case_top = ctx.case_stack.last().copied();
-        self.check_alias = match token {
+        ctx.check_alias = match token {
             Token::Word(word) => {
                 if let Some(saved) = ctx.redirect_target.take() {
                     saved

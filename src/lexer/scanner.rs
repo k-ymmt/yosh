@@ -404,12 +404,12 @@ impl Lexer {
     /// Returns None and restores state if not followed by a redirect operator.
     ///
     /// Uses the light `CursorState` snapshot (pos/line/column only) instead
-    /// of the full `LexerState` (which also clones `alias_token_queue` and
-    /// `expanding_aliases`). This is safe here because the only operations
-    /// performed between save and restore are the byte-level `advance` and
-    /// `current_byte`/`at_end` — none of which touch the alias queue,
-    /// `check_alias`, or `expanding_aliases`. Those fields are only ever
-    /// mutated inside `Lexer::next_token`, which is never called in this
+    /// of the full `LexerState` (which also clones the alias-substitution
+    /// state). This is safe here because the only operations performed
+    /// between save and restore are the byte-level `advance` and
+    /// `current_byte`/`at_end` — none of which touch the alias state
+    /// (token queue, command-name position, recursion guard). It is only
+    /// ever mutated inside `Lexer::next_token`, which is never called in this
     /// scan. Contrast with `Parser::parse_command`'s assignment lookahead
     /// (src/parser/mod.rs), which DOES call `next_token` (via
     /// `Parser::advance`) between save and restore and therefore must keep

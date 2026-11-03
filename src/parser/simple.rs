@@ -114,13 +114,8 @@ impl Parser {
     }
 }
 
-/// Try to parse an assignment from a word.
-/// Returns Some(Assignment) if the word contains an `=` and a valid name prefix.
-///
-/// A free function (not a `Parser` method): it needs no parser state and is
-/// also called from the executor's assignment re-check.
-/// Whether `try_parse_assignment` would accept `word` (`NAME=...`),
-/// without building the assignment.
+/// Whether `try_parse_assignment` would accept `word` (`NAME=...` with an
+/// unquoted literal `NAME=` lead), without building the assignment.
 pub(crate) fn is_assignment_word(word: &Word) -> bool {
     match word.parts.first() {
         Some(WordPart::Literal(s)) => s.find('=').is_some_and(|eq| is_valid_name(&s[..eq])),
@@ -128,6 +123,11 @@ pub(crate) fn is_assignment_word(word: &Word) -> bool {
     }
 }
 
+/// Try to parse an assignment from a word.
+/// Returns Some(Assignment) if the word contains an `=` and a valid name prefix.
+///
+/// A free function (not a `Parser` method): it needs no parser state and is
+/// also called from the executor's assignment re-check.
 pub(crate) fn try_parse_assignment(word: &Word) -> Option<Assignment> {
     // We need the first part to be a Literal containing '='
     // (or the word might be entirely a literal like "FOO=bar")
