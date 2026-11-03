@@ -136,11 +136,8 @@ impl Executor {
         let prev_dot_script = self.env.mode.in_dot_script;
         self.env.mode.in_dot_script = true;
         self.env.exec.indirection_level += 1;
-        let status = match crate::parser::Parser::new_with_aliases(&content, &self.env.aliases)
-            .parse_program()
-        {
-            Ok(program) => {
-                let s = self.exec_program(&program);
+        let status = match self.exec_text(&content) {
+            Ok(s) => {
                 if let Some(crate::env::FlowControl::Return(code)) = self.env.exec.flow_control {
                     self.env.exec.flow_control = None;
                     self.env.mode.in_dot_script = prev_dot_script;
@@ -150,7 +147,14 @@ impl Executor {
                 s
             }
             Err(e) => {
-                eprintln!("yosh: {}", e);
+                // ShellError's Display already starts with `yosh: `; name
+                // the sourced file instead of repeating it.
+                let msg = e.to_string();
+                eprintln!(
+                    "yosh: {}: {}",
+                    path.display(),
+                    msg.strip_prefix("yosh: ").unwrap_or(&msg)
+                );
                 2
             }
         };
@@ -232,12 +236,51 @@ impl Executor {
         status
     }
 
+    /// Parse and run shell code one complete command at a time (`eval`,
+    /// `.`, trap actions), as the top-level script loop does and as dash
+    /// and bash do: aliases defined by a command apply to the lines after
+    /// it, and a syntax error on a later line is reported only after the
+    /// earlier lines ran. Stops early on `break` / `continue` / `return`,
+    /// `exit`, or a fatal error. `Err` is the syntax error that ended the
+    /// text; the commands before it have run.
+    pub(crate) fn exec_text(&mut self, input: &str) -> Result<i32, crate::error::ShellError> {
+        let mut parser = crate::parser::Parser::new_with_aliases(input, &self.env.aliases);
+        let mut status = 0;
+        let mut first = true;
+        loop {
+            if !first {
+                parser.set_aliases(&self.env.aliases);
+            }
+            first = false;
+            let parsed = parser.skip_newlines().and_then(|()| {
+                if parser.is_at_end() {
+                    Ok(None)
+                } else {
+                    parser.parse_complete_command().map(Some)
+                }
+            });
+            match parsed {
+                Ok(None) => break,
+                Ok(Some(cmd)) => {
+                    status = self.exec_complete_command(&cmd);
+                    if self.should_unwind() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    self.env.exec.last_exit_status = status;
+                    return Err(e);
+                }
+            }
+        }
+        self.env.exec.last_exit_status = status;
+        Ok(status)
+    }
+
     /// Evaluate a string as shell commands (used by trap actions and eval).
     pub fn eval_string(&mut self, input: &str) {
-        match crate::parser::Parser::new_with_aliases(input, &self.env.aliases).parse_program() {
-            Ok(program) => {
-                self.exec_program(&program);
-            }
+        match self.exec_text(input) {
+            Ok(_) => {}
             Err(e) => {
                 // A trap action with a syntax error must not fail silently
                 // at fire time (bash/dash print the diagnostic).

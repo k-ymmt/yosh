@@ -56,7 +56,21 @@ pub struct Lexer {
     pending_heredocs: Vec<PendingHereDoc>,
     heredoc_bodies: Vec<(u64, Vec<WordPart>)>,
     next_heredoc_id: u64,
-    aliases: HashMap<String, String>,
+    /// Alias table, shared (not copied) with the sub-lexers that parse
+    /// `$(...)` and backquoted bodies: as in dash, a substitution's body
+    /// is parsed with the aliases in effect when the enclosing command is
+    /// parsed.
+    aliases: Rc<HashMap<String, String>>,
+    /// Alias names never substituted by this lexer or its sub-lexers: the
+    /// aliases whose values are being read when this lexer was created
+    /// for a command substitution inside an alias value (dash's
+    /// "alias in use" guard reaches into `alias a='echo $(a)'`).
+    blocked_aliases: Rc<[String]>,
+    /// Whether words this lexer reads itself are alias-substituted. Off
+    /// for the lexer that tokenizes an alias value: its tokens are
+    /// substituted lazily when dequeued, but command substitutions inside
+    /// the value still see `aliases`.
+    substitute_aliases: bool,
     /// While non-zero, `\<newline>` line continuations are NOT removed by
     /// `advance` (single quotes, `$'...'`, here-document bodies).
     no_join: u32,
@@ -109,7 +123,9 @@ impl Lexer {
             pending_heredocs: Vec::new(),
             heredoc_bodies: Vec::new(),
             next_heredoc_id: 0,
-            aliases: HashMap::new(),
+            aliases: Rc::default(),
+            blocked_aliases: Rc::new([]),
+            substitute_aliases: true,
             no_join: 0,
             nest_depth: 0,
             subparse_count: 0,
@@ -119,22 +135,32 @@ impl Lexer {
     }
 
     /// A lexer over the same input, starting at the current position, for
-    /// parsing a nested `$(...)` body with the real grammar. It starts
-    /// with no aliases and no pending here-documents (the body is a
-    /// separate program), one nesting level deeper.
+    /// parsing a nested `$(...)` body with the real grammar. It shares this
+    /// lexer's alias table but starts with fresh alias-substitution state
+    /// and no pending here-documents (the body is a separate program), one
+    /// nesting level deeper.
     pub(crate) fn sub_lexer(&self) -> Lexer {
         let mut lexer = Lexer::over(Rc::clone(&self.input));
         lexer.restore_cursor(self.save_cursor());
-        lexer.nest_depth = self.nest_depth + crate::parser::SUBPARSE_NEST_COST;
+        lexer.inherit_aliases(self);
         lexer
     }
 
     /// A fresh lexer over `input` that inherits this lexer's nesting depth
-    /// (for re-parsing a backquoted command body).
+    /// and alias table (for re-parsing a backquoted command body).
     pub(crate) fn nested_lexer(&self, input: &str) -> Lexer {
         let mut lexer = Lexer::new(input);
-        lexer.nest_depth = self.nest_depth + crate::parser::SUBPARSE_NEST_COST;
+        lexer.inherit_aliases(self);
         lexer
+    }
+
+    /// Set up a lexer for a command substitution body found by `parent`:
+    /// one nesting level deeper, with the parent's alias table and alias
+    /// recursion guard.
+    fn inherit_aliases(&mut self, parent: &Lexer) {
+        self.nest_depth = parent.nest_depth + crate::parser::SUBPARSE_NEST_COST;
+        self.aliases = Rc::clone(&parent.aliases);
+        self.blocked_aliases = Rc::clone(&parent.blocked_aliases);
     }
 
     /// Error out once word-level nesting gets too deep (see
@@ -167,10 +193,13 @@ impl Lexer {
     /// Replace the alias table (used when a persistent parser reads a
     /// script command by command and earlier commands changed aliases).
     pub fn set_aliases(&mut self, aliases: &crate::env::aliases::AliasStore) {
-        self.aliases.clear();
-        for (name, value) in aliases.sorted_iter() {
-            self.aliases.insert(name.to_string(), value.to_string());
-        }
+        self.aliases = Rc::new(
+            aliases
+                .sorted_iter()
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+        );
     }
 
     /// Drop cached command-substitution tokens (see `token_cache`); the

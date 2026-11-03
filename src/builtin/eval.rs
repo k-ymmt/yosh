@@ -10,10 +10,12 @@ pub fn builtin_eval(args: &[String], executor: &mut Executor) -> Result<i32, She
         return Ok(0);
     }
     let input = args.join(" ");
-    match crate::parser::Parser::new_with_aliases(&input, &executor.env.aliases).parse_program() {
-        Ok(program) => Ok(executor.exec_program(&program)),
+    match executor.exec_text(&input) {
+        Ok(status) => Ok(status),
         Err(e) => {
-            eprintln!("yosh: eval: {}", e);
+            // ShellError's Display already starts with `yosh: `.
+            let msg = e.to_string();
+            eprintln!("yosh: eval: {}", msg.strip_prefix("yosh: ").unwrap_or(&msg));
             Ok(2)
         }
     }

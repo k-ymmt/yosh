@@ -197,7 +197,9 @@ pub(super) fn expand_string(env: &mut ShellEnv, s: &str) -> crate::error::Result
 /// bash/dash instead of collapsing to `12`). An unparsable body
 /// substitutes nothing.
 fn run_command_sub(env: &mut ShellEnv, cmd_str: &str, result: &mut String) {
-    if let Ok(program) = crate::parser::Parser::new(cmd_str).parse_program() {
+    if let Ok(program) =
+        crate::parser::Parser::new_with_aliases(cmd_str, &env.aliases).parse_program()
+    {
         result.push_str(&command_sub::execute(env, &program));
     }
 }
@@ -221,7 +223,9 @@ fn run_command_sub(env: &mut ShellEnv, cmd_str: &str, result: &mut String) {
 /// plain variable lookup swallowed the error entirely.
 fn expand_braced_param(env: &mut ShellEnv, inner: &str) -> crate::error::Result<String> {
     let input = format!("${{{}}}", inner);
-    let mut lexer = crate::lexer::Lexer::new(&input);
+    // The aliases only reach command substitutions nested in the word
+    // (`${x:-$(e y)}`); `read_word_parts` itself never substitutes them.
+    let mut lexer = crate::lexer::Lexer::new_with_aliases(&input, &env.aliases);
     // Lex with double-quote rules: both raw-string contexts (here-document
     // bodies, arithmetic text) are double-quote-like, so the word of
     // `${x:-'s'}` keeps its single quotes (POSIX §2.7.4/§2.6.4; dash and

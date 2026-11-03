@@ -23,6 +23,7 @@ use ast::{AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, Separ
 pub(super) struct Snapshot {
     lexer: LexerState,
     current: SpannedToken,
+    pre_current_pos: usize,
 }
 
 pub struct Parser {
@@ -123,11 +124,13 @@ impl Parser {
     /// alias expansion. See `Lexer::try_read_io_number` for the
     /// contrasting call site where the light snapshot IS safe.
     ///
-    /// `pre_current_pos` is not part of the snapshot.
+    /// `pre_current_pos` is saved too, so `consumed_bytes` after a rewind
+    /// still names the start of the restored look-ahead token.
     pub(super) fn snapshot(&self) -> Snapshot {
         Snapshot {
             lexer: self.lexer.save_state(),
             current: self.current.clone(),
+            pre_current_pos: self.pre_current_pos,
         }
     }
 
@@ -135,6 +138,7 @@ impl Parser {
     pub(super) fn rewind(&mut self, snapshot: Snapshot) {
         self.lexer.restore_state(snapshot.lexer);
         self.current = snapshot.current;
+        self.pre_current_pos = snapshot.pre_current_pos;
     }
 
     pub fn advance(&mut self) -> error::Result<()> {
@@ -244,7 +248,16 @@ impl Parser {
                 }
             };
             items.push((aol, sep));
-            if ended || self.is_at_end() || self.is_complete_command_end() {
+            if ended || self.is_at_end() {
+                break;
+            }
+            if self.is_complete_command_end() {
+                // `a; fi` / `a & )`: a closer after the separator ends an
+                // enclosing construct, which at the top level does not
+                // exist. Reject it here, as part of this complete command,
+                // so no command on the line runs (POSIX §2.10: the whole
+                // line is parsed before any of it executes).
+                self.check_command_terminator()?;
                 break;
             }
             if self.current.token == Token::Newline {
@@ -472,8 +485,7 @@ impl Parser {
     /// Returns true when we've reached a token that ends a complete command.
     pub(super) fn is_complete_command_end(&self) -> bool {
         match &self.current.token {
-            Token::Eof => true,
-            Token::RParen => true,
+            Token::Eof | Token::RParen | Token::DSemi | Token::SemiAnd => true,
             Token::Word(word) => word.as_literal().is_some_and(is_closing_reserved_word),
             _ => false,
         }
@@ -857,5 +869,20 @@ mod tests {
         assert_eq!(sc.words.len(), 2);
         assert_eq!(sc.words[0].as_literal(), Some("echo"));
         assert_eq!(sc.words[1].as_literal(), Some("hi"));
+    }
+
+    #[test]
+    fn rewind_restores_consumed_bytes() {
+        let mut p = Parser::new("a=1 b=2 echo x\n");
+        p.advance().unwrap();
+        let before = p.consumed_bytes();
+        assert_eq!(before, 3, "look-ahead `b=2` starts after `a=1`");
+        let saved = p.snapshot();
+        p.advance().unwrap();
+        p.advance().unwrap();
+        assert_ne!(p.consumed_bytes(), before);
+        p.rewind(saved);
+        assert_eq!(p.consumed_bytes(), before);
+        assert_eq!(p.current_token(), &Token::Word(ast::Word::literal("b=2")));
     }
 }

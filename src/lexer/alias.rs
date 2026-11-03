@@ -147,11 +147,13 @@ impl Lexer {
             // reserved-word spelling is a reserved word and never an alias.
             // After a trailing-blank alias the word is merely eligible.
             let st = &self.alias_state;
-            if (st.check_alias || st.after_trailing_blank)
+            if self.substitute_aliases
+                && (st.check_alias || st.after_trailing_blank)
                 && let Token::Word(ref word) = tok.token
                 && let Some(word_text) = word.as_literal()
                 && !(st.check_alias && is_posix_reserved_word(word_text))
                 && !st.is_expanding(word_text)
+                && !self.blocked_aliases.iter().any(|b| b == word_text)
                 && let Some(alias_value) = self.aliases.get(word_text).cloned()
             {
                 let name = word_text.to_string();
@@ -192,9 +194,23 @@ impl Lexer {
     ) -> error::Result<()> {
         let trailing_blank = value.ends_with(' ') || value.ends_with('\t');
 
-        // The sub-lexer has no alias table: substitution of the replacement
-        // tokens happens lazily as they are dequeued (see `next_token`).
+        // The value's own words are not substituted here: substitution of
+        // the replacement tokens happens lazily as they are dequeued (see
+        // `next_token`). Command substitutions inside the value are parsed
+        // now, with the alias table and with every alias being expanded
+        // (this one included) blocked, as in dash: `alias a='echo $(a)'`
+        // runs a command named `a` instead of recursing without bound.
         let mut alias_lexer = Lexer::new(value);
+        alias_lexer.substitute_aliases = false;
+        alias_lexer.aliases = Rc::clone(&self.aliases);
+        alias_lexer.blocked_aliases = self
+            .blocked_aliases
+            .iter()
+            .cloned()
+            .chain(self.alias_state.frames.iter().map(|f| f.name.clone()))
+            .chain(std::iter::once(name.clone()))
+            .collect();
+        alias_lexer.nest_depth = self.nest_depth;
         alias_lexer.line = span.line.max(1);
         let mut queue = VecDeque::new();
         loop {
