@@ -19,7 +19,7 @@ use pipeline::expand_word_to_fields;
 pub(crate) use tilde::expand_tilde_prefix;
 
 use crate::env::ShellEnv;
-use crate::parser::ast::{Word, WordPart};
+use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 
 // ─── ExpandedField ──────────────────────────────────────────────────────────
 
@@ -267,85 +267,102 @@ pub fn expand_word(env: &mut ShellEnv, word: &Word) -> crate::error::Result<Vec<
     Ok(out)
 }
 
-/// A word made only of literal text (no expansions), as the field
-/// pipeline would see it: its whole text, whether any part was quoted,
-/// and whether an unquoted part holds a pathname-expansion character.
-struct StaticWord<'a> {
-    text: std::borrow::Cow<'a, str>,
-    quoted: bool,
-    glob_meta: bool,
+/// `true` for a parameter expansion that always yields one scalar
+/// string (everything but `$@`/`$*` and the modifier forms, whose words
+/// keep their own quote structure).
+fn is_scalar_param(p: &ParamExpr) -> bool {
+    match p {
+        ParamExpr::Simple(_) | ParamExpr::Positional(_) => true,
+        ParamExpr::Special(sp) => !matches!(sp, SpecialParam::At | SpecialParam::Star),
+        _ => false,
+    }
 }
 
-/// `Some` for a word with no expansions — the common case for command
-/// names and arguments. Such a word always expands to its text as one
-/// unsplit field (every byte comes from literal or quoted text), so the
-/// per-byte field machinery can be skipped.
-fn static_word(word: &Word) -> Option<StaticWord<'_>> {
-    fn is_glob_meta(s: &str) -> bool {
-        s.bytes().any(|b| matches!(b, b'*' | b'?' | b'['))
+/// Whether `part` can take the scalar fast path (see [`scalar_word`]).
+/// Unquoted expansions qualify only in a string context (no field
+/// splitting there); an unquoted literal holding a pathname-expansion
+/// character qualifies only when `allow_glob_meta` is set.
+fn scalar_part_ok(part: &WordPart, quoted: bool, string_ctx: bool, allow_glob_meta: bool) -> bool {
+    match part {
+        WordPart::Literal(s) => {
+            quoted || allow_glob_meta || !s.bytes().any(|b| matches!(b, b'*' | b'?' | b'['))
+        }
+        WordPart::EscapedLiteral(_)
+        | WordPart::SingleQuoted(_)
+        | WordPart::DollarSingleQuoted(_) => true,
+        WordPart::Parameter(p) => (quoted || string_ctx) && is_scalar_param(p),
+        WordPart::ArithSub(_) | WordPart::CommandSub(_) => quoted || string_ctx,
+        WordPart::DoubleQuoted(inner) => {
+            !quoted
+                && inner
+                    .iter()
+                    .all(|p| scalar_part_ok(p, true, string_ctx, allow_glob_meta))
+        }
+        WordPart::Tilde(_) => false,
     }
-    if let [part] = word.parts.as_slice() {
-        return match part {
-            WordPart::Literal(s) => Some(StaticWord {
-                text: s.as_str().into(),
-                quoted: false,
-                glob_meta: is_glob_meta(s),
-            }),
-            WordPart::EscapedLiteral(s)
-            | WordPart::SingleQuoted(s)
-            | WordPart::DollarSingleQuoted(s) => Some(StaticWord {
-                text: s.as_str().into(),
-                quoted: true,
-                glob_meta: false,
-            }),
-            WordPart::DoubleQuoted(inner) => match inner.as_slice() {
-                [] => Some(StaticWord {
-                    text: "".into(),
-                    quoted: true,
-                    glob_meta: false,
-                }),
-                [WordPart::Literal(s) | WordPart::EscapedLiteral(s)] => Some(StaticWord {
-                    text: s.as_str().into(),
-                    quoted: true,
-                    glob_meta: false,
-                }),
-                _ => None,
-            },
-            _ => None,
-        };
+}
+
+/// Append the expansion of a part accepted by [`scalar_part_ok`].
+fn push_scalar_part(
+    env: &mut ShellEnv,
+    part: &WordPart,
+    out: &mut String,
+) -> crate::error::Result<()> {
+    match part {
+        WordPart::Literal(s)
+        | WordPart::EscapedLiteral(s)
+        | WordPart::SingleQuoted(s)
+        | WordPart::DollarSingleQuoted(s) => out.push_str(s),
+        WordPart::Parameter(p) => out.push_str(&param::expand(env, p)?),
+        WordPart::ArithSub(expr) => out.push_str(&arith::evaluate(env, expr)?),
+        WordPart::CommandSub(program) => out.push_str(&command_sub::execute(env, program)),
+        WordPart::DoubleQuoted(inner) => {
+            for p in inner {
+                push_scalar_part(env, p, out)?;
+            }
+        }
+        WordPart::Tilde(_) => unreachable!("rejected by scalar_part_ok"),
+    }
+    Ok(())
+}
+
+/// Fast path for a word that expands to exactly one string — the
+/// common case for command names, arguments such as `"$x"` or `-lt`,
+/// and assignment values: literal and quoted text plus quoted (or, in a
+/// string context, unquoted) scalar expansions. Such a word never
+/// splits, and an unquoted literal part only matters for pathname
+/// expansion, so the per-byte field machinery can be skipped. Parts
+/// are expanded in order with the same functions the field pipeline
+/// uses. Returns `None` when the word needs the full pipeline, else the
+/// text and whether any part was quoted.
+fn scalar_word(
+    env: &mut ShellEnv,
+    word: &Word,
+    string_ctx: bool,
+) -> Option<crate::error::Result<(String, bool)>> {
+    let allow_glob_meta = string_ctx || env.mode.options.noglob;
+    if !word
+        .parts
+        .iter()
+        .all(|p| scalar_part_ok(p, false, string_ctx, allow_glob_meta))
+    {
+        return None;
     }
     let mut text = String::new();
     let mut quoted = false;
-    let mut glob_meta = false;
     for part in &word.parts {
-        match part {
-            WordPart::Literal(s) => {
-                glob_meta |= is_glob_meta(s);
-                text.push_str(s);
-            }
-            WordPart::EscapedLiteral(s)
-            | WordPart::SingleQuoted(s)
-            | WordPart::DollarSingleQuoted(s) => {
-                quoted = true;
-                text.push_str(s);
-            }
-            WordPart::DoubleQuoted(inner) => {
-                quoted = true;
-                for p in inner {
-                    match p {
-                        WordPart::Literal(s) | WordPart::EscapedLiteral(s) => text.push_str(s),
-                        _ => return None,
-                    }
-                }
-            }
-            _ => return None,
+        quoted |= !matches!(
+            part,
+            WordPart::Literal(_)
+                | WordPart::Parameter(_)
+                | WordPart::ArithSub(_)
+                | WordPart::CommandSub(_)
+        );
+        if let Err(e) = push_scalar_part(env, part, &mut text) {
+            return Some(Err(e));
         }
     }
-    Some(StaticWord {
-        text: text.into(),
-        quoted,
-        glob_meta,
-    })
+    Some(Ok((text, quoted)))
 }
 
 /// [`expand_word`], appending the resulting fields to `out`.
@@ -354,11 +371,10 @@ fn expand_word_into(
     word: &Word,
     out: &mut Vec<String>,
 ) -> crate::error::Result<()> {
-    if let Some(sw) = static_word(word)
-        && (!sw.glob_meta || env.mode.options.noglob)
-    {
-        if !sw.text.is_empty() || sw.quoted {
-            out.push(sw.text.into_owned());
+    if let Some(r) = scalar_word(env, word, false) {
+        let (text, quoted) = r?;
+        if !text.is_empty() || quoted {
+            out.push(text);
         }
         return Ok(());
     }
@@ -391,8 +407,8 @@ pub fn expand_words(env: &mut ShellEnv, words: &[Word]) -> crate::error::Result<
 /// Expand a `Word` to a single `String`, suitable for assignments and
 /// redirect targets (no field splitting, no glob).
 pub fn expand_word_to_string(env: &mut ShellEnv, word: &Word) -> crate::error::Result<String> {
-    if let Some(sw) = static_word(word) {
-        return Ok(sw.text.into_owned());
+    if let Some(r) = scalar_word(env, word, true) {
+        return r.map(|(text, _)| text);
     }
     let fields = expand_word_to_fields(env, word)?;
     // Concatenate all fields (there is normally only one here, but $@/$*
