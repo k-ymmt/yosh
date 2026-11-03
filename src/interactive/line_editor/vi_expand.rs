@@ -49,11 +49,10 @@ impl LineEditor {
                 KeyAction::Continue
             }
             _ => {
-                // ExpandAll: each match becomes its own word, so a quote
-                // the bigword left open cannot be carried over.
-                if open_quote.is_some() {
-                    return self.bell();
-                }
+                // ExpandAll: each match becomes its own word, quoted on
+                // its own, and replaces the whole bigword — a quote the
+                // bigword left open (`"Cargo.t`) is consumed with it, as
+                // bash and ksh do.
                 let replacement = matches
                     .iter()
                     .map(|m| quote_for_insertion("", m))
@@ -246,6 +245,18 @@ mod tests {
         let mut ed = editor_with(&format!("ls \"{base}/a$"));
         ed.vi_expand(ViCmd::CompleteUnique);
         assert_eq!(line_of(&ed), format!("ls \"{base}/a\\$c\" "));
+    }
+
+    /// An open quote in the bigword must not stop `*`: the matches
+    /// replace the whole bigword, quote included.
+    #[test]
+    fn expand_all_consumes_open_quote() {
+        let dir = fixture();
+        let base = dir.path().to_str().unwrap();
+        let mut ed = editor_with(&format!("ls \"{base}/a$"));
+        ed.vi_expand(ViCmd::ExpandAll);
+        assert_eq!(line_of(&ed), format!("ls {base}/a\\$c"));
+        assert_eq!(ed.vi.mode, ViMode::Insert);
     }
 
     #[test]

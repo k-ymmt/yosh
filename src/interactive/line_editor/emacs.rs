@@ -47,6 +47,15 @@ impl LineEditor {
             self.tab_count = 0;
         }
 
+        // A numeric-argument prefix (`Alt+2`) only arms the count for the
+        // next command: it edits nothing and must leave the tracking state
+        // alone, or `C-w M-2 C-w` would no longer see the second kill as
+        // consecutive (readline merges both into one kill-ring entry) and
+        // `C-y M-2 M-y` would no longer see the yank.
+        if matches!(action, EditAction::SetNumericArg(_)) {
+            return self.execute_action(action, count, history, false);
+        }
+
         self.save_undo_before(action);
 
         // Determine if consecutive kill for append
@@ -78,8 +87,16 @@ impl LineEditor {
         // Backspace, the Ctrl kills) may create intermediate entries;
         // `u` after ESC must restore the whole pre-session state.
         let vi_insert = self.edit_mode.is_vi_family();
-        if self.last_was_insert && !matches!(action, EditAction::InsertChar(_)) && !vi_insert {
-            // Finalize the insert group — save current state as group boundary
+        if self.last_was_insert
+            && !matches!(action, EditAction::InsertChar(_))
+            && !vi_insert
+            && !leaves_buffer_unchanged(action)
+        {
+            // Finalize the insert group — save current state as group
+            // boundary. Only before an action that may change the buffer:
+            // a snapshot taken before Undo itself (or a cursor motion)
+            // would equal the buffer it is later restored onto, so the
+            // first `C-_` after typing would appear to do nothing.
             self.undo.save(&self.buf, self.pos);
         }
         match action {
@@ -288,4 +305,26 @@ impl LineEditor {
             EditAction::Noop => KeyAction::Continue,
         }
     }
+}
+
+/// Actions that never change the buffer contents, so they need no undo
+/// snapshot (cursor motions, undo itself, and pure control actions).
+fn leaves_buffer_unchanged(action: EditAction) -> bool {
+    matches!(
+        action,
+        EditAction::MoveBackward
+            | EditAction::MoveForward
+            | EditAction::MoveToStart
+            | EditAction::MoveToEnd
+            | EditAction::MoveBackwardWord
+            | EditAction::MoveForwardWord
+            | EditAction::Undo
+            | EditAction::ClearScreen
+            | EditAction::Cancel
+            | EditAction::SetNumericArg(_)
+            | EditAction::Submit
+            | EditAction::Eof
+            | EditAction::Interrupt
+            | EditAction::Noop
+    )
 }

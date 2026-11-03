@@ -2817,6 +2817,48 @@ fn test_mock_ctrl_underscore_undo() {
     assert_eq!(result.unwrap().unwrap(), "hello");
 }
 
+/// The first `C-_` right after typing undoes the insertion: it used to
+/// restore a snapshot of the unchanged buffer (taken just before the undo
+/// ran) and appear to do nothing. A cursor motion between typing and
+/// undo must not cost an extra press either.
+#[test]
+fn test_mock_ctrl_underscore_undoes_typing_first_press() {
+    let run = |events: Vec<crossterm::event::Event>| {
+        let mut ed = LineEditor::new();
+        let mut history = History::new();
+        let mut term = MockTerminal::new(events);
+        ed.read_line("$ ", &[], &mut history, &mut term)
+            .unwrap()
+            .unwrap()
+    };
+    let direct = [chars("echo abc"), vec![ctrl('_'), key(KeyCode::Enter)]].concat();
+    assert_eq!(run(direct), "echo ");
+    let after_motion = [
+        chars("abc"),
+        vec![ctrl('b'), ctrl('_'), key(KeyCode::Enter)],
+    ]
+    .concat();
+    assert_eq!(run(after_motion), "");
+}
+
+/// A numeric prefix between two kills keeps them consecutive, so both
+/// merge into one kill-ring entry (readline): `C-w M-2 C-w C-y`
+/// restores all three words.
+#[test]
+fn test_mock_numeric_arg_keeps_consecutive_kill() {
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("echo a b c"),
+        vec![ctrl('w'), alt('2'), ctrl('w'), ctrl('y')],
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &[], &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "echo a b c");
+}
+
 #[test]
 fn test_mock_alt_b_word_backward() {
     let mut ed = LineEditor::new();
