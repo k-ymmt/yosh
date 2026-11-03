@@ -62,6 +62,20 @@ pub(crate) fn history_settings(vars: &crate::env::vars::VarStore) -> (usize, Str
     (histsize, histcontrol)
 }
 
+/// The entry limit [`History::save`] wants, read from `$HISTFILESIZE`
+/// with bash semantics: `0` truncates the file to no entries, while a
+/// negative or non-numeric value inhibits truncation; unset means the
+/// REPL default (500). Mirrors [`history_settings`]' HISTSIZE mapping.
+pub(crate) fn histfilesize_setting(vars: &crate::env::vars::VarStore) -> usize {
+    match vars.get("HISTFILESIZE") {
+        None => 500,
+        Some(v) => match v.trim().parse::<i64>() {
+            Ok(n) => usize::try_from(n).unwrap_or(usize::MAX),
+            Err(_) => usize::MAX,
+        },
+    }
+}
+
 /// Command history storage with navigation and persistence.
 ///
 /// Stores commands in chronological order (oldest first) and supports
@@ -258,9 +272,10 @@ impl History {
     }
 
     /// Persist history entries to `path` in the v2 (newline-escaped) format,
-    /// keeping at most `histfilesize` most-recent entries (`0` means keep
-    /// all). One physical line per entry, so multiline commands survive a
-    /// save/load round trip instead of shattering into per-line fragments.
+    /// keeping at most `histfilesize` most-recent entries (`0` keeps none,
+    /// `usize::MAX` all — see [`histfilesize_setting`]). One physical line
+    /// per entry, so multiline commands survive a save/load round trip
+    /// instead of shattering into per-line fragments.
     ///
     /// Errors from `create_dir_all`, `File::create`, and per-entry `writeln!` are
     /// propagated. On a partial-write failure the file is left truncated to
@@ -283,11 +298,7 @@ impl History {
                 .open(path)?
         };
         writeln!(file, "{}", FILE_HEADER_V2)?;
-        let start = if histfilesize > 0 && self.entries.len() > histfilesize {
-            self.entries.len() - histfilesize
-        } else {
-            0
-        };
+        let start = self.entries.len().saturating_sub(histfilesize);
         // Write entries as their original bytes (the inverse of `load`'s
         // byteenc encoding), buffered: one syscall per entry is slow for
         // a large HISTFILESIZE.
@@ -530,6 +541,27 @@ mod tests {
         let mut h2 = History::new();
         h2.load(&path);
         assert_eq!(h2.entries(), &["cmd7", "cmd8", "cmd9"]);
+    }
+
+    /// bash HISTFILESIZE: 0 truncates the file to nothing, a negative or
+    /// non-numeric value keeps everything (yosh read 0 as "keep all" and
+    /// a negative value as the default 500).
+    #[test]
+    fn test_histfilesize_setting_bash_semantics() {
+        let mut env = crate::env::ShellEnv::new("yosh", vec![]);
+        assert_eq!(histfilesize_setting(&env.vars), 500);
+        for (value, want) in [("0", 0), ("7", 7), ("-1", usize::MAX), ("x", usize::MAX)] {
+            env.vars.set("HISTFILESIZE", value).unwrap();
+            assert_eq!(histfilesize_setting(&env.vars), want, "{value}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history");
+        let mut h = History::new();
+        h.add("cmd", 500, "");
+        h.save(&path, 0).unwrap();
+        let mut h2 = History::new();
+        h2.load(&path);
+        assert!(h2.entries().is_empty());
     }
 
     #[test]

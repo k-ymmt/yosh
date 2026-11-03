@@ -150,7 +150,13 @@ impl LineEditor {
         history: &mut History,
     ) -> KeyAction {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
+        // Ctrl+H (BS) erases and Ctrl+J (LF) enters, as in the keymap.
+        let code = match key.code {
+            KeyCode::Char('h') if ctrl => KeyCode::Backspace,
+            KeyCode::Char('j') if ctrl => KeyCode::Enter,
+            code => code,
+        };
+        match code {
             KeyCode::Char('c') if ctrl => {
                 self.vi_search_input = None;
                 return KeyAction::Interrupt;

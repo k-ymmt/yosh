@@ -226,26 +226,29 @@ fn fc_edit(
                 ));
             }
         };
+        // Raw bytes (byteenc egress): an entry holding non-UTF-8 bytes
+        // must reach the editor as those bytes.
         for cmd in &commands {
-            let _ = writeln!(file, "{}", cmd);
+            let _ = file.write_all(&crate::byteenc::decode_bytes(cmd));
+            let _ = file.write_all(b"\n");
         }
     }
 
-    use std::process::Command;
-    let status = Command::new(&editor_cmd).arg(&tmp_path).status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Ok(s.code().unwrap_or(1));
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(ShellError::runtime(
-                RuntimeErrorKind::CommandNotFound,
-                format!("fc: {}: {}", editor_cmd, e),
-            ));
-        }
+    // Run the editor through the shell, as bash and ksh do: the editor
+    // is a utility name found by the normal command search (a function
+    // or builtin works), and an `FCEDIT` / `-e` value carrying options
+    // (`FCEDIT='vim -u NONE'`) is split into words. A foreground editor
+    // also gets the terminal under job control. A plain
+    // `Command::new(editor)` failed for all of these.
+    executor.eval_string(&format!(
+        "{} {}",
+        editor_cmd,
+        crate::builtin::quote::single_quote(&tmp_path)
+    ));
+    let status = executor.env.exec.last_exit_status;
+    if status != 0 {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Ok(status);
     }
 
     let content = match std::fs::read(&tmp_path) {
@@ -263,6 +266,15 @@ fn fc_edit(
     if content.trim().is_empty() {
         return Ok(0);
     }
+
+    // POSIX: the edited commands are entered at the end of the history
+    // list and then re-executed (as `fc -s` already did). The REPL never
+    // records the `fc` line itself.
+    let (histsize, histcontrol) = crate::interactive::history::history_settings(&executor.env.vars);
+    executor
+        .env
+        .history
+        .add(content.trim_end_matches('\n'), histsize, &histcontrol);
 
     executor.eval_string(&content);
     Ok(executor.env.exec.last_exit_status)
@@ -372,6 +384,30 @@ mod tests {
         assert_eq!(status, 0);
         assert_eq!(exec.env.history.entries().len(), 506);
         assert_eq!(exec.env.history.first_number(), 1);
+    }
+
+    /// The editor runs through the shell (a function is a valid editor,
+    /// as in bash and ksh), and the edited command enters the history
+    /// before it runs.
+    #[test]
+    fn fc_edit_runs_editor_as_shell_command_and_records_result() {
+        // The editor function redirects the process's own fd 1.
+        let _fds = crate::test_sync::lock_stdio_fds();
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.eval_string("ed2() { echo 'fc_edited=yes' > \"$1\"; }\n");
+        exec.env.history.add("echo original", 500, "");
+        let status = builtin_fc(&["-e".to_string(), "ed2".to_string()], &mut exec).unwrap();
+        assert_eq!(status, 0);
+        assert_eq!(exec.env.vars.get("fc_edited"), Some("yes"));
+        assert_eq!(
+            exec.env.history.entries().last().map(String::as_str),
+            Some("fc_edited=yes")
+        );
+        // A failing editor aborts without re-executing anything.
+        exec.eval_string("bad() { return 3; }\n");
+        let status = builtin_fc(&["-e".to_string(), "bad".to_string()], &mut exec).unwrap();
+        assert_eq!(status, 3);
+        assert_eq!(exec.env.history.entries().len(), 2);
     }
 
     #[test]

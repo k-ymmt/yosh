@@ -505,13 +505,7 @@ impl Repl {
             .get("HISTFILE")
             .unwrap_or("")
             .to_string();
-        let histfilesize: usize = self
-            .executor
-            .env
-            .vars
-            .get("HISTFILESIZE")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(500);
+        let histfilesize = history::histfilesize_setting(&self.executor.env.vars);
         if !histfile.is_empty()
             && let Err(e) = self
                 .executor
