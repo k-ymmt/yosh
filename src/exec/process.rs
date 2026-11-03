@@ -1,5 +1,8 @@
 //! Process-level primitives for the shell and its forked children:
-//! forking with the stdio locks held, and fork-safe exits.
+//! forking with the stdio locks held, signal masking around forks, and
+//! fork-safe exits.
+
+use nix::sys::signal::{SigSet, SigmaskHow, sigprocmask};
 
 /// Fork the shell process with the std `stdout` / `stderr` locks held.
 ///
@@ -58,6 +61,37 @@ pub(crate) fn exit_child(status: i32) -> ! {
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
     unsafe { libc::_exit(status) }
+}
+
+/// Block every signal, returning the previous mask for
+/// [`restore_signal_mask`]. Held across a fork whose child inherits the
+/// parent's self-pipe handler AND the shared pipe until its own signal
+/// setup runs: a signal delivered in that window would be written into
+/// the pipe and later misread by the parent as its own.
+pub(crate) fn block_all_signals() -> SigSet {
+    let mut prev_mask = SigSet::empty();
+    let _ = sigprocmask(
+        SigmaskHow::SIG_BLOCK,
+        Some(&SigSet::all()),
+        Some(&mut prev_mask),
+    );
+    prev_mask
+}
+
+/// Restore a signal mask saved by [`block_all_signals`].
+pub(crate) fn restore_signal_mask(mask: &SigSet) {
+    let _ = sigprocmask(SigmaskHow::SIG_SETMASK, Some(mask), None);
+}
+
+/// Point stdin at /dev/null (an async list without job control, POSIX
+/// §2.9.3.1). Left unchanged if /dev/null cannot be opened.
+pub(crate) fn stdin_from_dev_null() {
+    if let Ok(devnull) = std::fs::File::open("/dev/null") {
+        use std::os::fd::AsRawFd;
+        unsafe {
+            libc::dup2(devnull.as_raw_fd(), libc::STDIN_FILENO);
+        }
+    }
 }
 
 /// True once this process is a post-fork child of the shell (subshell,

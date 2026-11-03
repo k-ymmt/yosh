@@ -10,7 +10,10 @@ mod simple;
 pub(crate) mod terminal_state;
 mod trap;
 
-pub(crate) use process::{exit_child, fork_shell, mark_forked_child, shell_exit};
+pub(crate) use process::{
+    block_all_signals, exit_child, fork_shell, mark_forked_child, restore_signal_mask, shell_exit,
+    stdin_from_dev_null,
+};
 
 use crate::env::ShellEnv;
 use crate::parser::ast::{AndOrList, Command, WordPart};

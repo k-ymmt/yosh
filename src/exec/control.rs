@@ -1,6 +1,9 @@
 use nix::unistd::ForkResult;
 
-use super::{Executor, exit_child, fork_shell, preview_command};
+use super::{
+    Executor, block_all_signals, exit_child, fork_shell, preview_command, restore_signal_mask,
+    stdin_from_dev_null,
+};
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::parser::ast::{
     AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, SeparatorOp,
@@ -222,22 +225,10 @@ impl Executor {
         // the pipe and later misread by the parent as its own (observed as
         // `kill -TERM $!` racing the child's signal reset and terminating
         // the parent shell). Both sides restore the mask below.
-        let all_signals = nix::sys::signal::SigSet::all();
-        let prev_mask = nix::sys::signal::SigSet::empty();
-        let mut prev_mask_opt = Some(prev_mask);
-        let _ = nix::sys::signal::sigprocmask(
-            nix::sys::signal::SigmaskHow::SIG_BLOCK,
-            Some(&all_signals),
-            prev_mask_opt.as_mut(),
-        );
-        let prev_mask = prev_mask_opt.unwrap();
+        let prev_mask = block_all_signals();
         match unsafe { fork_shell() } {
             Err(e) => {
-                let _ = nix::sys::signal::sigprocmask(
-                    nix::sys::signal::SigmaskHow::SIG_SETMASK,
-                    Some(&prev_mask),
-                    None,
-                );
+                restore_signal_mask(&prev_mask);
                 Err(ShellError::runtime(
                     RuntimeErrorKind::IoError,
                     format!("fork: {}", e),
@@ -278,32 +269,12 @@ impl Executor {
                     // store so nested forks (subshells, exec'd commands)
                     // keep them ignored; a `trap` in the async list may
                     // still override them.
-                    let mut ignored = ignored;
-                    self.env
-                        .traps
-                        .signal_traps
-                        .insert(libc::SIGINT, crate::env::TrapAction::Ignore);
-                    self.env
-                        .traps
-                        .signal_traps
-                        .insert(libc::SIGQUIT, crate::env::TrapAction::Ignore);
-                    ignored.push(libc::SIGINT);
-                    ignored.push(libc::SIGQUIT);
-                    signal::reset_shell_child_signals(&ignored);
-                    if let Ok(devnull) = std::fs::File::open("/dev/null") {
-                        use std::os::fd::AsRawFd;
-                        unsafe {
-                            libc::dup2(devnull.as_raw_fd(), libc::STDIN_FILENO);
-                        }
-                    }
+                    self.ignore_int_quit_in_async_child(ignored);
+                    stdin_from_dev_null();
                 }
                 // Signal dispositions are now the child's own — deliver
                 // anything that arrived while the fork window was blocked.
-                let _ = nix::sys::signal::sigprocmask(
-                    nix::sys::signal::SigmaskHow::SIG_SETMASK,
-                    Some(&prev_mask),
-                    None,
-                );
+                restore_signal_mask(&prev_mask);
 
                 // bash's nofork optimization: a `&` payload shaped like a
                 // single simple command may exec in place (no grandchild
@@ -326,11 +297,7 @@ impl Executor {
                 exit_child(self.child_exit_status(status));
             }
             Ok(ForkResult::Parent { child }) => {
-                let _ = nix::sys::signal::sigprocmask(
-                    nix::sys::signal::SigmaskHow::SIG_SETMASK,
-                    Some(&prev_mask),
-                    None,
-                );
+                restore_signal_mask(&prev_mask);
                 nix::unistd::setpgid(child, child).ok();
                 let command_name = preview_command(and_or);
                 let job_id = self
@@ -347,6 +314,26 @@ impl Executor {
                 Ok(0)
             }
         }
+    }
+
+    /// Signal setup of a non-job-control async child (POSIX §2.9.3.1 /
+    /// §2.12): SIGINT and SIGQUIT are ignored, recorded in the trap store
+    /// so nested forks (subshells, exec'd commands) keep them ignored —
+    /// a `trap` in the async list may still override them — and every
+    /// other disposition is reset like any shell child's (`ignored`: the
+    /// signals already ignored on entry).
+    pub(super) fn ignore_int_quit_in_async_child(&mut self, mut ignored: Vec<i32>) {
+        self.env
+            .traps
+            .signal_traps
+            .insert(libc::SIGINT, crate::env::TrapAction::Ignore);
+        self.env
+            .traps
+            .signal_traps
+            .insert(libc::SIGQUIT, crate::env::TrapAction::Ignore);
+        ignored.push(libc::SIGINT);
+        ignored.push(libc::SIGQUIT);
+        signal::reset_shell_child_signals(&ignored);
     }
 
     /// Execute a complete command (list of AND-OR lists with separators).
