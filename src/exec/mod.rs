@@ -356,7 +356,10 @@ impl Executor {
     /// not cut the action short: `trap 'echo a; echo b' EXIT; unset -Z x`
     /// prints both lines (dash and bash agree). A fatal error raised by the
     /// action itself ends a non-interactive shell with that error's status
-    /// (`trap 'unset -Z x' EXIT; true` exits 2).
+    /// (`trap 'unset -Z x' EXIT; true` exits 2; a fatal expansion error
+    /// such as `trap ': ${x:?}' EXIT` exits 1). Callers that exit right
+    /// after this (forked children via `child_exit_status`, the top-level
+    /// shell) therefore never report the pre-trap status over it.
     pub fn execute_exit_trap(&mut self) {
         if let Some(crate::env::TrapAction::Command(cmd)) = self.env.traps.exit_trap.take() {
             let pending = self.exit_requested.take();
@@ -380,6 +383,17 @@ impl Executor {
                 Some(code) if !self.env.mode.is_interactive => shell_exit(code),
                 Some(_) => {}
                 None => self.exit_requested = pending,
+            }
+            // A fatal expansion error raised by the action itself
+            // (`trap ': ${x:?}' EXIT`) ends a non-interactive shell — or
+            // the subshell / command substitution whose exit fired the
+            // trap — with the expansion-error status, overriding the
+            // status it was about to exit with (POSIX §2.8.1; dash exits
+            // 2 here, and so does `out=$(trap ': ${x:?}' EXIT; :)`).
+            if !self.env.mode.is_interactive
+                && self.env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError)
+            {
+                shell_exit(1);
             }
             if self.env.exec.flow_control.is_none() {
                 self.env.exec.flow_control = pending_flow;
