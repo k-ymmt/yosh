@@ -5,47 +5,89 @@ use crate::builtin::options::{invalid_flag, scan_flag_words, strip_end_of_option
 use crate::builtin::output::write_stdout_decoded;
 use crate::builtin::quote::quote_for_reinput;
 use crate::env::ShellEnv;
+use crate::env::vars::Variable;
 use crate::error::ShellError;
 use crate::parser::word::is_valid_name;
 
-/// `export name=value` / `readonly name=value` re-input line, or just
-/// `export name` for a name that has the attribute but no value.
-fn reinput_declaration(keyword: &str, name: &str, value: Option<&str>) -> String {
-    match value {
-        Some(v) => format!("{} {}={}", keyword, name, quote_for_reinput(v)),
-        None => format!("{} {}", keyword, name),
+/// The attribute `export` / `readonly` give a variable.
+#[derive(Clone, Copy)]
+enum Attribute {
+    Export,
+    Readonly,
+}
+
+impl Attribute {
+    /// The builtin's name, also the keyword of its re-input listing.
+    fn keyword(self) -> &'static str {
+        match self {
+            Attribute::Export => "export",
+            Attribute::Readonly => "readonly",
+        }
+    }
+
+    fn is_set(self, var: &Variable) -> bool {
+        match self {
+            Attribute::Export => var.exported,
+            Attribute::Readonly => var.readonly,
+        }
+    }
+
+    fn apply(self, env: &mut ShellEnv, name: &str) {
+        match self {
+            Attribute::Export => env.vars.export(name),
+            Attribute::Readonly => env.vars.set_readonly(name),
+        }
+    }
+
+    /// `export name=value` / `readonly name=value` re-input line, or just
+    /// `export name` for a name that has the attribute but no value.
+    fn reinput_line(self, name: &str, value: Option<&str>) -> String {
+        match value {
+            Some(v) => format!("{} {}={}", self.keyword(), name, quote_for_reinput(v)),
+            None => format!("{} {}", self.keyword(), name),
+        }
     }
 }
 
 pub fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
-    // POSIX §2.15: `export -p` writes exported variables in re-input
-    // format. Operands after `-p` are NOT dropped (POSIX Issue 8 /
-    // bash behavior; dash ignores them, bash processes them):
-    //   - `export -p name=value` performs the assignment + export
-    //     exactly like `export name=value` (matches bash).
-    //   - `export -p name` prints just that variable, if exported.
+    Ok(declare(Attribute::Export, args, env))
+}
+
+pub fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+    Ok(declare(Attribute::Readonly, args, env))
+}
+
+/// Shared body of `export` and `readonly`.
+///
+/// POSIX §2.15: with no operands or with `-p`, write the variables that
+/// have the attribute in re-input format, including names without a
+/// value (`export y`). Only `-p` in the first position triggers listing;
+/// `-p` after operands or after `--` (end of options, XBD §12.2
+/// Guideline 10) is validated as a bad identifier. Operands after `-p`
+/// are NOT dropped (POSIX Issue 8 / bash behavior; dash ignores them):
+///   - `export -p name=value` performs the assignment and sets the
+///     attribute exactly like `export name=value` (matches bash).
+///   - `export -p name` prints just that variable, if it has the
+///     attribute (without setting it).
+fn declare(attr: Attribute, args: &[String], env: &mut ShellEnv) -> i32 {
     let print_mode = args.first().map(String::as_str) == Some("-p");
     let operands = strip_end_of_options(&args[usize::from(print_mode)..]);
 
     if args.is_empty() || (print_mode && operands.is_empty()) {
-        // Print all exported variables in POSIX re-input format,
-        // including exported names without a value (`export y`).
-        let mut exported: Vec<(String, Option<String>)> = env
+        let mut listed: Vec<(String, Option<String>)> = env
             .vars
             .vars_iter()
-            .filter(|(_, v)| v.exported)
+            .filter(|(_, v)| attr.is_set(v))
             .map(|(k, v)| (k.to_string(), v.value.clone()))
             .collect();
-        exported.sort_by(|a, b| a.0.cmp(&b.0));
-        for (name, value) in exported {
-            write_stdout_decoded(
-                &reinput_declaration("export", &name, value.as_deref()),
-                true,
-            );
+        listed.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, value) in listed {
+            write_stdout_decoded(&attr.reinput_line(&name, value.as_deref()), true);
         }
-        return Ok(0);
+        return 0;
     }
 
+    let keyword = attr.keyword();
     let mut status = 0;
     for arg in operands {
         let name = match arg.find('=') {
@@ -53,29 +95,31 @@ pub fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellE
             None => arg.as_str(),
         };
         if !is_valid_name(name) {
-            eprintln!("yosh: export: `{}': not a valid identifier", name);
+            eprintln!("yosh: {}: `{}': not a valid identifier", keyword, name);
             status = 1;
             continue;
         }
         if let Some(pos) = arg.find('=') {
             let raw_value = &arg[pos + 1..];
+            // assign_var (not vars.set): `readonly PATH=…` must
+            // invalidate the utility hash like any other PATH write.
             if let Err(e) = env.assign_var(name, raw_value) {
-                eprintln!("yosh: export: {}", e);
+                eprintln!("yosh: {}: {}", keyword, e);
                 status = 1;
                 continue;
             }
-            env.vars.export(name);
+            attr.apply(env, name);
         } else if print_mode {
-            // `export -p name`: print only this variable (if exported).
-            if let Some(v) = env.vars.get_var(name).filter(|v| v.exported) {
-                let line = reinput_declaration("export", name, v.value());
-                write_stdout_decoded(&line, true);
+            // `export -p name`: print only this variable (if it has the
+            // attribute).
+            if let Some(v) = env.vars.get_var(name).filter(|v| attr.is_set(v)) {
+                write_stdout_decoded(&attr.reinput_line(name, v.value()), true);
             }
         } else {
-            env.vars.export(name);
+            attr.apply(env, name);
         }
     }
-    Ok(status)
+    status
 }
 
 pub fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
@@ -117,70 +161,6 @@ pub fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellEr
         } else if let Err(e) = env.unset_var(name) {
             eprintln!("yosh: unset: {}", e);
             status = 1;
-        }
-    }
-    Ok(status)
-}
-
-pub fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
-    // POSIX §2.15 set: "When invoked with no arguments or with the -p
-    // option, readonly shall write...". Only `-p` in the first position
-    // triggers listing; `-p` after operands or after `--` (end of
-    // options, XBD §12.2 Guideline 10) is validated as a bad identifier.
-    // Operands after `-p` are NOT dropped (POSIX Issue 8 / bash
-    // behavior; dash ignores them): assignments are performed + marked
-    // readonly, name-only operands print just that variable.
-    // Mirrors builtin_export.
-    let print_mode = args.first().map(String::as_str) == Some("-p");
-    let operands = strip_end_of_options(&args[usize::from(print_mode)..]);
-
-    if args.is_empty() || (print_mode && operands.is_empty()) {
-        let readonly_vars: Vec<(String, Option<String>)> = env
-            .vars
-            .vars_iter()
-            .filter(|(_, v)| v.readonly)
-            .map(|(k, v)| (k.to_string(), v.value.clone()))
-            .collect();
-        let mut sorted = readonly_vars;
-        sorted.sort_by(|a, b| a.0.cmp(&b.0));
-        for (name, value) in sorted {
-            write_stdout_decoded(
-                &reinput_declaration("readonly", &name, value.as_deref()),
-                true,
-            );
-        }
-        return Ok(0);
-    }
-
-    let mut status = 0;
-    for arg in operands {
-        let name = match arg.find('=') {
-            Some(pos) => &arg[..pos],
-            None => arg.as_str(),
-        };
-        if !is_valid_name(name) {
-            eprintln!("yosh: readonly: `{}': not a valid identifier", name);
-            status = 1;
-            continue;
-        }
-        if let Some(pos) = arg.find('=') {
-            let raw_value = &arg[pos + 1..];
-            // assign_var (not vars.set): `readonly PATH=…` must
-            // invalidate the utility hash like any other PATH write.
-            if let Err(e) = env.assign_var(name, raw_value) {
-                eprintln!("yosh: readonly: {}", e);
-                status = 1;
-                continue;
-            }
-            env.vars.set_readonly(name);
-        } else if print_mode {
-            // `readonly -p name`: print only this variable (if readonly).
-            if let Some(v) = env.vars.get_var(name).filter(|v| v.readonly) {
-                let line = reinput_declaration("readonly", name, v.value());
-                write_stdout_decoded(&line, true);
-            }
-        } else {
-            env.vars.set_readonly(name);
         }
     }
     Ok(status)
