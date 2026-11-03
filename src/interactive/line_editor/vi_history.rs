@@ -96,12 +96,7 @@ impl LineEditor {
 
     /// Execute a `/` / `?` history search. Returns whether a matching
     /// entry was recalled.
-    fn vi_history_search(
-        &mut self,
-        dir: SearchDir,
-        pattern: &str,
-        history: &mut History,
-    ) -> bool {
+    fn vi_history_search(&mut self, dir: SearchDir, pattern: &str, history: &mut History) -> bool {
         // POSIX: sh patterns; a leading `^` anchors at the start of the
         // line, otherwise the pattern matches anywhere. A trailing odd
         // backslash would escape the appended `*`; double it so it stays

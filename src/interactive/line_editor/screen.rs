@@ -30,7 +30,7 @@ impl LineEditor {
     /// Move the cursor down past the last rendered row so subsequent
     /// terminal output starts below the full (possibly wrapped) input.
     /// No-op when nothing has been rendered yet.
-    fn move_below_render<T: Terminal>(&self, term: &mut T, _prompt_width: usize) -> io::Result<()> {
+    fn move_below_render<T: Terminal>(&self, term: &mut T) -> io::Result<()> {
         if self.prev_total_rows > self.prev_cursor_row {
             term.move_down((self.prev_total_rows - self.prev_cursor_row) as u16)?;
         }
@@ -45,12 +45,8 @@ impl LineEditor {
     /// End-of-read screen sequence shared by Submit/Interrupt (and the
     /// like): move below the rendered input, return to column 0, restore
     /// the cursor shape, and start a fresh output line.
-    pub(super) fn finish_line<T: Terminal>(
-        &mut self,
-        term: &mut T,
-        prompt_width: usize,
-    ) -> io::Result<()> {
-        self.move_below_render(term, prompt_width)?;
+    pub(super) fn finish_line<T: Terminal>(&mut self, term: &mut T) -> io::Result<()> {
+        self.move_below_render(term)?;
         term.move_to_column(0)?;
         self.reset_cursor_style(term);
         term.write_str("\r\n")?;
@@ -76,6 +72,18 @@ impl LineEditor {
             term.move_to_column(0)?;
             term.clear_current_line()?;
         }
+        self.reprint_prompt_lines(term, prompt, upper_lines)
+    }
+
+    /// Write the prompt block (upper display lines, then the last prompt
+    /// line) at the cursor and forget the previous render, since the
+    /// input area now starts on the freshly printed prompt row.
+    fn reprint_prompt_lines<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        upper_lines: &[String],
+    ) -> io::Result<()> {
         for line in upper_lines {
             term.write_str(line)?;
             term.write_str("\r\n")?;
@@ -94,18 +102,12 @@ impl LineEditor {
         upper_lines: &[String],
         items: &[String],
     ) -> io::Result<()> {
-        self.move_below_render(term, 0)?;
+        self.move_below_render(term)?;
         term.move_to_column(0)?;
         term.write_str("\r\n")?;
         term.write_str(&items.join("  "))?;
         term.write_str("\r\n")?;
-        for line in upper_lines {
-            term.write_str(line)?;
-            term.write_str("\r\n")?;
-        }
-        term.write_str(prompt)?;
-        self.invalidate_render_state();
-        Ok(())
+        self.reprint_prompt_lines(term, prompt, upper_lines)
     }
 
     /// Emit (and clear) a pending vi alert as a terminal BEL.

@@ -9,11 +9,39 @@ use crate::interactive::command_completion::CommandCompletionContext;
 use crate::interactive::completion::CompletionContext;
 use crate::interactive::display_width::display_width;
 use crate::interactive::fuzzy_search::FuzzySearchUI;
-use crate::interactive::highlight::{CheckerEnv, HighlightScanner};
+use crate::interactive::highlight::{CheckerEnv, ColorSpan, HighlightScanner};
 use crate::interactive::history::History;
 use crate::interactive::spec_completion::SpecStore;
 use crate::interactive::terminal::{CursorStyle, Terminal};
 use crate::interactive::vi::{ViFlavor, ViMode};
+
+/// Convert alias-macro text into key events: ESC, Enter, Tab, and
+/// control characters map to their key equivalents so an alias value
+/// can contain editing commands (POSIX `@letter`).
+fn key_events_for_text(text: &str) -> Vec<KeyEvent> {
+    text.chars()
+        .map(|c| match c {
+            '\x1b' => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            '\n' | '\r' => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            '\t' => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            c if (c as u32) < 0x20 => KeyEvent::new(
+                KeyCode::Char((((c as u8) | 0x60) as char).to_ascii_lowercase()),
+                KeyModifiers::CONTROL,
+            ),
+            c => KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+        })
+        .collect()
+}
+
+/// What a completion-enabled read needs to paint the buffer: the
+/// syntax highlighter and the lazily resolved continuation prompt.
+struct PaintContext<'a, 'env> {
+    scanner: &'a mut HighlightScanner,
+    checker_env: &'a CheckerEnv<'env>,
+    /// Earlier lines of the command being entered, for highlighting.
+    accumulated: &'a str,
+    cont_prompt: &'a mut dyn FnMut() -> String,
+}
 
 impl LineEditor {
     /// Read a line of input from the terminal, handling cursor movement and
@@ -52,7 +80,7 @@ impl LineEditor {
                         KeyAction::Submit => {
                             history.reset_cursor();
                             self.clear_lingering_suggestion(term, prompt, prompt_width, "> ", &[])?;
-                            self.finish_line(term, prompt_width)?;
+                            self.finish_line(term)?;
                             return Ok(Some(self.buffer()));
                         }
                         KeyAction::Eof => {
@@ -61,17 +89,12 @@ impl LineEditor {
                         KeyAction::Interrupt => {
                             history.reset_cursor();
                             self.clear_lingering_suggestion(term, prompt, prompt_width, "> ", &[])?;
-                            self.finish_line(term, prompt_width)?;
+                            self.finish_line(term)?;
                             self.clear();
                             return Ok(Some(String::new()));
                         }
                         KeyAction::FuzzySearch => {
-                            self.suggestion = None;
-                            term.disable_raw_mode()?;
-                            if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
-                                self.replace_buffer(&line);
-                            }
-                            term.enable_raw_mode()?;
+                            self.run_fuzzy_search(term, history)?;
                             // The screen was repainted outside of redraw's own
                             // bookkeeping; force a full repaint next time so
                             // the diff-based partial repaint doesn't assume a
@@ -149,22 +172,64 @@ impl LineEditor {
         term.read_event()
     }
 
-    /// Convert alias-macro text into key events: ESC, Enter, Tab, and
-    /// control characters map to their key equivalents so an alias value
-    /// can contain editing commands (POSIX `@letter`).
-    fn key_events_for_text(text: &str) -> Vec<KeyEvent> {
-        text.chars()
-            .map(|c| match c {
-                '\x1b' => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                '\n' | '\r' => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                '\t' => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-                c if (c as u32) < 0x20 => KeyEvent::new(
-                    KeyCode::Char((((c as u8) | 0x60) as char).to_ascii_lowercase()),
-                    KeyModifiers::CONTROL,
-                ),
-                c => KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-            })
-            .collect()
+    /// Run the fuzzy history search UI (outside raw mode); a selected
+    /// entry replaces the buffer. The caller repaints the prompt.
+    fn run_fuzzy_search<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        history: &mut History,
+    ) -> io::Result<()> {
+        self.suggestion = None;
+        term.disable_raw_mode()?;
+        if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
+            self.replace_buffer(&line);
+        }
+        term.enable_raw_mode()
+    }
+
+    /// POSIX `@letter`: queue alias `_letter`'s `value` as editor input.
+    /// The per-keystroke expansion budget (see `next_event`) breaks
+    /// recursive macros like `alias _a='@a'`; the size cap bounds a
+    /// single expansion burst.
+    fn queue_alias_macro(&mut self, value: &str) {
+        if self.vi_macro_budget > 0 && self.pending_events.len() + value.chars().count() <= 4096 {
+            self.vi_macro_budget -= 1;
+            self.pending_events.extend(key_events_for_text(value));
+        }
+    }
+
+    /// Enter on structurally incomplete input (unclosed if/quote/heredoc,
+    /// trailing pipe, …): start a continuation line in-buffer instead of
+    /// submitting, keeping the whole construct editable with cursor
+    /// movement across lines.
+    fn start_continuation_line(&mut self) {
+        // vi Enter executes the whole buffer regardless of cursor
+        // position, so the continuation line starts after the end of what
+        // was submitted — not at a mid-buffer command-mode cursor. The
+        // continuation conventionally starts in insert mode, whichever
+        // submode Enter was pressed in.
+        if self.edit_mode.is_vi_family() {
+            // The continuation is a fresh insert session: save the
+            // pre-continuation state for `u` and start the `.` text
+            // capture at the new line. In the vim flavor an ongoing
+            // Insert session simply absorbs the '\n'; from Command mode
+            // the pre-newline snapshot moves to the staging slot (one
+            // unit spanning the newline plus the typed continuation).
+            if self.vi.flavor == ViFlavor::Vim {
+                if self.vi.mode != ViMode::Insert {
+                    self.vim_undo_staged = Some((self.buf.clone(), self.pos));
+                }
+            } else {
+                self.undo.save(&self.buf, self.pos);
+            }
+            self.pos = self.buf.len();
+            self.vi.mode = ViMode::Insert;
+            self.vi.replace_overwrite = false;
+            self.insert_char('\n');
+            self.vi_insert_start = Some(self.pos);
+        } else {
+            self.insert_char('\n');
+        }
     }
 
     // ── Tab completion support ─────────────────────────────────────────
@@ -200,6 +265,12 @@ impl LineEditor {
     ) -> io::Result<Option<String>> {
         self.clear();
         term.enable_raw_mode()?;
+        let mut paint = PaintContext {
+            scanner,
+            checker_env,
+            accumulated,
+            cont_prompt,
+        };
         let result = self.read_line_loop_with_completion(
             prompt,
             upper_lines,
@@ -208,10 +279,7 @@ impl LineEditor {
             ctx,
             cmd_ctx,
             specs,
-            scanner,
-            checker_env,
-            accumulated,
-            cont_prompt,
+            &mut paint,
             is_incomplete,
         );
         self.reset_cursor_style(term);
@@ -229,10 +297,7 @@ impl LineEditor {
         ctx: &CompletionContext,
         cmd_ctx: &mut CommandCompletionContext<'_>,
         specs: &mut SpecStore,
-        scanner: &mut HighlightScanner,
-        checker_env: &CheckerEnv<'_>,
-        accumulated: &str,
-        cont_prompt: &mut dyn FnMut() -> String,
+        paint: &mut PaintContext<'_, '_>,
         is_incomplete: &dyn Fn(&str) -> bool,
     ) -> io::Result<Option<String>> {
         let prompt_width = display_width(prompt);
@@ -243,66 +308,16 @@ impl LineEditor {
                 Event::Key(key_event) => {
                     match self.handle_key(key_event, history) {
                         KeyAction::Submit => {
+                            // Reset history navigation either way: a
+                            // continuation makes the buffer a new
+                            // in-progress construct, and a stale cursor
+                            // would let a later Up replace it with an
+                            // unrelated older entry.
+                            history.reset_cursor();
                             if is_incomplete(&self.buffer()) {
-                                // Structurally incomplete input (unclosed
-                                // if/quote/heredoc, trailing pipe, …): start
-                                // a continuation line in-buffer instead of
-                                // submitting, keeping the whole construct
-                                // editable with cursor movement across lines.
-                                // Reset history navigation like the Submit
-                                // path does: the buffer is now a new
-                                // in-progress construct, and a stale cursor
-                                // would let a later Up replace it with an
-                                // unrelated older entry.
-                                history.reset_cursor();
-                                // vi Enter executes the whole buffer
-                                // regardless of cursor position, so the
-                                // continuation line starts after the end
-                                // of what was submitted — not at a
-                                // mid-buffer command-mode cursor. The
-                                // continuation conventionally starts in
-                                // insert mode, whichever submode Enter
-                                // was pressed in.
-                                if self.edit_mode.is_vi_family() {
-                                    // The continuation is a fresh insert
-                                    // session: save the pre-continuation
-                                    // state for `u` and start the `.`
-                                    // text capture at the new line. In
-                                    // the vim flavor an ongoing Insert
-                                    // session simply absorbs the '\n';
-                                    // from Command mode the pre-newline
-                                    // snapshot moves to the staging slot
-                                    // (one unit spanning the newline
-                                    // plus the typed continuation).
-                                    if self.vi.flavor == ViFlavor::Vim {
-                                        if self.vi.mode != ViMode::Insert {
-                                            self.vim_undo_staged =
-                                                Some((self.buf.clone(), self.pos));
-                                        }
-                                    } else {
-                                        self.undo.save(&self.buf, self.pos);
-                                    }
-                                    self.pos = self.buf.len();
-                                    self.vi.mode = ViMode::Insert;
-                                    self.vi.replace_overwrite = false;
-                                    self.insert_char('\n');
-                                    self.vi_insert_start = Some(self.pos);
-                                } else {
-                                    self.insert_char('\n');
-                                }
+                                self.start_continuation_line();
                             } else {
-                                history.reset_cursor();
-                                term.reset_style()?;
-                                let spans = scanner.scan(accumulated, &self.buf, checker_env);
-                                let cont = self.resolve_cont_prompt(cont_prompt);
-                                self.clear_lingering_suggestion(
-                                    term,
-                                    prompt,
-                                    prompt_width,
-                                    &cont,
-                                    &spans,
-                                )?;
-                                self.finish_line(term, prompt_width)?;
+                                self.end_read_screen(term, prompt, prompt_width, paint)?;
                                 return Ok(Some(self.buffer()));
                             }
                         }
@@ -311,28 +326,13 @@ impl LineEditor {
                         }
                         KeyAction::Interrupt => {
                             history.reset_cursor();
-                            term.reset_style()?;
-                            let spans = scanner.scan(accumulated, &self.buf, checker_env);
-                            let cont = self.resolve_cont_prompt(cont_prompt);
-                            self.clear_lingering_suggestion(
-                                term,
-                                prompt,
-                                prompt_width,
-                                &cont,
-                                &spans,
-                            )?;
-                            self.finish_line(term, prompt_width)?;
+                            self.end_read_screen(term, prompt, prompt_width, paint)?;
                             self.clear();
                             return Ok(Some(String::new()));
                         }
                         KeyAction::FuzzySearch => {
-                            self.suggestion = None;
                             term.reset_style()?;
-                            term.disable_raw_mode()?;
-                            if let Ok(Some(line)) = FuzzySearchUI::run(history, term) {
-                                self.replace_buffer(&line);
-                            }
-                            term.enable_raw_mode()?;
+                            self.run_fuzzy_search(term, history)?;
                             self.repaint_prompt(term, prompt, upper_lines, false)?;
                         }
                         KeyAction::TabComplete => {
@@ -354,21 +354,9 @@ impl LineEditor {
                             self.print_vi_expansions(term, prompt, upper_lines, &items)?;
                         }
                         KeyAction::ViAliasMacro(c) => {
-                            // POSIX @letter: run alias `_letter`'s value as
-                            // editor input; no effect if unset. The
-                            // per-keystroke expansion budget (see
-                            // next_event) breaks recursive macros like
-                            // `alias _a='@a'`; the size cap bounds a
-                            // single expansion burst.
-                            let name = format!("_{}", c);
-                            if let Some(value) = cmd_ctx.aliases.get(&name)
-                                && self.vi_macro_budget > 0
-                                && self.pending_events.len() + value.chars().count() <= 4096
-                            {
-                                self.vi_macro_budget -= 1;
-                                for ev in Self::key_events_for_text(value) {
-                                    self.pending_events.push_back(ev);
-                                }
+                            // No effect if the alias is unset.
+                            if let Some(value) = cmd_ctx.aliases.get(&format!("_{}", c)) {
+                                self.queue_alias_macro(value);
                             }
                         }
                         KeyAction::ViEditInEditor(entry) => {
@@ -396,23 +384,56 @@ impl LineEditor {
                         KeyAction::Continue => {}
                     }
                     self.flush_pending_bell(term)?;
-                    self.update_suggestion(history);
-                    let spans = scanner.scan(accumulated, &self.buf, checker_env);
-                    let (tw, th) = Self::term_size(term);
-                    let cont = self.resolve_cont_prompt(cont_prompt);
-                    self.redraw(term, prompt, prompt_width, &cont, &spans, tw, th)?;
+                    self.repaint_input(term, prompt, prompt_width, history, paint)?;
                 }
                 Event::Resize(_cols, _rows) => {
                     self.invalidate_render_state();
-                    let (tw, th) = Self::term_size(term);
-                    self.update_suggestion(history);
-                    let spans = scanner.scan(accumulated, &self.buf, checker_env);
-                    let cont = self.resolve_cont_prompt(cont_prompt);
-                    self.redraw(term, prompt, prompt_width, &cont, &spans, tw, th)?;
+                    self.repaint_input(term, prompt, prompt_width, history, paint)?;
                 }
                 _ => {}
             }
         }
+    }
+
+    /// Highlight spans and continuation prompt for painting the current
+    /// buffer.
+    fn paint_inputs(&mut self, paint: &mut PaintContext<'_, '_>) -> (Vec<ColorSpan>, String) {
+        let spans = paint
+            .scanner
+            .scan(paint.accumulated, &self.buf, paint.checker_env);
+        let cont = self.resolve_cont_prompt(paint.cont_prompt);
+        (spans, cont)
+    }
+
+    /// Refresh the autosuggestion and redraw the input area.
+    fn repaint_input<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        prompt_width: usize,
+        history: &History,
+        paint: &mut PaintContext<'_, '_>,
+    ) -> io::Result<()> {
+        self.update_suggestion(history);
+        let (spans, cont) = self.paint_inputs(paint);
+        let (tw, th) = Self::term_size(term);
+        self.redraw(term, prompt, prompt_width, &cont, &spans, tw, th)
+    }
+
+    /// Leave the input area at the end of a read (Submit / Interrupt):
+    /// drop the highlight style, repaint without a lingering
+    /// autosuggestion, and start a fresh output line below the input.
+    fn end_read_screen<T: Terminal>(
+        &mut self,
+        term: &mut T,
+        prompt: &str,
+        prompt_width: usize,
+        paint: &mut PaintContext<'_, '_>,
+    ) -> io::Result<()> {
+        term.reset_style()?;
+        let (spans, cont) = self.paint_inputs(paint);
+        self.clear_lingering_suggestion(term, prompt, prompt_width, &cont, &spans)?;
+        self.finish_line(term)
     }
 
     /// Return the continuation prompt for the upcoming redraw, resolving
