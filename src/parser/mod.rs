@@ -2,6 +2,7 @@ pub mod ast;
 mod compound;
 mod function;
 mod heredoc;
+mod nested;
 mod nesting;
 mod redirect;
 mod simple;
