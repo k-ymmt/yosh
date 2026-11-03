@@ -537,6 +537,38 @@ fn has_foreign_handler(sig: i32) -> bool {
         && h != signal_handler as *const () as libc::sighandler_t
 }
 
+/// Signals a `posix_spawn`ed external command must start with at
+/// SIG_DFL (`POSIX_SPAWN_SETSIGDEF`) so its dispositions equal what
+/// [`reset_child_signals`] followed by `execve` gives a forked child:
+/// every [`SIGNAL_TABLE`] signal not kept ignored (caught handlers would
+/// reset on exec anyway). Kept-ignored signals are inherited, so this
+/// returns `None` — use the fork path — when one of them is not
+/// currently SIG_IGN in the shell (spawn attributes cannot set SIG_IGN).
+pub fn spawn_default_sigset(ignored: &[i32]) -> Option<libc::sigset_t> {
+    let entry_set = IGNORED_ON_ENTRY.get();
+    // SAFETY: sigset_t is plain data, initialized by sigemptyset.
+    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    unsafe { libc::sigemptyset(&mut set) };
+    for &(num, _) in SIGNAL_TABLE {
+        if num == libc::SIGKILL || num == libc::SIGSTOP {
+            continue;
+        }
+        let keep_ignored = ignored.contains(&num) || entry_set.is_some_and(|s| s.contains(&num));
+        if keep_ignored {
+            let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+            // SAFETY: query-only sigaction (null new action).
+            let ok = unsafe { libc::sigaction(num, std::ptr::null(), &mut old) } == 0;
+            if !ok || old.sa_sigaction != libc::SIG_IGN {
+                return None;
+            }
+        } else {
+            // SAFETY: `set` is initialized; `num` is a valid signal.
+            unsafe { libc::sigaddset(&mut set, num) };
+        }
+    }
+    Some(set)
+}
+
 /// Reset signals after fork for children that will `exec` (or exit
 /// without running further shell code). See
 /// [`reset_child_dispositions`] for the disposition policy; the
