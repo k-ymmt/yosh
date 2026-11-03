@@ -4,7 +4,8 @@ use std::io;
 use unicode_width::UnicodeWidthChar;
 
 use super::super::LineEditor;
-use super::{CellPainter, chars_width, style_diff_pos, term_col};
+use super::super::editing::chars_width;
+use super::{CellPainter, style_diff_pos, term_col};
 use crate::interactive::highlight::ColorSpan;
 use crate::interactive::terminal::Terminal;
 use crate::interactive::vi::ViMode;

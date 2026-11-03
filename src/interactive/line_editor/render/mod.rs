@@ -5,7 +5,6 @@ mod multiline;
 mod single_line;
 
 use std::io;
-use unicode_width::UnicodeWidthChar;
 
 use super::LineEditor;
 use crate::interactive::highlight::{ColorSpan, HighlightStyle, apply_style};
@@ -61,14 +60,6 @@ fn style_diff_pos(old_spans: &[ColorSpan], new_spans: &[ColorSpan], limit: usize
 /// Clamp a column/row count to the `u16` the terminal API takes.
 fn term_col(n: usize) -> u16 {
     n.min(u16::MAX as usize) as u16
-}
-
-/// Total display width of a run of buffer characters.
-fn chars_width(chars: &[char]) -> usize {
-    chars
-        .iter()
-        .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-        .sum()
 }
 
 /// Incremental style state for painting buffer cells left to right: the

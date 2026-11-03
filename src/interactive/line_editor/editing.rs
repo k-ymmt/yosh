@@ -6,6 +6,43 @@ use unicode_width::UnicodeWidthChar;
 use super::LineEditor;
 use crate::interactive::vi;
 
+/// Total display width of a run of buffer characters.
+pub(super) fn chars_width(chars: &[char]) -> usize {
+    chars
+        .iter()
+        .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+        .sum()
+}
+
+/// Returns true if `ch` is a word character (alphanumeric or underscore).
+fn is_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+/// Step back from `p` over the characters whose word-char-ness equals
+/// `word`, returning the index where the run starts.
+fn scan_back(buf: &[char], mut p: usize, word: bool) -> usize {
+    while p > 0 && is_word_char(buf[p - 1]) == word {
+        p -= 1;
+    }
+    p
+}
+
+/// Step forward from `p` over the characters whose word-char-ness
+/// equals `word`, returning the index just past the run.
+fn scan_forward(buf: &[char], mut p: usize, word: bool) -> usize {
+    while p < buf.len() && is_word_char(buf[p]) == word {
+        p += 1;
+    }
+    p
+}
+
+/// End of the next word at or after `p` (skipping leading non-word
+/// characters): the target of forward-word motion and kill.
+fn next_word_end(buf: &[char], p: usize) -> usize {
+    scan_forward(buf, scan_forward(buf, p, false), true)
+}
+
 impl LineEditor {
     /// Insert a character at the current cursor position and advance
     /// the cursor by one.
@@ -73,11 +110,7 @@ impl LineEditor {
         if cur_start == 0 {
             return;
         }
-        let visual: usize = self.buf[cur_start..self.pos]
-            .iter()
-            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-            .sum();
-        let target = *self.preferred_col.get_or_insert(visual);
+        let target = self.preferred_column(cur_start);
         let prev_end = cur_start - 1; // index of the '\n'
         let prev_start = vi::line_start(&self.buf, prev_end);
         self.pos = Self::pos_at_column(&self.buf, prev_start, prev_end, target);
@@ -92,14 +125,18 @@ impl LineEditor {
             return;
         }
         let cur_start = vi::line_start(&self.buf, self.pos);
-        let visual: usize = self.buf[cur_start..self.pos]
-            .iter()
-            .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-            .sum();
-        let target = *self.preferred_col.get_or_insert(visual);
+        let target = self.preferred_column(cur_start);
         let next_start = cur_end + 1;
         let next_end = vi::line_end(&self.buf, next_start);
         self.pos = Self::pos_at_column(&self.buf, next_start, next_end, target);
+    }
+
+    /// The display column the current vertical-move run aims for: the
+    /// cursor's column within its line (starting at `line_start`) on the
+    /// first move of a run, the remembered one afterwards.
+    fn preferred_column(&mut self, line_start: usize) -> usize {
+        let visual = chars_width(&self.buf[line_start..self.pos]);
+        *self.preferred_col.get_or_insert(visual)
     }
 
     /// Walk `buf[start..end]` accumulating display width and return the char
@@ -130,30 +167,14 @@ impl LineEditor {
         self.pos = vi::line_end(&self.buf, self.pos);
     }
 
-    /// Returns true if `ch` is a word character (alphanumeric or underscore).
-    fn is_word_char(ch: char) -> bool {
-        ch.is_alphanumeric() || ch == '_'
-    }
-
     /// Move cursor backward to the start of the previous word.
     pub fn move_backward_word(&mut self) {
-        while self.pos > 0 && !Self::is_word_char(self.buf[self.pos - 1]) {
-            self.pos -= 1;
-        }
-        while self.pos > 0 && Self::is_word_char(self.buf[self.pos - 1]) {
-            self.pos -= 1;
-        }
+        self.pos = scan_back(&self.buf, scan_back(&self.buf, self.pos, false), true);
     }
 
     /// Move cursor forward to the end of the next word.
     pub fn move_forward_word(&mut self) {
-        let len = self.buf.len();
-        while self.pos < len && !Self::is_word_char(self.buf[self.pos]) {
-            self.pos += 1;
-        }
-        while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
-            self.pos += 1;
-        }
+        self.pos = next_word_end(&self.buf, self.pos);
     }
 
     /// Kill from cursor to end of the current logical line. When the cursor
@@ -196,14 +217,7 @@ impl LineEditor {
     /// Kill from cursor to end of the next word. Returns the killed text.
     pub fn kill_forward_word(&mut self) -> String {
         let old_pos = self.pos;
-        let len = self.buf.len();
-        let mut end = self.pos;
-        while end < len && !Self::is_word_char(self.buf[end]) {
-            end += 1;
-        }
-        while end < len && Self::is_word_char(self.buf[end]) {
-            end += 1;
-        }
+        let end = next_word_end(&self.buf, self.pos);
         let killed: String = self.buf[old_pos..end].iter().collect();
         self.buf.drain(old_pos..end);
         self.invalidate_width_cache();
@@ -239,49 +253,34 @@ impl LineEditor {
         }
 
         let mut p = self.pos;
-        if p == len || !Self::is_word_char(self.buf[p]) {
-            while p > 0 && !Self::is_word_char(self.buf[p - 1]) {
-                p -= 1;
-            }
+        if p == len || !is_word_char(self.buf[p]) {
+            p = scan_back(&self.buf, p, false);
         }
         if p == 0 {
             return;
         }
 
         // Find end of word2
-        let w2e = if self.pos < len && Self::is_word_char(self.buf[self.pos]) {
-            let mut e = self.pos;
-            while e < len && Self::is_word_char(self.buf[e]) {
-                e += 1;
-            }
-            e
+        let w2e = if self.pos < len && is_word_char(self.buf[self.pos]) {
+            scan_forward(&self.buf, self.pos, true)
         } else {
             p
         };
 
         // Find start of word2
-        let mut w2s = w2e;
-        while w2s > 0 && Self::is_word_char(self.buf[w2s - 1]) {
-            w2s -= 1;
-        }
+        let w2s = scan_back(&self.buf, w2e, true);
         if w2s == 0 {
             return;
         }
 
         // Find end of word1
-        let mut w1e = w2s;
-        while w1e > 0 && !Self::is_word_char(self.buf[w1e - 1]) {
-            w1e -= 1;
-        }
+        let w1e = scan_back(&self.buf, w2s, false);
         if w1e == 0 {
             return;
         }
 
         // Find start of word1
-        let mut w1s = w1e;
-        while w1s > 0 && Self::is_word_char(self.buf[w1s - 1]) {
-            w1s -= 1;
-        }
+        let w1s = scan_back(&self.buf, w1e, true);
 
         let word1: Vec<char> = self.buf[w1s..w1e].to_vec();
         let sep: Vec<char> = self.buf[w1e..w2s].to_vec();
@@ -305,11 +304,9 @@ impl LineEditor {
     /// of its characters, and leave the cursor just past it.
     fn map_word<F: Fn(char, bool) -> char>(&mut self, f: F) {
         let len = self.buf.len();
-        while self.pos < len && !Self::is_word_char(self.buf[self.pos]) {
-            self.pos += 1;
-        }
+        self.pos = scan_forward(&self.buf, self.pos, false);
         let mut first = true;
-        while self.pos < len && Self::is_word_char(self.buf[self.pos]) {
+        while self.pos < len && is_word_char(self.buf[self.pos]) {
             self.buf[self.pos] = f(self.buf[self.pos], first);
             first = false;
             self.pos += 1;
@@ -341,11 +338,8 @@ impl LineEditor {
     /// Insert text at the current cursor position. Returns (start, len) for yank tracking.
     pub fn insert_str(&mut self, text: &str) -> (usize, usize) {
         let start = self.pos;
-        let chars: Vec<char> = text.chars().collect();
-        let len = chars.len();
-        for (i, ch) in chars.into_iter().enumerate() {
-            self.buf.insert(self.pos + i, ch);
-        }
+        let len = text.chars().count();
+        self.buf.splice(start..start, text.chars());
         self.pos += len;
         self.invalidate_width_cache();
         (start, len)
@@ -384,11 +378,7 @@ impl LineEditor {
     /// scan.
     pub(super) fn buf_prefix_and_total_width(&mut self) -> (usize, usize) {
         if let Some(total) = self.cached_total_width {
-            let prefix: usize = self.buf[..self.pos]
-                .iter()
-                .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                .sum();
-            return (prefix, total);
+            return (chars_width(&self.buf[..self.pos]), total);
         }
         let mut prefix = 0usize;
         let mut total = 0usize;

@@ -129,12 +129,8 @@ impl LineEditor {
         let drain_end = self.pos;
         self.buf.drain(char_start..drain_end);
         // Insert replacement chars at char_start
-        let rep_chars: Vec<char> = replacement.chars().collect();
-        let rep_len = rep_chars.len();
-        for (i, ch) in rep_chars.into_iter().enumerate() {
-            self.buf.insert(char_start + i, ch);
-        }
-        self.pos = char_start + rep_len;
+        self.buf.splice(char_start..char_start, replacement.chars());
+        self.pos = char_start + replacement.chars().count();
         self.invalidate_width_cache();
     }
 }
