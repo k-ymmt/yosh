@@ -21,7 +21,7 @@ impl Lexer {
     }
 
     pub fn process_pending_heredocs(&mut self) -> error::Result<()> {
-        let pending: Vec<PendingHereDoc> = self.pending_heredocs.drain(..).collect();
+        let pending = std::mem::take(&mut self.pending_heredocs);
         for hd in pending {
             let body = self.read_heredoc_body(&hd)?;
             self.heredoc_bodies.push((hd.id, body));
