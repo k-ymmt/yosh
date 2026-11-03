@@ -215,16 +215,12 @@ impl Executor {
             targets
         };
 
-        if targets.is_empty() {
-            // No operands and nothing running: POSIX no-operand wait
-            // exits 0 (previously leaked $?, so `false; wait` was 1).
-            // Completing a no-operand wait discards remembered statuses
-            // of already-forgotten jobs (bash: `wait; wait $p` then
-            // reports "not a child", empirical 2026-08-25).
-            self.env.process.jobs.clear_reaped();
-            return Ok(0);
-        }
-
+        // No early return when `targets` is empty (no operands and every
+        // job already terminal): the finished-job cleanup and the
+        // reaped-status discard below must still run, or `sleep 0 &
+        // sleep 1; wait; sleep 1 & jobs` keeps listing the Done job as
+        // %1 (dash/bash list only the new job, as %1). A no-operand
+        // wait with nothing to wait for still exits 0 (`false; wait`).
         let pipefail = self.env.mode.options.pipefail;
         let mut last_status = 0;
 
