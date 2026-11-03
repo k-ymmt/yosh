@@ -129,11 +129,20 @@ impl ShellEnv {
         }
     }
 
-    /// Set a shell variable. If `name == "PATH"`, the utility hash
-    /// table is cleared after the successful assignment (POSIX
-    /// §2.5.3). Returns `Err` only if the variable is readonly.
+    /// Assign a shell variable the way a shell-level assignment does:
+    /// `read`, `getopts`, a `for` loop variable, `${x=word}`, `$((x=1))`,
+    /// `export`/`readonly name=value`. Under `set -a` the variable is
+    /// exported (POSIX §2.15 set -a: "each variable to which an
+    /// assignment is performed"; dash and bash agree for read and
+    /// getopts). If `name == "PATH"`, the utility hash table is cleared
+    /// after the successful assignment (POSIX §2.5.3). Returns `Err`
+    /// only if the variable is readonly.
     pub fn assign_var(&mut self, name: &str, value: impl Into<String>) -> Result<(), String> {
-        self.vars.set(name, value)?;
+        if self.mode.options.allexport {
+            self.vars.set_with_options(name, value, true)?;
+        } else {
+            self.vars.set(name, value)?;
+        }
         if name == "PATH" {
             self.utility_hash.clear();
         }
