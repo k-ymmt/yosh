@@ -35,18 +35,21 @@ pub fn expand_tilde_prefix(home_dir: Option<&str>, s: &str) -> String {
 
 /// Expand `~username` using `getpwnam`.
 pub fn expand_tilde_user(user: &str) -> String {
+    lookup_tilde_user(user).unwrap_or_else(|| format!("~{}", user))
+}
+
+/// The home directory of login name `user`, or `None` when there is no
+/// such user (the tilde-prefix is then left unexpanded).
+pub(crate) fn lookup_tilde_user(user: &str) -> Option<String> {
     use std::ffi::CString;
-    let c_user = match CString::new(user) {
-        Ok(s) => s,
-        Err(_) => return format!("~{}", user),
-    };
+    let c_user = CString::new(user).ok()?;
     // SAFETY: getpwnam is reentrant enough for single-threaded shell use.
     let pw = unsafe { libc::getpwnam(c_user.as_ptr()) };
     if pw.is_null() {
-        return format!("~{}", user);
+        return None;
     }
     let dir = unsafe { std::ffi::CStr::from_ptr((*pw).pw_dir) };
-    crate::byteenc::encode_bytes(dir.to_bytes()).into_owned()
+    Some(crate::byteenc::encode_bytes(dir.to_bytes()).into_owned())
 }
 
 #[cfg(test)]

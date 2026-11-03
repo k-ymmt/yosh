@@ -64,10 +64,12 @@ impl Lexer {
             // line ending in an unescaped `\` is joined with the next one
             // (the backslash-newline is removed) BEFORE the delimiter
             // check, so `line \<nl>EOF` is body text, not the delimiter
-            // (POSIX §2.7.4; dash/bash agree). `<<-` strips leading tabs
-            // from the first physical line only.
+            // (POSIX §2.7.4; dash/bash agree). `<<-` strips the leading
+            // tabs of the logical line: those of a continuation line too
+            // while nothing precedes them (`\<nl><tab>EOF` is the
+            // delimiter), but not tabs after earlier text (`a\<nl><tab>b`
+            // keeps the tab).
             let mut line = String::new();
-            let mut first = true;
             loop {
                 let mut phys = String::new();
                 while !self.at_end() && self.current_byte() != b'\n' {
@@ -77,12 +79,11 @@ impl Lexer {
                 if had_newline {
                     self.advance(); // consume newline
                 }
-                if hd.strip_tabs && first {
+                if hd.strip_tabs && line.is_empty() {
                     line.push_str(phys.trim_start_matches('\t'));
                 } else {
                     line.push_str(&phys);
                 }
-                first = false;
                 if !hd.quoted && had_newline && ends_with_unescaped_backslash(&line) {
                     line.pop(); // drop the `\` of the continuation
                     continue;

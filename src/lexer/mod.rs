@@ -19,6 +19,7 @@ pub struct LexerState {
     check_alias: bool,
     expanding_aliases: HashSet<String>,
     alias_ctx: alias::AliasCtx,
+    last_from_alias: bool,
 }
 
 /// A cheap snapshot of only the byte-cursor fields (`pos`/`line`/`column`).
@@ -99,6 +100,10 @@ pub struct Lexer {
     token_cache: HashMap<usize, CachedToken>,
     /// Command-position / recursion-guard bookkeeping for alias substitution.
     alias_ctx: alias::AliasCtx,
+    /// The token most recently returned by `next_token` came from an alias
+    /// replacement rather than directly from the input, so the source text
+    /// it was read from does not spell it.
+    last_from_alias: bool,
 }
 
 struct CachedToken {
@@ -135,6 +140,7 @@ impl Lexer {
             subparse_count: 0,
             token_cache: HashMap::new(),
             alias_ctx: alias::AliasCtx::default(),
+            last_from_alias: false,
         }
     }
 
@@ -160,6 +166,7 @@ impl Lexer {
             subparse_count: 0,
             token_cache: HashMap::new(),
             alias_ctx: alias::AliasCtx::default(),
+            last_from_alias: false,
         }
     }
 
@@ -224,6 +231,7 @@ impl Lexer {
             check_alias: self.check_alias,
             expanding_aliases: self.expanding_aliases.clone(),
             alias_ctx: self.alias_ctx.clone(),
+            last_from_alias: self.last_from_alias,
         }
     }
 
@@ -235,6 +243,14 @@ impl Lexer {
         self.check_alias = state.check_alias;
         self.expanding_aliases = state.expanding_aliases;
         self.alias_ctx = state.alias_ctx;
+        self.last_from_alias = state.last_from_alias;
+    }
+
+    /// True when the token most recently returned by `next_token` was
+    /// produced by alias substitution (its source text is the alias name,
+    /// not the token's own spelling).
+    pub(crate) fn last_token_from_alias(&self) -> bool {
+        self.last_from_alias
     }
 
     /// Cheap cursor-only snapshot; see `CursorState` for the safety contract.

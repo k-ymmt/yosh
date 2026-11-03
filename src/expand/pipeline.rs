@@ -37,7 +37,7 @@ fn expand_part_to_fields(
         | WordPart::SingleQuoted(s)
         | WordPart::DollarSingleQuoted(s) => expand_part_quoted_literal(s, fields),
         WordPart::DoubleQuoted(parts) => expand_part_double_quoted(env, parts, fields)?,
-        WordPart::Tilde(user) => expand_part_tilde(env, user.as_deref(), fields),
+        WordPart::Tilde(user) => expand_part_tilde(env, user.as_deref(), fields, false),
         WordPart::Parameter(p) => expand_part_parameter(env, p, fields, in_double_quote)?,
         WordPart::CommandSub(program) => {
             expand_part_command_sub(env, program, fields, in_double_quote)
@@ -74,16 +74,34 @@ fn expand_part_double_quoted(
     Ok(())
 }
 
-fn expand_part_tilde(env: &mut ShellEnv, user: Option<&str>, fields: &mut [ExpandedField]) {
-    let result = match user {
-        None => env
-            .vars
-            .get("HOME")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "~".to_string()),
-        Some(name) => super::tilde::expand_tilde_user(name),
+/// Expand a tilde-prefix part. A successful expansion is treated as
+/// quoted (POSIX §2.6.1: not field-split or globbed). A prefix that is
+/// not expanded (unknown login name, `~` with HOME unset) stays as the
+/// literal text it was: glob-subject (`~nosuch*` can match a file), and
+/// inside a `${x:-word}` word also field-split like the rest of the
+/// word (`${x:-~nosuch a}` is two fields) — dash and bash agree.
+fn expand_part_tilde(
+    env: &mut ShellEnv,
+    user: Option<&str>,
+    fields: &mut [ExpandedField],
+    in_modifier_word: bool,
+) {
+    let expanded = match user {
+        None => env.vars.get("HOME").map(|s| s.to_string()),
+        Some(name) => super::tilde::lookup_tilde_user(name),
     };
-    fields.last_mut().unwrap().push_quoted(&result);
+    let field = fields.last_mut().unwrap();
+    match expanded {
+        Some(dir) => field.push_quoted(&dir),
+        None => {
+            let literal = format!("~{}", user.unwrap_or(""));
+            if in_modifier_word {
+                field.push_expanded(&literal);
+            } else {
+                field.push_literal(&literal);
+            }
+        }
+    }
 }
 
 fn expand_part_parameter(
@@ -281,6 +299,9 @@ fn expand_modifier_word(
         match part {
             WordPart::Literal(s) if !in_double_quote => {
                 fields.last_mut().unwrap().push_expanded(s);
+            }
+            WordPart::Tilde(user) if !in_double_quote => {
+                expand_part_tilde(env, user.as_deref(), fields, true);
             }
             _ => expand_part_to_fields(env, part, fields, in_double_quote)?,
         }

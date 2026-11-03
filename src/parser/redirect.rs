@@ -110,11 +110,14 @@ impl Parser {
     fn parse_heredoc_delimiter(&mut self) -> error::Result<(String, bool)> {
         // The current token was just lexed, so its source text spans from
         // the pre-token position to the lexer's position. A token replayed
-        // from an alias expansion does not advance the lexer (empty span):
-        // fall back to the parts.
-        let source = self
-            .lexer
-            .source_text(self.pre_current_pos, self.lexer.position());
+        // from an alias expansion is not spelled by that text (it is empty,
+        // or the substituted alias name): fall back to the parts.
+        let source = if self.lexer.last_token_from_alias() {
+            String::new()
+        } else {
+            self.lexer
+                .source_text(self.pre_current_pos, self.lexer.position())
+        };
         let word = self.expect_word("here-document delimiter")?;
         let quoted = word_has_quoting(&word);
         let source = trim_leading_blanks(&source);

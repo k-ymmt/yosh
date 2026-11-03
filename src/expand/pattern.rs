@@ -307,7 +307,7 @@ fn parse_bracket(pat: &str) -> Option<(usize, bool, Vec<BracketItem>)> {
         if let Some('-') = after_m0.chars().next() {
             let after_dash = &after_m0['-'.len_utf8()..];
             if let Some(h0) = after_dash.chars().next() {
-                let (mut hi, hi_escaped, mut after_hi) = decode_bracket_char(after_dash, h0);
+                let (mut hi, mut hi_escaped, mut after_hi) = decode_bracket_char(after_dash, h0);
                 if !hi_escaped
                     && hi == '['
                     && after_hi.starts_with('.')
@@ -315,6 +315,9 @@ fn parse_bracket(pat: &str) -> Option<(usize, bool, Vec<BracketItem>)> {
                 {
                     hi = c;
                     after_hi = after;
+                    // `[.].]` names `]` without closing the class, like
+                    // `\]` (dash/bash: `[A-[.].]]` matches `M`).
+                    hi_escaped = true;
                 }
                 if hi != ']' || hi_escaped {
                     members.push(BracketItem::Range(m0, hi));
@@ -1030,6 +1033,10 @@ mod tests {
         assert!(!matches("[a-[.c.]]", "d"));
         assert!(matches("[[.a.]-c]", "c"));
         assert!(matches("[[.a.]-[.c.]]", "b"));
+        // `]` named by a collating symbol is a valid upper endpoint.
+        assert!(matches("[A-[.].]]", "M"));
+        assert!(matches("[A-[.].]]", "]"));
+        assert!(!matches("[A-[.].]]", "a"));
     }
 
     #[test]

@@ -21,7 +21,12 @@
 //! `!`, ...), after assignment words in a command prefix, after a redirect's
 //! target word when the redirect began in command position, and after the
 //! `)` that closes a case pattern list. Case subjects, case patterns, and
-//! redirect targets are never alias-substituted.
+//! redirect targets are not alias-substituted in command position.
+//!
+//! A trailing-blank alias (`alias e='echo '`) makes only the next token
+//! *eligible* for substitution (`AliasCtx::after_trailing_blank`); it does
+//! not put that word in command position, so `e case` does not open a
+//! case context and `e if` substitutes an alias named `if`.
 
 use std::collections::VecDeque;
 
@@ -43,6 +48,12 @@ pub(crate) struct AliasCtx {
     /// is never alias-substituted, and `check_alias` is restored to `saved`
     /// after it so a command name following a prefix redirect is checked.
     redirect_target: Option<bool>,
+    /// The previous alias value ended in a blank, so the next token is
+    /// eligible for alias substitution even outside command-name position.
+    /// This only widens substitution eligibility: it does not put the word
+    /// in command position, so it is not recognized as a reserved word and
+    /// does not drive the grammar state machine.
+    after_trailing_blank: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -83,25 +94,31 @@ impl Lexer {
         loop {
             self.release_finished_aliases();
 
-            let tok = match self.alias_token_queue.pop_front() {
-                Some(tok) => tok,
-                None => self.next_token_raw()?,
+            let (tok, from_alias) = match self.alias_token_queue.pop_front() {
+                Some(tok) => (tok, true),
+                None => (self.next_token_raw()?, false),
             };
 
-            if self.check_alias
+            // `check_alias` is grammatical command-name position, where a
+            // reserved-word spelling is a reserved word and never an alias.
+            // After a trailing-blank alias the word is merely eligible.
+            if (self.check_alias || self.alias_ctx.after_trailing_blank)
                 && let Token::Word(ref word) = tok.token
                 && let Some(word_text) = word.as_literal()
-                && !is_posix_reserved_word(word_text)
+                && !(self.check_alias && is_posix_reserved_word(word_text))
                 && !self.expanding_aliases.contains(word_text)
                 && let Some(alias_value) = self.aliases.get(word_text).cloned()
             {
                 let name = word_text.to_string();
                 self.push_alias_expansion(name, &alias_value, tok.span)?;
                 // The first replacement token is still in command-name
-                // position: loop with `check_alias` unchanged.
+                // position (or still eligible after a trailing blank): loop
+                // with `check_alias` unchanged.
                 continue;
             }
 
+            self.last_from_alias = from_alias;
+            self.alias_ctx.after_trailing_blank = false;
             self.update_check_alias_after(&tok.token);
             return Ok(tok);
         }
@@ -116,7 +133,7 @@ impl Lexer {
             let frame = self.alias_ctx.frames.pop().expect("checked above");
             self.expanding_aliases.remove(&frame.name);
             if frame.trailing_blank {
-                self.check_alias = true;
+                self.alias_ctx.after_trailing_blank = true;
             }
         }
     }
@@ -321,6 +338,21 @@ mod tests {
                 "Semi", "echo"
             ]
         );
+    }
+
+    #[test]
+    fn trailing_blank_makes_next_word_eligible_not_command_position() {
+        let a = [("e", "echo "), ("ok", "echo OK"), ("if", "YES")];
+        // `case` after a trailing-blank alias is an ordinary argument: it
+        // must not open a case context that swallows later commands.
+        assert_eq!(
+            words("e case x in x\nok", &a),
+            ["echo", "case", "x", "in", "x", "NL", "echo", "OK"]
+        );
+        // A reserved-word spelling outside command position is substituted.
+        assert_eq!(words("e if", &a), ["echo", "YES"]);
+        // Any token, including a redirect operator, ends the eligibility.
+        assert_eq!(words("e >f if", &a), ["echo", "Great", "f", "if"]);
     }
 
     #[test]
