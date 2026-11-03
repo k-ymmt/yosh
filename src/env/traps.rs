@@ -180,30 +180,18 @@ impl TrapStore {
         self.signal_traps.get(&sig)
     }
 
-    /// Print all active traps in a format suitable for re-input:
+    /// The `trap` listing as lines suitable for re-input:
     /// `trap -- 'cmd' NAME` / `trap -- '' NAME`, with the action
     /// single-quoted (embedded `'` as `'\''`) and the condition named
     /// without the `SIG` prefix (POSIX, dash, `bash --posix`).
-    /// Default actions are skipped. Exit trap first, then signals sorted by number.
-    /// In subshells, displays the saved parent traps (POSIX requirement).
-    pub fn display_all(&self) {
-        for line in self.listing(None) {
-            crate::builtin::output::write_stdout_decoded(&line, true);
-        }
-    }
-
-    /// Print traps for just the named conditions (POSIX 2024
-    /// `trap -p CONDITION...`), in the same re-input format as
-    /// [`Self::display_all`]. Unknown condition names and conditions at
-    /// their default action print nothing.
-    pub fn display_conditions(&self, conditions: &[String]) {
-        for line in self.listing(Some(conditions)) {
-            crate::builtin::output::write_stdout_decoded(&line, true);
-        }
-    }
-
-    /// Build the re-input lines for [`Self::display_all`] (`conditions`
-    /// = `None`) or [`Self::display_conditions`].
+    /// Default actions are skipped.
+    ///
+    /// With `conditions` = `None`, every active trap is listed: the exit
+    /// trap first, then signals sorted by number. With `Some`, only the
+    /// named conditions (POSIX 2024 `trap -p CONDITION...`); unknown
+    /// condition names and conditions at their default action list
+    /// nothing. In subshells, the saved parent traps are listed (POSIX
+    /// requirement).
     pub(crate) fn listing(&self, conditions: Option<&[String]>) -> Vec<String> {
         let (exit_trap, signal_traps) = if let Some(saved) = &self.saved_traps {
             (&saved.0, &saved.1)

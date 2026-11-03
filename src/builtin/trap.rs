@@ -1,6 +1,7 @@
 //! `trap` special builtin (POSIX XCU §2.15 `trap`).
 
 use crate::builtin::options::strip_end_of_options;
+use crate::builtin::output::write_stdout_decoded;
 use crate::env::{ShellEnv, TrapAction};
 use crate::error::ShellError;
 
@@ -24,6 +25,14 @@ fn apply_trap_os_disposition(env: &ShellEnv, condition: &str, action: &TrapActio
     crate::signal::apply_trap_disposition(num, disposition, env.mode.options.monitor);
 }
 
+/// Write the re-input trap listing (all traps, or just `conditions`;
+/// see [`crate::env::TrapStore::listing`]) to stdout.
+fn print_traps(env: &ShellEnv, conditions: Option<&[String]>) {
+    for line in env.traps.listing(conditions) {
+        write_stdout_decoded(&line, true);
+    }
+}
+
 pub fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     // POSIX XBD §12.2 Guideline 10: a leading `--` marks the end of
     // options — required for the save/restore idiom `t=$(trap); eval
@@ -31,18 +40,14 @@ pub fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     let saw_end_of_options = args.first().is_some_and(|a| a == "--");
     let args = strip_end_of_options(args);
     if args.is_empty() {
-        env.traps.display_all();
+        print_traps(env, None);
         return Ok(0);
     }
     if !saw_end_of_options && args[0] == "-p" {
         // POSIX 2024: with condition operands, print only the named
         // conditions; with none, print all traps. `--` may still follow.
         let conds = strip_end_of_options(&args[1..]);
-        if conds.is_empty() {
-            env.traps.display_all();
-        } else {
-            env.traps.display_conditions(conds);
-        }
+        print_traps(env, (!conds.is_empty()).then_some(conds));
         return Ok(0);
     }
     // POSIX trap: "If the first operand is an unsigned decimal integer,
@@ -66,18 +71,17 @@ pub fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     };
     let mut status = 0;
     for sig in signals {
-        if matches!(action, TrapAction::Default) {
-            if let Err(e) = env.traps.remove_trap(sig) {
+        let stored = if matches!(action, TrapAction::Default) {
+            env.traps.remove_trap(sig)
+        } else {
+            env.traps.set_trap(sig, action.clone())
+        };
+        match stored {
+            Ok(()) => apply_trap_os_disposition(env, sig, &action),
+            Err(e) => {
                 eprintln!("yosh: trap: {}", e);
                 status = 1;
-            } else {
-                apply_trap_os_disposition(env, sig, &action);
             }
-        } else if let Err(e) = env.traps.set_trap(sig, action.clone()) {
-            eprintln!("yosh: trap: {}", e);
-            status = 1;
-        } else {
-            apply_trap_os_disposition(env, sig, &action);
         }
     }
     Ok(status)
