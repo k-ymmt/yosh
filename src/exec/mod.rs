@@ -445,8 +445,26 @@ impl Executor {
         }
     }
 
-    /// Handle a signal with default behavior (terminate).
+    /// Handle a signal with default behavior: the signal's `SIG_DFL`
+    /// action (see [`signal::default_action`]), which for most signals
+    /// terminates the shell.
     pub(crate) fn handle_default_signal(&mut self, sig: i32) {
+        match signal::default_action(sig) {
+            // A signal whose default is to be discarded (WINCH, URG, ...)
+            // never ends the shell, e.g. when a second delivery was
+            // queued before the trap reset itself with `trap - WINCH`.
+            signal::DefaultAction::Ignore => return,
+            // Re-raise so the current disposition decides: SIG_DFL stops
+            // the shell like an untrapped delivery would; monitor mode
+            // keeps these ignored so the shell itself is never stopped.
+            signal::DefaultAction::Stop => {
+                // SAFETY: raise is async-signal-safe and only delivers
+                // `sig` to this process.
+                unsafe { libc::raise(sig) };
+                return;
+            }
+            signal::DefaultAction::Terminate => {}
+        }
         // POSIX sh: an interactive shell ignores untrapped SIGQUIT and
         // SIGTERM, and untrapped SIGINT only discards the current line —
         // none of the three may terminate the shell (bash/dash survive
@@ -588,6 +606,35 @@ mod tests {
         exec.handle_default_signal(libc::SIGTERM);
         assert_eq!(exec.env.vars.get("x"), None);
         assert!(exec.env.traps.exit_trap.is_some());
+    }
+
+    #[test]
+    fn handle_default_signal_ignores_signals_whose_default_is_ignore() {
+        // WINCH/URG/CONT are discarded at SIG_DFL: emulating the default
+        // action must not end a non-interactive shell or fire EXIT.
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.env
+            .traps
+            .set_trap("EXIT", crate::env::TrapAction::Command("x=exited".into()))
+            .unwrap();
+        for sig in [libc::SIGWINCH, libc::SIGURG, libc::SIGCONT, libc::SIGCHLD] {
+            assert_eq!(
+                signal::default_action(sig),
+                signal::DefaultAction::Ignore,
+                "{sig}"
+            );
+            exec.handle_default_signal(sig);
+        }
+        assert_eq!(exec.env.vars.get("x"), None);
+        assert_eq!(exec.exit_requested, None);
+        assert_eq!(
+            signal::default_action(libc::SIGTERM),
+            signal::DefaultAction::Terminate
+        );
+        assert_eq!(
+            signal::default_action(libc::SIGTSTP),
+            signal::DefaultAction::Stop
+        );
     }
 
     #[test]

@@ -162,6 +162,36 @@ pub const HANDLED_SIGNALS: &[(i32, &str)] = &[
     (libc::SIGUSR2, "USR2"),
 ];
 
+/// The action `SIG_DFL` takes for a signal, which the shell has to
+/// emulate when a delivery it queued on the self-pipe is processed after
+/// the trap was reset (`trap 'trap - WINCH' WINCH; kill -WINCH $$ $$`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultAction {
+    Terminate,
+    /// Discarded: CHLD, URG, WINCH, CONT (and INFO on the BSDs/macOS).
+    Ignore,
+    /// Stops the process: TSTP, TTIN, TTOU (STOP cannot be caught).
+    Stop,
+}
+
+/// See [`DefaultAction`].
+pub fn default_action(sig: i32) -> DefaultAction {
+    match sig {
+        libc::SIGCHLD | libc::SIGURG | libc::SIGWINCH | libc::SIGCONT => DefaultAction::Ignore,
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        ))]
+        libc::SIGINFO => DefaultAction::Ignore,
+        libc::SIGTSTP | libc::SIGTTIN | libc::SIGTTOU | libc::SIGSTOP => DefaultAction::Stop,
+        _ => DefaultAction::Terminate,
+    }
+}
+
 /// Look up a signal number by name (case-insensitive, strips optional "SIG" prefix).
 pub fn signal_name_to_number(name: &str) -> Result<i32, String> {
     let upper = name.to_ascii_uppercase();
@@ -378,7 +408,13 @@ pub fn init_signal_handling() {
 
 /// Non-blocking read of all pending signal bytes from the self-pipe.
 ///
-/// Returns a (possibly empty) vector of signal numbers.
+/// Returns a (possibly empty) vector of signal numbers in first-delivery
+/// order, each at most once: like the kernel's pending set for standard
+/// signals (and dash/bash), several deliveries of one signal received
+/// before the shell gets to them coalesce into one. Otherwise a trap that
+/// resets itself (`trap 'trap - TERM' TERM; kill -TERM $$ $$`) would see
+/// its second, already-caught delivery processed at the default action
+/// and kill the shell.
 /// Also clears the [`PENDING_EXIT_SIGNAL`] flag.
 pub fn drain_pending_signals() -> Vec<i32> {
     // Fast path: no handler has signalled since the last drain — skip the
@@ -405,7 +441,10 @@ pub fn drain_pending_signals() -> Vec<i32> {
             break;
         }
         for &b in &buf[..n as usize] {
-            signals.push(b as i32);
+            let sig = b as i32;
+            if !signals.contains(&sig) {
+                signals.push(sig);
+            }
         }
     }
 
