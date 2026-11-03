@@ -1,6 +1,7 @@
 //! `cd` regular builtin (POSIX XCU `cd`): `-L`/`-P` modes, `CDPATH`
 //! search, `cd -`, and lexical canonicalization of logical paths.
 
+use crate::builtin::options::{invalid_flag, scan_flag_words};
 use crate::builtin::output::write_stdout_decoded;
 use crate::builtin::path::{encode_path, os_path};
 use crate::env::ShellEnv;
@@ -72,64 +73,31 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
 
 fn parse_cd_options(args: &[String]) -> Result<(CdMode, Option<String>), ShellError> {
     let mut mode = CdMode::Logical;
-    let mut iter = args.iter();
-    let operand: Option<String>;
-
-    loop {
-        match iter.next() {
-            None => {
-                operand = None;
-                break;
-            }
-            Some(a) if a == "--" => {
-                operand = iter.next().cloned();
-                if iter.next().is_some() {
-                    return Err(ShellError::runtime(
-                        RuntimeErrorKind::IoError,
-                        "cd: too many arguments",
-                    ));
-                }
-                break;
-            }
-            Some(a) if a == "-" => {
-                operand = Some(a.clone());
-                if iter.next().is_some() {
-                    return Err(ShellError::runtime(
-                        RuntimeErrorKind::IoError,
-                        "cd: too many arguments",
-                    ));
-                }
-                break;
-            }
-            Some(a) if a.starts_with('-') && a.len() >= 2 => {
-                for ch in a[1..].chars() {
-                    match ch {
-                        'L' => mode = CdMode::Logical,
-                        'P' => mode = CdMode::Physical,
-                        other => {
-                            return Err(ShellError::runtime(
-                                RuntimeErrorKind::InvalidArgument,
-                                format!("cd: -{}: invalid option", other),
-                            ));
-                        }
-                    }
-                }
-                // continue parsing
-            }
-            Some(a) => {
-                operand = Some(a.clone());
-                if iter.next().is_some() {
-                    return Err(ShellError::runtime(
-                        RuntimeErrorKind::IoError,
-                        "cd: too many arguments",
-                    ));
-                }
-                break;
-            }
+    // `-L`/`-P` may repeat or cluster; the last one wins. A lone `-` is
+    // the `cd -` operand, not an option.
+    let idx = scan_flag_words(args, |ch| {
+        match ch {
+            'L' => mode = CdMode::Logical,
+            'P' => mode = CdMode::Physical,
+            _ => return false,
         }
-    }
+        true
+    })
+    .map_err(|e| {
+        ShellError::runtime(
+            RuntimeErrorKind::InvalidArgument,
+            invalid_flag("cd", e.flag),
+        )
+    })?;
 
-    Ok((mode, operand))
+    match &args[idx..] {
+        [] => Ok((mode, None)),
+        [operand] => Ok((mode, Some(operand.clone()))),
+        _ => Err(ShellError::runtime(
+            RuntimeErrorKind::IoError,
+            "cd: too many arguments",
+        )),
+    }
 }
 
 /// Lexical path canonicalization per POSIX §4 cd step 8 (logical mode).

@@ -1,5 +1,6 @@
 //! `trap` special builtin (POSIX XCU §2.15 `trap`).
 
+use crate::builtin::options::strip_end_of_options;
 use crate::env::{ShellEnv, TrapAction};
 use crate::error::ShellError;
 
@@ -27,11 +28,8 @@ pub fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     // POSIX XBD §12.2 Guideline 10: a leading `--` marks the end of
     // options — required for the save/restore idiom `t=$(trap); eval
     // "$t"` to work against our own `trap -- '…' NAME` output.
-    let (args, saw_end_of_options) = if args.first().map(String::as_str) == Some("--") {
-        (&args[1..], true)
-    } else {
-        (args, false)
-    };
+    let saw_end_of_options = args.first().is_some_and(|a| a == "--");
+    let args = strip_end_of_options(args);
     if args.is_empty() {
         env.traps.display_all();
         return Ok(0);
@@ -39,12 +37,7 @@ pub fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     if !saw_end_of_options && args[0] == "-p" {
         // POSIX 2024: with condition operands, print only the named
         // conditions; with none, print all traps. `--` may still follow.
-        let conds = &args[1..];
-        let conds = if conds.first().map(String::as_str) == Some("--") {
-            &conds[1..]
-        } else {
-            conds
-        };
+        let conds = strip_end_of_options(&args[1..]);
         if conds.is_empty() {
             env.traps.display_all();
         } else {

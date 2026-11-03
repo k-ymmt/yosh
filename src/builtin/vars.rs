@@ -1,21 +1,12 @@
 //! Variable-attribute special builtins: `export`, `readonly` and
 //! `unset` (POSIX XCU §2.15).
 
+use crate::builtin::options::{invalid_flag, scan_flag_words, strip_end_of_options};
 use crate::builtin::output::write_stdout_decoded;
 use crate::builtin::quote::quote_for_reinput;
 use crate::env::ShellEnv;
 use crate::error::ShellError;
 use crate::parser::word::is_valid_name;
-
-// POSIX XBD §12.2 Utility Syntax Guideline 10: `--` marks end of options.
-// Shared by export / readonly / unset to keep operand validation consistent.
-fn consume_end_of_options(args: &[String], idx: usize) -> usize {
-    if args.get(idx).map(String::as_str) == Some("--") {
-        idx + 1
-    } else {
-        idx
-    }
-}
 
 /// `export name=value` / `readonly name=value` re-input line, or just
 /// `export name` for a name that has the attribute but no value.
@@ -34,9 +25,7 @@ pub fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellE
     //     exactly like `export name=value` (matches bash).
     //   - `export -p name` prints just that variable, if exported.
     let print_mode = args.first().map(String::as_str) == Some("-p");
-    let opts_end = if print_mode { 1 } else { 0 };
-    let start = consume_end_of_options(args, opts_end);
-    let operands = &args[start..];
+    let operands = strip_end_of_options(&args[usize::from(print_mode)..]);
 
     if args.is_empty() || (print_mode && operands.is_empty()) {
         // Print all exported variables in POSIX re-input format,
@@ -95,28 +84,21 @@ pub fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellEr
     // Combining -f and -v is rejected with status 2.
     let mut mode_f = false;
     let mut mode_v = false;
-    let mut idx = 0;
-    while idx < args.len() {
-        let arg = args[idx].as_str();
-        if arg == "--" {
-            idx = consume_end_of_options(args, idx);
-            break;
+    let flags = scan_flag_words(args, |ch| {
+        match ch {
+            'f' => mode_f = true,
+            'v' => mode_v = true,
+            _ => return false,
         }
-        if arg == "-" || !arg.starts_with('-') || arg.len() == 1 {
-            break;
+        true
+    });
+    let idx = match flags {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!("yosh: {}", invalid_flag("unset", e.flag));
+            return Ok(2);
         }
-        for ch in arg[1..].chars() {
-            match ch {
-                'f' => mode_f = true,
-                'v' => mode_v = true,
-                _ => {
-                    eprintln!("yosh: unset: -{}: invalid option", ch);
-                    return Ok(2);
-                }
-            }
-        }
-        idx += 1;
-    }
+    };
     if mode_f && mode_v {
         eprintln!("yosh: unset: cannot simultaneously unset a function and a variable");
         return Ok(2);
@@ -150,9 +132,7 @@ pub fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, Shel
     // readonly, name-only operands print just that variable.
     // Mirrors builtin_export.
     let print_mode = args.first().map(String::as_str) == Some("-p");
-    let opts_end = if print_mode { 1 } else { 0 };
-    let start = consume_end_of_options(args, opts_end);
-    let operands = &args[start..];
+    let operands = strip_end_of_options(&args[usize::from(print_mode)..]);
 
     if args.is_empty() || (print_mode && operands.is_empty()) {
         let readonly_vars: Vec<(String, Option<String>)> = env
@@ -208,7 +188,6 @@ pub fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, Shel
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::builtin::special::exec_special_builtin;
     use crate::exec::Executor;
 
@@ -369,36 +348,6 @@ mod tests {
             !executor.env.vars.is_readonly("notro"),
             "readonly -p name is print-only; it must not set the readonly flag"
         );
-    }
-
-    #[test]
-    fn consume_end_of_options_skips_double_dash() {
-        let args = vec!["--".to_string(), "foo".to_string()];
-        assert_eq!(consume_end_of_options(&args, 0), 1);
-    }
-
-    #[test]
-    fn consume_end_of_options_leaves_idx_when_not_double_dash() {
-        let args = vec!["foo".to_string()];
-        assert_eq!(consume_end_of_options(&args, 0), 0);
-    }
-
-    #[test]
-    fn consume_end_of_options_handles_empty_args() {
-        let args: Vec<String> = vec![];
-        assert_eq!(consume_end_of_options(&args, 0), 0);
-    }
-
-    #[test]
-    fn consume_end_of_options_handles_idx_at_double_dash_mid_array() {
-        let args = vec!["-f".to_string(), "--".to_string(), "x".to_string()];
-        assert_eq!(consume_end_of_options(&args, 1), 2);
-    }
-
-    #[test]
-    fn consume_end_of_options_handles_idx_out_of_range() {
-        let args = vec!["foo".to_string()];
-        assert_eq!(consume_end_of_options(&args, 5), 5);
     }
 
     #[test]

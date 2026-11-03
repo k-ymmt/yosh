@@ -9,6 +9,7 @@ pub mod flow;
 pub mod getopts;
 pub mod hash;
 pub mod kill;
+pub(crate) mod options;
 pub(crate) mod output;
 pub(crate) mod path;
 pub mod printf;

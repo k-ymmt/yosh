@@ -8,6 +8,7 @@
 
 use std::io::Write;
 
+use crate::builtin::options::invalid_flag;
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::exec::Executor;
 
@@ -51,7 +52,7 @@ pub fn builtin_fc(args: &[String], executor: &mut Executor) -> Result<i32, Shell
                     _ => {
                         return Err(ShellError::runtime(
                             RuntimeErrorKind::InvalidArgument,
-                            format!("fc: -{}: invalid option", ch),
+                            invalid_flag("fc", ch),
                         ));
                     }
                 }

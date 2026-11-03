@@ -21,6 +21,7 @@
 //! bytes on entry and the assembled output is written to stdout as raw
 //! bytes, so invalid-UTF-8 input round-trips unchanged.
 
+use crate::builtin::options::strip_end_of_options;
 use crate::builtin::output::write_stdout_bytes;
 use crate::byteenc;
 use crate::error::ShellError;
@@ -59,10 +60,7 @@ fn run(args: &[String]) -> Run {
         diags: Vec::new(),
         usage: false,
     };
-    let args: &[String] = match args.first().map(String::as_str) {
-        Some("--") => &args[1..],
-        _ => args,
-    };
+    let args = strip_end_of_options(args);
     let Some(format) = args.first() else {
         r.diags
             .push("usage: printf format [argument...]".to_string());

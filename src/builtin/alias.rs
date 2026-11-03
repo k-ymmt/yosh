@@ -1,5 +1,6 @@
 //! `alias` / `unalias` regular builtins (POSIX XCU `alias`, `unalias`).
 
+use crate::builtin::options::strip_end_of_options;
 use crate::builtin::output::{report_write_error, try_write_stdout_decoded};
 use crate::env::ShellEnv;
 use crate::error::{RuntimeErrorKind, ShellError};
@@ -16,10 +17,7 @@ pub(crate) fn alias_line(name: &str, value: &str) -> String {
 
 pub fn builtin_alias(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     // XBD §12.2 Guideline 10: accept `--` (bash does; alias has no options).
-    let args = match args.first().map(String::as_str) {
-        Some("--") => &args[1..],
-        _ => args,
-    };
+    let args = strip_end_of_options(args);
     if args.is_empty() {
         for (name, value) in env.aliases.sorted_iter() {
             if let Err(e) = try_write_stdout_decoded(&alias_line(name, value), true) {

@@ -12,6 +12,7 @@
 //!   bash — it is silently ignored rather than cached under its
 //!   basename, which would make a later bare `ls` run `./d2/ls`.
 
+use crate::builtin::options::{invalid_flag, scan_flag_words};
 use crate::env::ShellEnv;
 use crate::error::ShellError;
 use crate::exec::command::find_in_path;
@@ -19,27 +20,20 @@ use crate::exec::command::find_in_path;
 pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     // Parse leading -X flags.
     let mut clear = false;
-    let mut idx = 0;
-    while idx < args.len() {
-        let a = &args[idx];
-        if a == "--" {
-            idx += 1;
-            break;
+    let flags = scan_flag_words(args, |ch| match ch {
+        'r' => {
+            clear = true;
+            true
         }
-        if !a.starts_with('-') || a == "-" {
-            break;
+        _ => false,
+    });
+    let idx = match flags {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!("yosh: {}", invalid_flag("hash", e.flag));
+            return Ok(1);
         }
-        for ch in a[1..].chars() {
-            match ch {
-                'r' => clear = true,
-                other => {
-                    eprintln!("yosh: hash: -{}: invalid option", other);
-                    return Ok(1);
-                }
-            }
-        }
-        idx += 1;
-    }
+    };
 
     let operands = &args[idx..];
 

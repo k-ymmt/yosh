@@ -1,5 +1,6 @@
 //! `ulimit` regular builtin (POSIX.1-2024 XCU `ulimit`).
 
+use crate::builtin::options::{invalid_option, scan_flag_words};
 use crate::builtin::output::write_stdout_or_report;
 use crate::error::ShellError;
 
@@ -116,26 +117,17 @@ fn parse_ulimit(args: &[String]) -> Result<UlimitRequest, UlimitArgError> {
         all: false,
         value: None,
     };
-    let mut i = 0;
-    while let Some(a) = args.get(i) {
-        if a == "--" {
-            i += 1;
-            break;
+    let i = scan_flag_words(args, |c| {
+        match c {
+            'H' => req.hard = true,
+            'S' => req.soft = true,
+            'a' => req.all = true,
+            c if ULIMIT_RESOURCES.iter().any(|r| r.opt == c) => req.resources.push(c),
+            _ => return false,
         }
-        let Some(cluster) = a.strip_prefix('-').filter(|c| !c.is_empty()) else {
-            break;
-        };
-        for c in cluster.chars() {
-            match c {
-                'H' => req.hard = true,
-                'S' => req.soft = true,
-                'a' => req.all = true,
-                c if ULIMIT_RESOURCES.iter().any(|r| r.opt == c) => req.resources.push(c),
-                _ => return Err(UlimitArgError::UnknownOption(a.clone())),
-            }
-        }
-        i += 1;
-    }
+        true
+    })
+    .map_err(|e| UlimitArgError::UnknownOption(e.word.to_string()))?;
     match &args[i..] {
         [] => {}
         [op] => {
@@ -192,7 +184,7 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
     let req = match parse_ulimit(args) {
         Ok(r) => r,
         Err(UlimitArgError::UnknownOption(o)) => {
-            eprintln!("yosh: ulimit: {o}: invalid option");
+            eprintln!("yosh: {}", invalid_option("ulimit", &o));
             return Ok(1);
         }
         Err(UlimitArgError::InvalidNumber(n)) => {

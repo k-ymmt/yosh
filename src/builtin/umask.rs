@@ -2,6 +2,7 @@
 //! creation mask (octal or `-S` symbolic) or set it from an octal or
 //! symbolic mode.
 
+use crate::builtin::options::invalid_option;
 use crate::builtin::output::write_stdout_or_report;
 use crate::error::{RuntimeErrorKind, ShellError};
 
@@ -21,7 +22,7 @@ pub fn builtin_umask(args: &[String]) -> Result<i32, ShellError> {
             s if s.starts_with('-') && s.len() > 1 => {
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::InvalidOption,
-                    format!("umask: {}: invalid option", s),
+                    invalid_option("umask", s),
                 ));
             }
             _ => break,

@@ -5,6 +5,7 @@
 //! backslash is the escape character (line continuation on `\<newline>`,
 //! `\X` keeps `X` literally).
 
+use crate::builtin::options::{invalid_flag, scan_flag_words};
 use crate::env::ShellEnv;
 use crate::error::ShellError;
 use crate::parser::word::is_valid_name;
@@ -19,7 +20,7 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         Err(ArgError::UnknownFlag(c)) => {
             // Usage error: status 2 like dash/bash (and yosh's other
             // builtins), distinct from read's EOF/assignment status 1.
-            eprintln!("yosh: read: -{}: invalid option", c);
+            eprintln!("yosh: {}", invalid_flag("read", c));
             return Ok(2);
         }
         Err(ArgError::InvalidIdentifier(name)) => {
@@ -218,24 +219,14 @@ enum ArgError {
 
 fn parse_args(args: &[String]) -> Result<ParsedArgs, ArgError> {
     let mut raw = false;
-    let mut idx = 0;
-    while idx < args.len() {
-        let a = &args[idx];
-        if a == "--" {
-            idx += 1;
-            break;
+    let idx = scan_flag_words(args, |ch| match ch {
+        'r' => {
+            raw = true;
+            true
         }
-        if !a.starts_with('-') || a == "-" {
-            break;
-        }
-        for ch in a[1..].chars() {
-            match ch {
-                'r' => raw = true,
-                other => return Err(ArgError::UnknownFlag(other)),
-            }
-        }
-        idx += 1;
-    }
+        _ => false,
+    })
+    .map_err(|e| ArgError::UnknownFlag(e.flag))?;
 
     let var_names: Vec<String> = args[idx..].to_vec();
     if var_names.is_empty() {

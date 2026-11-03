@@ -1,6 +1,7 @@
 //! `kill` regular builtin (POSIX XCU `kill`): send a signal to pids or
 //! `%jobspec` process groups, or list signal names with `kill -l`.
 
+use crate::builtin::options::strip_end_of_options;
 use crate::builtin::output::write_stdout_or_report;
 use crate::env::ShellEnv;
 use crate::error::{RuntimeErrorKind, ShellError};
@@ -18,11 +19,7 @@ pub fn builtin_kill(args: &[String], env: &ShellEnv) -> Result<i32, ShellError> 
 
     if args[0] == "-l" {
         // `kill -l -- 9`: `--` ends options (XBD §12.2 Guideline 10).
-        let rest = match args.get(1).map(String::as_str) {
-            Some("--") => &args[2..],
-            _ => &args[1..],
-        };
-        return kill_list(rest);
+        return kill_list(strip_end_of_options(&args[1..]));
     }
 
     let (sig_num, pid_args) = match parse_kill_signal(args) {
@@ -138,11 +135,7 @@ fn parse_kill_signal(args: &[String]) -> Result<(i32, &[String]), String> {
         Some(a) if a.starts_with('-') && a.len() > 1 => (parse_sig_spec(&a[1..])?, &args[1..]),
         _ => (libc::SIGTERM, args),
     };
-    let rest = match rest.first().map(String::as_str) {
-        Some("--") => &rest[1..],
-        _ => rest,
-    };
-    Ok((sig, rest))
+    Ok((sig, strip_end_of_options(rest)))
 }
 
 fn kill_list(args: &[String]) -> Result<i32, ShellError> {

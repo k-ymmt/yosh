@@ -14,6 +14,7 @@
 
 use crate::builtin::BuiltinKind;
 use crate::builtin::alias::alias_line;
+use crate::builtin::options::{invalid_flag, scan_flag_words};
 use crate::builtin::quote::single_quote;
 use crate::builtin::resolve::{CommandKind, resolve_command_kind};
 use crate::env::ShellEnv;
@@ -43,28 +44,17 @@ pub enum Verbosity {
 pub fn parse_flags(args: &[String]) -> Result<CommandFlags, String> {
     let mut use_default_path = false;
     let mut verbose = Verbosity::Execute;
-    let mut idx = 0;
-
-    while idx < args.len() {
-        let a = &args[idx];
-        if a == "--" {
-            idx += 1;
-            break;
+    // Clustered flags: "-pv" = -p -v, "-Vp" = -V -p.
+    let idx = scan_flag_words(args, |ch| {
+        match ch {
+            'p' => use_default_path = true,
+            'v' => verbose = Verbosity::Brief,
+            'V' => verbose = Verbosity::Verbose,
+            _ => return false,
         }
-        if !a.starts_with('-') || a == "-" {
-            break;
-        }
-        // Parse clustered flags: "-pv" = -p -v, "-Vp" = -V -p.
-        for ch in a[1..].chars() {
-            match ch {
-                'p' => use_default_path = true,
-                'v' => verbose = Verbosity::Brief,
-                'V' => verbose = Verbosity::Verbose,
-                other => return Err(format!("command: -{}: invalid option", other)),
-            }
-        }
-        idx += 1;
-    }
+        true
+    })
+    .map_err(|e| invalid_flag("command", e.flag))?;
 
     if idx >= args.len() {
         return Err("command: missing command name".to_string());
