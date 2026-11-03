@@ -401,6 +401,18 @@ impl Executor {
         }
     }
 
+    /// True when the command that just ran left the executor unwinding:
+    /// a pending flow-control signal (`break` / `continue` / `return`, a
+    /// fatal expansion error) or a pending shell exit (`exit`, a fatal
+    /// special-builtin or assignment error in a non-interactive shell).
+    /// Every compound construct checks this after each sub-list instead
+    /// of acting on the status it reported — e.g. a fatal error in an
+    /// `if` condition must not run the `else` branch (`readonly r=1; if
+    /// r=2 true; then :; else echo WRONG; fi` prints nothing; dash).
+    pub(crate) fn should_unwind(&self) -> bool {
+        self.env.exec.flow_control.is_some() || self.exit_requested.is_some()
+    }
+
     /// The status a forked child shell (subshell, pipeline member, async
     /// list, command substitution) exits with after running `status`'s
     /// command: a pending exit request — a fatal special-builtin error, or

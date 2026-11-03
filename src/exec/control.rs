@@ -97,7 +97,7 @@ impl Executor {
         let first_exempt = and_or.first.negated || has_rest;
         let mut status = self.exec_pipeline_errexit(&and_or.first, first_exempt);
 
-        if self.env.exec.flow_control.is_some() || self.exit_requested.is_some() {
+        if self.should_unwind() {
             return status;
         }
 
@@ -114,7 +114,7 @@ impl Executor {
             let exempt = pipeline.negated || !is_last;
             status = self.exec_pipeline_errexit(pipeline, exempt);
 
-            if self.env.exec.flow_control.is_some() || self.exit_requested.is_some() {
+            if self.should_unwind() {
                 break;
             }
         }
@@ -384,7 +384,7 @@ impl Executor {
                 // Sequential execution
                 status = self.exec_and_or(and_or);
             }
-            if self.env.exec.flow_control.is_some() {
+            if self.should_unwind() {
                 break;
             }
             self.check_errexit(status);

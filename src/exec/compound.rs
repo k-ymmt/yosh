@@ -73,7 +73,7 @@ impl Executor {
         let mut status = 0;
         for cmd in body {
             status = self.exec_complete_command(cmd);
-            if self.env.exec.flow_control.is_some() {
+            if self.should_unwind() {
                 break;
             }
             self.check_errexit(status);
@@ -148,7 +148,7 @@ impl Executor {
         else_part: &Option<Vec<CompleteCommand>>,
     ) -> i32 {
         let cond_status = self.with_errexit_suppressed(|e| e.exec_body(condition));
-        if self.env.exec.flow_control.is_some() {
+        if self.should_unwind() {
             return cond_status;
         }
 
@@ -158,7 +158,7 @@ impl Executor {
 
         for (elif_cond, elif_body) in elif_parts {
             let cond_status = self.with_errexit_suppressed(|e| e.exec_body(elif_cond));
-            if self.env.exec.flow_control.is_some() {
+            if self.should_unwind() {
                 return cond_status;
             }
             if cond_status == 0 {
@@ -213,7 +213,7 @@ impl Executor {
                 break;
             }
             let cond_status = self.with_errexit_suppressed(|e| e.exec_body(condition));
-            if self.env.exec.flow_control.is_some() {
+            if self.should_unwind() {
                 return cond_status;
             }
             let should_run = if until {
@@ -366,7 +366,7 @@ impl Executor {
             }
 
             status = self.exec_body(&item.body);
-            if self.env.exec.flow_control.is_some() {
+            if self.should_unwind() {
                 break;
             }
 
