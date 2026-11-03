@@ -11,7 +11,7 @@ mod xtrace;
 use crate::builtin::special::run_special_builtin;
 use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
 use crate::env::ShellEnv;
-use crate::error::{RuntimeErrorKind, ShellError, ShellErrorKind};
+use crate::error::{ShellError, ShellErrorKind};
 use crate::expand::expand_words;
 use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
 use crate::parser::try_parse_assignment;
@@ -167,19 +167,16 @@ impl Executor {
 
             for assignment in &cmd.assignments {
                 let has_cmd_sub = assignment.value.as_ref().is_some_and(word_has_command_sub);
-                let value = match assignment.value.as_ref() {
-                    // A failed expansion (`x=${zz:?}`, `set -u; x=$zz`)
-                    // must neither assign nor report status 0: it is an
-                    // expansion error (POSIX §2.8.1).
-                    Some(w) => match self.expand_assignment_value(w) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            redirect_state.restore();
-                            self.env.exec.last_exit_status = 1;
-                            return Err(e);
-                        }
-                    },
-                    None => String::new(),
+                // A failed expansion (`x=${zz:?}`, `set -u; x=$zz`) must
+                // neither assign nor report status 0: it is an expansion
+                // error (POSIX §2.8.1).
+                let value = match self.expand_assignment(assignment) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        redirect_state.restore();
+                        self.env.exec.last_exit_status = 1;
+                        return Err(e);
+                    }
                 };
                 // Trace before the variable is set so a readonly-failure still
                 // produces the trace line (bash behaviour). Nested command-sub
@@ -199,19 +196,10 @@ impl Executor {
                 if has_cmd_sub {
                     last_cmd_sub_status = Some(self.env.exec.last_exit_status);
                 }
-                // assign_var_with_options (not vars.set_with_options):
-                // `PATH=/dir` must invalidate the utility hash (POSIX §2.5.3).
-                let allexport = self.env.mode.options.allexport;
-                if let Err(e) = self
-                    .env
-                    .assign_var_with_options(&assignment.name, value, allexport)
-                {
+                if let Err(e) = self.assign_persistent(&assignment.name, value) {
                     redirect_state.restore();
                     self.env.exec.last_exit_status = 1;
-                    return Err(ShellError::runtime(
-                        RuntimeErrorKind::ReadonlyVariable,
-                        e.to_string(),
-                    ));
+                    return Err(e);
                 }
             }
             let final_status = last_cmd_sub_status.unwrap_or(0);
@@ -322,26 +310,11 @@ impl Executor {
                 // Special builtins: prefix assignments persist in current env
                 let mut assigned = Vec::with_capacity(cmd.assignments.len());
                 for assignment in &cmd.assignments {
-                    let value = match assignment.value.as_ref() {
-                        Some(w) => self
-                            .expand_assignment_value(w)
-                            .inspect_err(|_| self.env.exec.last_exit_status = 1)?,
-                        None => String::new(),
-                    };
-                    // assign_var_with_options: a `PATH=… special-builtin`
-                    // prefix assignment persists (POSIX §2.9.1) and must
-                    // invalidate the utility hash like any PATH write.
-                    let allexport = self.env.mode.options.allexport;
-                    if let Err(e) =
-                        self.env
-                            .assign_var_with_options(&assignment.name, value.clone(), allexport)
-                    {
-                        self.env.exec.last_exit_status = 1;
-                        return Err(ShellError::runtime(
-                            RuntimeErrorKind::ReadonlyVariable,
-                            e.to_string(),
-                        ));
-                    }
+                    let value = self
+                        .expand_assignment(assignment)
+                        .inspect_err(|_| self.env.exec.last_exit_status = 1)?;
+                    self.assign_persistent(&assignment.name, value.clone())
+                        .inspect_err(|_| self.env.exec.last_exit_status = 1)?;
                     // `VAR=x exec cmd`: the assignment belongs in the
                     // exec'd program's environment (dash/bash/ksh agree);
                     // it also persists in the shell per the special

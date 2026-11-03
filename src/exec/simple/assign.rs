@@ -1,6 +1,6 @@
 use crate::env::vars::Variable;
 use crate::error::{RuntimeErrorKind, ShellError};
-use crate::parser::ast::{Assignment, SimpleCommand, Word};
+use crate::parser::ast::{Assignment, SimpleCommand};
 
 use super::super::Executor;
 use super::super::redirect::{ExpandedRedirect, RedirectState};
@@ -11,16 +11,38 @@ use super::super::redirect::{ExpandedRedirect, RedirectState};
 pub(crate) type SavedVars = Vec<(String, Option<Variable>)>;
 
 impl Executor {
-    /// Expand one prefix-assignment value. A braced-parameter failure
-    /// (`${x:?}`, `set -u`) only raises `FlowControl::ExpansionError`
-    /// while returning `Ok`; turn it into an error so the command is
-    /// not run (POSIX §2.8.1 expansion error).
-    pub(super) fn expand_assignment_value(&mut self, w: &Word) -> crate::error::Result<String> {
+    /// Expand one prefix assignment's value (empty for `name=`). A
+    /// braced-parameter failure (`${x:?}`, `set -u`) only raises
+    /// `FlowControl::ExpansionError` while returning `Ok`; turn it into
+    /// an error so the command is not run (POSIX §2.8.1 expansion error).
+    pub(super) fn expand_assignment(
+        &mut self,
+        assignment: &Assignment,
+    ) -> Result<String, ShellError> {
+        let Some(w) = &assignment.value else {
+            return Ok(String::new());
+        };
         let value = crate::expand::expand_word_to_string(&mut self.env, w)?;
         if self.env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError) {
             return Err(ShellError::expansion_already_reported());
         }
         Ok(value)
+    }
+
+    /// Assign `name=value` persistently, as an assignment-only command or
+    /// a special built-in's prefix assignment does (POSIX §2.9.1).
+    /// `assign_var_with_options` (not `vars.set_with_options`): a `PATH`
+    /// assignment must invalidate the utility hash (POSIX §2.5.3). A
+    /// readonly variable makes this a variable-assignment error.
+    pub(super) fn assign_persistent(
+        &mut self,
+        name: &str,
+        value: String,
+    ) -> Result<(), ShellError> {
+        let allexport = self.env.mode.options.allexport;
+        self.env
+            .assign_var_with_options(name, value, allexport)
+            .map_err(|e| ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, e.to_string()))
     }
 
     /// Run `run` with the command's prefix assignments applied
@@ -66,10 +88,7 @@ impl Executor {
     ) -> crate::error::Result<Vec<(String, String)>> {
         let mut vars = Vec::with_capacity(assignments.len());
         for assign in assignments {
-            let value = match assign.value.as_ref() {
-                Some(w) => self.expand_assignment_value(w)?,
-                None => String::new(),
-            };
+            let value = self.expand_assignment(assign)?;
             if self.env.vars.is_readonly(&assign.name) {
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::ReadonlyVariable,
@@ -104,31 +123,33 @@ impl Executor {
         let mut saved = Vec::with_capacity(assignments.len());
         let mut assigned = Vec::with_capacity(assignments.len());
         for assignment in assignments {
-            let value = match assignment.value.as_ref() {
-                Some(w) => match self.expand_assignment_value(w) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        self.restore_assignments(saved);
-                        return Err(e);
-                    }
-                },
-                None => String::new(),
-            };
-            // The whole variable, not just its value: an exported name
-            // without a value (`export x` while unset) must get its
-            // export attribute back (dash/bash agree).
-            let old_val = self.env.vars.get_var(&assignment.name).cloned();
-            if let Err(e) = self.env.assign_var(&assignment.name, value.clone()) {
+            if let Err(e) = self.apply_temp_assignment(assignment, &mut saved, &mut assigned) {
                 self.restore_assignments(saved);
-                return Err(ShellError::runtime(
-                    RuntimeErrorKind::ReadonlyVariable,
-                    e.to_string(),
-                ));
+                return Err(e);
             }
-            saved.push((assignment.name.clone(), old_val));
-            assigned.push((assignment.name.clone(), value));
         }
         Ok((saved, assigned))
+    }
+
+    /// Apply one temporary prefix assignment, recording the variable's
+    /// previous state in `saved` and the assigned pair in `assigned`.
+    fn apply_temp_assignment(
+        &mut self,
+        assignment: &Assignment,
+        saved: &mut SavedVars,
+        assigned: &mut Vec<(String, String)>,
+    ) -> Result<(), ShellError> {
+        let value = self.expand_assignment(assignment)?;
+        // The whole variable, not just its value: an exported name
+        // without a value (`export x` while unset) must get its
+        // export attribute back (dash/bash agree).
+        let old_val = self.env.vars.get_var(&assignment.name).cloned();
+        self.env
+            .assign_var(&assignment.name, value.clone())
+            .map_err(|e| ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, e.to_string()))?;
+        saved.push((assignment.name.clone(), old_val));
+        assigned.push((assignment.name.clone(), value));
+        Ok(())
     }
 
     /// Restore variables to their pre-assignment values. Restores in
