@@ -111,21 +111,18 @@ impl Parser {
         // The current token was just lexed, so its source text spans from
         // the pre-token position to the lexer's position. A token replayed
         // from an alias expansion is not spelled by that text (it is empty,
-        // or the substituted alias name): fall back to the parts.
-        let source = if self.lexer.last_token_from_alias() {
-            String::new()
-        } else {
-            self.lexer
-                .source_text(self.pre_current_pos, self.lexer.position())
+        // or the substituted alias name): use its spelling in the alias
+        // value instead, so `alias h='cat <<"END$x"'` is delimited by
+        // `END$x` just like the unaliased command.
+        let source = match self.lexer.last_token_alias_source() {
+            Some(alias_source) => alias_source.to_string(),
+            None => self
+                .lexer
+                .source_text(self.pre_current_pos, self.lexer.position()),
         };
         let word = self.expect_word("here-document delimiter")?;
         let quoted = word_has_quoting(&word);
-        let source = trim_leading_blanks(&source);
-        let delimiter = if source.is_empty() {
-            delimiter_from_parts(&word)
-        } else {
-            delimiter_from_source(source, &word)
-        };
+        let delimiter = delimiter_from_source(trim_leading_blanks(&source), &word);
         Ok((delimiter, quoted))
     }
 
@@ -313,33 +310,6 @@ fn delimiter_from_source(source: &str, word: &Word) -> String {
         }
     }
     out
-}
-
-/// Fallback when no source text is available (delimiter word produced by
-/// alias substitution): concatenate the literal and quoted parts.
-fn delimiter_from_parts(word: &Word) -> String {
-    let mut delimiter = String::new();
-    for part in &word.parts {
-        match part {
-            WordPart::Literal(s)
-            | WordPart::EscapedLiteral(s)
-            | WordPart::SingleQuoted(s)
-            | WordPart::DollarSingleQuoted(s) => delimiter.push_str(s),
-            WordPart::DoubleQuoted(parts) => {
-                for p in parts {
-                    if let WordPart::Literal(s) | WordPart::EscapedLiteral(s) = p {
-                        delimiter.push_str(s);
-                    }
-                }
-            }
-            WordPart::Tilde(user) => {
-                delimiter.push('~');
-                delimiter.push_str(user.as_deref().unwrap_or(""));
-            }
-            _ => {}
-        }
-    }
-    delimiter
 }
 
 #[cfg(test)]

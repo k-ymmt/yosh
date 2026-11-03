@@ -65,6 +65,16 @@ struct AliasFrame {
     trailing_blank: bool,
 }
 
+/// A token produced by alias substitution, queued with its raw spelling in
+/// the alias value (leading blanks included). A here-document delimiter
+/// read from an alias is rebuilt from that spelling, exactly like one read
+/// from the input (POSIX §2.7.4: quote removal only, no expansion).
+#[derive(Clone, Debug)]
+pub(crate) struct QueuedToken {
+    token: SpannedToken,
+    source: std::rc::Rc<str>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum CaseState {
     /// After `case`, expecting the subject word.
@@ -98,9 +108,9 @@ impl Lexer {
         loop {
             self.release_finished_aliases();
 
-            let (tok, from_alias) = match self.alias_token_queue.pop_front() {
-                Some(tok) => (tok, true),
-                None => (self.next_token_raw()?, false),
+            let (tok, alias_source) = match self.alias_token_queue.pop_front() {
+                Some(q) => (q.token, Some(q.source)),
+                None => (self.next_token_raw()?, None),
             };
 
             // `check_alias` is grammatical command-name position, where a
@@ -121,7 +131,7 @@ impl Lexer {
                 continue;
             }
 
-            self.last_from_alias = from_alias;
+            self.last_alias_source = alias_source;
             self.alias_ctx.after_trailing_blank = false;
             self.update_check_alias_after(&tok.token);
             return Ok(tok);
@@ -155,17 +165,21 @@ impl Lexer {
         // tokens happens lazily as they are dequeued (see `next_token`).
         let mut alias_lexer = Lexer::new(value);
         alias_lexer.line = span.line.max(1);
-        let mut tokens = Vec::new();
+        let mut queue = VecDeque::new();
         loop {
+            let start = alias_lexer.position();
             let t = alias_lexer.next_token()?;
             if t.token == Token::Eof {
                 break;
             }
-            tokens.push(t);
+            let source = alias_lexer.source_text(start, alias_lexer.position());
+            queue.push_back(QueuedToken {
+                token: t,
+                source: source.into(),
+            });
         }
 
         let base_len = self.alias_token_queue.len();
-        let mut queue: VecDeque<SpannedToken> = tokens.into();
         queue.append(&mut self.alias_token_queue);
         self.alias_token_queue = queue;
         self.expanding_aliases.insert(name.clone());

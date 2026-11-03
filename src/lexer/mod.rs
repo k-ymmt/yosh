@@ -15,11 +15,11 @@ pub struct LexerState {
     pub pos: usize,
     pub line: usize,
     pub column: usize,
-    alias_token_queue: VecDeque<SpannedToken>,
+    alias_token_queue: VecDeque<alias::QueuedToken>,
     check_alias: bool,
     expanding_aliases: HashSet<String>,
     alias_ctx: alias::AliasCtx,
-    last_from_alias: bool,
+    last_alias_source: Option<Rc<str>>,
 }
 
 /// A cheap snapshot of only the byte-cursor fields (`pos`/`line`/`column`).
@@ -82,8 +82,9 @@ pub struct Lexer {
     aliases: HashMap<String, String>,
     expanding_aliases: HashSet<String>,
     check_alias: bool,
-    /// Queue of tokens produced by alias expansion, to be returned before reading more input.
-    alias_token_queue: VecDeque<SpannedToken>,
+    /// Queue of tokens produced by alias expansion, to be returned before
+    /// reading more input. Each carries its spelling in the alias value.
+    alias_token_queue: VecDeque<alias::QueuedToken>,
     /// While non-zero, `\<newline>` line continuations are NOT removed by
     /// `advance` (single quotes, `$'...'`, here-document bodies).
     no_join: u32,
@@ -100,10 +101,11 @@ pub struct Lexer {
     token_cache: HashMap<usize, CachedToken>,
     /// Command-position / recursion-guard bookkeeping for alias substitution.
     alias_ctx: alias::AliasCtx,
-    /// The token most recently returned by `next_token` came from an alias
-    /// replacement rather than directly from the input, so the source text
-    /// it was read from does not spell it.
-    last_from_alias: bool,
+    /// `Some(spelling)` when the token most recently returned by
+    /// `next_token` came from an alias replacement rather than directly
+    /// from the input (so the input text does not spell it): the token's
+    /// raw text in the alias value, leading blanks included.
+    last_alias_source: Option<Rc<str>>,
 }
 
 struct CachedToken {
@@ -140,7 +142,7 @@ impl Lexer {
             subparse_count: 0,
             token_cache: HashMap::new(),
             alias_ctx: alias::AliasCtx::default(),
-            last_from_alias: false,
+            last_alias_source: None,
         }
     }
 
@@ -166,7 +168,7 @@ impl Lexer {
             subparse_count: 0,
             token_cache: HashMap::new(),
             alias_ctx: alias::AliasCtx::default(),
-            last_from_alias: false,
+            last_alias_source: None,
         }
     }
 
@@ -233,7 +235,7 @@ impl Lexer {
             check_alias: self.check_alias,
             expanding_aliases: self.expanding_aliases.clone(),
             alias_ctx: self.alias_ctx.clone(),
-            last_from_alias: self.last_from_alias,
+            last_alias_source: self.last_alias_source.clone(),
         }
     }
 
@@ -245,14 +247,16 @@ impl Lexer {
         self.check_alias = state.check_alias;
         self.expanding_aliases = state.expanding_aliases;
         self.alias_ctx = state.alias_ctx;
-        self.last_from_alias = state.last_from_alias;
+        self.last_alias_source = state.last_alias_source;
     }
 
-    /// True when the token most recently returned by `next_token` was
-    /// produced by alias substitution (its source text is the alias name,
-    /// not the token's own spelling).
-    pub(crate) fn last_token_from_alias(&self) -> bool {
-        self.last_from_alias
+    /// When the token most recently returned by `next_token` was produced
+    /// by alias substitution, its raw spelling in the alias value (leading
+    /// blanks included) — the input text at the lexer's position spells
+    /// the alias name, not the token. `None` for a token read directly
+    /// from the input.
+    pub(crate) fn last_token_alias_source(&self) -> Option<&str> {
+        self.last_alias_source.as_deref()
     }
 
     /// Cheap cursor-only snapshot; see `CursorState` for the safety contract.
