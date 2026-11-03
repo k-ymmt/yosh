@@ -320,14 +320,11 @@ impl Repl {
             // Completeness probe for in-editor multiline editing: Enter on
             // input this closure deems incomplete inserts a newline into the
             // editor buffer instead of submitting. Mirrors exactly what the
-            // post-submit classification below would see (byteenc-encoded,
-            // newline-terminated, appended to any accumulated PS2 input).
+            // post-submit classification below would see (the editor buffer,
+            // already byteenc-encoded, newline-terminated, appended to any
+            // accumulated PS2 input).
             let is_incomplete = |buf_text: &str| {
-                let candidate = format!(
-                    "{}{}\n",
-                    input_buffer,
-                    crate::byteenc::encode_bytes(buf_text.as_bytes())
-                );
+                let candidate = format!("{}{}\n", input_buffer, buf_text);
                 matches!(
                     classify_parse(&candidate, &aliases),
                     ParseStatus::Incomplete
@@ -397,6 +394,7 @@ impl Repl {
             {
                 input_buffer.clear();
                 self.executor.run_signal_traps(&[libc::SIGINT]);
+                self.end_top_level_command();
                 continue;
             }
 
@@ -411,10 +409,13 @@ impl Repl {
                 continue;
             }
 
-            // Accumulate input, normalizing through the byteenc encoding so
-            // a literal escape-range codepoint typed/pasted at the prompt is
-            // re-escaped (keeps encode/decode injective; no-op otherwise).
-            input_buffer.push_str(&crate::byteenc::encode_bytes(line.as_bytes()));
+            // Accumulate input. The editor buffer is already in the byteenc
+            // encoding: typed text is encoded at the terminal ingress
+            // (`CrosstermTerminal::read_event`), and history entries, alias
+            // macros and completions are stored encoded. Encoding it again
+            // here would turn a recalled raw byte (an escape codepoint) into
+            // the four bytes of that codepoint's UTF-8 form.
+            input_buffer.push_str(&line);
             input_buffer.push('\n');
 
             // Verbose mode: print the input
@@ -430,12 +431,7 @@ impl Repl {
                     for cmd in &commands {
                         let status = self.executor.exec_complete_command(cmd);
                         self.executor.env.exec.last_exit_status = status;
-                        // The REPL is the top level: any flow-control signal
-                        // still pending here (ExpansionError from a nounset /
-                        // ${x:?} failure, or a stray return/break/continue)
-                        // has aborted the current command and must not leak
-                        // into the next one.
-                        self.executor.env.exec.flow_control = None;
+                        self.end_top_level_command();
                         if self.executor.exit_requested.is_some() {
                             break;
                         }
@@ -486,6 +482,7 @@ impl Repl {
 
             // Process any pending signals
             self.executor.process_pending_signals();
+            self.end_top_level_command();
             if let Some(code) = self.executor.exit_requested {
                 self.executor.env.exec.last_exit_status = code;
                 break;
@@ -493,6 +490,7 @@ impl Repl {
         }
 
         self.executor.process_pending_signals();
+        self.end_top_level_command();
         if self.executor.exit_requested.is_none() {
             self.executor.execute_exit_trap();
         }
@@ -517,6 +515,18 @@ impl Repl {
         }
 
         self.executor.env.exec.last_exit_status
+    }
+
+    /// Finish a command (or trap action) run at the top level of the
+    /// REPL: any flow-control signal still pending here (ExpansionError
+    /// from a nounset / `${x:?}` failure, or a stray return/break/
+    /// continue) has aborted that command and must not leak into the
+    /// next one — otherwise the next typed command is silently skipped.
+    /// Every top-level run goes through here: typed commands, trap
+    /// actions for signals drained between commands, and the INT trap
+    /// fired by Ctrl+C at the prompt.
+    fn end_top_level_command(&mut self) {
+        self.executor.env.exec.flow_control = None;
     }
 }
 

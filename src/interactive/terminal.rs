@@ -4,6 +4,7 @@ use crossterm::{
     style::{Attribute, Color, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{self, ClearType},
 };
+use std::collections::VecDeque;
 use std::io::{self, Stdout, Write, stdout};
 
 /// Text-cursor shape, used by the vi editing mode to distinguish
@@ -101,6 +102,9 @@ pub struct CrosstermTerminal {
     /// reads events from fd 0 and [`read_event`](Terminal::read_event)
     /// can watch that fd directly for terminal hangup.
     stdin_is_tty: bool,
+    /// Key events still to deliver from one terminal event that
+    /// [`byteenc_events`] expanded into several.
+    pending: VecDeque<Event>,
 }
 
 impl Default for CrosstermTerminal {
@@ -109,7 +113,44 @@ impl Default for CrosstermTerminal {
             stdout: stdout(),
             // SAFETY: isatty is always safe to call on a constant fd.
             stdin_is_tty: unsafe { libc::isatty(libc::STDIN_FILENO) } == 1,
+            pending: VecDeque::new(),
         }
+    }
+}
+
+/// Bring a terminal event into the byteenc encoding the line editor
+/// buffer is kept in (the ingress boundary for typed text).
+///
+/// The editor buffer holds the shell's internal encoding: history
+/// entries, alias macros and completed pathnames arrive already encoded,
+/// and the REPL hands the submitted line to the parser as is. A typed
+/// character is valid UTF-8, so only a *real* escape-range codepoint
+/// (`U+10FE00..=U+10FEFF`) needs work: it is escaped byte by byte, one
+/// key event per UTF-8 byte. Every other event passes through.
+fn byteenc_events(event: Event) -> Vec<Event> {
+    use crossterm::event::{KeyCode, KeyEvent};
+    match event {
+        Event::Key(
+            key @ KeyEvent {
+                code: KeyCode::Char(c),
+                ..
+            },
+        ) if crate::byteenc::unescape_char(c).is_some() => {
+            let mut utf8 = [0u8; 4];
+            crate::byteenc::encode_bytes(c.encode_utf8(&mut utf8).as_bytes())
+                .chars()
+                .map(|e| {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char(e),
+                        ..key
+                    })
+                })
+                .collect()
+        }
+        Event::Paste(text) => vec![Event::Paste(
+            crate::byteenc::encode_bytes(text.as_bytes()).into_owned(),
+        )],
+        other => vec![other],
     }
 }
 
@@ -177,10 +218,9 @@ impl CrosstermTerminal {
     pub fn new() -> Self {
         Self::default()
     }
-}
 
-impl Terminal for CrosstermTerminal {
-    fn read_event(&mut self) -> io::Result<Event> {
+    /// Read one event from crossterm, as the terminal delivered it.
+    fn read_terminal_event(&mut self) -> io::Result<Event> {
         use std::time::Duration;
         // Poll in short bursts so we can check the signal self-pipe between
         // calls.  This lets SIGHUP (and other termination signals) interrupt
@@ -222,6 +262,20 @@ impl Terminal for CrosstermTerminal {
                 return event::read();
             }
         }
+    }
+}
+
+impl Terminal for CrosstermTerminal {
+    fn read_event(&mut self) -> io::Result<Event> {
+        if let Some(event) = self.pending.pop_front() {
+            return Ok(event);
+        }
+        let mut events = byteenc_events(self.read_terminal_event()?).into_iter();
+        let first = events
+            .next()
+            .expect("byteenc_events yields at least one event");
+        self.pending.extend(events);
+        Ok(first)
     }
 
     fn size(&self) -> io::Result<(u16, u16)> {
@@ -360,5 +414,38 @@ impl Terminal for CrosstermTerminal {
         };
         write!(self.stdout, "{}", seq)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::byteenc_events;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn plain_keys_pass_through() {
+        for c in ['a', 'é', '日', '\u{10FDFF}', '\u{10FF00}'] {
+            assert_eq!(byteenc_events(key(c)), vec![key(c)]);
+        }
+    }
+
+    /// A typed escape-range codepoint is a real character, not the raw
+    /// byte its codepoint stands for: it is escaped byte by byte so the
+    /// editor buffer stays in the shell's encoding.
+    #[test]
+    fn typed_escape_range_char_is_escaped_per_byte() {
+        let typed = '\u{10FEFF}';
+        let mut utf8 = [0u8; 4];
+        let want: Vec<Event> = typed
+            .encode_utf8(&mut utf8)
+            .bytes()
+            .map(|b| key(crate::byteenc::escape_char(b)))
+            .collect();
+        assert_eq!(want.len(), 4);
+        assert_eq!(byteenc_events(key(typed)), want);
     }
 }

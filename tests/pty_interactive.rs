@@ -280,6 +280,27 @@ fn test_pty_ctrl_c_at_prompt_runs_int_trap() {
     exit_shell(&mut s);
 }
 
+/// An expansion error inside the INT trap fired by Ctrl+C at the prompt
+/// aborts only the trap action: the pending flow control it left used to
+/// leak into the next command and silently discard it (dash and bash run
+/// it).
+#[test]
+fn test_pty_ctrl_c_int_trap_error_does_not_eat_next_command() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+    s.send("trap ': ${missing:?OOPS}' INT\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("\x03").unwrap();
+    expect_output(&mut s, "yosh: missing: OOPS", "INT trap error not reported");
+    wait_for_prompt(&mut s);
+    s.send("\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("echo SURVIVED_$((40+2))\r").unwrap();
+    expect_output(&mut s, "SURVIVED_42", "command after INT trap error lost");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
 /// vi `[count]v` edits history NUMBER `count` (as `fc -l` numbers it and
 /// as `[count]G` reads it). Once HISTSIZE trimming has advanced the
 /// numbering, the number is not the list index; `v` used to index the
@@ -2371,6 +2392,33 @@ fn test_pty_startup_history_honors_inherited_histsize() {
     assert!(
         !before.contains("echo OLD"),
         "HISTSIZE=0 history still lists the loaded entry: {before:?}"
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+/// A history entry holding a byte that is not valid UTF-8 runs with that
+/// byte when recalled with Up: the REPL used to byteenc-encode the
+/// (already encoded) editor buffer again, so `\xff` ran as the four bytes
+/// of its escape codepoint (`f4 8f bb bf`). bash prints `ff`.
+#[test]
+fn test_pty_recalled_history_keeps_raw_bytes() {
+    let work = helpers::TempDir::new();
+    let hf = work.path().join("hf");
+    std::fs::write(&hf, b"printf '%s' '\xff' | od -An -tx1\n").unwrap();
+    let (mut s, _home) = spawn_yosh_in(work.path(), &[("HISTFILE", hf.to_str().unwrap())]);
+    wait_for_prompt(&mut s);
+    s.send("\x1b[A").unwrap();
+    s.send("\r").unwrap();
+    s.send("echo mark-$((40+2))\r").unwrap();
+    let caps = s
+        .expect(Regex(r"\r?\nmark-42"))
+        .expect("recalled line did not finish");
+    let before = String::from_utf8_lossy(caps.before()).into_owned();
+    let od_lines: Vec<&str> = before.lines().map(str::trim).collect();
+    assert!(
+        od_lines.contains(&"ff"),
+        "recalled raw byte did not run as itself: {before:?}"
     );
     wait_for_prompt(&mut s);
     exit_shell(&mut s);
