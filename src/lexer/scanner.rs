@@ -225,19 +225,11 @@ impl Lexer {
                     span,
                 })
             }
-            b'|' => self.read_pipe(),
-            b'&' => self.read_amp(),
-            b';' => self.read_semi(),
-            b'(' => {
-                let span = self.current_span();
-                self.advance();
-                Ok(SpannedToken {
-                    token: Token::LParen,
-                    span,
-                })
-            }
+            b'|' => Ok(self.read_pipe()),
+            b'&' => Ok(self.read_amp()),
+            b';' => Ok(self.read_semi()),
+            b'(' => Ok(self.read_operator(|_| Token::LParen)),
             b')' => {
-                let span = self.current_span();
                 // Raw: `$(...)` end-finding (`Lexer::parse_command_sub`)
                 // relies on `pos` sitting right after this `)`.
                 self.advance_raw();
@@ -246,8 +238,8 @@ impl Lexer {
                     span,
                 })
             }
-            b'<' => self.read_less(),
-            b'>' => self.read_great(),
+            b'<' => Ok(self.read_less()),
+            b'>' => Ok(self.read_great()),
             ch => {
                 if ch.is_ascii_digit()
                     && let Some(io_num) = self.try_read_io_number()
@@ -262,135 +254,96 @@ impl Lexer {
         }
     }
 
-    pub(crate) fn read_pipe(&mut self) -> error::Result<SpannedToken> {
-        let span = self.current_span();
-        self.advance(); // consume '|'
-        if self.current_byte() == b'|' {
+    /// Consume the current byte if it is `b`.
+    #[inline]
+    fn eat_byte(&mut self, b: u8) -> bool {
+        if self.current_byte() == b {
             self.advance();
-            Ok(SpannedToken {
-                token: Token::OrIf,
-                span,
-            })
+            true
         } else {
-            Ok(SpannedToken {
-                token: Token::Pipe,
-                span,
-            })
+            false
         }
     }
 
-    pub(crate) fn read_amp(&mut self) -> error::Result<SpannedToken> {
+    /// Read an operator token: consume its first byte, then let `rest`
+    /// consume any further bytes and pick the token.
+    #[inline]
+    fn read_operator(&mut self, rest: impl FnOnce(&mut Self) -> Token) -> SpannedToken {
         let span = self.current_span();
-        self.advance(); // consume '&'
-        if self.current_byte() == b'&' {
-            self.advance();
-            Ok(SpannedToken {
-                token: Token::AndIf,
-                span,
-            })
-        } else {
-            Ok(SpannedToken {
-                token: Token::Amp,
-                span,
-            })
+        self.advance(); // consume the first byte
+        SpannedToken {
+            token: rest(self),
+            span,
         }
     }
 
-    pub(crate) fn read_semi(&mut self) -> error::Result<SpannedToken> {
-        let span = self.current_span();
-        self.advance(); // consume ';'
-        match self.current_byte() {
-            b';' => {
-                self.advance();
-                Ok(SpannedToken {
-                    token: Token::DSemi,
-                    span,
-                })
+    /// `|` or `||`.
+    fn read_pipe(&mut self) -> SpannedToken {
+        self.read_operator(|lx| {
+            if lx.eat_byte(b'|') {
+                Token::OrIf
+            } else {
+                Token::Pipe
             }
-            b'&' => {
-                self.advance();
-                Ok(SpannedToken {
-                    token: Token::SemiAnd,
-                    span,
-                })
-            }
-            _ => Ok(SpannedToken {
-                token: Token::Semi,
-                span,
-            }),
-        }
+        })
     }
 
-    pub(crate) fn read_less(&mut self) -> error::Result<SpannedToken> {
-        let span = self.current_span();
-        self.advance(); // consume '<'
-        match self.current_byte() {
-            b'<' => {
-                self.advance();
-                if self.current_byte() == b'-' {
-                    self.advance();
-                    Ok(SpannedToken {
-                        token: Token::DLessDash,
-                        span,
-                    })
+    /// `&` or `&&`.
+    fn read_amp(&mut self) -> SpannedToken {
+        self.read_operator(|lx| {
+            if lx.eat_byte(b'&') {
+                Token::AndIf
+            } else {
+                Token::Amp
+            }
+        })
+    }
+
+    /// `;`, `;;` or `;&`.
+    fn read_semi(&mut self) -> SpannedToken {
+        self.read_operator(|lx| {
+            if lx.eat_byte(b';') {
+                Token::DSemi
+            } else if lx.eat_byte(b'&') {
+                Token::SemiAnd
+            } else {
+                Token::Semi
+            }
+        })
+    }
+
+    /// `<`, `<<`, `<<-`, `<&` or `<>`.
+    fn read_less(&mut self) -> SpannedToken {
+        self.read_operator(|lx| {
+            if lx.eat_byte(b'<') {
+                if lx.eat_byte(b'-') {
+                    Token::DLessDash
                 } else {
-                    Ok(SpannedToken {
-                        token: Token::DLess,
-                        span,
-                    })
+                    Token::DLess
                 }
+            } else if lx.eat_byte(b'&') {
+                Token::LessAnd
+            } else if lx.eat_byte(b'>') {
+                Token::LessGreat
+            } else {
+                Token::Less
             }
-            b'&' => {
-                self.advance();
-                Ok(SpannedToken {
-                    token: Token::LessAnd,
-                    span,
-                })
-            }
-            b'>' => {
-                self.advance();
-                Ok(SpannedToken {
-                    token: Token::LessGreat,
-                    span,
-                })
-            }
-            _ => Ok(SpannedToken {
-                token: Token::Less,
-                span,
-            }),
-        }
+        })
     }
 
-    pub(crate) fn read_great(&mut self) -> error::Result<SpannedToken> {
-        let span = self.current_span();
-        self.advance(); // consume '>'
-        match self.current_byte() {
-            b'>' => {
-                self.advance();
-                Ok(SpannedToken {
-                    token: Token::DGreat,
-                    span,
-                })
+    /// `>`, `>>`, `>&` or `>|`.
+    fn read_great(&mut self) -> SpannedToken {
+        self.read_operator(|lx| {
+            if lx.eat_byte(b'>') {
+                Token::DGreat
+            } else if lx.eat_byte(b'&') {
+                Token::GreatAnd
+            } else if lx.eat_byte(b'|') {
+                Token::Clobber
+            } else {
+                Token::Great
             }
-            b'&' => {
-                self.advance();
-                Ok(SpannedToken {
-                    token: Token::GreatAnd,
-                    span,
-                })
-            }
-            b'|' => {
-                self.advance();
-                Ok(SpannedToken {
-                    token: Token::Clobber,
-                    span,
-                })
-            }
-            _ => Ok(SpannedToken {
-                token: Token::Great,
-                span,
-            }),
-        }
+        })
     }
 
     pub(crate) fn is_meta_or_whitespace(ch: u8) -> bool {
