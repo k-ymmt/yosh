@@ -216,12 +216,9 @@ mod tests {
             "redirect-only command must create {}",
             tmp.display()
         );
-        let metadata = std::fs::metadata(&tmp).unwrap();
-        assert_eq!(
-            metadata.len(),
-            0,
-            "the file must be truncated to zero bytes"
-        );
+        // No length check: while fd 1 points at the file, libtest's main
+        // thread (which no test lock excludes) may write a progress line
+        // into it.
 
         let _ = std::fs::remove_file(&tmp);
     }
@@ -243,8 +240,16 @@ mod tests {
         let mut exec = Executor::new("yosh", vec![]);
         exec.exec_program(&prog);
 
-        let metadata = std::fs::metadata(&tmp).unwrap();
-        assert_eq!(metadata.len(), 0, "existing file must be truncated");
+        // The old content must be gone. Not `len() == 0`: libtest's main
+        // thread may print a progress line through the redirected fd 1.
+        let contents = std::fs::read(&tmp).unwrap();
+        assert!(
+            !contents
+                .windows(b"existing-content".len())
+                .any(|w| w == b"existing-content"),
+            "existing file must be truncated: {:?}",
+            String::from_utf8_lossy(&contents)
+        );
 
         let _ = std::fs::remove_file(&tmp);
     }

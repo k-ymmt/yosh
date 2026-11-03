@@ -50,6 +50,12 @@ static STDIO_FDS_LOCK: Mutex<()> = Mutex::new(());
 /// in whatever state it had, but children never run test code that
 /// takes it.
 ///
+/// The lock cannot exclude libtest's own main thread, which prints the
+/// `test ... ok` progress lines straight to fd 1: a test that points fd 1
+/// at a file must not assert on that file's exact length or content
+/// (assert on the presence / absence of its own marker text instead), or
+/// do the redirected write in a child process.
+///
 /// Poison-tolerant: a panicking test restored (or failed to restore)
 /// the fds itself; poisoning must not cascade into every fd test.
 pub(crate) fn lock_stdio_fds() -> MutexGuard<'static, ()> {

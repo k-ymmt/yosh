@@ -386,17 +386,17 @@ mod tests {
         assert_eq!(exec.env.history.first_number(), 1);
     }
 
-    /// The editor runs through the shell (a function is a valid editor,
-    /// as in bash and ksh), and the edited command enters the history
-    /// before it runs.
+    /// The editor runs through the shell (an editor value with options
+    /// and a function are both valid, as in bash and ksh), and the
+    /// edited command enters the history before it runs.
     #[test]
     fn fc_edit_runs_editor_as_shell_command_and_records_result() {
-        // The editor function redirects the process's own fd 1.
-        let _fds = crate::test_sync::lock_stdio_fds();
         let mut exec = Executor::new("yosh", vec![]);
-        exec.eval_string("ed2() { echo 'fc_edited=yes' > \"$1\"; }\n");
         exec.env.history.add("echo original", 500, "");
-        let status = builtin_fc(&["-e".to_string(), "ed2".to_string()], &mut exec).unwrap();
+        // The rewrite happens in a child /bin/sh: redirecting this test
+        // process's own fd 1 would also capture libtest's progress lines.
+        let editor = "/bin/sh -c 'echo fc_edited=yes >\"$1\"' sh";
+        let status = builtin_fc(&["-e".to_string(), editor.to_string()], &mut exec).unwrap();
         assert_eq!(status, 0);
         assert_eq!(exec.env.vars.get("fc_edited"), Some("yes"));
         assert_eq!(

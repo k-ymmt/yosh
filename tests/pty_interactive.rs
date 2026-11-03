@@ -297,7 +297,7 @@ fn test_pty_vi_mode_count_v_uses_history_number() {
         "echo v_bbb",
         "echo v_ccc",
     ] {
-        s.send(&format!("{cmd}\r")).unwrap();
+        s.send(format!("{cmd}\r")).unwrap();
         wait_for_prompt(&mut s);
     }
     // `true` as the editor leaves the file unchanged: entry 4 runs.

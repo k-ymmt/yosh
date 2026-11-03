@@ -24,6 +24,13 @@ fn key_events_for_text(text: &str) -> Vec<KeyEvent> {
             '\x1b' => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
             '\n' | '\r' => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             '\t' => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            '\x7f' => KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            // 0x1C..=0x1F as crossterm decodes them from a terminal
+            // (Ctrl+4..=Ctrl+7), so e.g. a Ctrl+_ in a macro undoes.
+            c @ '\x1c'..='\x1f' => KeyEvent::new(
+                KeyCode::Char(((c as u8) - 0x1c + b'4') as char),
+                KeyModifiers::CONTROL,
+            ),
             c if (c as u32) < 0x20 => KeyEvent::new(
                 KeyCode::Char((((c as u8) | 0x60) as char).to_ascii_lowercase()),
                 KeyModifiers::CONTROL,
@@ -455,5 +462,27 @@ impl LineEditor {
             self.cont_prompt_cache = Some(cont_prompt());
         }
         self.cont_prompt_cache.clone().unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Macro text maps control bytes to the key events a terminal
+    /// produces through crossterm (0x1F is Ctrl+7, DEL is Backspace).
+    #[test]
+    fn macro_control_bytes_match_terminal_key_events() {
+        let ev = key_events_for_text("\x1f\x7f\x08\x1b");
+        assert_eq!(
+            ev[0],
+            KeyEvent::new(KeyCode::Char('7'), KeyModifiers::CONTROL)
+        );
+        assert_eq!(ev[1], KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(
+            ev[2],
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)
+        );
+        assert_eq!(ev[3], KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     }
 }
