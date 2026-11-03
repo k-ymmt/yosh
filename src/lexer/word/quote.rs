@@ -136,51 +136,12 @@ impl Lexer {
                     break;
                 }
                 let esc = self.current_byte();
+                if let Some(byte) = simple_escape(esc) {
+                    self.advance();
+                    bytes.push(byte);
+                    continue;
+                }
                 match esc {
-                    b'a' => {
-                        self.advance();
-                        bytes.push(0x07);
-                    }
-                    b'b' => {
-                        self.advance();
-                        bytes.push(0x08);
-                    }
-                    b'e' | b'E' => {
-                        self.advance();
-                        bytes.push(0x1B);
-                    }
-                    b'f' => {
-                        self.advance();
-                        bytes.push(0x0C);
-                    }
-                    b'n' => {
-                        self.advance();
-                        bytes.push(b'\n');
-                    }
-                    b'r' => {
-                        self.advance();
-                        bytes.push(b'\r');
-                    }
-                    b't' => {
-                        self.advance();
-                        bytes.push(b'\t');
-                    }
-                    b'v' => {
-                        self.advance();
-                        bytes.push(0x0B);
-                    }
-                    b'\\' => {
-                        self.advance();
-                        bytes.push(b'\\');
-                    }
-                    b'\'' => {
-                        self.advance();
-                        bytes.push(b'\'');
-                    }
-                    b'"' => {
-                        self.advance();
-                        bytes.push(b'"');
-                    }
                     b'x' => {
                         self.advance();
                         let val = self.read_hex_digits(2);
@@ -250,4 +211,24 @@ impl Lexer {
         }
         val
     }
+}
+
+/// The byte a single-character `$'...'` escape (`\n`, `\t`, `\\`, ...)
+/// stands for; `None` for the multi-character (`\x`, `\c`, octal) and
+/// unknown escapes.
+fn simple_escape(esc: u8) -> Option<u8> {
+    Some(match esc {
+        b'a' => 0x07,
+        b'b' => 0x08,
+        b'e' | b'E' => 0x1B,
+        b'f' => 0x0C,
+        b'n' => b'\n',
+        b'r' => b'\r',
+        b't' => b'\t',
+        b'v' => 0x0B,
+        b'\\' => b'\\',
+        b'\'' => b'\'',
+        b'"' => b'"',
+        _ => return None,
+    })
 }
