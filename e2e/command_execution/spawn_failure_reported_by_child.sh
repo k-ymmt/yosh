@@ -12,6 +12,9 @@ a=x; i=0
 while [ "$i" -lt 23 ]; do a=$a$a; i=$((i+1)); done
 exec 3>&1
 {
+    # Write to the pipe until the reader has exited, so the failing
+    # command below always sees a closed pipe (no race with the reader).
+    (while :; do echo x >&2; done)
     /usr/bin/true "$a"
     echo status:$?
     echo done

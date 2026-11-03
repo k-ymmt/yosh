@@ -29,7 +29,7 @@
       works. Future follow-up: plumb ShellEnv's NO_COLOR value (or other
       color-control exports) through the line_editor into `SelectorOptions.colors`
       so runtime `export NO_COLOR=1` takes effect immediately
-      (`src/interactive/line_editor.rs`, `src/interactive/selector.rs::colors_enabled`).
+      (`src/interactive/line_editor/`, `src/interactive/selector.rs::colors_enabled`).
 
 ## Job Control: Known Limitations
 
@@ -314,34 +314,34 @@
       (a) multiline buffers always take the full clear+repaint path — extend
       the diff-based partial repaint to multiline layouts if large pasted
       blocks make per-keystroke repaints visibly slow
-      (`src/interactive/line_editor.rs`).
+      (`src/interactive/line_editor/`).
 - [ ] 2026-07-27 viewport-rendering adversarial review residuals (the
       confirmed majors/minors and the grid-emulation test gap were fixed
       2026-07-27; remaining acknowledged items):
   - [ ] (nit) tw=1 + width-2 char: the packer's progress guard force-places
         the cell, making a row wider than the terminal (model/physical
         1-row drift). Degenerate geometry; acknowledged cost of the
-        progress guarantee (`src/interactive/line_editor.rs`).
+        progress guarantee (`src/interactive/line_editor/`).
   - [ ] (design note) A side-effectful PS2 (`PS2='$(...)'`) executes once
         per read session when a *multiline suggestion* is merely displayed,
         without the user ever entering a continuation line —
         `resolve_cont_prompt` intentionally treats the suggestion as
         needing PS2. Surprising trigger for user-defined command execution;
         document or gate if user reports surface
-        (`src/interactive/line_editor.rs`).
+        (`src/interactive/line_editor/`).
   - [ ] (pre-existing) The single-line renderer's *within-screen* soft-wrap
         row math still uses pure width division, which mis-models wide
         (CJK) chars that wrap early; the 2026-07-27 fix only made the
         taller-than-screen dispatch pessimistic so such buffers reach the
         packing renderer. Sub-screen wide-char soft-wrap positioning
         retains the historical approximation
-        (`src/interactive/line_editor.rs`).
+        (`src/interactive/line_editor/`).
   - [ ] (degenerate) A prompt wider than the whole screen (`prefix rows >
         th`) still overflows the viewport during its atomic `write_str`,
         and a viewport window starting mid-prefix repaints cells but not
         the prefix tail on its top row. Both need a prompt occupying most
         of the screen; recorded, not planned
-        (`src/interactive/line_editor.rs`).
+        (`src/interactive/line_editor/`).
 - [ ] `-i` non-terminal residuals (core landed 2026-08-24: `-i` forces
       `is_interactive` for the stdin-pipe / `-c` / script-file paths,
       `$-` reports `i`, untrapped TERM/QUIT/INT ignored, shell errors
@@ -441,11 +441,11 @@
   - [ ] `=` `\` `*` glob the raw bigword: no tilde expansion or
         quote-aware word extraction (POSIX prescribes wordexp for `=`).
         Same class as the completion engine's quote handling
-        (`src/interactive/line_editor.rs::vi_expand_bigword`).
+        (`src/interactive/line_editor/vi_expand.rs::vi_expand_bigword`).
   - [ ] `v` resolves VISUAL/EDITOR from the inherited process
         environment, not ShellEnv exports — same std::env-vs-ShellEnv
         class as the selector NO_COLOR item above
-        (`src/interactive/line_editor.rs::vi_edit_in_editor`).
+        (`src/interactive/line_editor/external_editor.rs::vi_edit_in_editor`).
   - [ ] `set +o vi` with neither editing option set falls back to emacs
         behavior; bash instead disables line editing entirely. Deviation
         noted in `src/env/shell_mode.rs::set_by_name`; revisit only if a
@@ -455,52 +455,52 @@
         only requires undoing the last change, and bash behaves the
         same. `.` insert-text capture is an approximation (entry point
         to cursor) that degrades if the cursor moves mid-session
-        (`src/interactive/line_editor.rs`).
+        (`src/interactive/line_editor/`).
   - [ ] `@letter` alias macros resolve only in the completion-enabled
         read path (the production REPL path); the plain `read_line`
-        test path ignores them (`src/interactive/line_editor.rs`).
+        test path ignores them (`src/interactive/line_editor/`).
   - [ ] vi insert mode interprets Alt+char as ESC-then-command (fast
         ESC+key arrives as Alt+key in terminal encoding; bash vi mode
         behaves the same), so the emacs Alt-chords (Alt+f/b/d/u/l/c/t)
         are unavailable in vi insert mode. Ctrl bindings all remain.
         Revisit only if a user wants real-Alt distinction via the kitty
-        keyboard protocol (`src/interactive/line_editor.rs::handle_key`).
+        keyboard protocol (`src/interactive/line_editor/emacs.rs::handle_key`).
   - [ ] Multiline dd/cc/yy semantics: the line variants operate on the
         cursor's logical line *text* only — the count is ignored and the
         '\n' separators stay, so `2dd` on `a\nb\nc` empties one line
         instead of deleting two lines. POSIX's single-line model doesn't
         cover this; full-vi behavior would delete count lines including
         separators. Wrap-up review 2026-08-25 deferral
-        (`src/interactive/line_editor.rs::execute_vi_cmd_arm`, OpLine).
+        (`src/interactive/line_editor/vi_edit.rs::vi_op_line`, `src/interactive/line_editor/vim_ops.rs::vim_op_line`).
   - [ ] Counts on insert-entry commands (`3a x <ESC>` → `xxx`) and on
         `n`/`N` are accepted but ignored. POSIX XCU does not give these
         commands a count, so this is a full-vi nicety, not a conformance
         gap. Wrap-up review 2026-08-25 deferral
-        (`src/interactive/line_editor.rs`).
+        (`src/interactive/line_editor/`).
   - [ ] `~` (and the pre-existing emacs Alt+u/l/c word-case ops) keep
         only the first scalar of a multi-char Unicode case mapping:
         `ß` toggles to `S`, dropping the second `S`. In-place single-cell
         replacement can't grow; fixing it means splicing. Wrap-up review
-        2026-08-25 deferral (`src/interactive/line_editor.rs`).
+        2026-08-25 deferral (`src/interactive/line_editor/`).
   - [ ] `v` spawns the external editor directly from the line editor in
         the shell's own process group: a Ctrl+C typed inside the editor
         also lands in yosh's self-pipe, so a pending INT trap can fire
         after the next submitted command. A real fix routes the editor
         through the executor's foreground-job machinery (like `fc`).
         Wrap-up review 2026-08-25 deferral
-        (`src/interactive/line_editor.rs::vi_edit_in_editor`).
+        (`src/interactive/line_editor/external_editor.rs::vi_edit_in_editor`).
 - [ ] Bash-style prompt escapes — `\w` (working directory), `\u` (username), `\h` (hostname), etc.
 - [ ] History expansion — `!!` (last command), `!n` (by number)
-- [ ] Right-aligned prompt (`PS1_RIGHT`) — starship-style right-side prompt display based on terminal width (`src/interactive/line_editor.rs`)
+- [ ] Right-aligned prompt (`PS1_RIGHT`) — starship-style right-side prompt display based on terminal width (`src/interactive/line_editor/`)
 - [ ] Prompt segment API — structured segment registration for multiple plugins to contribute prompt sections without PS1 conflicts (`src/plugin/`, `crates/yosh-plugin-sdk/`)
-- [ ] Ctrl+C / empty-Enter type distinction — both return `Ok(Some(""))` from `read_line`; introduce a dedicated variant for clearer intent (`src/interactive/line_editor.rs`, `src/interactive/mod.rs`)
+- [ ] Ctrl+C / empty-Enter type distinction — both return `Ok(Some(""))` from `read_line`; introduce a dedicated variant for clearer intent (`src/interactive/line_editor/`, `src/interactive/mod.rs`)
 - [ ] Parse status edge-case tests — `||` continuation, `for...do` incomplete, nested structures, unterminated here-document (`tests/interactive.rs`)
-- [ ] Tab completion: unify `read_line` and `read_line_with_completion` — `read_line` is now only used by tests; consider merging into a single method (`src/interactive/line_editor.rs`)
+- [ ] Tab completion: unify `read_line` and `read_line_with_completion` — `read_line` is now only used by tests; consider merging into a single method (`src/interactive/line_editor/`)
 - [ ] Syntax highlighting: color palette customization — allow users to override colors via environment variables like `YOSH_COLOR_KEYWORD=blue` (`src/interactive/highlight.rs`)
 - [ ] Syntax highlighting: double-quote `$` expansion uses inline scanning — deeply nested cases like `"$(foo "$(bar)")"` may highlight incorrectly; consider mode-stack approach (`src/interactive/highlight.rs`)
-- [ ] Syntax highlighting: `redraw()` ANSI optimization — currently calls `reset_style()` on every style change; could reduce escape sequences with diff-based rendering (`src/interactive/line_editor.rs`)
+- [ ] Syntax highlighting: `redraw()` ANSI optimization — currently calls `reset_style()` on every style change; could reduce escape sequences with diff-based rendering (`src/interactive/line_editor/`)
 - [ ] Emacs keybindings: `~/.inputrc` config file — Keymap struct is separated for future configurability but no config file reading is implemented (`src/interactive/keymap.rs`)
-- [ ] Emacs keybindings: undo group boundary on space — spec says space triggers undo group boundary but implementation defers boundary to next non-space char; undo granularity is slightly coarser than readline (`src/interactive/line_editor.rs`)
+- [ ] Emacs keybindings: undo group boundary on space — spec says space triggers undo group boundary but implementation defers boundary to next non-space char; undo granularity is slightly coarser than readline (`src/interactive/line_editor/`)
 - [ ] Emacs keybindings: PTY E2E tests — kill/yank round-trip, undo, word movement, numeric arg scenarios not covered by PTY tests (`tests/pty_interactive.rs`)
 - [ ] PTY tests: remaining `thread::sleep` after send — autosuggest/tab completion/syntax highlight/`set -m` tests still rely on 50–200ms fixed waits for UI render or child startup (not raw-mode races); if CI flakiness appears on those paths, migrate them to condition-based waits similar to `wait_for_raw_mode` (`tests/pty_interactive.rs`)
 - [ ] Spec completion: `command_words` treats unquoted `&` in `2>&1` as a segment separator and counts assignment prefixes (`FOO=1 cmd`) / redirection words as command/positional words — spec lookup misses, degrading gracefully to path completion (`src/interactive/spec_completion.rs`)
@@ -516,25 +516,25 @@ the items below are deferred work, not policy:
 
 - [ ] `.` repeat of VISUAL-mode changes — VISUAL operations are not
       recorded for `.`; Vim repeats them on a same-size region
-      (`src/interactive/line_editor.rs`).
+      (`src/interactive/line_editor/`).
 - [ ] VISUAL `u` / `U` (lower/uppercase the selection) — currently bell
       (`src/interactive/vi.rs::resolve_visual_key`).
 - [ ] Insert-mode Vim extensions — `Ctrl-O` (one-shot Normal command),
-      `Ctrl-R <reg>`, `Ctrl-A` (`src/interactive/line_editor.rs`).
+      `Ctrl-R <reg>`, `Ctrl-A` (`src/interactive/line_editor/`).
 - [ ] Named registers (`"a`–`"z`), numbered registers — only the typed
       unnamed register exists (`src/interactive/vim.rs`).
 - [ ] Blockwise VISUAL (`Ctrl-V`), `gv`, VISUAL `I`/`A`
-      (`src/interactive/vi.rs`, `src/interactive/line_editor.rs`).
+      (`src/interactive/vi.rs`, `src/interactive/line_editor/`).
 - [ ] Linewise selection of an empty logical line renders no highlighted
       cells — the renderer has no cell for `'\n'`
-      (`src/interactive/line_editor.rs::redraw_multiline`).
+      (`src/interactive/line_editor/render/multiline.rs::redraw_multiline`).
 - [ ] Normal-mode `Ctrl-A`/`Ctrl-X` number increment/decrement —
       `Ctrl-X` is taken by the `Ctrl-X Ctrl-E` chord; would need a
       different binding or a timeout (`src/interactive/vi.rs`).
 - [ ] Undo commit criterion is buffer byte-difference — a change command
       whose result equals its input (e.g. `r` with the same char)
       commits nothing and preserves redo, where Vim would create a unit
-      and clear redo (`src/interactive/line_editor.rs`).
+      and clear redo (`src/interactive/line_editor/`).
 
 ## Future: Plugin System Enhancements
 

@@ -4,7 +4,7 @@
 //!
 //! Everything specific to Vim-editor semantics — the typed unnamed
 //! register and the linewise range math — lives here, separate from the
-//! POSIX vi machinery in `vi.rs`. `line_editor.rs` calls into this
+//! POSIX vi machinery in `vi.rs`. `line_editor/` calls into this
 //! module only when `ViEngine::flavor == ViFlavor::Vim`.
 
 use super::vi::{self, VisualKind};
