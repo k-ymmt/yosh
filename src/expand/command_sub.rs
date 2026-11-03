@@ -44,9 +44,12 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 libc::close(pipe_write);
             }
 
-            // Create a new executor with a clone of the parent's environment
+            // Build the child's executor from the parent's environment.
+            // This process is a fork child that never returns to the
+            // parent's executor (it ends in `exit_child`), so the state is
+            // moved out of `env` rather than deep-cloned.
             let mut child_env = ShellEnv {
-                vars: env.vars.clone(),
+                vars: std::mem::take(&mut env.vars),
                 exec: crate::env::ExecState {
                     last_exit_status: env.exec.last_exit_status,
                     flow_control: None,
@@ -63,7 +66,7 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                 process: crate::env::ProcessState {
                     shell_pid: env.process.shell_pid,
                     shell_pgid: env.process.shell_pgid,
-                    jobs: env.process.jobs.clone(),
+                    jobs: std::mem::take(&mut env.process.jobs),
                 },
                 mode: crate::env::ShellMode {
                     options: env.mode.options.clone(),
@@ -82,13 +85,13 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                     flag_m: env.mode.options.monitor || env.mode.flag_m,
                     in_dot_script: false,
                 },
-                shell_name: env.shell_name.clone(),
-                functions: env.functions.clone(),
-                traps: env.traps.clone(),
-                aliases: env.aliases.clone(),
-                history: env.history.clone(),
-                default_path_cache: env.default_path_cache.clone(),
-                utility_hash: env.utility_hash.clone(),
+                shell_name: std::mem::take(&mut env.shell_name),
+                functions: std::mem::take(&mut env.functions),
+                traps: std::mem::take(&mut env.traps),
+                aliases: std::mem::take(&mut env.aliases),
+                history: std::mem::take(&mut env.history),
+                default_path_cache: std::mem::take(&mut env.default_path_cache),
+                utility_hash: std::mem::take(&mut env.utility_hash),
             };
             // POSIX §2.12: traps caught by the parent (including the
             // shell's always-registered HANDLED_SIGNALS self-pipe
