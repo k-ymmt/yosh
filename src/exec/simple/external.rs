@@ -1,5 +1,6 @@
 use std::ffi::CString;
 
+use nix::errno::Errno;
 use nix::unistd::{ForkResult, execve};
 
 use crate::env::jobs;
@@ -9,11 +10,11 @@ use crate::signal;
 use super::super::command::wait_child;
 use super::super::redirect::{ExpandedRedirect, RedirectState};
 use super::super::{Executor, fork_shell};
-use super::Invocation;
 use super::cstrings::{
-    ExecCStringError, build_exec_cstrings_for_path, merge_envp, nul_terminated_ptrs,
+    enoexec_sh_fallback, envp_with_overrides, exec_cstrings_or_report, nul_terminated_ptrs,
 };
 use super::resolve::{ResolvedExec, effective_path_override, resolve_exec_path};
+use super::{Invocation, command_line};
 
 impl Executor {
     /// Run a command that is neither a function nor a built-in: a plugin
@@ -54,18 +55,18 @@ impl Executor {
         Ok(self.finish_simple_command(inv.hook_cmd, status))
     }
 
-    /// Fork, apply redirects in child, exec the command, wait in parent.
+    /// Resolve and run an external command with its (already expanded)
+    /// redirections, waiting for it (see [`Self::spawn_external_at_path`]).
     ///
     /// `env_overrides` are prefix-assignment (name, value) pairs from the
     /// command itself (e.g. `FOO=bar cmd`); they are NOT pre-merged with
     /// the shell's exported environ (see `build_env_vars`). The merge
-    /// happens here, in the child, right before `setenv` — the common
-    /// case of no prefix assignments then never touches `environ()`'s
-    /// cached Vec at all beyond the borrow needed to iterate it.
+    /// happens right before the spawn / exec — the common case of no
+    /// prefix assignments then uses the cached envp as is.
     ///
-    /// The command is resolved to an absolute path in the parent (via
-    /// `find_in_path`, consulting/populating `utility_hash`) before
-    /// forking, and the child calls `execv` on the resolved path instead
+    /// The command is resolved to an absolute path in the shell (via
+    /// `lookup_in_path`, consulting/populating `utility_hash`) before
+    /// spawning, and the child is exec'd on the resolved path instead
     /// of `execvp` — avoiding a redundant PATH re-walk in the child.
     /// `cmd` containing `/` bypasses PATH search entirely (POSIX exec
     /// semantics), matching `execvp`'s own behavior.
@@ -112,16 +113,9 @@ impl Executor {
             ),
             ResolvedExec::Executable(path) => {
                 if in_place {
-                    let (c_cmd, c_args) = match build_exec_cstrings_for_path(&path, cmd, args) {
+                    let (c_cmd, c_args) = match exec_cstrings_or_report(&path, cmd, args) {
                         Ok(v) => v,
-                        Err(ExecCStringError::CommandName) => {
-                            eprintln!("yosh: {}: invalid command name", cmd);
-                            return 127;
-                        }
-                        Err(ExecCStringError::Argument(arg)) => {
-                            eprintln!("yosh: {}: invalid argument", arg);
-                            return 1;
-                        }
+                        Err(status) => return status,
                     };
                     // Same pre-exec dispositions the forked grandchild
                     // used to get: everything to SIG_DFL except trap-
@@ -162,16 +156,9 @@ impl Executor {
         redirects: &[ExpandedRedirect],
     ) -> i32 {
         let cmd = display_name;
-        let (c_cmd, c_args) = match build_exec_cstrings_for_path(path, cmd, args) {
+        let (c_cmd, c_args) = match exec_cstrings_or_report(path, cmd, args) {
             Ok(v) => v,
-            Err(ExecCStringError::CommandName) => {
-                eprintln!("yosh: {}: invalid command name", cmd);
-                return 127;
-            }
-            Err(ExecCStringError::Argument(arg)) => {
-                eprintln!("yosh: {}: invalid argument", arg);
-                return 1;
-            }
+            Err(status) => return status,
         };
 
         let monitor = self.env.mode.options.monitor;
@@ -214,15 +201,12 @@ impl Executor {
                     // parent and child call setpgid).
                     nix::unistd::setpgid(child, child).ok();
 
-                    let full_cmd = std::iter::once(cmd)
-                        .chain(args.iter().map(|s| s.as_str()))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let job_id = self
-                        .env
-                        .process
-                        .jobs
-                        .add_job(child, vec![child], full_cmd, true);
+                    let job_id = self.env.process.jobs.add_job(
+                        child,
+                        vec![child],
+                        command_line(cmd, args),
+                        true,
+                    );
 
                     // Hand terminal to the child's process group.
                     jobs::give_terminal(child).ok();
@@ -264,7 +248,6 @@ impl Executor {
         env_overrides: &[(String, String)],
         sigdef: &libc::sigset_t,
     ) -> Option<i32> {
-        use nix::errno::Errno;
         {
             // Like `fork_shell`: nothing buffered may be written after
             // the child's output.
@@ -272,65 +255,16 @@ impl Executor {
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
         }
-        let base = self.env.vars.envp();
-        let merged;
-        let envp: &[CString] = if env_overrides.is_empty() {
-            base
-        } else {
-            merged = merge_envp(base, env_overrides);
-            &merged
-        };
-        let envp_ptrs = nul_terminated_ptrs(envp);
+        let envp = envp_with_overrides(self.env.vars.envp(), env_overrides);
+        let envp_ptrs = nul_terminated_ptrs(&envp);
 
-        let spawn = |path: &CString, argv: &[CString]| -> Result<nix::unistd::Pid, Errno> {
-            let argv_ptrs = nul_terminated_ptrs(argv);
-            let mut attr = std::mem::MaybeUninit::<libc::posix_spawnattr_t>::uninit();
-            // SAFETY: attr is initialized by posix_spawnattr_init before
-            // use and destroyed after; every pointer array is
-            // NUL-terminated and outlives the call.
-            unsafe {
-                if libc::posix_spawnattr_init(attr.as_mut_ptr()) != 0 {
-                    return Err(Errno::last());
-                }
-                let attr = attr.assume_init_mut();
-                let mut rc = libc::posix_spawnattr_setsigdefault(attr, sigdef);
-                if rc == 0 {
-                    rc = libc::posix_spawnattr_setflags(
-                        attr,
-                        libc::POSIX_SPAWN_SETSIGDEF as libc::c_short,
-                    );
-                }
-                let mut pid: libc::pid_t = 0;
-                if rc == 0 {
-                    rc = libc::posix_spawn(
-                        &mut pid,
-                        path.as_ptr(),
-                        std::ptr::null(),
-                        attr,
-                        argv_ptrs.as_ptr(),
-                        envp_ptrs.as_ptr(),
-                    );
-                }
-                libc::posix_spawnattr_destroy(attr);
-                if rc == 0 {
-                    Ok(nix::unistd::Pid::from_raw(pid))
-                } else {
-                    Err(Errno::from_raw(rc))
-                }
-            }
-        };
-
-        let child = match spawn(c_cmd, c_args) {
+        let child = match posix_spawn_sigdef(c_cmd, c_args, &envp_ptrs, sigdef) {
             Ok(pid) => pid,
             Err(Errno::ENOEXEC) => {
-                // POSIX execvp fallback (see `exec_child_prepared`):
+                // POSIX execvp fallback (see `enoexec_sh_fallback`):
                 // run the file as a script with /bin/sh.
-                let sh = CString::new("/bin/sh").expect("/bin/sh has no NUL");
-                let mut sh_args = Vec::with_capacity(c_args.len() + 1);
-                sh_args.push(sh.clone());
-                sh_args.push(c_cmd.clone());
-                sh_args.extend_from_slice(&c_args[1..]);
-                spawn(&sh, &sh_args).ok()?
+                let (sh, sh_args) = enoexec_sh_fallback(c_cmd, c_args);
+                posix_spawn_sigdef(&sh, &sh_args, &envp_ptrs, sigdef).ok()?
             }
             Err(_) => return None,
         };
@@ -364,32 +298,15 @@ impl Executor {
             crate::exec::exit_child(1);
         }
 
-        // Set environment variables using libc::setenv directly.
-        // SAFETY: single-threaded child after fork (or the async child
-        // about to exec). We must NOT use std::env::set_var here because
-        // it acquires Rust's internal ENV_LOCK (RwLock). If another
-        // thread in the parent held that lock at fork() time, the child
-        // inherits the locked state and deadlocks — the lock holder
-        // thread does not exist in the child.
-        //
-        // The exported environ is applied first, then `env_overrides`
-        // (command prefix assignments) on top, so overrides win —
-        // matching the previous merged-Vec's replace-or-push order.
-        // Names/values are byteenc-encoded; decode so children see
-        // the original raw bytes for non-UTF-8 environment data.
-        // Exec with a prebuilt envp (cached in the parent across spawns)
-        // instead of `setenv` per exported variable after the fork.
-        let base = self.env.vars.envp();
-        let merged;
-        let envp: &[CString] = if env_overrides.is_empty() {
-            base
-        } else {
-            merged = merge_envp(base, env_overrides);
-            &merged
-        };
+        // Exec with the prebuilt exported envp (cached in the parent
+        // across spawns, names/values decoded from byteenc), with the
+        // command's prefix assignments overlaid so they win. Never
+        // `std::env::set_var` here: it takes Rust's internal ENV_LOCK,
+        // which another parent thread may have held at fork() time —
+        // the child would deadlock on it.
+        let envp = envp_with_overrides(self.env.vars.envp(), env_overrides);
 
-        let err = execve(c_cmd, c_args, envp).unwrap_err();
-        use nix::errno::Errno;
+        let err = execve(c_cmd, c_args, &envp).unwrap_err();
         let exit_code = match err {
             Errno::ENOENT => {
                 eprintln!("yosh: {}: command not found", cmd);
@@ -400,26 +317,10 @@ impl Executor {
                 126
             }
             Errno::ENOEXEC => {
-                // POSIX execvp fallback that execv does not do
-                // for us: an executable file the kernel refuses
-                // to exec (no `#!` line / unrecognized format)
-                // is re-run as a shell script:
-                //   /bin/sh <resolved-path> <args...>
-                // c_cmd is the resolved path; c_args[0] is the
-                // display-name argv[0], replaced by the script
-                // path in the sh invocation (matching libc
-                // execvp, which passes the *file* to sh).
-                match CString::new("/bin/sh") {
-                    Ok(sh) => {
-                        let mut sh_args = Vec::with_capacity(c_args.len() + 1);
-                        sh_args.push(sh.clone());
-                        sh_args.push(c_cmd.clone());
-                        sh_args.extend_from_slice(&c_args[1..]);
-                        let err2 = execve(&sh, &sh_args, envp).unwrap_err();
-                        eprintln!("yosh: {}: {}", cmd, err2);
-                    }
-                    Err(_) => unreachable!("/bin/sh has no NUL"),
-                }
+                // POSIX execvp fallback (see `enoexec_sh_fallback`).
+                let (sh, sh_args) = enoexec_sh_fallback(c_cmd, c_args);
+                let err2 = execve(&sh, &sh_args, &envp).unwrap_err();
+                eprintln!("yosh: {}: {}", cmd, err2);
                 126
             }
             // Found but not executable for another reason (E2BIG,
@@ -453,5 +354,47 @@ impl Executor {
         crate::byteenc::write_stderr_decoded_line(msg);
         redirect_state.restore();
         status
+    }
+}
+
+/// `posix_spawn` `path` with `argv` and the NUL-terminated `envp_ptrs`,
+/// resetting the `sigdef` signals to SIG_DFL in the child.
+fn posix_spawn_sigdef(
+    path: &CString,
+    argv: &[CString],
+    envp_ptrs: &[*mut libc::c_char],
+    sigdef: &libc::sigset_t,
+) -> Result<nix::unistd::Pid, Errno> {
+    let argv_ptrs = nul_terminated_ptrs(argv);
+    let mut attr = std::mem::MaybeUninit::<libc::posix_spawnattr_t>::uninit();
+    // SAFETY: attr is initialized by posix_spawnattr_init before
+    // use and destroyed after; every pointer array is
+    // NUL-terminated and outlives the call.
+    unsafe {
+        if libc::posix_spawnattr_init(attr.as_mut_ptr()) != 0 {
+            return Err(Errno::last());
+        }
+        let attr = attr.assume_init_mut();
+        let mut rc = libc::posix_spawnattr_setsigdefault(attr, sigdef);
+        if rc == 0 {
+            rc = libc::posix_spawnattr_setflags(attr, libc::POSIX_SPAWN_SETSIGDEF as libc::c_short);
+        }
+        let mut pid: libc::pid_t = 0;
+        if rc == 0 {
+            rc = libc::posix_spawn(
+                &mut pid,
+                path.as_ptr(),
+                std::ptr::null(),
+                attr,
+                argv_ptrs.as_ptr(),
+                envp_ptrs.as_ptr(),
+            );
+        }
+        libc::posix_spawnattr_destroy(attr);
+        if rc == 0 {
+            Ok(nix::unistd::Pid::from_raw(pid))
+        } else {
+            Err(Errno::from_raw(rc))
+        }
     }
 }

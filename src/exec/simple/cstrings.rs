@@ -1,19 +1,15 @@
+//! C-string `argv` / `envp` construction for `execve` and `posix_spawn`.
+
+use std::borrow::Cow;
 use std::ffi::CString;
 
+/// Why a command line cannot be passed to `execve`: an interior NUL byte.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ExecCStringError {
+enum ExecCStringError {
     CommandName,
     Argument(String),
 }
 
-/// Build C-string argv for `execv` on an already-resolved
-/// absolute path: the first element returned is the path to pass as the
-/// syscall's file argument, while `argv[0]` (the first entry of the
-/// returned Vec) stays `display_name` (the original, unresolved command
-/// name) — matching what `execvp(cmd, ...)` would have set argv[0] to.
-/// Overlay prefix-assignment `overrides` on the cached exported envp:
-/// entries whose key is overridden are dropped, then the overrides are
-/// appended (decoded from byteenc). Only built when overrides exist.
 /// `argv`/`envp`-style pointer array for `posix_spawn`.
 pub(super) fn nul_terminated_ptrs(strings: &[CString]) -> Vec<*mut libc::c_char> {
     strings
@@ -23,7 +19,24 @@ pub(super) fn nul_terminated_ptrs(strings: &[CString]) -> Vec<*mut libc::c_char>
         .collect()
 }
 
-pub(super) fn merge_envp(base: &[CString], overrides: &[(String, String)]) -> Vec<CString> {
+/// The exported envp with the command's prefix-assignment `overrides`
+/// overlaid (see [`merge_envp`]); borrowed unchanged when there are none,
+/// so the common case never copies the cached envp.
+pub(super) fn envp_with_overrides<'a>(
+    base: &'a [CString],
+    overrides: &[(String, String)],
+) -> Cow<'a, [CString]> {
+    if overrides.is_empty() {
+        Cow::Borrowed(base)
+    } else {
+        Cow::Owned(merge_envp(base, overrides))
+    }
+}
+
+/// Overlay prefix-assignment `overrides` on the cached exported envp:
+/// entries whose key is overridden are dropped, then the overrides are
+/// appended (decoded from byteenc).
+fn merge_envp(base: &[CString], overrides: &[(String, String)]) -> Vec<CString> {
     let keys: Vec<Vec<u8>> = overrides
         .iter()
         .map(|(k, _)| {
@@ -53,7 +66,12 @@ pub(super) fn merge_envp(base: &[CString], overrides: &[(String, String)]) -> Ve
     out
 }
 
-pub(super) fn build_exec_cstrings_for_path(
+/// Build C-string argv for `execv` on an already-resolved
+/// absolute path: the first element returned is the path to pass as the
+/// syscall's file argument, while `argv[0]` (the first entry of the
+/// returned Vec) stays `display_name` (the original, unresolved command
+/// name) — matching what `execvp(cmd, ...)` would have set argv[0] to.
+fn build_exec_cstrings_for_path(
     path: &std::path::Path,
     display_name: &str,
     args: &[String],
@@ -73,6 +91,42 @@ pub(super) fn build_exec_cstrings_for_path(
         c_args.push(c_arg);
     }
     Ok((c_path, c_args))
+}
+
+/// [`build_exec_cstrings_for_path`], printing the diagnostic on failure
+/// and returning the exit status instead: 127 for an invalid command
+/// name, 1 for an invalid argument.
+pub(super) fn exec_cstrings_or_report(
+    path: &std::path::Path,
+    display_name: &str,
+    args: &[String],
+) -> Result<(CString, Vec<CString>), i32> {
+    build_exec_cstrings_for_path(path, display_name, args).map_err(|e| match e {
+        ExecCStringError::CommandName => {
+            eprintln!("yosh: {}: invalid command name", display_name);
+            127
+        }
+        ExecCStringError::Argument(arg) => {
+            eprintln!("yosh: {}: invalid argument", arg);
+            1
+        }
+    })
+}
+
+/// The POSIX `execvp` fallback that `execv`/`posix_spawn` do not do for
+/// us: an executable file the kernel refuses to exec (ENOEXEC: no `#!`
+/// line / unrecognized format) is re-run as a shell script,
+/// `/bin/sh <resolved-path> <args...>`. `c_cmd` is the resolved path;
+/// `c_args[0]` is the display-name argv[0], replaced by the script path
+/// in the sh invocation (matching libc execvp, which passes the *file*
+/// to sh). Returns the program to exec and its argv.
+pub(super) fn enoexec_sh_fallback(c_cmd: &CString, c_args: &[CString]) -> (CString, Vec<CString>) {
+    let sh = CString::new("/bin/sh").expect("/bin/sh has no NUL");
+    let mut sh_args = Vec::with_capacity(c_args.len() + 1);
+    sh_args.push(sh.clone());
+    sh_args.push(c_cmd.clone());
+    sh_args.extend_from_slice(&c_args[1..]);
+    (sh, sh_args)
 }
 
 #[cfg(test)]

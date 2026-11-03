@@ -1,9 +1,25 @@
+//! Resolution of an external command name to the file to exec.
+
+use crate::exec::command::{
+    PathLookup, is_executable_file, lookup_in_path, lookup_in_path_uncached,
+};
+
 /// Outcome of resolving a command name to an executable file before fork.
 #[derive(Debug)]
 pub(super) enum ResolvedExec {
     Executable(std::path::PathBuf),
     NotExecutable,
     NotFound,
+}
+
+impl From<PathLookup> for ResolvedExec {
+    fn from(lookup: PathLookup) -> Self {
+        match lookup {
+            PathLookup::Executable(p) => ResolvedExec::Executable(p),
+            PathLookup::NotExecutable(_) => ResolvedExec::NotExecutable,
+            PathLookup::NotFound => ResolvedExec::NotFound,
+        }
+    }
 }
 
 /// Resolve `cmd` to an absolute executable path, mirroring the search
@@ -27,8 +43,6 @@ pub(super) fn resolve_exec_path(
     effective_path: Option<&str>,
     utility_hash: &mut std::collections::HashMap<String, crate::env::HashEntry>,
 ) -> ResolvedExec {
-    use crate::exec::command::is_executable_file;
-
     if cmd.contains('/') {
         // Decode byteenc-escaped bytes so a non-UTF-8 path resolves to the
         // real on-disk name.
@@ -49,19 +63,11 @@ pub(super) fn resolve_exec_path(
     if let Some(override_path) = effective_path {
         // Bypass utility_hash entirely: it is keyed on cmd name only and
         // assumes the shell's own $PATH, which does not hold here.
-        return match crate::exec::command::lookup_in_path_uncached(cmd, override_path) {
-            crate::exec::command::PathLookup::Executable(p) => ResolvedExec::Executable(p),
-            crate::exec::command::PathLookup::NotExecutable(_) => ResolvedExec::NotExecutable,
-            crate::exec::command::PathLookup::NotFound => ResolvedExec::NotFound,
-        };
+        return lookup_in_path_uncached(cmd, override_path).into();
     }
 
     let path_var = vars.get("PATH").unwrap_or("").to_string();
-    match crate::exec::command::lookup_in_path(cmd, &path_var, utility_hash) {
-        crate::exec::command::PathLookup::Executable(p) => ResolvedExec::Executable(p),
-        crate::exec::command::PathLookup::NotExecutable(_) => ResolvedExec::NotExecutable,
-        crate::exec::command::PathLookup::NotFound => ResolvedExec::NotFound,
-    }
+    lookup_in_path(cmd, &path_var, utility_hash).into()
 }
 
 /// Compute the effective `$PATH` for resolving an external command,
