@@ -28,11 +28,80 @@ thread_local! {
     static NESTING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// RAII token for one level of syntactic nesting (see `MAX_NESTING_DEPTH`).
-struct NestingGuard;
+/// Native stack a single parse may use, measured from where the
+/// outermost active nesting guard on this thread was entered.
+///
+/// `MAX_NESTING_DEPTH` (compound commands) and the lexer's
+/// `MAX_NEST_DEPTH` (word-level `${...}` / quote / `$(...)` nesting) are
+/// independent counters, and each alone fits the stack, but their frames
+/// add up: measured on a debug build, a compound level costs up to
+/// ~21 KiB and a `${x:-` word level ~14 KiB, so 190 `if`s around 350
+/// nested `${x:-...}` (both under their own limits) overflowed the 8 MiB
+/// main-thread stack. Both kinds of nesting therefore also check the
+/// actual stack depth against this one shared budget. 6 MiB leaves ~2 MiB
+/// for the frames below the outermost parse (`main`, and the executor
+/// frames under an `eval` / `.` / command-substitution parse).
+pub(crate) const PARSE_STACK_BUDGET: usize = 6 << 20;
+
+thread_local! {
+    /// `(base, active)`: the approximate stack pointer recorded when the
+    /// outermost `StackBudget` guard on this thread was entered, and the
+    /// number of guards currently alive.
+    static PARSE_STACK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Approximate current stack pointer: the address of a local in a frame
+/// that is never inlined. Good to within one frame, which is all the
+/// budget check needs. Assumes a downward-growing stack (every target yosh
+/// supports); on an upward-growing stack the check never fires.
+#[inline(never)]
+fn approx_stack_pointer() -> usize {
+    let probe = 0u8;
+    std::hint::black_box(&probe) as *const u8 as usize
+}
+
+/// RAII token for one recursive parse/lex level counted against
+/// `PARSE_STACK_BUDGET`.
+pub(crate) struct StackBudget;
+
+impl StackBudget {
+    pub(crate) fn enter(line: usize, column: usize) -> error::Result<Self> {
+        let sp = approx_stack_pointer();
+        PARSE_STACK.with(|c| {
+            let (base, active) = c.get();
+            let base = if active == 0 { sp } else { base };
+            if base.saturating_sub(sp) > PARSE_STACK_BUDGET {
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnexpectedToken,
+                    line,
+                    column,
+                    "syntax error: nesting too deep",
+                ));
+            }
+            c.set((base, active + 1));
+            Ok(StackBudget)
+        })
+    }
+}
+
+impl Drop for StackBudget {
+    fn drop(&mut self) {
+        PARSE_STACK.with(|c| {
+            let (base, active) = c.get();
+            c.set((base, active - 1));
+        });
+    }
+}
+
+/// RAII token for one level of syntactic nesting (see `MAX_NESTING_DEPTH`
+/// and `PARSE_STACK_BUDGET`).
+struct NestingGuard {
+    _stack: StackBudget,
+}
 
 impl NestingGuard {
     fn enter(span: Span) -> error::Result<Self> {
+        let stack = StackBudget::enter(span.line, span.column)?;
         NESTING.with(|n| {
             if n.get() >= MAX_NESTING_DEPTH {
                 return Err(ShellError::parse(
@@ -43,7 +112,7 @@ impl NestingGuard {
                 ));
             }
             n.set(n.get() + 1);
-            Ok(NestingGuard)
+            Ok(NestingGuard { _stack: stack })
         })
     }
 }

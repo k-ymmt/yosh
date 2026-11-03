@@ -178,8 +178,10 @@ impl Lexer {
         lexer
     }
 
-    /// Error out once nesting gets too deep (see `MAX_NEST_DEPTH`).
-    pub(crate) fn check_nest_depth(&self) -> crate::error::Result<()> {
+    /// Error out once nesting gets too deep (see `MAX_NEST_DEPTH` and
+    /// `parser::PARSE_STACK_BUDGET`). The returned guard keeps this level
+    /// counted against the shared stack budget while it is alive.
+    pub(crate) fn check_nest_depth(&self) -> crate::error::Result<crate::parser::StackBudget> {
         if self.nest_depth > MAX_NEST_DEPTH {
             return Err(crate::error::ShellError::parse(
                 crate::error::ParseErrorKind::UnexpectedToken,
@@ -188,7 +190,7 @@ impl Lexer {
                 "syntax error: nesting too deep",
             ));
         }
-        Ok(())
+        crate::parser::StackBudget::enter(self.line, self.column)
     }
 
     pub fn new_with_aliases(input: &str, aliases: &crate::env::aliases::AliasStore) -> Self {

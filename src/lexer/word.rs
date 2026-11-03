@@ -38,7 +38,7 @@ impl Lexer {
     ) -> error::Result<Vec<WordPart>> {
         self.nest_depth += 1;
         let result = match self.check_nest_depth() {
-            Ok(()) => self.read_word_parts_inner(in_double_quote, end_byte),
+            Ok(_stack) => self.read_word_parts_inner(in_double_quote, end_byte),
             Err(e) => Err(e),
         };
         self.nest_depth -= 1;
