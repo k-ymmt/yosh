@@ -6,6 +6,7 @@ pub mod token;
 mod word;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 
 use crate::parser::ast::WordPart;
 use token::SpannedToken;
@@ -42,10 +43,34 @@ pub struct PendingHereDoc {
     pub id: u64,
     pub delimiter: String,
     pub strip_tabs: bool,
+    /// The delimiter was quoted: the body is taken verbatim (no line
+    /// continuation joining, no expansion).
+    pub quoted: bool,
 }
 
+/// Maximum nesting depth of word-level constructs before the lexer gives
+/// up with a syntax error instead of overflowing the native stack.
+///
+/// Each `read_word_parts` level (a `${x-word}` word, a double-quoted
+/// string, a word inside `$(...)`) costs 1; entering a nested command
+/// substitution body costs `SUBPARSE_NEST_COST` more, since it also
+/// recurses through the parser. Measured on a debug build (8 MiB main
+/// stack): ~11 KiB of stack per unit for `${x:-${x:-...}}` (overflow at
+/// ~750 levels) and ~32 KiB per `$(echo $(echo ...))` level (overflow at
+/// ~250). 400 units keeps the worst case near 4.4 MiB in debug builds
+/// (far less in release), leaving room for the executor frames below a
+/// nested parse (`eval`, `.`, functions). Real scripts nest a handful of
+/// levels.
+pub(crate) const MAX_NEST_DEPTH: usize = 400;
+
+/// Extra nesting cost of a command substitution body (see
+/// `MAX_NEST_DEPTH`).
+const SUBPARSE_NEST_COST: usize = 4;
+
 pub struct Lexer {
-    input: Vec<u8>,
+    /// Shared so a `$(...)` body can be parsed by a sub-lexer over the
+    /// same buffer without copying the rest of the input.
+    input: Rc<[u8]>,
     pos: usize,
     line: usize,
     column: usize,
@@ -57,6 +82,27 @@ pub struct Lexer {
     check_alias: bool,
     /// Queue of tokens produced by alias expansion, to be returned before reading more input.
     alias_token_queue: VecDeque<SpannedToken>,
+    /// While non-zero, `\<newline>` line continuations are NOT removed by
+    /// `advance` (single quotes, `$'...'`, here-document bodies).
+    no_join: u32,
+    /// Current word-construct nesting depth (see `MAX_NEST_DEPTH`).
+    nest_depth: usize,
+    /// Number of nested command-substitution bodies parsed so far; a
+    /// token whose lexing bumped it is expensive and gets cached.
+    subparse_count: u64,
+    /// Tokens containing command substitutions, keyed by start offset:
+    /// start (line, column), the token, and the end cursor. The parser's
+    /// save/restore look-ahead re-lexes such a token, and without this
+    /// cache each nesting level of `$(echo $(echo ...))` doubled the
+    /// parse time.
+    token_cache: HashMap<usize, CachedToken>,
+}
+
+struct CachedToken {
+    line: usize,
+    column: usize,
+    token: SpannedToken,
+    end: (usize, usize, usize),
 }
 
 fn is_name_start(ch: u8) -> bool {
@@ -70,7 +116,7 @@ fn is_name_char(ch: u8) -> bool {
 impl Lexer {
     pub fn new(input: &str) -> Self {
         Lexer {
-            input: input.as_bytes().to_vec(),
+            input: Rc::from(input.as_bytes()),
             pos: 0,
             line: 1,
             column: 1,
@@ -81,7 +127,56 @@ impl Lexer {
             expanding_aliases: HashSet::new(),
             check_alias: true,
             alias_token_queue: VecDeque::new(),
+            no_join: 0,
+            nest_depth: 0,
+            subparse_count: 0,
+            token_cache: HashMap::new(),
         }
+    }
+
+    /// A lexer over the same input, starting at the current position, for
+    /// parsing a nested `$(...)` body with the real grammar. It starts
+    /// with no aliases and no pending here-documents (the body is a
+    /// separate program), one nesting level deeper.
+    pub(crate) fn sub_lexer(&self) -> Lexer {
+        Lexer {
+            input: Rc::clone(&self.input),
+            pos: self.pos,
+            line: self.line,
+            column: self.column,
+            pending_heredocs: Vec::new(),
+            heredoc_bodies: Vec::new(),
+            next_heredoc_id: 0,
+            aliases: HashMap::new(),
+            expanding_aliases: HashSet::new(),
+            check_alias: true,
+            alias_token_queue: VecDeque::new(),
+            no_join: 0,
+            nest_depth: self.nest_depth + SUBPARSE_NEST_COST,
+            subparse_count: 0,
+            token_cache: HashMap::new(),
+        }
+    }
+
+    /// A fresh lexer over `input` that inherits this lexer's nesting depth
+    /// (for re-parsing a backquoted command body).
+    pub(crate) fn nested_lexer(&self, input: &str) -> Lexer {
+        let mut lexer = Lexer::new(input);
+        lexer.nest_depth = self.nest_depth + SUBPARSE_NEST_COST;
+        lexer
+    }
+
+    /// Error out once nesting gets too deep (see `MAX_NEST_DEPTH`).
+    pub(crate) fn check_nest_depth(&self) -> crate::error::Result<()> {
+        if self.nest_depth > MAX_NEST_DEPTH {
+            return Err(crate::error::ShellError::parse(
+                crate::error::ParseErrorKind::UnexpectedToken,
+                self.line,
+                self.column,
+                "syntax error: nesting too deep",
+            ));
+        }
+        Ok(())
     }
 
     pub fn new_with_aliases(input: &str, aliases: &crate::env::aliases::AliasStore) -> Self {

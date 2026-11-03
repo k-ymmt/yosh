@@ -230,10 +230,14 @@ fn run_command_sub(env: &mut ShellEnv, cmd_str: &str, result: &mut String) {
 fn expand_braced_param(env: &mut ShellEnv, inner: &str) -> crate::error::Result<String> {
     let input = format!("${{{}}}", inner);
     let mut lexer = crate::lexer::Lexer::new(&input);
-    match lexer.next_token() {
-        Ok(tok) => {
-            if let crate::lexer::token::Token::Word(word) = tok.token
-                && let [WordPart::Parameter(p)] = word.parts.as_slice()
+    // Lex with double-quote rules: both raw-string contexts (here-document
+    // bodies, arithmetic text) are double-quote-like, so the word of
+    // `${x:-'s'}` keeps its single quotes (POSIX §2.7.4/§2.6.4; dash and
+    // bash print `'s'` in a here-document).
+    match lexer.read_word_parts(true, None) {
+        Ok(parts) => {
+            if lexer.at_end()
+                && let [WordPart::Parameter(p)] = parts.as_slice()
             {
                 param::expand(env, p)
             } else {

@@ -3,13 +3,14 @@ use crate::error::{self, ParseErrorKind, ShellError};
 use crate::parser::ast::WordPart;
 
 impl Lexer {
-    pub fn register_heredoc(&mut self, delimiter: String, strip_tabs: bool) -> u64 {
+    pub fn register_heredoc(&mut self, delimiter: String, strip_tabs: bool, quoted: bool) -> u64 {
         let id = self.next_heredoc_id;
         self.next_heredoc_id += 1;
         self.pending_heredocs.push(PendingHereDoc {
             id,
             delimiter,
             strip_tabs,
+            quoted,
         });
         id
     }
@@ -40,6 +41,12 @@ impl Lexer {
         &mut self,
         hd: &PendingHereDoc,
     ) -> error::Result<Vec<WordPart>> {
+        // The body is read raw: backslash-newline is handled per line
+        // below (and kept verbatim for a quoted delimiter).
+        self.without_join(|lx| lx.read_heredoc_body_raw(hd))
+    }
+
+    fn read_heredoc_body_raw(&mut self, hd: &PendingHereDoc) -> error::Result<Vec<WordPart>> {
         let mut body = String::new();
         loop {
             if self.at_end() {
@@ -53,35 +60,50 @@ impl Lexer {
                     ),
                 ));
             }
-            // Read a line
+            // Read a logical line. With an unquoted delimiter, a physical
+            // line ending in an unescaped `\` is joined with the next one
+            // (the backslash-newline is removed) BEFORE the delimiter
+            // check, so `line \<nl>EOF` is body text, not the delimiter
+            // (POSIX §2.7.4; dash/bash agree). `<<-` strips leading tabs
+            // from the first physical line only.
             let mut line = String::new();
-            while !self.at_end() && self.current_byte() != b'\n' {
-                self.push_current_char(&mut line)?;
-            }
-            if !self.at_end() {
-                self.advance(); // consume newline
-            }
-
-            // Strip leading tabs if <<- (borrowed comparison, no allocation)
-            let check_line: &str = if hd.strip_tabs {
-                line.trim_start_matches('\t')
-            } else {
-                &line
-            };
-
-            // Check if this is the delimiter line
-            if check_line == hd.delimiter {
+            let mut first = true;
+            loop {
+                let mut phys = String::new();
+                while !self.at_end() && self.current_byte() != b'\n' {
+                    self.push_current_char(&mut phys)?;
+                }
+                let had_newline = !self.at_end();
+                if had_newline {
+                    self.advance(); // consume newline
+                }
+                if hd.strip_tabs && first {
+                    line.push_str(phys.trim_start_matches('\t'));
+                } else {
+                    line.push_str(&phys);
+                }
+                first = false;
+                if !hd.quoted && had_newline && ends_with_unescaped_backslash(&line) {
+                    line.pop(); // drop the `\` of the continuation
+                    continue;
+                }
                 break;
             }
 
-            // Add line to body (with tab stripping if applicable)
-            if hd.strip_tabs {
-                body.push_str(line.trim_start_matches('\t'));
-            } else {
-                body.push_str(&line);
+            // Check if this is the delimiter line
+            if line == hd.delimiter {
+                break;
             }
+
+            body.push_str(&line);
             body.push('\n');
         }
         Ok(vec![WordPart::Literal(body)])
     }
+}
+
+/// True when `s` ends in an odd-length run of backslashes, i.e. its last
+/// `\` is not itself escaped.
+fn ends_with_unescaped_backslash(s: &str) -> bool {
+    s.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1
 }

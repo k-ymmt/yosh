@@ -27,9 +27,25 @@ impl Lexer {
     // ---- Word construction methods ----
 
     /// Main word-part reader that loops over input, dispatching to quoting methods.
-    /// `in_double_quote`: true when inside "..."
+    /// `in_double_quote`: true when inside "..." (or, with `end_byte`, for
+    /// the word of a `${x-word}`-style expansion that is itself inside
+    /// double quotes / a here-document)
     /// `end_byte`: if Some(b'}'), stop at unquoted `}` (for ${...} parsing)
     pub fn read_word_parts(
+        &mut self,
+        in_double_quote: bool,
+        end_byte: Option<u8>,
+    ) -> error::Result<Vec<WordPart>> {
+        self.nest_depth += 1;
+        let result = match self.check_nest_depth() {
+            Ok(()) => self.read_word_parts_inner(in_double_quote, end_byte),
+            Err(e) => Err(e),
+        };
+        self.nest_depth -= 1;
+        result
+    }
+
+    fn read_word_parts_inner(
         &mut self,
         in_double_quote: bool,
         end_byte: Option<u8>,
@@ -52,9 +68,18 @@ impl Lexer {
             }
 
             if in_double_quote {
-                // inside double quotes: stop at closing "
                 if ch == b'"' {
-                    break;
+                    if end_byte.is_none() {
+                        // inside double quotes: stop at closing "
+                        break;
+                    }
+                    // `"${x-"a b"}"`: a double quote inside the braces of
+                    // a double-quoted expansion opens a nested quoted
+                    // string (bash/dash/ksh agree).
+                    flush_literal(&mut parts, &mut literal);
+                    let part = self.read_double_quote()?;
+                    parts.push(part);
+                    continue;
                 }
                 match ch {
                     b'$' => {
@@ -69,7 +94,7 @@ impl Lexer {
                     }
                     b'`' => {
                         flush_literal(&mut parts, &mut literal);
-                        let part = self.read_backtick()?;
+                        let part = self.read_backtick(true)?;
                         parts.push(part);
                     }
                     _ => {
@@ -98,18 +123,12 @@ impl Lexer {
                         parts.push(part);
                     }
                     b'\\' => {
-                        // Peek at the next byte to differentiate \<newline> line-
-                        // continuation (transparent — don't flush, don't emit) from
-                        // \<char> escape (flush and emit EscapedLiteral).
-                        if self.peek_byte() == b'\n' {
-                            self.advance(); // consume '\'
-                            self.advance(); // consume '\n'
-                        // loop continues with `literal` still accumulating
-                        } else {
-                            flush_literal(&mut parts, &mut literal);
-                            let part = self.read_escape_unquoted()?;
-                            parts.push(part);
-                        }
+                        // `\<newline>` line continuations were already
+                        // removed by `advance`, so this is a `\<char>`
+                        // escape (flush and emit EscapedLiteral).
+                        flush_literal(&mut parts, &mut literal);
+                        let part = self.read_escape_unquoted()?;
+                        parts.push(part);
                     }
                     b'$' => {
                         flush_literal(&mut parts, &mut literal);
@@ -118,12 +137,15 @@ impl Lexer {
                     }
                     b'`' => {
                         flush_literal(&mut parts, &mut literal);
-                        let part = self.read_backtick()?;
+                        let part = self.read_backtick(false)?;
                         parts.push(part);
                     }
                     b'~' if parts.is_empty() && literal.is_empty() => {
-                        let part = self.read_tilde()?;
-                        parts.push(part);
+                        match self.read_tilde(end_byte == Some(b'}'))? {
+                            Some(part) => parts.push(part),
+                            // Not a tilde-prefix: `~` is an ordinary character.
+                            None => literal.push('~'),
+                        }
                     }
                     _ => {
                         self.push_current_char(&mut literal)?;
@@ -136,9 +158,9 @@ impl Lexer {
             parts.push(WordPart::Literal(literal));
         }
 
-        // Filter out empty Literal("") parts (produced by \<newline> line
-        // continuations between two other parts, e.g. `$x\<newline>y`). This
-        // is rare, so only pay for the rebuild when such a part actually
+        // Filter out empty Literal("") parts (defensive: a `\<newline>`
+        // reaching `read_backslash_in_double_quote` yields one). This is
+        // rare, so only pay for the rebuild when such a part actually
         // exists.
         if parts
             .iter()
@@ -169,26 +191,37 @@ impl Lexer {
 
     // ---- Quoting methods ----
 
+    /// Run `f` with `\<newline>` joining suppressed (single quotes,
+    /// `$'...'`, here-document bodies keep backslash-newline verbatim).
+    pub(crate) fn without_join<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.no_join += 1;
+        let result = f(self);
+        self.no_join -= 1;
+        result
+    }
+
     fn read_single_quote(&mut self) -> error::Result<WordPart> {
         let span = self.current_span();
-        self.advance(); // consume opening '
-        let mut content = String::new();
-        loop {
-            if self.at_end() {
-                return Err(ShellError::parse(
-                    ParseErrorKind::UnterminatedSingleQuote,
-                    span.line,
-                    span.column,
-                    "unterminated single quote",
-                ));
+        let content = self.without_join(|lx| {
+            lx.advance(); // consume opening '
+            let mut content = String::new();
+            loop {
+                if lx.at_end() {
+                    return Err(ShellError::parse(
+                        ParseErrorKind::UnterminatedSingleQuote,
+                        span.line,
+                        span.column,
+                        "unterminated single quote",
+                    ));
+                }
+                if lx.current_byte() == b'\'' {
+                    break;
+                }
+                lx.push_current_char(&mut content)?;
             }
-            let ch = self.current_byte();
-            if ch == b'\'' {
-                self.advance(); // consume closing '
-                break;
-            }
-            self.push_current_char(&mut content)?;
-        }
+            Ok(content)
+        })?;
+        self.advance(); // consume closing ' (joining resumes after it)
         Ok(WordPart::SingleQuoted(content))
     }
 
@@ -208,11 +241,11 @@ impl Lexer {
         Ok(WordPart::DoubleQuoted(inner))
     }
 
-    /// Handles `\<char>` escape outside double quotes. The caller MUST have
-    /// confirmed the next byte is not `\n` (line-continuation is handled inline
-    /// in `read_word_parts`). Returns `EscapedLiteral` for the escaped character.
+    /// Handles `\<char>` escape outside double quotes (`\<newline>` never
+    /// reaches here: `advance` removes line continuations). Returns
+    /// `EscapedLiteral` for the escaped character.
     fn read_escape_unquoted(&mut self) -> error::Result<WordPart> {
-        self.advance(); // consume '\'
+        self.advance_raw(); // consume '\' — the escaped byte is taken raw
         if self.at_end() {
             // Trailing `\` with no following char: per POSIX, preserve as literal
             // backslash (implementation-defined; yosh keeps it).
@@ -227,7 +260,7 @@ impl Lexer {
     /// Literal that the outer filter removes; other `\<ch>` keeps the backslash
     /// as a literal two-character sequence per POSIX §2.2.3.
     fn read_backslash_in_double_quote(&mut self) -> error::Result<WordPart> {
-        self.advance(); // consume '\'
+        self.advance_raw(); // consume '\' — the escaped byte is taken raw
         if self.at_end() {
             return Ok(WordPart::Literal("\\".to_string()));
         }
@@ -248,22 +281,44 @@ impl Lexer {
         }
     }
 
-    /// Reads `~` or `~user` at word start.
-    fn read_tilde(&mut self) -> error::Result<WordPart> {
+    /// Reads a tilde-prefix (`~` or `~user`) at word start.
+    ///
+    /// POSIX §2.6.1: the tilde-prefix runs to the first unquoted `/` (or
+    /// the end of the word — here the closing `}` when `in_brace`, i.e.
+    /// the word of `${x:-~}`). If any character of it is quoted, or it
+    /// contains an expansion (`$`, backquote), it is not a tilde-prefix
+    /// and the `~` is an ordinary character: `~'root'`, `~"/q"`, `~$U`,
+    /// `~root$(cmd)` all keep a literal `~` (dash/bash agree). Returns
+    /// `None` in that case, having consumed only the `~`.
+    fn read_tilde(&mut self, in_brace: bool) -> error::Result<Option<WordPart>> {
         self.advance(); // consume '~'
+        let start = self.save_cursor();
         let mut username = String::new();
-        // read until metachar, whitespace, or '/'
+        let mut quoted = false;
         while !self.at_end() {
             let ch = self.current_byte();
-            if Self::is_meta_or_whitespace(ch) || ch == b'/' {
+            let ends = if in_brace {
+                ch == b'}'
+            } else {
+                Self::is_meta_or_whitespace(ch)
+            };
+            if ends || ch == b'/' {
+                break;
+            }
+            if matches!(ch, b'\'' | b'"' | b'\\' | b'$' | b'`') {
+                quoted = true;
                 break;
             }
             self.push_current_char(&mut username)?;
         }
+        if quoted {
+            self.restore_cursor(start);
+            return Ok(None);
+        }
         if username.is_empty() {
-            Ok(WordPart::Tilde(None))
+            Ok(Some(WordPart::Tilde(None)))
         } else {
-            Ok(WordPart::Tilde(Some(username)))
+            Ok(Some(WordPart::Tilde(Some(username))))
         }
     }
 
@@ -352,7 +407,7 @@ impl Lexer {
     // ---- Parameter expansion methods ----
 
     /// Handles `${...}` braced parameter expansion.
-    fn read_param_expansion_braced(&mut self) -> error::Result<WordPart> {
+    fn read_param_expansion_braced(&mut self, in_dq: bool) -> error::Result<WordPart> {
         let span = self.current_span();
         self.advance(); // consume '{'
 
@@ -395,17 +450,22 @@ impl Lexer {
                     self.advance(); // consume '#'
                     let name = "#".to_string();
                     // fall through to operator handling below
-                    return self.read_param_operator(span, name);
+                    return self.read_param_operator(span, name, in_dq);
                 }
             }
         }
 
         let name = self.read_param_name(span)?;
-        self.read_param_operator(span, name)
+        self.read_param_operator(span, name, in_dq)
     }
 
     /// After reading the param name inside `${`, read optional operator and closing `}`.
-    fn read_param_operator(&mut self, span: Span, name: String) -> error::Result<WordPart> {
+    fn read_param_operator(
+        &mut self,
+        span: Span,
+        name: String,
+        in_dq: bool,
+    ) -> error::Result<WordPart> {
         if self.at_end() {
             return Err(param_err(span, "unterminated parameter expansion"));
         }
@@ -440,9 +500,9 @@ impl Lexer {
             }
             b':' => {
                 self.advance(); // consume ':'
-                self.read_conditional_param(span, name, true)
+                self.read_conditional_param(span, name, true, in_dq)
             }
-            b'-' | b'=' | b'?' | b'+' => self.read_conditional_param(span, name, false),
+            b'-' | b'=' | b'?' | b'+' => self.read_conditional_param(span, name, false, in_dq),
             _ => Err(param_err(
                 span,
                 format!(
@@ -454,11 +514,19 @@ impl Lexer {
     }
 
     /// Reads the conditional operator (`-`, `=`, `?`, `+`) and its word argument.
+    ///
+    /// `in_dq`: the expansion itself is inside double quotes (or a
+    /// here-document). The word is then scanned with double-quote rules —
+    /// `'` is literal and `\` only escapes `$` `` ` `` `"` `\` — so
+    /// `"${x-'a'}"` yields `'a'` (POSIX §2.6.2; dash/bash/ksh agree). The
+    /// pattern operators (`#`, `%`) keep unquoted scanning: quotes in a
+    /// pattern are significant even inside double quotes.
     fn read_conditional_param(
         &mut self,
         span: Span,
         name: String,
         null_check: bool,
+        in_dq: bool,
     ) -> error::Result<WordPart> {
         if self.at_end() {
             return Err(param_err(span, "unterminated parameter expansion"));
@@ -467,7 +535,7 @@ impl Lexer {
         self.advance(); // consume operator
 
         // Read optional word (may be empty)
-        let parts = self.read_word_parts(false, Some(b'}'))?;
+        let parts = self.read_word_parts(in_dq, Some(b'}'))?;
         self.expect_byte(b'}', span)?;
         let word = if parts.is_empty() {
             None
@@ -517,6 +585,14 @@ impl Lexer {
     /// The byte buffer is encoded via `byteenc` at the end, so byte runs
     /// that are not valid UTF-8 are preserved losslessly end to end.
     fn read_dollar_single_quote(&mut self) -> error::Result<WordPart> {
+        // Backslash-newline is not a line continuation inside `$'...'`.
+        let part = self.without_join(|lx| lx.read_dollar_single_quote_body())?;
+        // Joining resumes after the closing quote.
+        self.skip_line_continuations();
+        Ok(part)
+    }
+
+    fn read_dollar_single_quote_body(&mut self) -> error::Result<WordPart> {
         let span = self.current_span();
         self.advance(); // consume opening '
         let mut bytes: Vec<u8> = Vec::new();
@@ -658,11 +734,46 @@ impl Lexer {
 
     /// Handles `$(...)` command substitution.
     fn read_command_sub_dollar(&mut self) -> error::Result<WordPart> {
-        let span = self.current_span();
-        let content = self.read_balanced_parens(span)?;
-        let mut parser = crate::parser::Parser::new(&content);
-        let program = parser.parse_program()?;
+        let (program, _) = self.parse_command_sub()?;
         Ok(WordPart::CommandSub(program))
+    }
+
+    /// Parse the body of `$(...)` with the real grammar, as dash and ksh
+    /// do: the closing `)` is the first `)` the shell grammar does not
+    /// consume itself, so escapes (`\)`), quotes, nested substitutions,
+    /// comments (`# it's`), here-document bodies and `case` patterns
+    /// (`a) ...;;`) are all handled exactly as at top level.
+    ///
+    /// Called with the current byte at the opening `(`; on return the
+    /// closing `)` has been consumed. Also returns the byte range of the
+    /// body text (between the parentheses) for callers that need it.
+    pub(crate) fn parse_command_sub(
+        &mut self,
+    ) -> error::Result<(crate::parser::ast::Program, std::ops::Range<usize>)> {
+        let span = self.current_span();
+        self.advance(); // consume '('
+        self.subparse_count += 1;
+        let body_start = self.pos;
+        let sub = self.sub_lexer();
+        let (program, sub) = crate::parser::Parser::parse_command_sub_body(sub, span)?;
+        // The sub-lexer stops right after the `)` (read raw, see
+        // `next_token_raw`).
+        let body_end = sub.pos - 1;
+        self.pos = sub.pos;
+        self.line = sub.line;
+        self.column = sub.column;
+        self.skip_line_continuations();
+        Ok((program, body_start..body_end))
+    }
+
+    /// Byte-offset of the `)` that closes a `$(` whose body starts at the
+    /// beginning of `body`, found by parsing it with the real grammar.
+    /// `None` if the body does not parse or is unterminated.
+    pub fn find_command_sub_end(body: &str) -> Option<usize> {
+        let lexer = Lexer::new(body);
+        let span = lexer.current_span();
+        let (_, sub) = crate::parser::Parser::parse_command_sub_body(lexer, span).ok()?;
+        Some(sub.pos - 1)
     }
 
     /// Handles `$((expr))` arithmetic expansion.
@@ -685,9 +796,17 @@ impl Lexer {
             }
             let ch = self.current_byte();
             match ch {
+                b'$' if self.peek_byte() == b'(' && self.peek_byte2() != b'(' => {
+                    // Nested $(cmd) — find its end with the real grammar
+                    // and keep its body text verbatim.
+                    self.advance(); // consume '$', now at '('
+                    let (_, body) = self.parse_command_sub()?;
+                    expr.push_str("$(");
+                    expr.push_str(&String::from_utf8_lossy(&self.input[body]));
+                    expr.push(')');
+                }
                 b'$' if self.peek_byte() == b'(' => {
-                    // Nested $(cmd) or $((...)) — delegate to read_balanced_parens
-                    // which correctly handles quotes inside command substitutions
+                    // Nested $((...)) — balanced, quote-aware scan.
                     let sub_span = self.current_span();
                     expr.push('$');
                     self.advance(); // consume '$', now at '('
@@ -704,7 +823,7 @@ impl Lexer {
                         let bch = self.current_byte();
                         if bch == b'\\' {
                             expr.push('\\');
-                            self.advance();
+                            self.advance_raw();
                             if !self.at_end() {
                                 self.push_current_char(&mut expr)?;
                             }
@@ -750,7 +869,8 @@ impl Lexer {
         Ok(WordPart::ArithSub(expr.trim().to_string()))
     }
 
-    /// Reads balanced parentheses content for `$(...)`.
+    /// Reads balanced parentheses content for a `$((...))` nested inside
+    /// an arithmetic expansion (the parenthesized arithmetic text).
     /// Returns content between outer parens (not including them).
     fn read_balanced_parens(&mut self, span: Span) -> error::Result<String> {
         self.advance(); // consume opening '('
@@ -768,6 +888,20 @@ impl Lexer {
             }
             let ch = self.current_byte();
             match ch {
+                b'$' if self.peek_byte() == b'(' && self.peek_byte2() != b'(' => {
+                    self.advance(); // consume '$', now at '('
+                    let (_, body) = self.parse_command_sub()?;
+                    content.push_str("$(");
+                    content.push_str(&String::from_utf8_lossy(&self.input[body]));
+                    content.push(')');
+                }
+                b'\\' => {
+                    content.push('\\');
+                    self.advance_raw();
+                    if !self.at_end() {
+                        self.push_current_char(&mut content)?;
+                    }
+                }
                 b'(' => {
                     depth += 1;
                     content.push('(');
@@ -823,7 +957,7 @@ impl Lexer {
                         }
                         if qch == b'\\' {
                             content.push('\\');
-                            self.advance();
+                            self.advance_raw();
                             if !self.at_end() {
                                 self.push_current_char(&mut content)?;
                             }
@@ -855,7 +989,7 @@ impl Lexer {
         match ch {
             b'\'' if in_double_quote => Ok(WordPart::Literal("$".to_string())),
             b'\'' => self.read_dollar_single_quote(),
-            b'{' => self.read_param_expansion_braced(),
+            b'{' => self.read_param_expansion_braced(in_double_quote),
             b'(' => {
                 // check for $(( arithmetic ))
                 if self.peek_byte() == b'(' {
@@ -914,7 +1048,11 @@ impl Lexer {
     }
 
     /// Handles backtick command substitution `` `...` ``.
-    fn read_backtick(&mut self) -> error::Result<WordPart> {
+    ///
+    /// `in_double_quote`: the backquotes are inside double quotes, where
+    /// `\"` also loses its backslash (POSIX §2.6.3; dash/bash/ksh:
+    /// ``"`echo \"hi\"`"`` prints `hi`).
+    fn read_backtick(&mut self, in_double_quote: bool) -> error::Result<WordPart> {
         let span = self.current_span();
         self.advance(); // consume opening '`'
         let mut content = String::new();
@@ -935,7 +1073,7 @@ impl Lexer {
                     break;
                 }
                 b'\\' => {
-                    self.advance(); // consume '\'
+                    self.advance_raw(); // consume '\' — the escaped byte is raw
                     if self.at_end() {
                         content.push('\\');
                         break;
@@ -944,6 +1082,10 @@ impl Lexer {
                     match esc {
                         b'$' | b'`' | b'\\' => {
                             content.push(esc as char);
+                            self.advance();
+                        }
+                        b'"' if in_double_quote => {
+                            content.push('"');
                             self.advance();
                         }
                         _ => {
@@ -959,8 +1101,9 @@ impl Lexer {
             }
         }
 
-        let mut parser = crate::parser::Parser::new(&content);
-        let program = parser.parse_program()?;
+        self.subparse_count += 1;
+        let lexer = self.nested_lexer(&content);
+        let program = crate::parser::Parser::parse_nested_program(lexer)?;
         Ok(WordPart::CommandSub(program))
     }
 }
@@ -1154,5 +1297,127 @@ mod tests {
         );
         let loc = e.location.expect("quote error carries a location");
         assert_eq!((loc.line, loc.column), (1, 1));
+    }
+
+    fn tokens(input: &str) -> Vec<crate::lexer::token::Token> {
+        let mut lexer = Lexer::new(input);
+        let mut out = Vec::new();
+        loop {
+            let t = lexer.next_token().unwrap().token;
+            if t == crate::lexer::token::Token::Eof {
+                break;
+            }
+            out.push(t);
+        }
+        out
+    }
+
+    #[test]
+    fn line_continuation_before_blank_and_inside_operators() {
+        use crate::lexer::token::Token;
+        assert_eq!(
+            tokens("a \\\n  b"),
+            vec![
+                Token::Word(word(vec![lit("a")])),
+                Token::Word(word(vec![lit("b")]))
+            ]
+        );
+        assert_eq!(
+            tokens("&\\\n& |\\\n| <\\\n<"),
+            vec![Token::AndIf, Token::OrIf, Token::DLess]
+        );
+        assert_eq!(
+            parts("$\\\nx${HO\\\nME}"),
+            vec![
+                WordPart::Parameter(ParamExpr::Simple("x".to_string())),
+                WordPart::Parameter(ParamExpr::Simple("HOME".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn line_continuation_kept_in_single_quotes_and_after_escape() {
+        assert_eq!(
+            parts("'a\\\nb'"),
+            vec![WordPart::SingleQuoted("a\\\nb".to_string())]
+        );
+        // `\\` escapes the backslash; the newline then ends the word.
+        assert_eq!(
+            parts("a\\\\\nb"),
+            vec![lit("a"), WordPart::EscapedLiteral("\\".to_string())]
+        );
+    }
+
+    #[test]
+    fn command_sub_end_found_by_grammar() {
+        for src in [
+            "$(echo \\))",
+            "$(echo \"$(echo \"a)\")\")",
+            "$(case a in a) echo A;; esac)",
+            "$(cat <<E\nit's\nE\n)",
+            "$(\n# it's\necho c\n)",
+        ] {
+            let p = parts(src);
+            assert!(
+                matches!(p.as_slice(), [WordPart::CommandSub(_)]),
+                "{src:?} -> {p:?}"
+            );
+        }
+        assert_eq!(Lexer::find_command_sub_end("echo \\)) x"), Some(7));
+        assert_eq!(Lexer::find_command_sub_end("echo ("), None);
+    }
+
+    #[test]
+    fn tilde_prefix_with_quote_or_expansion_is_literal() {
+        assert_eq!(
+            parts("~'root'"),
+            vec![lit("~"), WordPart::SingleQuoted("root".to_string())]
+        );
+        assert_eq!(
+            parts("~$u"),
+            vec![
+                lit("~"),
+                WordPart::Parameter(ParamExpr::Simple("u".to_string()))
+            ]
+        );
+        assert_eq!(
+            parts("${x:-~}"),
+            vec![WordPart::Parameter(ParamExpr::Default {
+                name: "x".to_string(),
+                word: Some(word(vec![WordPart::Tilde(None)])),
+                null_check: true,
+            })]
+        );
+    }
+
+    #[test]
+    fn dquoted_conditional_word_uses_dquote_rules() {
+        assert_eq!(
+            parts("\"${x-'a'}\""),
+            vec![WordPart::DoubleQuoted(vec![WordPart::Parameter(
+                ParamExpr::Default {
+                    name: "x".to_string(),
+                    word: Some(word(vec![lit("'a'")])),
+                    null_check: false,
+                }
+            )])]
+        );
+    }
+
+    #[test]
+    fn deep_nesting_is_a_syntax_error() {
+        // Run on a big stack: the limit is sized for the 8 MiB main
+        // thread, larger than libtest's default thread stack.
+        let handle = std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(|| {
+                let deep = format!("{}z{}", "${x:-".repeat(5000), "}".repeat(5000));
+                let e = parse_err(&deep);
+                assert!(e.message.contains("nesting too deep"), "{e:?}");
+                let ok = format!("{}z{}", "${x:-".repeat(100), "}".repeat(100));
+                assert_eq!(parts(&ok).len(), 1);
+            })
+            .unwrap();
+        handle.join().unwrap();
     }
 }

@@ -177,14 +177,16 @@ fn build_assignment_value_parts(after_eq: &str, remaining_parts: &[WordPart]) ->
     let mut value_parts = Vec::new();
     let mut at_boundary = true;
     if !after_eq.is_empty() {
-        let (parts, ends_colon) = split_tildes_in_literal(after_eq, at_boundary);
+        let (parts, ends_colon) =
+            split_tildes_in_literal(after_eq, at_boundary, !remaining_parts.is_empty());
         value_parts.extend(parts);
         at_boundary = ends_colon;
     }
-    for part in remaining_parts {
+    for (i, part) in remaining_parts.iter().enumerate() {
         match part {
             WordPart::Literal(s) => {
-                let (parts, ends_colon) = split_tildes_in_literal(s, at_boundary);
+                let followed = i + 1 < remaining_parts.len();
+                let (parts, ends_colon) = split_tildes_in_literal(s, at_boundary, followed);
                 value_parts.extend(parts);
                 at_boundary = ends_colon;
             }

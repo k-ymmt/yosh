@@ -50,11 +50,30 @@ fn skip_quoted_or_escaped(bytes: &[u8], i: usize) -> Option<usize> {
     }
 }
 
+/// Find the `)` closing a `$(` (or `$((`) whose body starts at `start`.
+/// Returns its index, or `bytes.len()` if there is none.
+///
+/// A command substitution body is parsed with the real shell grammar
+/// (`Lexer::find_command_sub_end`), so `\)`, nested quotes and
+/// substitutions, comments, here-documents and `case` patterns are
+/// handled as in the word context. If the body does not parse (or this
+/// is the inner `(` of `$((...))`), fall back to the quote-aware
+/// paren-depth scan.
+pub fn skip_balanced_parens(bytes: &[u8], start: usize) -> usize {
+    if bytes.get(start) != Some(&b'(')
+        && let Ok(body) = std::str::from_utf8(&bytes[start.min(bytes.len())..])
+        && let Some(end) = crate::lexer::Lexer::find_command_sub_end(body)
+    {
+        return start + end;
+    }
+    skip_balanced_parens_naive(bytes, start)
+}
+
 /// Skip forward from `start` in `bytes`, tracking parenthesis depth (starting at 1),
 /// while respecting single/double quotes and backslash escapes.
 /// Returns the index of the byte where depth reaches 0 (the closing `)`).
 /// If no matching `)` is found, returns `bytes.len()`.
-pub fn skip_balanced_parens(bytes: &[u8], start: usize) -> usize {
+fn skip_balanced_parens_naive(bytes: &[u8], start: usize) -> usize {
     let mut i = start;
     let mut depth: usize = 1;
     while i < bytes.len() && depth > 0 {
@@ -157,6 +176,12 @@ pub fn skip_balanced_double_parens(bytes: &[u8], start: usize) -> usize {
             continue;
         }
         match bytes[i] {
+            b'$' if bytes[i + 1] == b'(' && bytes.get(i + 2) != Some(&b'(') => {
+                // Nested `$(cmd)`: its `)` (even an escaped or quoted
+                // one) is found by the command-substitution scanner.
+                let j = skip_balanced_parens(bytes, i + 2);
+                i = if j < bytes.len() { j + 1 } else { j };
+            }
             b'(' => {
                 depth += 1;
                 i += 1;

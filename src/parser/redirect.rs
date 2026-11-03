@@ -57,7 +57,7 @@ impl Parser {
                 self.advance()?;
                 let delimiter_word = self.expect_word("here-document delimiter")?;
                 let (delimiter, quoted) = self.extract_heredoc_delimiter(&delimiter_word);
-                let id = self.lexer.register_heredoc(delimiter, false);
+                let id = self.lexer.register_heredoc(delimiter, false, quoted);
                 RedirectKind::HereDoc(HereDoc {
                     id,
                     body: vec![],
@@ -69,7 +69,7 @@ impl Parser {
                 self.advance()?;
                 let delimiter_word = self.expect_word("here-document delimiter")?;
                 let (delimiter, quoted) = self.extract_heredoc_delimiter(&delimiter_word);
-                let id = self.lexer.register_heredoc(delimiter, true);
+                let id = self.lexer.register_heredoc(delimiter, true, quoted);
                 RedirectKind::HereDoc(HereDoc {
                     id,
                     body: vec![],
