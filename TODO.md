@@ -328,6 +328,26 @@
       typed line clears it (bash restores it; POSIX is ambiguous); `%`
       in POSIX vi mode rings the bell (not in the POSIX command list).
 - [ ] No `local` builtin (not POSIX; would be a feature addition).
+- [ ] yosh is locale-agnostic (`src/env/locale.rs`): under
+      `LC_ALL=C`, `read` and field splitting still keep a valid UTF-8
+      sequence together, so a raw-byte IFS cannot match inside it:
+      `LC_ALL=C; IFS=$(printf '\251'); printf 'a\303\251b\n' | read -r a b`
+      gives `a\303\251b|` (dash and bash: `a\303|b`). A C-locale byte mode
+      would have to cover field splitting, `read`, pattern matching and
+      `${#x}` together.
+- [ ] Field splitting and `read` match a non-ASCII IFS character only
+      whole: `IFS=é` does not split on a lone `\303` byte (dash, and
+      bash in the C locale, split byte by byte)
+      (`src/expand/field_split.rs`).
+- [ ] A typed character in byteenc's reserved range (U+10FE00..U+10FEFF)
+      is escaped as four separately editable characters in the line
+      editor, so one Backspace leaves three bytes of invalid UTF-8
+      behind (bash removes the whole character)
+      (`src/interactive/terminal.rs`).
+- [ ] `$(...)` bodies keep the parent's `eof_ends_heredoc`; an
+      unterminated here-document at the end of a `$(...)` body is an
+      error in yosh and dash, accepted by bash (backquote bodies accept
+      it).
 
 ## History: Known Limitations
 
