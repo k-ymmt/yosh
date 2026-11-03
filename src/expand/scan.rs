@@ -1,7 +1,23 @@
 //! Lexical balanced-bracket scanners with quote/escape awareness.
 //!
-//! Used by `expand::heredoc` (after PR-B) and `expand::arith` for parenthesis-,
-//! brace-, and double-paren depth tracking inside string bodies.
+//! Used by `expand::dollar` (raw-string `$` expansion for here-document
+//! bodies and arithmetic text) and by interactive completion for
+//! parenthesis-, brace-, and double-paren depth tracking inside strings.
+
+/// Index just past the run that opens at `bytes[i]` and closes at the next
+/// unescaped `close` (a `\x` escape skips the escaped byte), or
+/// `bytes.len()` if the run is unterminated.
+fn skip_delimited(bytes: &[u8], i: usize, close: u8) -> usize {
+    let mut j = i + 1;
+    while j < bytes.len() && bytes[j] != close {
+        if bytes[j] == b'\\' && j + 1 < bytes.len() {
+            j += 2;
+        } else {
+            j += 1;
+        }
+    }
+    if j < bytes.len() { j + 1 } else { j }
+}
 
 /// If `bytes[i]` begins a quoted run or a backslash escape, return
 /// `Some(j)` where `j` is the index just past it; otherwise `None`.
@@ -25,20 +41,7 @@ fn skip_quoted_or_escaped(bytes: &[u8], i: usize) -> Option<usize> {
             }
             Some(j)
         }
-        b'"' => {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j] != b'"' {
-                if bytes[j] == b'\\' && j + 1 < bytes.len() {
-                    j += 2;
-                } else {
-                    j += 1;
-                }
-            }
-            if j < bytes.len() {
-                j += 1;
-            }
-            Some(j)
-        }
+        b'"' => Some(skip_delimited(bytes, i, b'"')),
         b'\\' => {
             if i + 1 < bytes.len() {
                 Some(i + 2)
@@ -137,15 +140,7 @@ pub fn skip_balanced_braces(bytes: &[u8], start: usize) -> usize {
             b'`' => {
                 // Nested backtick substitution — skip to the closing
                 // unescaped backtick (or end of input if unterminated).
-                let mut j = i + 1;
-                while j < bytes.len() && bytes[j] != b'`' {
-                    if bytes[j] == b'\\' && j + 1 < bytes.len() {
-                        j += 2;
-                    } else {
-                        j += 1;
-                    }
-                }
-                i = if j < bytes.len() { j + 1 } else { j };
+                i = skip_delimited(bytes, i, b'`');
             }
             b'}' => {
                 depth -= 1;
