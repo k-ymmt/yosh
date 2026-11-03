@@ -2,7 +2,10 @@ pub mod alias;
 pub mod cd;
 pub mod command;
 pub mod echo;
+pub mod eval;
+pub mod exec;
 pub mod fc;
+pub mod flow;
 pub mod getopts;
 pub mod hash;
 pub mod kill;
@@ -13,11 +16,15 @@ pub(crate) mod quote;
 pub mod read;
 pub mod regular;
 pub mod resolve;
+pub mod set;
 pub mod special;
 pub mod test;
+pub mod times;
+pub mod trap;
 pub mod r#type;
 pub mod ulimit;
 pub mod umask;
+pub mod vars;
 
 pub use regular::exec_regular_builtin;
 
