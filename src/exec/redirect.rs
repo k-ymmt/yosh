@@ -292,13 +292,10 @@ fn saved_fds_len() -> usize {
 /// Pop the saved fds above `base` (innermost first), restoring each one
 /// to its original fd.
 fn unwind_saved_fds(base: usize) {
-    loop {
-        let Some((original, saved, cloexec)) = SAVED_FDS.with(|s| {
-            let mut s = s.borrow_mut();
-            if s.len() > base { s.pop() } else { None }
-        }) else {
-            break;
-        };
+    while let Some((original, saved, cloexec)) = SAVED_FDS.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.len() > base { s.pop() } else { None }
+    }) {
         if saved == WAS_CLOSED {
             unsafe { libc::close(original) };
         } else {

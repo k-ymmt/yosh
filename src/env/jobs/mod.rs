@@ -19,7 +19,6 @@ pub use terminal::{give_terminal, take_terminal};
 #[derive(Debug, Clone, Default)]
 pub struct JobTable {
     jobs: HashMap<JobId, Job>,
-    next_id: JobId,
     current: Option<JobId>,
     previous: Option<JobId>,
     /// Termios snapshot captured once at interactive REPL startup. Used to
@@ -68,8 +67,12 @@ impl JobTable {
         command: impl Into<String>,
         foreground: bool,
     ) -> JobId {
-        self.next_id += 1;
-        let id = self.next_id;
+        // One more than the highest live job number (bash/ksh): numbers
+        // freed by finished, reported jobs are reused, so the first job
+        // after the table empties is %1 again. Never below a live id,
+        // which keeps ids in creation order for `remove_job`'s
+        // "highest remaining id" previous-job fallback.
+        let id = self.jobs.keys().copied().max().unwrap_or(0) + 1;
 
         // A reused pid now names a live process: its predecessor's
         // remembered status must not be reachable once this job later
@@ -320,6 +323,24 @@ mod tests {
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         assert_eq!(id3, 3);
+    }
+
+    #[test]
+    fn test_add_job_reuses_numbers_above_highest_live_job() {
+        let mut table = JobTable::default();
+        let id1 = table.add_job(pid(100), vec![pid(100)], "a", false);
+        let id2 = table.add_job(pid(200), vec![pid(200)], "b", false);
+        // A freed number below a live job is not reused: ids stay in
+        // creation order (bash).
+        table.remove_job(id1);
+        assert_eq!(table.add_job(pid(300), vec![pid(300)], "c", false), 3);
+        // Freed numbers at the top are.
+        table.remove_job(3);
+        assert_eq!(table.add_job(pid(400), vec![pid(400)], "d", false), 3);
+        // An empty table starts again at 1.
+        table.remove_job(id2);
+        table.remove_job(3);
+        assert_eq!(table.add_job(pid(500), vec![pid(500)], "e", true), 1);
     }
 
     // -----------------------------------------------------------------------

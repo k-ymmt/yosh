@@ -250,6 +250,39 @@ impl Executor {
             }
         }
 
+        // A non-interactive shell has no notification pass, so a job whose
+        // termination `wait` just reported would otherwise stay in the
+        // table forever, holding its job number and showing up as Done
+        // in later `jobs` output (bash drops it; `sleep 0 & wait; sleep
+        // 1 & jobs` lists `[1] Running`). The interactive shell keeps it
+        // for the prompt's Done notification. cleanup_notified records
+        // the members' statuses, so `wait $!` keeps working.
+        if !self.env.mode.is_interactive {
+            let jobs = &self.env.process.jobs;
+            let finished: Vec<crate::env::jobs::JobId> = if no_operands {
+                // Every known job has now terminated.
+                jobs.all_jobs()
+                    .filter(|j| j.status.is_terminal())
+                    .map(|j| j.id)
+                    .collect()
+            } else {
+                targets
+                    .iter()
+                    .filter_map(|t| match t {
+                        WaitTarget::Job(pids) => jobs
+                            .all_jobs()
+                            .find(|j| j.pids == *pids && j.status.is_terminal())
+                            .map(|j| j.id),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            for id in finished {
+                self.env.process.jobs.mark_notified(id);
+            }
+            self.env.process.jobs.cleanup_notified();
+        }
+
         if no_operands {
             // Completed no-operand wait: discard remembered statuses of
             // already-forgotten jobs (bash behavior; the >128 trapped-
@@ -415,6 +448,11 @@ impl Executor {
             }
         };
 
+        // Report current statuses: a job that finished since the last
+        // complete command (`sleep 0 & sleep 1; jobs` on one line) is
+        // Done, not Running (dash reaps here too).
+        self.reap_zombies();
+
         // Decide which job IDs to print.
         let mut exit_status = 0;
         let job_ids: Vec<crate::env::jobs::JobId> = if opts.operands.is_empty() {
@@ -452,11 +490,15 @@ impl Executor {
             exit_status = 1;
         }
 
-        // Mark done/terminated jobs as notified.
+        // POSIX XCU jobs: a finished job whose status has been reported
+        // is removed from the job list, so its number becomes free (bash
+        // and dash both drop `[1] Done` after printing it once). Only
+        // the jobs actually listed count as reported.
         let pending = self.env.process.jobs.pending_notifications();
-        for id in pending {
+        for id in pending.into_iter().filter(|id| job_ids.contains(id)) {
             self.env.process.jobs.mark_notified(id);
         }
+        self.env.process.jobs.cleanup_notified();
 
         Ok(exit_status)
     }
@@ -1111,24 +1153,24 @@ mod tests {
         let mut exec = Executor::new("yosh", vec![]);
         let leader = Pid::from_raw(88920);
         let member = Pid::from_raw(88921);
-        exec.env
-            .process
-            .jobs
-            .add_job(leader, vec![leader, member], "false | true", false);
-        exec.env
-            .process
-            .jobs
-            .update_status(leader, JobStatus::Done(2));
-        exec.env
-            .process
-            .jobs
-            .update_status(member, JobStatus::Done(0));
+        let add_finished_job = |exec: &mut Executor| {
+            let jobs = &mut exec.env.process.jobs;
+            jobs.add_job(leader, vec![leader, member], "false | true", false);
+            jobs.update_status(leader, JobStatus::Done(2));
+            jobs.update_status(member, JobStatus::Done(0));
+        };
+        add_finished_job(&mut exec);
 
         // Without pipefail: the last member's status.
         let status = exec
             .builtin_wait(&["%1".to_string()])
             .expect("wait %1 must not error");
         assert_eq!(status, 0);
+
+        // The waited-for job left the table (non-interactive shell);
+        // set it up again for the pipefail case.
+        assert!(exec.env.process.jobs.is_empty());
+        add_finished_job(&mut exec);
 
         // With pipefail: the last NONZERO member status (bash:
         // `set -o pipefail; false | true & wait %1` is 1, empirical
