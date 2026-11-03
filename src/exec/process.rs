@@ -105,6 +105,7 @@ static IN_FORKED_CHILD: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// `ForkResult::Child` branch.
 pub(crate) fn mark_forked_child() {
     IN_FORKED_CHILD.store(true, std::sync::atomic::Ordering::Relaxed);
+    super::redirect::forget_inherited_saved_redirections();
 }
 
 /// Exit the shell process, using [`exit_child`] when this process is a

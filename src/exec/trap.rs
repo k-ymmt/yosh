@@ -99,6 +99,11 @@ impl Executor {
     /// shell) therefore never report the pre-trap status over it.
     pub fn execute_exit_trap(&mut self) {
         if let Some(TrapAction::Command(cmd)) = self.env.traps.exit_trap.take() {
+            // The shell is terminating, possibly from inside redirected
+            // compound commands or functions (`{ exit; } >f`, `set -e`
+            // failing in `f >f`): unwind those redirections first so the
+            // action writes to the shell's own fds, as dash and bash do.
+            super::redirect::restore_all_saved_redirections();
             let pending = self.exit_requested.take();
             // The action sees the status the shell is exiting with as
             // `$?`, not whatever a surrounding conditional left behind

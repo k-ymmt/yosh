@@ -240,18 +240,125 @@ fn expand_one(redirect: &Redirect, env: &mut ShellEnv) -> Result<ExpandedRedirec
 /// the redirection: restoring it means closing the fd again.
 const WAS_CLOSED: RawFd = -1;
 
-/// Tracks saved file descriptors so they can be restored after a builtin runs.
-#[derive(Default)]
+/// One fd a [`RedirectState`] overwrote: `(original_fd, saved_copy_fd,
+/// original_was_cloexec)`. `saved_copy_fd` is [`WAS_CLOSED`] when
+/// `original_fd` was not open.
+type SavedFd = (RawFd, RawFd, bool);
+
+thread_local! {
+    /// The saved fds of every [`RedirectState`] currently applied in this
+    /// process, innermost last. Redirection scopes nest strictly (a
+    /// compound command's redirections are restored after its body's),
+    /// so each state owns the suffix of this stack that it pushed.
+    ///
+    /// Keeping them in one stack lets a shell that is about to terminate
+    /// undo every active redirection before it runs the EXIT trap
+    /// ([`restore_all_saved_redirections`]): `trap 'echo out' EXIT; {
+    /// exit; } >f` must print `out` on the shell's own stdout, not into
+    /// `f` (dash and bash unwind the redirection first).
+    static SAVED_FDS: std::cell::RefCell<Vec<SavedFd>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+
+    /// Bumped whenever the whole stack is emptied out of band
+    /// ([`restore_all_saved_redirections`], a fork): a [`RedirectState`]
+    /// from an older epoch no longer owns any entry, and must not pop
+    /// those of states created after the reset.
+    static SAVED_FDS_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn saved_fds_epoch() -> u64 {
+    SAVED_FDS_EPOCH.with(|e| e.get())
+}
+
+fn bump_saved_fds_epoch() {
+    SAVED_FDS_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
+}
+
+fn saved_fds_len() -> usize {
+    SAVED_FDS.with(|s| s.borrow().len())
+}
+
+/// Pop the saved fds above `base` (innermost first), restoring each one
+/// to its original fd.
+fn unwind_saved_fds(base: usize) {
+    loop {
+        let Some((original, saved, cloexec)) = SAVED_FDS.with(|s| {
+            let mut s = s.borrow_mut();
+            if s.len() > base { s.pop() } else { None }
+        }) else {
+            break;
+        };
+        if saved == WAS_CLOSED {
+            unsafe { libc::close(original) };
+        } else {
+            if raw_dup2(saved, original).is_ok() && cloexec {
+                unsafe { libc::fcntl(original, libc::F_SETFD, libc::FD_CLOEXEC) };
+            }
+            unsafe { libc::close(saved) };
+        }
+    }
+}
+
+/// Undo every redirection currently applied with `save` in this
+/// process, innermost first. Called when the shell (or a subshell) is
+/// terminating, right before its EXIT trap runs, so the action writes to
+/// the shell's own fds — the redirection scopes it is exiting from are
+/// never re-entered. A [`RedirectState`] whose fds were undone this way
+/// finds nothing left to restore.
+pub(crate) fn restore_all_saved_redirections() {
+    unwind_saved_fds(0);
+    bump_saved_fds_epoch();
+}
+
+/// Forget (without restoring) the saved fds inherited from the parent
+/// shell: called first thing in every forked child. The redirections the
+/// parent applied before forking are part of the child's environment
+/// (`( trap 'echo t' EXIT; exit ) >f` writes `t` into `f`), so the
+/// child's exit must not undo them. The saved copies are close-on-exec
+/// and stay open until the child exits.
+pub(crate) fn forget_inherited_saved_redirections() {
+    SAVED_FDS.with(|s| s.borrow_mut().clear());
+    bump_saved_fds_epoch();
+}
+
+/// Tracks saved file descriptors so they can be restored after a builtin
+/// or compound command runs. The saved fds live on the per-process
+/// `SAVED_FDS` stack; this state owns the entries above `base` while
+/// the stack is still in the `epoch` it was created in.
 pub struct RedirectState {
-    /// (original_fd, saved_copy_fd, original_was_cloexec) — used for
-    /// restore. `saved_copy_fd` is [`WAS_CLOSED`] when `original_fd` was
-    /// not open.
-    saved_fds: Vec<(RawFd, RawFd, bool)>,
+    base: usize,
+    epoch: u64,
+}
+
+impl Default for RedirectState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RedirectState {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            base: saved_fds_len(),
+            epoch: saved_fds_epoch(),
+        }
+    }
+
+    /// Restore this state's saved fds, unless an out-of-band reset
+    /// already did (see `SAVED_FDS_EPOCH`).
+    fn unwind(&self) {
+        if self.epoch == saved_fds_epoch() {
+            unwind_saved_fds(self.base);
+        }
+    }
+
+    /// Number of saved fds this state currently holds.
+    #[cfg(test)]
+    fn saved_len(&self) -> usize {
+        if self.epoch != saved_fds_epoch() {
+            return 0;
+        }
+        saved_fds_len().saturating_sub(self.base)
     }
 
     /// Expand and apply a list of redirects (see [`expand_redirects`] and
@@ -367,7 +474,7 @@ impl RedirectState {
         if saved == -1 {
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(libc::EBADF) {
-                self.saved_fds.push((fd, WAS_CLOSED, false));
+                SAVED_FDS.with(|s| s.borrow_mut().push((fd, WAS_CLOSED, false)));
                 return Ok(());
             }
             return Err(format!("dup: {}", err));
@@ -379,33 +486,22 @@ impl RedirectState {
         // child would otherwise inherit the self-pipe).
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
         let cloexec = flags != -1 && flags & libc::FD_CLOEXEC != 0;
-        self.saved_fds.push((fd, saved, cloexec));
+        SAVED_FDS.with(|s| s.borrow_mut().push((fd, saved, cloexec)));
         Ok(())
     }
 
     /// Restore all saved fds in reverse order (LIFO).
     pub fn restore(&mut self) {
-        for (original, saved, cloexec) in self.saved_fds.drain(..).rev() {
-            if saved == WAS_CLOSED {
-                unsafe { libc::close(original) };
-            } else {
-                if raw_dup2(saved, original).is_ok() && cloexec {
-                    unsafe { libc::fcntl(original, libc::F_SETFD, libc::FD_CLOEXEC) };
-                }
-                unsafe { libc::close(saved) };
-            }
-        }
+        self.unwind();
     }
 }
 
 impl Drop for RedirectState {
     fn drop(&mut self) {
-        // Close any saved fds that were never restored
-        for (_original, saved, _cloexec) in self.saved_fds.drain(..) {
-            if saved != WAS_CLOSED {
-                unsafe { libc::close(saved) };
-            }
-        }
+        // A state dropped without `restore` (an early return) must not
+        // leave its redirections in place for the commands after it, nor
+        // leave stale entries on the shared stack.
+        self.unwind();
     }
 }
 
@@ -527,9 +623,9 @@ mod tests {
 
         // Post-condition 1: rollback emptied saved_fds.
         assert!(
-            state.saved_fds.is_empty(),
+            state.saved_len() == 0,
             "saved_fds should be empty after rollback, got {} entries",
-            state.saved_fds.len()
+            state.saved_len()
         );
 
         // Post-condition 2: writes to fd 1 should not land in tmp_ok.

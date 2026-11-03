@@ -294,7 +294,14 @@ impl Executor {
                 }
 
                 let status = self.exec_and_or(and_or);
-                exit_child(self.child_exit_status(status));
+                // POSIX §2.12: an EXIT trap set inside the async list
+                // runs when its subshell exits (`{ trap 'echo t' EXIT;
+                // :; } &` prints t; dash agrees), like every other
+                // forked subshell.
+                let status = self.child_exit_status(status);
+                self.env.exec.last_exit_status = status;
+                self.execute_exit_trap();
+                exit_child(status);
             }
             Ok(ForkResult::Parent { child }) => {
                 restore_signal_mask(&prev_mask);

@@ -34,35 +34,40 @@ impl Executor {
             return Err(e);
         }
 
-        let status = match &compound.kind {
+        // Every arm yields a Result so an error from the subshell fork, a
+        // for-word / case-word expansion or a readonly loop variable still
+        // falls through to the restore below: returning early with `?`
+        // left the compound's redirections (and prefix assignments) in
+        // place, so e.g. the EXIT trap output of a fatal `for i in
+        // $((1/0)); do :; done >f` went to `f`.
+        let result = match &compound.kind {
             crate::parser::ast::CompoundCommandKind::BraceGroup { body } => {
-                self.exec_brace_group(body)
+                Ok(self.exec_brace_group(body))
             }
-            crate::parser::ast::CompoundCommandKind::Subshell { body } => {
-                self.exec_subshell(body)?
-            }
+            crate::parser::ast::CompoundCommandKind::Subshell { body } => self.exec_subshell(body),
             crate::parser::ast::CompoundCommandKind::If {
                 condition,
                 then_part,
                 elif_parts,
                 else_part,
-            } => self.exec_if(condition, then_part, elif_parts, else_part),
+            } => Ok(self.exec_if(condition, then_part, elif_parts, else_part)),
             crate::parser::ast::CompoundCommandKind::While { condition, body } => {
-                self.exec_loop(condition, body, false)
+                Ok(self.exec_loop(condition, body, false))
             }
             crate::parser::ast::CompoundCommandKind::Until { condition, body } => {
-                self.exec_loop(condition, body, true)
+                Ok(self.exec_loop(condition, body, true))
             }
             crate::parser::ast::CompoundCommandKind::For { var, words, body } => {
-                self.exec_for(var, words, body)?
+                self.exec_for(var, words, body)
             }
             crate::parser::ast::CompoundCommandKind::Case { word, items } => {
-                self.exec_case(word, items)?
+                self.exec_case(word, items)
             }
         };
 
         redirect_state.restore();
         self.restore_assignments(saved);
+        let status = result?;
         self.env.exec.last_exit_status = status;
         Ok(status)
     }
