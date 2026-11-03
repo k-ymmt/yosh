@@ -2,18 +2,18 @@ use std::ffi::CString;
 
 use nix::unistd::{ForkResult, execve};
 
-use crate::builtin::special::exec_special_builtin;
+use crate::builtin::special::run_special_builtin;
 use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
 use crate::env::ShellEnv;
 use crate::env::jobs;
-use crate::error::{RuntimeErrorKind, ShellError};
+use crate::error::{RuntimeErrorKind, ShellError, ShellErrorKind};
 use crate::expand::expand_words;
 use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
 use crate::parser::try_parse_assignment;
 use crate::signal;
 
 use super::command::wait_child;
-use super::redirect::RedirectState;
+use super::redirect::{ExpandedRedirect, RedirectState, expand_redirects};
 use super::{Executor, fork_shell};
 
 /// For export/readonly, re-process each Word argument by trying to parse
@@ -341,13 +341,16 @@ impl Executor {
             let mut redirect_state = RedirectState::new();
             if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
                 self.env.exec.last_exit_status = 1;
-                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
+                return Err(e);
             }
 
             for assignment in &cmd.assignments {
                 let has_cmd_sub = assignment.value.as_ref().is_some_and(word_has_command_sub);
                 let value = match assignment.value.as_ref() {
-                    Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
+                    // A failed expansion (`x=${zz:?}`, `set -u; x=$zz`)
+                    // must neither assign nor report status 0: it is an
+                    // expansion error (POSIX §2.8.1).
+                    Some(w) => match self.expand_assignment_value(w) {
                         Ok(v) => v,
                         Err(e) => {
                             redirect_state.restore();
@@ -396,14 +399,38 @@ impl Executor {
             return Ok(final_status);
         }
 
-        if self.env.mode.options.xtrace && !expanded.is_empty() {
-            let prefix = xtrace_prefix(&mut self.env);
-            crate::byteenc::write_stderr_decoded_line(&format!("{}{}", prefix, expanded.join(" ")));
-        }
-
         let mut expanded_iter = expanded.into_iter();
         let command_name = expanded_iter.next().unwrap();
         let args: Vec<String> = expanded_iter.collect();
+        let kind = classify_builtin(&command_name);
+
+        // POSIX §2.9.1 step order: redirection words are expanded before
+        // the prefix assignments, so `x=bar cmd >$x` opens the file named
+        // by the *old* `$x` (dash/bash agree). Expanding here, in the
+        // shell process, also makes an expansion error in a redirection
+        // word a shell-level expansion error for every command kind —
+        // previously external commands expanded them in the forked child,
+        // so `/bin/echo ran >${zz:?}` still ran the command.
+        let redirs = match expand_redirects(&cmd.redirects, &mut self.env) {
+            Ok(r) => r,
+            Err(e) => {
+                self.env.exec.last_exit_status = 1;
+                // A here-document body failure is a redirection error,
+                // which POSIX §2.8.1 makes fatal for a special built-in
+                // in a non-interactive shell (expansion errors are fatal
+                // for every command and handled by the caller).
+                if !matches!(e.kind, ShellErrorKind::Expansion(_))
+                    && matches!(kind, BuiltinKind::Special)
+                    && !self.env.mode.is_interactive
+                {
+                    if !e.message.is_empty() {
+                        eprintln!("{}", e);
+                    }
+                    self.exit_shell(1);
+                }
+                return Err(e);
+            }
+        };
 
         // Build command string for hooks — only when some loaded plugin
         // actually registered pre-exec or post-exec, since this joined
@@ -423,125 +450,59 @@ impl Executor {
         // Check for function call. POSIX §2.9.1.4: special built-ins are
         // found before functions, so a function may never shadow one;
         // functions do take precedence over regular built-ins and PATH.
-        let shadowed_by_special = matches!(
-            crate::builtin::classify_builtin(&command_name),
-            crate::builtin::BuiltinKind::Special
-        );
-        if !shadowed_by_special
+        if !matches!(kind, BuiltinKind::Special)
             // `.cloned()` here is an Rc refcount bump, not a deep copy of
             // the definition — the table stores `Rc<FunctionDef>`.
             && let Some(func_def) = self.env.functions.get(&command_name).cloned()
         {
-            let saved = self
-                .apply_temp_assignments(&cmd.assignments)
-                .inspect_err(|_| {
-                    self.env.exec.last_exit_status = 1;
-                })?;
-            let mut redirect_state = RedirectState::new();
-            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                self.restore_assignments(saved);
-                self.env.exec.last_exit_status = 1;
-                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
-            }
-            let status = self.exec_function_call(&func_def, &args);
-            redirect_state.restore();
-            self.restore_assignments(saved);
+            let status = self
+                .run_with_temp_assignments(cmd, &redirs, &command_name, &args, |exec| {
+                    exec.exec_function_call(&func_def, &args)
+                })
+                .inspect_err(|_| self.env.exec.last_exit_status = 1)?;
             self.plugins
                 .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
             return Ok(status);
         }
 
-        // wait needs Executor access (bg_jobs + signal processing)
-        if command_name == "wait" {
-            let saved = self
-                .apply_temp_assignments(&cmd.assignments)
-                .inspect_err(|_| {
-                    self.env.exec.last_exit_status = 1;
-                })?;
-            let mut redirect_state = RedirectState::new();
-            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                self.restore_assignments(saved);
-                self.env.exec.last_exit_status = 1;
-                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
-            }
-            let status = self.builtin_wait(&args).unwrap_or_else(|e| {
-                eprintln!("{}", e);
-                e.exit_code()
-            });
-            redirect_state.restore();
-            self.restore_assignments(saved);
+        // wait / fg / bg / jobs / command need Executor access (job
+        // table, signal processing, -p / no-flag execution paths).
+        if matches!(
+            command_name.as_str(),
+            "wait" | "fg" | "bg" | "jobs" | "command"
+        ) {
+            let status = self
+                .run_with_temp_assignments(cmd, &redirs, &command_name, &args, |exec| {
+                    let res = match command_name.as_str() {
+                        "wait" => exec.builtin_wait(&args),
+                        "fg" => exec.builtin_fg(&args),
+                        "bg" => exec.builtin_bg(&args),
+                        "jobs" => exec.builtin_jobs(&args),
+                        "command" => Ok(exec.builtin_command(&args)),
+                        _ => unreachable!(),
+                    };
+                    res.unwrap_or_else(|e| {
+                        eprintln!("{}", e);
+                        e.exit_code()
+                    })
+                })
+                .inspect_err(|_| self.env.exec.last_exit_status = 1)?;
             self.plugins
                 .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
             self.env.exec.last_exit_status = status;
             return Ok(status);
         }
 
-        // fg/bg/jobs need Executor access for job table + terminal control
-        if command_name == "fg" || command_name == "bg" || command_name == "jobs" {
-            let saved = self
-                .apply_temp_assignments(&cmd.assignments)
-                .inspect_err(|_| {
-                    self.env.exec.last_exit_status = 1;
-                })?;
-            let mut redirect_state = RedirectState::new();
-            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                self.restore_assignments(saved);
-                self.env.exec.last_exit_status = 1;
-                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
-            }
-            let status = match command_name.as_str() {
-                "fg" => self.builtin_fg(&args),
-                "bg" => self.builtin_bg(&args),
-                "jobs" => self.builtin_jobs(&args),
-                _ => unreachable!(),
-            }
-            .unwrap_or_else(|e| {
-                eprintln!("{}", e);
-                e.exit_code()
-            });
-            redirect_state.restore();
-            self.restore_assignments(saved);
-            self.plugins
-                .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
-            self.env.exec.last_exit_status = status;
-            return Ok(status);
-        }
-
-        // `command` needs Executor access for -p / no-flag execution paths.
-        if command_name == "command" {
-            let saved = self
-                .apply_temp_assignments(&cmd.assignments)
-                .inspect_err(|_| {
-                    self.env.exec.last_exit_status = 1;
-                })?;
-            let mut redirect_state = RedirectState::new();
-            if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                self.restore_assignments(saved);
-                self.env.exec.last_exit_status = 1;
-                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
-            }
-            let status = self.builtin_command(&args);
-            redirect_state.restore();
-            self.restore_assignments(saved);
-            self.plugins
-                .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
-            self.env.exec.last_exit_status = status;
-            return Ok(status);
-        }
-
-        match classify_builtin(&command_name) {
+        match kind {
             BuiltinKind::Special => {
                 // Special builtins: prefix assignments persist in current env
+                let mut assigned = Vec::with_capacity(cmd.assignments.len());
                 for assignment in &cmd.assignments {
                     let value = match assignment.value.as_ref() {
-                        Some(w) => match crate::expand::expand_word_to_string(&mut self.env, w) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                self.env.exec.last_exit_status = 1;
-                                return Err(e);
-                            }
-                        },
+                        Some(w) => self
+                            .expand_assignment_value(w)
+                            .inspect_err(|_| self.env.exec.last_exit_status = 1)?,
                         None => String::new(),
                     };
                     // assign_var_with_options: a `PATH=… special-builtin`
@@ -550,7 +511,7 @@ impl Executor {
                     let allexport = self.env.mode.options.allexport;
                     if let Err(e) =
                         self.env
-                            .assign_var_with_options(&assignment.name, value, allexport)
+                            .assign_var_with_options(&assignment.name, value.clone(), allexport)
                     {
                         self.env.exec.last_exit_status = 1;
                         return Err(ShellError::runtime(
@@ -558,45 +519,60 @@ impl Executor {
                             e.to_string(),
                         ));
                     }
+                    // `VAR=x exec cmd`: the assignment belongs in the
+                    // exec'd program's environment (dash/bash/ksh agree);
+                    // it also persists in the shell per the special
+                    // built-in rule, which is moot once exec succeeds.
+                    if command_name == "exec" && !args.is_empty() {
+                        self.env.vars.export(&assignment.name);
+                    }
+                    assigned.push((assignment.name.clone(), value));
                 }
+                self.xtrace_simple(&assigned, &command_name, &args);
+
                 // exec with no args: redirects persist (don't save/restore)
                 if command_name == "exec" && args.is_empty() {
                     let mut redirect_state = RedirectState::new();
-                    if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, false) {
+                    if let Err(e) = redirect_state.apply_expanded(&redirs, false) {
                         self.env.exec.last_exit_status = 1;
                         if !self.env.mode.is_interactive {
-                            // Empty message = diagnostic already printed
-                            // (heredoc `${x:?}`/nounset failure).
-                            if !e.is_empty() {
-                                eprintln!("yosh: {}", e);
+                            if !e.message.is_empty() {
+                                eprintln!("{}", e);
                             }
                             self.exit_shell(1);
                         }
-                        return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
+                        return Err(e);
                     }
                     self.env.exec.last_exit_status = 0;
                     return Ok(0);
                 }
 
                 let mut redirect_state = RedirectState::new();
-                if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
+                if let Err(e) = redirect_state.apply_expanded(&redirs, true) {
                     self.env.exec.last_exit_status = 1;
                     if !self.env.mode.is_interactive {
-                        // Empty message = diagnostic already printed
-                        // (heredoc `${x:?}`/nounset failure).
-                        if !e.is_empty() {
-                            eprintln!("yosh: {}", e);
+                        if !e.message.is_empty() {
+                            eprintln!("{}", e);
                         }
                         self.exit_shell(1);
                     }
-                    return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
+                    return Err(e);
                 }
                 // `args` for export/readonly was already produced by
                 // expand_assignment_builtin_args in the early dispatch above
                 // (single-pass expansion avoids double-running command
                 // substitutions in assignment RHS).
-                let status = exec_special_builtin(&command_name, &args, self);
+                let outcome = run_special_builtin(&command_name, &args, self);
                 redirect_state.restore();
+                let status = outcome.status;
+                // POSIX §2.8.1: a special built-in utility error makes a
+                // non-interactive shell exit (dash and bash --posix agree).
+                // Only this direct dispatch requests the exit — `command`
+                // strips the special properties (`command set -Z` must not
+                // exit), and it reaches the builtin via another path.
+                if outcome.utility_error && !self.env.mode.is_interactive {
+                    self.exit_requested = Some(status);
+                }
                 self.plugins
                     .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
                 self.env.exec.last_exit_status = status;
@@ -604,25 +580,16 @@ impl Executor {
             }
             BuiltinKind::Regular => {
                 // Regular builtins: prefix assignments are temporary
-                let saved = self
-                    .apply_temp_assignments(&cmd.assignments)
-                    .inspect_err(|_| {
-                        self.env.exec.last_exit_status = 1;
-                    })?;
-                let mut redirect_state = RedirectState::new();
-                if let Err(e) = redirect_state.apply(&cmd.redirects, &mut self.env, true) {
-                    self.restore_assignments(saved);
-                    self.env.exec.last_exit_status = 1;
-                    return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
-                }
                 let old_pwd = if command_name == "cd" {
                     self.env.vars.get("PWD").map(|s| s.to_string())
                 } else {
                     None
                 };
-                let status = exec_regular_builtin(&command_name, &args, &mut self.env);
-                redirect_state.restore();
-                self.restore_assignments(saved);
+                let status = self
+                    .run_with_temp_assignments(cmd, &redirs, &command_name, &args, |exec| {
+                        exec_regular_builtin(&command_name, &args, &mut exec.env)
+                    })
+                    .inspect_err(|_| self.env.exec.last_exit_status = 1)?;
                 self.plugins
                     .call_post_exec(&mut self.env, &cmd_str_for_hooks, status);
 
@@ -664,6 +631,7 @@ impl Executor {
                 let env_vars = self.build_env_vars(&cmd.assignments).inspect_err(|_| {
                     self.env.exec.last_exit_status = 1;
                 })?;
+                self.xtrace_simple(&env_vars, &command_name, &args);
                 // DEVIATION (async exec-in-place, 2026-09-01): plugins'
                 // post_exec does not fire for a background external
                 // simple command — the async child is replaced by the
@@ -675,7 +643,7 @@ impl Executor {
                     &command_name,
                     &args,
                     &env_vars,
-                    &cmd.redirects,
+                    &redirs,
                     async_exec_in_place,
                 );
                 self.plugins
@@ -686,6 +654,66 @@ impl Executor {
         }
     }
 
+    /// `set -x` trace line for a simple command with a command name:
+    /// prefix assignments first, then the command words, on one line
+    /// (`+ x=1 echo hi`, matching dash). Emitted after the assignment
+    /// values are expanded so the trace shows their final values.
+    fn xtrace_simple(&mut self, assignments: &[(String, String)], name: &str, args: &[String]) {
+        if !self.env.mode.options.xtrace {
+            return;
+        }
+        let mut line = xtrace_prefix(&mut self.env);
+        for (n, v) in assignments {
+            line.push_str(n);
+            line.push('=');
+            line.push_str(v);
+            line.push(' ');
+        }
+        line.push_str(name);
+        for a in args {
+            line.push(' ');
+            line.push_str(a);
+        }
+        crate::byteenc::write_stderr_decoded_line(&line);
+    }
+
+    /// Expand one prefix-assignment value. A braced-parameter failure
+    /// (`${x:?}`, `set -u`) only raises `FlowControl::ExpansionError`
+    /// while returning `Ok`; turn it into an error so the command is
+    /// not run (POSIX §2.8.1 expansion error).
+    fn expand_assignment_value(&mut self, w: &Word) -> crate::error::Result<String> {
+        let value = crate::expand::expand_word_to_string(&mut self.env, w)?;
+        if self.env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError) {
+            return Err(ShellError::expansion_already_reported());
+        }
+        Ok(value)
+    }
+
+    /// Run `run` with the command's prefix assignments applied
+    /// temporarily and its (already expanded) redirections applied,
+    /// restoring both afterwards. Shared by the function, regular
+    /// built-in and Executor-hosted built-in dispatches.
+    fn run_with_temp_assignments(
+        &mut self,
+        cmd: &SimpleCommand,
+        redirs: &[ExpandedRedirect],
+        name: &str,
+        args: &[String],
+        run: impl FnOnce(&mut Self) -> i32,
+    ) -> Result<i32, ShellError> {
+        let (saved, assigned) = self.apply_temp_assignments_with_values(&cmd.assignments)?;
+        self.xtrace_simple(&assigned, name, args);
+        let mut redirect_state = RedirectState::new();
+        if let Err(e) = redirect_state.apply_expanded(redirs, true) {
+            self.restore_assignments(saved);
+            return Err(e);
+        }
+        let status = run(self);
+        redirect_state.restore();
+        self.restore_assignments(saved);
+        Ok(status)
+    }
+
     /// Expand command-specific prefix assignments to (name, value) pairs.
     ///
     /// This does NOT merge with the exported environ — that merge happens
@@ -694,6 +722,10 @@ impl Executor {
     /// `environ()` at all. When there are assignments, they are applied
     /// as overrides on top of `environ()` (last-wins, matching the
     /// previous `iter_mut().find()` replace-or-push behavior).
+    ///
+    /// A readonly variable cannot be overridden even for one command:
+    /// that is a variable-assignment error (POSIX §2.8.1; dash refuses
+    /// `readonly r=1; r=2 cmd` and exits a non-interactive shell).
     pub(crate) fn build_env_vars(
         &mut self,
         assignments: &[Assignment],
@@ -701,9 +733,15 @@ impl Executor {
         let mut vars = Vec::with_capacity(assignments.len());
         for assign in assignments {
             let value = match assign.value.as_ref() {
-                Some(w) => crate::expand::expand_word_to_string(&mut self.env, w)?,
+                Some(w) => self.expand_assignment_value(w)?,
                 None => String::new(),
             };
+            if self.env.vars.is_readonly(&assign.name) {
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::ReadonlyVariable,
+                    format!("{}: readonly variable", assign.name),
+                ));
+            }
             vars.push((assign.name.clone(), value));
         }
         Ok(vars)
@@ -740,7 +778,7 @@ impl Executor {
         cmd: &str,
         args: &[String],
         env_overrides: &[(String, String)],
-        redirects: &[crate::parser::ast::Redirect],
+        redirects: &[ExpandedRedirect],
         in_place: bool,
     ) -> i32 {
         let effective_path = effective_path_override(env_overrides);
@@ -752,23 +790,19 @@ impl Executor {
         );
 
         match resolved {
-            ResolvedExec::NotFound => {
-                // No executable file candidate exists anywhere in the
-                // search — nothing to fork/exec. Matches the exit code
-                // `execvp`'s ENOENT branch previously produced.
-                crate::byteenc::write_stderr_decoded_line(&format!(
-                    "yosh: {}: command not found",
-                    cmd
-                ));
-                127
-            }
-            ResolvedExec::NotExecutable => {
-                crate::byteenc::write_stderr_decoded_line(&format!(
-                    "yosh: {}: permission denied",
-                    cmd
-                ));
-                126
-            }
+            // No executable file candidate exists anywhere in the
+            // search — nothing to fork/exec. Matches the exit code
+            // `execvp`'s ENOENT branch previously produced.
+            ResolvedExec::NotFound => self.diagnose_with_redirects(
+                redirects,
+                &format!("yosh: {}: command not found", cmd),
+                127,
+            ),
+            ResolvedExec::NotExecutable => self.diagnose_with_redirects(
+                redirects,
+                &format!("yosh: {}: permission denied", cmd),
+                126,
+            ),
             ResolvedExec::Executable(path) => {
                 if in_place {
                     let (c_cmd, c_args) = match build_exec_cstrings_for_path(&path, cmd, args) {
@@ -818,7 +852,7 @@ impl Executor {
         display_name: &str,
         args: &[String],
         env_overrides: &[(String, String)],
-        redirects: &[crate::parser::ast::Redirect],
+        redirects: &[ExpandedRedirect],
     ) -> i32 {
         let cmd = display_name;
         let (c_cmd, c_args) = match build_exec_cstrings_for_path(path, cmd, args) {
@@ -911,16 +945,12 @@ impl Executor {
         c_args: &[CString],
         cmd: &str,
         env_overrides: &[(String, String)],
-        redirects: &[crate::parser::ast::Redirect],
+        redirects: &[ExpandedRedirect],
     ) -> ! {
         // Apply redirects (no need to save — this process is replaced)
         let mut redir_state = RedirectState::new();
-        if let Err(e) = redir_state.apply(redirects, &mut self.env, false) {
-            // Empty message = diagnostic already printed (heredoc
-            // `${x:?}`/nounset failure inside this child).
-            if !e.is_empty() {
-                eprintln!("yosh: {}", e);
-            }
+        if let Err(e) = redir_state.apply_expanded(redirects, false) {
+            eprintln!("{}", e);
             super::exit_child(1);
         }
 
@@ -995,27 +1025,75 @@ impl Executor {
         &mut self,
         assignments: &[Assignment],
     ) -> crate::error::Result<Vec<(String, Option<String>)>> {
-        let mut saved = Vec::new();
-        for assignment in assignments {
-            let old_val = self.env.vars.get(&assignment.name).map(|s| s.to_string());
-            saved.push((assignment.name.clone(), old_val));
-            let value = match assignment.value.as_ref() {
-                Some(w) => crate::expand::expand_word_to_string(&mut self.env, w)?,
-                None => String::new(),
-            };
-            // A readonly variable rejects the temporary assignment: print
-            // the diagnostic but keep executing the command (sh behavior
-            // for `readonly r=1; r=2 cmd`).
-            if let Err(e) = self.env.assign_var(&assignment.name, value) {
-                eprintln!("yosh: {}", e);
-            }
-        }
-        Ok(saved)
+        self.apply_temp_assignments_with_values(assignments)
+            .map(|(saved, _)| saved)
     }
 
-    /// Restore variables to their pre-assignment values.
+    /// [`Self::apply_temp_assignments`], also returning the assigned
+    /// (name, value) pairs (for the `set -x` trace).
+    ///
+    /// On error every assignment applied so far is rolled back. A
+    /// readonly variable rejecting the temporary assignment is a
+    /// variable-assignment error (POSIX §2.8.1: the command is not run
+    /// and a non-interactive shell exits — dash agrees).
+    #[allow(clippy::type_complexity)]
+    fn apply_temp_assignments_with_values(
+        &mut self,
+        assignments: &[Assignment],
+    ) -> crate::error::Result<(Vec<(String, Option<String>)>, Vec<(String, String)>)> {
+        let mut saved = Vec::with_capacity(assignments.len());
+        let mut assigned = Vec::with_capacity(assignments.len());
+        for assignment in assignments {
+            let value = match assignment.value.as_ref() {
+                Some(w) => match self.expand_assignment_value(w) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.restore_assignments(saved);
+                        return Err(e);
+                    }
+                },
+                None => String::new(),
+            };
+            let old_val = self.env.vars.get(&assignment.name).map(|s| s.to_string());
+            if let Err(e) = self.env.assign_var(&assignment.name, value.clone()) {
+                self.restore_assignments(saved);
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::ReadonlyVariable,
+                    e.to_string(),
+                ));
+            }
+            saved.push((assignment.name.clone(), old_val));
+            assigned.push((assignment.name.clone(), value));
+        }
+        Ok((saved, assigned))
+    }
+
+    /// Print a pre-fork diagnostic (`command not found` / `permission
+    /// denied`) with the command's redirections in effect, as if the
+    /// command had run: `nonexist 2>/dev/null` is silent and
+    /// `x=$(nonexist 2>&1)` captures the message (dash/bash agree).
+    /// The redirections are also *performed* (`nonexist 2>err` creates
+    /// `err`). A redirection failure takes precedence (status 1).
+    fn diagnose_with_redirects(
+        &mut self,
+        redirects: &[ExpandedRedirect],
+        msg: &str,
+        status: i32,
+    ) -> i32 {
+        let mut redirect_state = RedirectState::new();
+        if let Err(e) = redirect_state.apply_expanded(redirects, true) {
+            eprintln!("{}", e);
+            return 1;
+        }
+        crate::byteenc::write_stderr_decoded_line(msg);
+        redirect_state.restore();
+        status
+    }
+
+    /// Restore variables to their pre-assignment values. Restores in
+    /// reverse order so `a=1 a=2 cmd` ends with `a`'s original value.
     pub(crate) fn restore_assignments(&mut self, saved: Vec<(String, Option<String>)>) {
-        for (name, old_val) in saved {
+        for (name, old_val) in saved.into_iter().rev() {
             match old_val {
                 Some(val) => {
                     let _ = self.env.assign_var(&name, val);
@@ -1683,5 +1761,45 @@ mod tests {
         exec.exec_program(&prog);
         assert_eq!(exec.env.vars.get("foo"), Some("bar"));
         assert_eq!(exec.env.exec.last_exit_status, 0);
+    }
+
+    /// POSIX §2.8.1: a special built-in utility error exits only a
+    /// NON-interactive shell, and never when reached through `command`.
+    #[test]
+    fn special_builtin_error_requests_exit_only_when_noninteractive() {
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+
+        let run = |src: &str, interactive: bool| {
+            let mut exec = Executor::new("yosh", vec![]);
+            exec.env.mode.is_interactive = interactive;
+            let prog = Parser::new(src).parse_program().unwrap();
+            exec.exec_program(&prog);
+            (exec.exit_requested, exec.env.vars.get("after").is_some())
+        };
+        assert_eq!(run("unset -Z x; after=1", false), (Some(2), false));
+        assert_eq!(run("unset -Z x; after=1", true), (None, true));
+        assert_eq!(run("command unset -Z x; after=1", false), (None, true));
+        assert_eq!(
+            run("readonly r=1; export r=2; after=1", false),
+            (Some(1), false)
+        );
+        // A nonzero status that is not an error (`eval false`) does not exit.
+        assert_eq!(run("eval false; after=1", false), (None, true));
+    }
+
+    /// Temporary prefix assignments are rolled back in reverse order, so a
+    /// duplicated name ends with its original value.
+    #[test]
+    fn duplicate_temp_assignment_restores_original_value() {
+        use crate::exec::Executor;
+        use crate::parser::Parser;
+
+        let mut exec = Executor::new("yosh", vec![]);
+        let prog = Parser::new("a=orig; f() { :; }; a=1 a=2 f")
+            .parse_program()
+            .unwrap();
+        exec.exec_program(&prog);
+        assert_eq!(exec.env.vars.get("a"), Some("orig"));
     }
 }

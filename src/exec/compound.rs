@@ -31,7 +31,7 @@ impl Executor {
         if let Err(e) = redirect_state.apply(redirects, &mut self.env, true) {
             self.restore_assignments(saved);
             self.env.exec.last_exit_status = 1;
-            return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
+            return Err(e);
         }
 
         let status = match &compound.kind {
@@ -123,7 +123,12 @@ impl Executor {
                 // reporting `m` via the flag_m snapshot (bash-like).
                 self.env.mode.flag_m = self.env.mode.options.monitor || self.env.mode.flag_m;
                 self.env.mode.options.monitor = false;
-                let status = self.exec_body(body);
+                let mut status = self.exec_body(body);
+                // A fatal expansion error ends the subshell with a
+                // non-zero status even if the failing command reported 0.
+                if self.env.exec.flow_control == Some(FlowControl::ExpansionError) {
+                    status = 1;
+                }
                 // POSIX §2.12: EXIT pseudo-signal handler runs on shell exit,
                 // including subshell exit. Fire BEFORE _exit so the action runs
                 // in the child's environment.
@@ -270,6 +275,12 @@ impl Executor {
             },
             None => self.env.vars.positional_params().to_vec(),
         };
+        if self.env.exec.flow_control == Some(FlowControl::ExpansionError) {
+            // `for i in ${x:?}`: already diagnosed; the loop does not run
+            // and its status is the expansion error's, not 0.
+            self.env.exec.last_exit_status = 1;
+            return Ok(1);
+        }
 
         let mut status = 0;
         for item in &items {
@@ -319,6 +330,10 @@ impl Executor {
                 return Err(e);
             }
         };
+        if self.env.exec.flow_control == Some(FlowControl::ExpansionError) {
+            self.env.exec.last_exit_status = 1;
+            return Ok(1);
+        }
         let mut status = 0;
         let mut falling_through = false;
 

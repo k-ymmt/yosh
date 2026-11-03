@@ -1,9 +1,14 @@
 use std::collections::HashMap;
 
 /// A shell variable with its value and attributes.
+///
+/// `value` is `None` for a name that carries attributes but no value:
+/// `export y` / `readonly z` on an unset name (POSIX: the name is marked,
+/// but stays unset — `${y-unset}` expands to `unset`, it is not passed
+/// to children, and `export -p` lists it as `export y`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Variable {
-    pub value: String,
+    pub value: Option<String>,
     pub exported: bool,
     pub readonly: bool,
 }
@@ -11,7 +16,7 @@ pub struct Variable {
 impl Variable {
     pub fn new(value: impl Into<String>) -> Self {
         Variable {
-            value: value.into(),
+            value: Some(value.into()),
             exported: false,
             readonly: false,
         }
@@ -19,10 +24,15 @@ impl Variable {
 
     pub fn new_exported(value: impl Into<String>) -> Self {
         Variable {
-            value: value.into(),
+            value: Some(value.into()),
             exported: true,
             readonly: false,
         }
+    }
+
+    /// The variable's value, or `None` when it is unset (attributes only).
+    pub fn value(&self) -> Option<&str> {
+        self.value.as_deref()
     }
 }
 
@@ -242,11 +252,11 @@ impl VarStore {
     pub fn get(&self, name: &str) -> Option<&str> {
         // Fast path: single scope (most common — outside function calls)
         if self.scopes.len() == 1 {
-            return self.scopes[0].vars.get(name).map(|v| v.value.as_str());
+            return self.scopes[0].vars.get(name).and_then(|v| v.value());
         }
         for scope in self.scopes.iter().rev() {
             if let Some(var) = scope.vars.get(name) {
-                return Some(var.value.as_str());
+                return var.value();
             }
         }
         None
@@ -289,7 +299,7 @@ impl VarStore {
                     self.environ_cache = None;
                     self.envp_cache = None;
                 }
-                existing.value = value;
+                existing.value = Some(value);
                 existing.readonly = false;
             } else {
                 self.scopes[0]
@@ -310,7 +320,7 @@ impl VarStore {
                     self.environ_cache = None;
                     self.envp_cache = None;
                 }
-                existing.value = value;
+                existing.value = Some(value);
                 existing.readonly = false;
                 self.note_optind_write(name);
                 return Ok(());
@@ -354,7 +364,7 @@ impl VarStore {
                     self.environ_cache = None;
                     self.envp_cache = None;
                 }
-                existing.value = value;
+                existing.value = Some(value);
                 existing.exported = exported;
                 existing.readonly = false;
                 self.note_optind_write(name);
@@ -402,9 +412,11 @@ impl VarStore {
     }
 
     /// Mark a variable as exported. Walks scopes to find it; if not found,
-    /// creates in global scope with empty value. Only invalidates the
-    /// environ cache when the variable was not already exported (a no-op
-    /// re-export cannot change `environ()`'s output).
+    /// creates in global scope an exported name *without a value* (it
+    /// stays unset until assigned, and is not passed to children until
+    /// then). Only invalidates the environ cache when the variable was not
+    /// already exported (a no-op re-export cannot change `environ()`'s
+    /// output).
     pub fn export(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(var) = scope.vars.get_mut(name) {
@@ -416,15 +428,21 @@ impl VarStore {
                 return;
             }
         }
-        self.environ_cache = None;
-        self.envp_cache = None;
-        self.scopes[0]
-            .vars
-            .insert(name.to_string(), Variable::new_exported(""));
+        // A valueless name never appears in `environ()`, so the cache
+        // stays valid.
+        self.scopes[0].vars.insert(
+            name.to_string(),
+            Variable {
+                value: None,
+                exported: true,
+                readonly: false,
+            },
+        );
     }
 
     /// Mark a variable as readonly. Walks scopes to find it; if not found,
-    /// creates in global scope with empty value. `readonly` never changes
+    /// creates in global scope a readonly name without a value (it stays
+    /// unset, and can never be assigned). `readonly` never changes
     /// `exported`, so this cannot affect `environ()`'s output — except
     /// when it creates a brand-new (non-exported) variable, which also
     /// cannot appear in `environ()`. The cache is therefore never
@@ -436,9 +454,14 @@ impl VarStore {
                 return;
             }
         }
-        let mut var = Variable::new("");
-        var.readonly = true;
-        self.scopes[0].vars.insert(name.to_string(), var);
+        self.scopes[0].vars.insert(
+            name.to_string(),
+            Variable {
+                value: None,
+                exported: false,
+                readonly: true,
+            },
+        );
     }
 
     /// Return true if `name` resolves to a readonly variable in any
@@ -502,8 +525,10 @@ impl VarStore {
                 if !seen.insert(name.as_str()) {
                     continue;
                 }
-                if var.exported {
-                    result.push((name.clone(), var.value.clone()));
+                if var.exported
+                    && let Some(value) = &var.value
+                {
+                    result.push((name.clone(), value.clone()));
                 }
             }
         }

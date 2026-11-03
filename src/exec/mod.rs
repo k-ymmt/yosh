@@ -275,19 +275,38 @@ impl Executor {
     /// `exit` without an operand inside a trap action uses the value `$?`
     /// had when the trap action started).
     ///
-    /// Used by the EXIT-trap path, which keeps errexit suppressed inside
-    /// the action (see `test_errexit_trap_action_suppressed`); signal
-    /// traps go through [`Self::run_signal_trap_action`] instead.
+    /// Used by the EXIT-trap path; signal traps go through
+    /// [`Self::run_signal_trap_action`] instead. `set -e` applies inside
+    /// the action like anywhere else (`set -e; trap 'false; echo t' EXIT`
+    /// prints nothing and exits 1 — dash and bash agree), see
+    /// [`Self::with_errexit_context_reset`].
     pub(crate) fn run_trap_action(&mut self, cmd: &str) {
         let prev = self
             .env
             .exec
             .trap_context_status
             .replace(self.env.exec.last_exit_status);
-        self.with_errexit_suppressed(|exec| {
+        self.with_errexit_context_reset(|exec| {
             exec.eval_string(cmd);
         });
         self.env.exec.trap_context_status = prev;
+    }
+
+    /// Run `f` (a trap action) as a fresh errexit context: an action that
+    /// fires while the interrupted code was errexit-suppressed (`f ||
+    /// true`, an `if` condition) is not itself suppressed — the
+    /// suppression belongs to the interrupted command list, not to the
+    /// trap action (dash and bash agree).
+    fn with_errexit_context_reset<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        let saved_depth = std::mem::take(&mut self.errexit_suppressed_depth);
+        let saved_exempt = std::mem::take(&mut self.errexit_exempt_status);
+        let result = f(self);
+        self.errexit_suppressed_depth = saved_depth;
+        self.errexit_exempt_status = saved_exempt;
+        result
     }
 
     /// Execute a SIGNAL trap action (POSIX §2.12). Differences from the
@@ -300,8 +319,9 @@ impl Executor {
     ///   the action itself requested an exit (`exit` builtin, errexit,
     ///   fatal error) or flow control (`break`/`continue`), whose
     ///   resulting status must survive.
-    /// - errexit is NOT suppressed: `set -e; trap 'false' USR1;
-    ///   kill -USR1 $$; echo ok` exits 1 without printing ok
+    /// - errexit is NOT suppressed, even when the signal arrives while
+    ///   the interrupted code is (`f || true`): `set -e; trap 'false'
+    ///   USR1; kill -USR1 $$; echo ok` exits 1 without printing ok
     ///   (bash/dash/zsh agree).
     ///
     /// The pre-trap `$?` is still exposed to `exit` without an operand
@@ -309,7 +329,7 @@ impl Executor {
     fn run_signal_trap_action(&mut self, cmd: &str) {
         let saved_status = self.env.exec.last_exit_status;
         let prev = self.env.exec.trap_context_status.replace(saved_status);
-        self.eval_string(cmd);
+        self.with_errexit_context_reset(|exec| exec.eval_string(cmd));
         self.env.exec.trap_context_status = prev;
         if self.exit_requested.is_none() && self.env.exec.flow_control.is_none() {
             self.env.exec.last_exit_status = saved_status;

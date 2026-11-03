@@ -67,7 +67,7 @@ impl Executor {
     /// requested via `exit_requested` so the top-level driver unwinds
     /// (and fires the EXIT trap) instead of `process::exit`ing from
     /// arbitrarily deep in the executor.
-    fn report_command_error(&mut self, e: &ShellError) -> i32 {
+    pub(super) fn report_command_error(&mut self, e: &ShellError) -> i32 {
         // Empty message = the diagnostic was already printed at the point
         // of failure (e.g. `param::expansion_error` for a `${x:?}` /
         // nounset failure inside a heredoc body, converted to a

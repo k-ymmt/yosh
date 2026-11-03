@@ -433,6 +433,24 @@ fn create_pipe() -> Result<(RawFd, RawFd), std::io::Error> {
     if ret != 0 {
         return Err(std::io::Error::last_os_error());
     }
+    // With stdin/stdout/stderr closed (`exec 0<&-`), pipe() hands out
+    // those low numbers. A member's `dup2(pipe_end, 0/1)` is then a no-op
+    // and the following `close_all_pipes` closes the very fd it just
+    // "installed" (`exec 0<&-; echo hi | cat` → cat: Bad file
+    // descriptor). Move such ends above the standard fds.
+    for i in 0..2 {
+        if fds[i] <= 2 {
+            let moved = unsafe { libc::fcntl(fds[i], libc::F_DUPFD, 3) };
+            let err = std::io::Error::last_os_error();
+            unsafe { libc::close(fds[i]) };
+            if moved == -1 {
+                // Close the other end before failing.
+                unsafe { libc::close(fds[1 - i]) };
+                return Err(err);
+            }
+            fds[i] = moved;
+        }
+    }
     Ok((fds[0], fds[1]))
 }
 

@@ -51,12 +51,10 @@ impl Executor {
 
         let status = match compound_result {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("{}", e);
-                let code = e.exit_code();
-                self.env.exec.last_exit_status = code;
-                code
-            }
+            // Same reporting as at command level: no duplicate line for an
+            // already-reported error, and POSIX §2.8.1 exit requests for
+            // expansion / assignment errors in the function's redirections.
+            Err(e) => self.report_command_error(&e),
         };
 
         // Handle return flow control

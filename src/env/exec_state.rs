@@ -42,14 +42,13 @@ pub struct ExecState {
     ///
     /// Edge case: `export LINENO` / `readonly LINENO` (bare, no `=`) still
     /// go through `VarStore::export` / `set_readonly`, which create a
-    /// phantom `VarStore` entry (empty value) when the name isn't already
-    /// present — since `$LINENO` is never actually written there, this
-    /// entry then sits inert but exported/readonly. That phantom entry
-    /// exports as `LINENO=` (empty) to child environments, while `$LINENO`
-    /// itself keeps reading the live intercept (i.e. the exported child
-    /// sees a stale empty value, not the shell's current line). bash, by
-    /// contrast, exports the live numeric value. This divergence is
-    /// accepted rather than fixed.
+    /// valueless `VarStore` entry (attributes only) when the name isn't
+    /// already present — since `$LINENO` is never actually written there,
+    /// this entry then sits inert but exported/readonly. A valueless entry
+    /// is not passed to child environments, so the exported child sees no
+    /// `LINENO` at all, while `$LINENO` itself keeps reading the live
+    /// intercept. bash, by contrast, exports the live numeric value. This
+    /// divergence is accepted rather than fixed.
     pub lineno: usize,
     /// One-shot exec-in-place marker set by `exec_async` in the forked
     /// async child when the `&` payload is a single simple command.

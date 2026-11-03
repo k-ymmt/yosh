@@ -6,7 +6,33 @@ use crate::error::{RuntimeErrorKind, ShellError};
 use crate::exec::Executor;
 use crate::parser::word::is_valid_name;
 
+/// Result of running a special built-in.
+pub struct SpecialOutcome {
+    pub status: i32,
+    /// True when the built-in failed with a "special built-in utility
+    /// error" (POSIX §2.8.1), which makes a non-interactive shell exit
+    /// when the built-in was invoked directly (not via `command`).
+    pub utility_error: bool,
+}
+
+/// Run a special built-in and return its status (diagnostics printed).
+/// Used where the special-built-in error consequences do not apply
+/// (`command name ...`).
 pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor) -> i32 {
+    run_special_builtin(name, args, executor).status
+}
+
+/// Run a special built-in, classifying a failure as a utility error.
+///
+/// An `Err` from the implementation is always a utility error. For the
+/// built-ins whose nonzero status can only mean failure (they print the
+/// diagnostic and return `Ok(n)` so the remaining operands are still
+/// processed), a nonzero status counts too. The others (`eval`, `.`,
+/// `fc`, `exit`, `return`, `break`, `continue`, `exec`) pass through the
+/// status of what they ran, so a nonzero status is not by itself an error.
+/// `trap` is left out on purpose: dash and bash both keep running after
+/// `trap : BADSIG`.
+pub fn run_special_builtin(name: &str, args: &[String], executor: &mut Executor) -> SpecialOutcome {
     let result = match name {
         ":" => Ok(0),
         "exit" => builtin_exit(args, executor),
@@ -18,34 +44,13 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
         "continue" => builtin_continue(args, &mut executor.env),
         "set" => {
             let was_monitor = executor.env.mode.options.monitor;
-            let ret = match builtin_set(args, &mut executor.env) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("{}", e);
-                    return e.exit_code();
+            match builtin_set(args, &mut executor.env) {
+                Ok(ret) => {
+                    set_after_success(args, executor, was_monitor);
+                    Ok(ret)
                 }
-            };
-            let is_monitor = executor.env.mode.options.monitor;
-            if was_monitor && !is_monitor {
-                crate::signal::reset_job_control_signals();
-            } else if !was_monitor && is_monitor {
-                // Runtime `set -m` shares the invocation `-m`
-                // terminal-ownership gate: without the controlling
-                // terminal, monitor stays off (and `m` stays out of
-                // `$-`), matching `yosh -m ...` and bash. `set`
-                // itself still succeeds.
-                if !crate::signal::try_enable_monitor_mode() {
-                    executor.env.mode.options.monitor = false;
-                }
+                Err(e) => Err(e),
             }
-            // An explicit `set -m`/`set +m` overrides the subshell
-            // `flag_m` `$-` snapshot: a child that turned monitor off
-            // internally still shows `m` in `$-` (bash-like) until the
-            // user toggles it themselves.
-            if set_args_mention_monitor(args) {
-                executor.env.mode.flag_m = executor.env.mode.options.monitor;
-            }
-            return ret;
         }
         "eval" => builtin_eval(args, executor),
         "exec" => builtin_exec(args, executor),
@@ -60,11 +65,47 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
         )),
     };
     match result {
-        Ok(status) => status,
+        Ok(status) => SpecialOutcome {
+            status,
+            utility_error: status != 0
+                && matches!(name, "export" | "readonly" | "unset" | "set" | "times"),
+        },
         Err(e) => {
             eprintln!("{}", e);
-            e.exit_code()
+            SpecialOutcome {
+                status: e.exit_code(),
+                // `fc` is dispatched here but is a regular built-in in
+                // POSIX, so its errors never terminate the shell. `return`
+                // outside a function/dot script is tolerated by dash
+                // (silently) and bash (diagnostic only); keep going too.
+                utility_error: !matches!(name, "fc" | "return"),
+            }
         }
+    }
+}
+
+/// Post-success bookkeeping of the `set` special built-in (monitor-mode
+/// signal setup and the `$-` `m` snapshot).
+fn set_after_success(args: &[String], executor: &mut Executor, was_monitor: bool) {
+    let is_monitor = executor.env.mode.options.monitor;
+    if was_monitor && !is_monitor {
+        crate::signal::reset_job_control_signals();
+    } else if !was_monitor && is_monitor {
+        // Runtime `set -m` shares the invocation `-m`
+        // terminal-ownership gate: without the controlling
+        // terminal, monitor stays off (and `m` stays out of
+        // `$-`), matching `yosh -m ...` and bash. `set`
+        // itself still succeeds.
+        if !crate::signal::try_enable_monitor_mode() {
+            executor.env.mode.options.monitor = false;
+        }
+    }
+    // An explicit `set -m`/`set +m` overrides the subshell
+    // `flag_m` `$-` snapshot: a child that turned monitor off
+    // internally still shows `m` in `$-` (bash-like) until the
+    // user toggles it themselves.
+    if set_args_mention_monitor(args) {
+        executor.env.mode.flag_m = executor.env.mode.options.monitor;
     }
 }
 
@@ -179,6 +220,15 @@ fn consume_end_of_options(args: &[String], idx: usize) -> usize {
     }
 }
 
+/// `export name=value` / `readonly name=value` re-input line, or just
+/// `export name` for a name that has the attribute but no value.
+fn reinput_declaration(keyword: &str, name: &str, value: Option<&str>) -> String {
+    match value {
+        Some(v) => format!("{} {}={}", keyword, name, quote_for_reinput(v)),
+        None => format!("{} {}", keyword, name),
+    }
+}
+
 fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     // POSIX §2.15: `export -p` writes exported variables in re-input
     // format. Operands after `-p` are NOT dropped (POSIX Issue 8 /
@@ -192,12 +242,18 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
     let operands = &args[start..];
 
     if args.is_empty() || (print_mode && operands.is_empty()) {
-        // Print all exported variables in POSIX re-input format
-        let mut exported: Vec<(String, String)> = env.vars.environ().to_vec();
+        // Print all exported variables in POSIX re-input format,
+        // including exported names without a value (`export y`).
+        let mut exported: Vec<(String, Option<String>)> = env
+            .vars
+            .vars_iter()
+            .filter(|(_, v)| v.exported)
+            .map(|(k, v)| (k.to_string(), v.value.clone()))
+            .collect();
         exported.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in exported {
             crate::builtin::regular::write_stdout_decoded(
-                &format!("export {}={}", name, quote_for_reinput(&value)),
+                &reinput_declaration("export", &name, value.as_deref()),
                 true,
             );
         }
@@ -225,17 +281,9 @@ fn builtin_export(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
             env.vars.export(name);
         } else if print_mode {
             // `export -p name`: print only this variable (if exported).
-            if let Some((n, value)) = env
-                .vars
-                .environ()
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(n, v)| (n.clone(), v.clone()))
-            {
-                crate::builtin::regular::write_stdout_decoded(
-                    &format!("export {}={}", n, quote_for_reinput(&value)),
-                    true,
-                );
+            if let Some(v) = env.vars.get_var(name).filter(|v| v.exported) {
+                let line = reinput_declaration("export", name, v.value());
+                crate::builtin::regular::write_stdout_decoded(&line, true);
             }
         } else {
             env.vars.export(name);
@@ -310,7 +358,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     let operands = &args[start..];
 
     if args.is_empty() || (print_mode && operands.is_empty()) {
-        let readonly_vars: Vec<(String, String)> = env
+        let readonly_vars: Vec<(String, Option<String>)> = env
             .vars
             .vars_iter()
             .filter(|(_, v)| v.readonly)
@@ -320,7 +368,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in sorted {
             crate::builtin::regular::write_stdout_decoded(
-                &format!("readonly {}={}", name, quote_for_reinput(&value)),
+                &reinput_declaration("readonly", &name, value.as_deref()),
                 true,
             );
         }
@@ -351,7 +399,7 @@ fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         } else if print_mode {
             // `readonly -p name`: print only this variable (if readonly).
             if let Some(v) = env.vars.get_var(name).filter(|v| v.readonly) {
-                let line = format!("readonly {}={}", name, quote_for_reinput(&v.value));
+                let line = reinput_declaration("readonly", name, v.value());
                 crate::builtin::regular::write_stdout_decoded(&line, true);
             }
         } else {
@@ -455,10 +503,12 @@ fn builtin_continue(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
 fn builtin_set(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     if args.is_empty() {
         // Display all variables sorted
+        // Names with attributes but no value (`export y`) are unset and
+        // not listed (dash/bash agree).
         let mut vars: Vec<(String, String)> = env
             .vars
             .vars_iter()
-            .map(|(k, v)| (k.to_string(), v.value.clone()))
+            .filter_map(|(k, v)| v.value().map(|val| (k.to_string(), val.to_string())))
             .collect();
         vars.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, value) in vars {
@@ -781,10 +831,12 @@ fn builtin_shift(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError>
         }
     };
     if !env.vars.shift_positional_params(n) {
-        return Err(ShellError::runtime(
-            RuntimeErrorKind::IoError,
-            "shift: shift count out of range".to_string(),
-        ));
+        // POSIX shift: a count greater than `$#` "may be considered a
+        // syntax error and a non-interactive shell may exit"; bash keeps
+        // going with status 1 (dash exits). Report it as a plain failure
+        // status, not a special-built-in utility error.
+        eprintln!("yosh: shift: shift count out of range");
+        return Ok(1);
     }
     Ok(0)
 }
@@ -1284,7 +1336,7 @@ mod tests {
         );
         assert_eq!(status, 0);
         let var = executor.env.vars.get_var("expvar").expect("must be set");
-        assert_eq!(var.value, "val1");
+        assert_eq!(var.value(), Some("val1"));
         assert!(var.exported, "export -p name=value must export the var");
     }
 

@@ -502,6 +502,13 @@ fn run_string(
                     Some(env::FlowControl::ExpansionError) if executor.env.mode.is_interactive => {
                         executor.env.exec.flow_control = None;
                     }
+                    // The command that raised it may have reported status 0
+                    // (`for i in ${x:?}; do :; done`); the shell still exits
+                    // with the expansion-error status (POSIX §2.8.1: non-zero).
+                    Some(env::FlowControl::ExpansionError) => {
+                        status = 1;
+                        break;
+                    }
                     Some(_) => break,
                     None => {}
                 }

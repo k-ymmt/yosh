@@ -50,6 +50,11 @@ pub enum ExpansionErrorKind {
     /// (`${x:bad}`, `${}`); the word-context lexer rejects the same text
     /// at parse time.
     BadSubstitution,
+    /// A braced-parameter failure (`${x:?}`, `set -u` unset variable)
+    /// that `param::expansion_error` has already diagnosed while raising
+    /// `FlowControl::ExpansionError`. Carried with an empty message so
+    /// callers propagating it through `Result` do not print it twice.
+    AlreadyReported,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -100,6 +105,12 @@ impl ShellError {
             message: message.into(),
             location: None,
         }
+    }
+
+    /// Sentinel for an expansion error already diagnosed by
+    /// `param::expansion_error` (see [`ExpansionErrorKind::AlreadyReported`]).
+    pub fn expansion_already_reported() -> Self {
+        Self::expansion(ExpansionErrorKind::AlreadyReported, String::new())
     }
 
     pub fn runtime(kind: RuntimeErrorKind, message: impl Into<String>) -> Self {

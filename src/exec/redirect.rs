@@ -4,8 +4,9 @@ use nix::fcntl::{OFlag, open};
 use nix::sys::stat::Mode;
 
 use crate::env::ShellEnv;
+use crate::error::{RuntimeErrorKind, ShellError};
 use crate::expand::expand_word_to_string;
-use crate::parser::ast::{Redirect, RedirectKind};
+use crate::parser::ast::{Redirect, RedirectKind, Word};
 
 /// Open a byteenc-encoded redirect target, decoding escape codepoints so
 /// non-UTF-8 paths reach the OS as their original raw bytes.
@@ -107,10 +108,133 @@ fn raw_dup2(oldfd: RawFd, newfd: RawFd) -> nix::Result<()> {
     }
 }
 
+/// What a redirection does once its word has been expanded.
+#[derive(Debug, Clone, PartialEq)]
+enum ExpandedOp {
+    /// `<path`
+    Input(String),
+    /// `>path` (`noclobber` captured at expansion time) and `>|path`
+    Output { path: String, noclobber: bool },
+    /// `>>path`
+    Append(String),
+    /// `<>path`
+    ReadWrite(String),
+    /// `>&word` / `<&word` — `-` closes, otherwise a source fd number.
+    Dup(String),
+    /// Here-document body, already expanded and decoded to raw bytes.
+    HereDoc(Vec<u8>),
+}
+
+/// A redirection whose word (or here-document body) has already been
+/// expanded in the shell process. Splitting expansion from application
+/// lets the shell expand every redirection word *before* the command's
+/// prefix assignments (POSIX §2.9.1 step order) and before forking an
+/// external utility, so an expansion error in a redirection word is a
+/// shell-level expansion error (POSIX §2.8.1: a non-interactive shell
+/// exits — dash agrees) rather than a failure confined to the forked
+/// child.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpandedRedirect {
+    fd: RawFd,
+    op: ExpandedOp,
+}
+
+/// Expand the words of `redirects` in order.
+///
+/// Error contract:
+/// - A word expansion failure is returned unchanged (kind `Expansion`
+///   for arithmetic errors, which the caller reports and which makes a
+///   non-interactive shell exit).
+/// - A braced-parameter failure in a word (`${x:?}`, `set -u`) has
+///   already been diagnosed and left `FlowControl::ExpansionError` set;
+///   it is returned as [`ShellError::expansion_already_reported`] and the
+///   flow control stays raised so the shell exits / aborts the line.
+/// - A here-document body failure stays a *redirection* error (command
+///   skipped, status 1, the shell continues — dash and bash agree,
+///   empirical 2026-08-26; POSIX §2.7.4 heredocs are redirections, so the
+///   §2.8.1 redirection-error row applies).
+pub fn expand_redirects(
+    redirects: &[Redirect],
+    env: &mut ShellEnv,
+) -> Result<Vec<ExpandedRedirect>, ShellError> {
+    let mut out = Vec::with_capacity(redirects.len());
+    for redirect in redirects {
+        out.push(expand_one(redirect, env)?);
+    }
+    Ok(out)
+}
+
+fn expansion_failed(env: &ShellEnv) -> bool {
+    env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError)
+}
+
+fn expand_redirect_word(env: &mut ShellEnv, word: &Word) -> Result<String, ShellError> {
+    let s = expand_word_to_string(env, word)?;
+    if expansion_failed(env) {
+        // Diagnostic already printed by `param::expansion_error`.
+        return Err(ShellError::expansion_already_reported());
+    }
+    Ok(s)
+}
+
+fn expand_one(redirect: &Redirect, env: &mut ShellEnv) -> Result<ExpandedRedirect, ShellError> {
+    let (default_fd, op) = match &redirect.kind {
+        RedirectKind::Input(w) => (0, ExpandedOp::Input(expand_redirect_word(env, w)?)),
+        RedirectKind::Output(w) => (
+            1,
+            ExpandedOp::Output {
+                path: expand_redirect_word(env, w)?,
+                noclobber: env.mode.options.noclobber,
+            },
+        ),
+        RedirectKind::OutputClobber(w) => (
+            1,
+            ExpandedOp::Output {
+                path: expand_redirect_word(env, w)?,
+                noclobber: false,
+            },
+        ),
+        RedirectKind::Append(w) => (1, ExpandedOp::Append(expand_redirect_word(env, w)?)),
+        RedirectKind::ReadWrite(w) => (0, ExpandedOp::ReadWrite(expand_redirect_word(env, w)?)),
+        RedirectKind::DupOutput(w) => (1, ExpandedOp::Dup(expand_redirect_word(env, w)?)),
+        RedirectKind::DupInput(w) => (0, ExpandedOp::Dup(expand_redirect_word(env, w)?)),
+        RedirectKind::HereDoc(heredoc) => {
+            // See the error contract on `expand_redirects`: heredoc body
+            // failures are redirection errors, not fatal expansion errors.
+            let body = crate::expand::expand_heredoc_body(env, &heredoc.body, heredoc.quoted)
+                .map_err(|e| ShellError::runtime(RuntimeErrorKind::RedirectFailed, e.message))?;
+            if expansion_failed(env) {
+                // `${x:?}` / nounset inside the body: already reported.
+                // Clear the flow control so it does not abort the shell,
+                // and return the already-reported sentinel (empty
+                // message) so `report_command_error` stays silent.
+                env.exec.flow_control = None;
+                return Err(ShellError::runtime(
+                    RuntimeErrorKind::RedirectFailed,
+                    String::new(),
+                ));
+            }
+            (
+                0,
+                ExpandedOp::HereDoc(crate::byteenc::decode_bytes(&body).into_owned()),
+            )
+        }
+    };
+    Ok(ExpandedRedirect {
+        fd: redirect.fd.unwrap_or(default_fd),
+        op,
+    })
+}
+
+/// Sentinel stored in `saved_fds` when the target fd was closed before
+/// the redirection: restoring it means closing the fd again.
+const WAS_CLOSED: RawFd = -1;
+
 /// Tracks saved file descriptors so they can be restored after a builtin runs.
 #[derive(Default)]
 pub struct RedirectState {
-    /// (original_fd, saved_copy_fd) — used for restore
+    /// (original_fd, saved_copy_fd) — used for restore. `saved_copy_fd`
+    /// is [`WAS_CLOSED`] when `original_fd` was not open.
     saved_fds: Vec<(RawFd, RawFd)>,
 }
 
@@ -119,7 +243,19 @@ impl RedirectState {
         Self::default()
     }
 
-    /// Apply a list of redirects.
+    /// Expand and apply a list of redirects (see [`expand_redirects`] and
+    /// [`Self::apply_expanded`]).
+    pub fn apply(
+        &mut self,
+        redirects: &[Redirect],
+        env: &mut ShellEnv,
+        save: bool,
+    ) -> Result<(), ShellError> {
+        let expanded = expand_redirects(redirects, env)?;
+        self.apply_expanded(&expanded, save)
+    }
+
+    /// Apply already-expanded redirects.
     /// If `save` is true (builtin case), save the original fds so they can be restored.
     ///
     /// On failure, any redirects already applied within this call are rolled back
@@ -128,195 +264,111 @@ impl RedirectState {
     /// so the rollback is a no-op in that case — meaning fds opened by successful
     /// redirects preceding the failing one are leaked (out of scope per spec §C;
     /// callers in this mode are forked children that exit on failure anyway).
-    pub fn apply(
+    /// Errors are `RedirectFailed` runtime errors.
+    pub fn apply_expanded(
         &mut self,
-        redirects: &[Redirect],
-        env: &mut ShellEnv,
+        redirects: &[ExpandedRedirect],
         save: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), ShellError> {
         for redirect in redirects {
-            if let Err(e) = self.apply_one(redirect, env, save) {
+            if let Err(e) = self.apply_one(redirect, save) {
                 self.restore();
-                return Err(e);
+                return Err(ShellError::runtime(RuntimeErrorKind::RedirectFailed, e));
             }
         }
         Ok(())
     }
 
-    fn apply_one(
-        &mut self,
-        redirect: &Redirect,
-        env: &mut ShellEnv,
-        save: bool,
-    ) -> Result<(), String> {
-        match &redirect.kind {
-            RedirectKind::Input(word) => {
-                let target_fd = redirect.fd.unwrap_or(0);
-                let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
-                let fd = open_decoded(&path, OFlag::O_RDONLY, Mode::empty())
-                    .map_err(|e| format!("{}: {}", path, e))?
-                    .into_raw_fd();
-                if save {
-                    self.save_fd(target_fd)?;
-                }
-                if fd != target_fd {
-                    raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                    unsafe { libc::close(fd) };
-                }
-            }
-            RedirectKind::Output(word) => {
-                let target_fd = redirect.fd.unwrap_or(1);
-                let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
-                let fd = if env.mode.options.noclobber {
-                    open_noclobber(&path)?
+    fn apply_one(&mut self, redirect: &ExpandedRedirect, save: bool) -> Result<(), String> {
+        let target_fd = redirect.fd;
+        match &redirect.op {
+            ExpandedOp::Input(path) => self.install(target_fd, save, || {
+                open_decoded(path, OFlag::O_RDONLY, Mode::empty())
+                    .map(|fd| fd.into_raw_fd())
+                    .map_err(|e| format!("{}: {}", path, e))
+            }),
+            ExpandedOp::Output { path, noclobber } => self.install(target_fd, save, || {
+                if *noclobber {
+                    open_noclobber(path)
                 } else {
                     let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
-                    open_decoded(&path, flags, Mode::from_bits_truncate(0o644))
-                        .map_err(|e| format!("{}: {}", path, e))?
-                        .into_raw_fd()
-                };
-                if save {
-                    self.save_fd(target_fd)?;
+                    open_decoded(path, flags, Mode::from_bits_truncate(0o644))
+                        .map(|fd| fd.into_raw_fd())
+                        .map_err(|e| format!("{}: {}", path, e))
                 }
-                if fd != target_fd {
-                    raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                    unsafe { libc::close(fd) };
-                }
-            }
-            RedirectKind::OutputClobber(word) => {
-                let target_fd = redirect.fd.unwrap_or(1);
-                let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
-                let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC;
-                let fd = open_decoded(&path, flags, Mode::from_bits_truncate(0o644))
-                    .map_err(|e| format!("{}: {}", path, e))?
-                    .into_raw_fd();
-                if save {
-                    self.save_fd(target_fd)?;
-                }
-                if fd != target_fd {
-                    raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                    unsafe { libc::close(fd) };
-                }
-            }
-            RedirectKind::Append(word) => {
-                let target_fd = redirect.fd.unwrap_or(1);
-                let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
+            }),
+            ExpandedOp::Append(path) => self.install(target_fd, save, || {
                 let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_APPEND;
-                let fd = open_decoded(&path, flags, Mode::from_bits_truncate(0o644))
-                    .map_err(|e| format!("{}: {}", path, e))?
-                    .into_raw_fd();
-                if save {
-                    self.save_fd(target_fd)?;
-                }
-                if fd != target_fd {
-                    raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                    unsafe { libc::close(fd) };
-                }
-            }
-            RedirectKind::DupOutput(word) => {
-                let target_fd = redirect.fd.unwrap_or(1);
-                let src = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
-                if src == "-" {
-                    if save {
-                        self.save_fd(target_fd)?;
-                    }
-                    unsafe { libc::close(target_fd) };
-                } else {
-                    let src_fd: RawFd = src
-                        .parse()
-                        .map_err(|_| format!("{}: invalid file descriptor", src))?;
-                    if src_fd != target_fd {
-                        if save {
-                            self.save_fd(target_fd)?;
-                        }
-                        raw_dup2(src_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                    }
-                }
-            }
-            RedirectKind::DupInput(word) => {
-                let target_fd = redirect.fd.unwrap_or(0);
-                let src = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
-                if src == "-" {
-                    if save {
-                        self.save_fd(target_fd)?;
-                    }
-                    unsafe { libc::close(target_fd) };
-                } else {
-                    let src_fd: RawFd = src
-                        .parse()
-                        .map_err(|_| format!("{}: invalid file descriptor", src))?;
-                    if src_fd != target_fd {
-                        if save {
-                            self.save_fd(target_fd)?;
-                        }
-                        raw_dup2(src_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                    }
-                }
-            }
-            RedirectKind::ReadWrite(word) => {
-                let target_fd = redirect.fd.unwrap_or(0);
-                let path = expand_word_to_string(env, word).map_err(|e| e.to_string())?;
+                open_decoded(path, flags, Mode::from_bits_truncate(0o644))
+                    .map(|fd| fd.into_raw_fd())
+                    .map_err(|e| format!("{}: {}", path, e))
+            }),
+            ExpandedOp::ReadWrite(path) => self.install(target_fd, save, || {
                 let flags = OFlag::O_RDWR | OFlag::O_CREAT;
-                let fd = open_decoded(&path, flags, Mode::from_bits_truncate(0o644))
-                    .map_err(|e| format!("{}: {}", path, e))?
-                    .into_raw_fd();
-                if save {
-                    self.save_fd(target_fd)?;
-                }
-                if fd != target_fd {
-                    raw_dup2(fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                    unsafe { libc::close(fd) };
-                }
-            }
-            RedirectKind::HereDoc(heredoc) => {
-                let target_fd = redirect.fd.unwrap_or(0);
-
-                // Expand the body. An expansion failure (e.g. $((1/0)))
-                // becomes a redirection error: the command is aborted but
-                // the shell continues — dash and bash both keep the shell
-                // alive for a heredoc arithmetic failure, unlike the word
-                // path (empirical 2026-08-26; POSIX §2.7.4 heredocs are
-                // redirections, so the §2.8.1 redirection-error row
-                // applies, not the expansion-error row).
-                let body = crate::expand::expand_heredoc_body(env, &heredoc.body, heredoc.quoted)
-                    .map_err(|e| e.message)?;
-
-                // Braced-parameter failures (`${x:?msg}`, `set -u` unset)
-                // report through `param::expansion_error` instead of `Err`:
-                // the diagnostic is already printed and
-                // `FlowControl::ExpansionError` is raised. Convert that to
-                // the same redirection-error outcome as above (command
-                // skipped, status 1, shell continues — matching dash;
-                // empirical 2026-08-26): clear the flow control so it does
-                // not abort the non-interactive shell, and return the
-                // already-reported sentinel (empty message) so
-                // `report_command_error` does not print a second line.
-                if env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError) {
-                    env.exec.flow_control = None;
-                    return Err(String::new());
-                }
-
-                let read_fd = heredoc_source_fd(&crate::byteenc::decode_bytes(&body))?;
-
-                // Connect read end to target fd (stdin by default)
-                if save {
-                    self.save_fd(target_fd)?;
-                }
-                if read_fd != target_fd {
-                    raw_dup2(read_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
-                    unsafe { libc::close(read_fd) };
+                open_decoded(path, flags, Mode::from_bits_truncate(0o644))
+                    .map(|fd| fd.into_raw_fd())
+                    .map_err(|e| format!("{}: {}", path, e))
+            }),
+            ExpandedOp::Dup(src) => {
+                if src == "-" {
+                    if save {
+                        self.save_fd(target_fd)?;
+                    }
+                    unsafe { libc::close(target_fd) };
+                    Ok(())
+                } else {
+                    let src_fd: RawFd = src
+                        .parse()
+                        .map_err(|_| format!("{}: invalid file descriptor", src))?;
+                    if src_fd != target_fd {
+                        if save {
+                            self.save_fd(target_fd)?;
+                        }
+                        raw_dup2(src_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
+                    }
+                    Ok(())
                 }
             }
+            ExpandedOp::HereDoc(body) => self.install(target_fd, save, || heredoc_source_fd(body)),
+        }
+    }
+
+    /// Point `target_fd` at the fd produced by `open`. The target is saved
+    /// *before* opening: if it is currently closed, `open` may return the
+    /// target number itself, and saving afterwards would record the new
+    /// file as the "original" and leak it past `restore`.
+    fn install(
+        &mut self,
+        target_fd: RawFd,
+        save: bool,
+        open: impl FnOnce() -> Result<RawFd, String>,
+    ) -> Result<(), String> {
+        if save {
+            self.save_fd(target_fd)?;
+        }
+        let fd = open()?;
+        if fd != target_fd {
+            let res = raw_dup2(fd, target_fd);
+            unsafe { libc::close(fd) };
+            res.map_err(|e| format!("dup2: {}", e))?;
         }
         Ok(())
     }
 
     /// dup() the fd before it gets overwritten, storing the saved copy.
     /// Uses F_DUPFD_CLOEXEC so the saved fd is automatically closed in child processes.
+    /// A closed fd (EBADF) is recorded as [`WAS_CLOSED`] so `restore`
+    /// closes it again — redirecting a closed fd is not an error
+    /// (`{ echo x >&5; } 5>&1` works in every shell).
     fn save_fd(&mut self, fd: RawFd) -> Result<(), String> {
         let saved = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10) };
         if saved == -1 {
-            return Err(format!("dup: {}", std::io::Error::last_os_error()));
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EBADF) {
+                self.saved_fds.push((fd, WAS_CLOSED));
+                return Ok(());
+            }
+            return Err(format!("dup: {}", err));
         }
         self.saved_fds.push((fd, saved));
         Ok(())
@@ -325,8 +377,12 @@ impl RedirectState {
     /// Restore all saved fds in reverse order (LIFO).
     pub fn restore(&mut self) {
         for (original, saved) in self.saved_fds.drain(..).rev() {
-            raw_dup2(saved, original).ok();
-            unsafe { libc::close(saved) };
+            if saved == WAS_CLOSED {
+                unsafe { libc::close(original) };
+            } else {
+                raw_dup2(saved, original).ok();
+                unsafe { libc::close(saved) };
+            }
         }
     }
 }
@@ -335,7 +391,9 @@ impl Drop for RedirectState {
     fn drop(&mut self) {
         // Close any saved fds that were never restored
         for (_original, saved) in self.saved_fds.drain(..) {
-            unsafe { libc::close(saved) };
+            if saved != WAS_CLOSED {
+                unsafe { libc::close(saved) };
+            }
         }
     }
 }
@@ -487,5 +545,34 @@ mod tests {
             !written.contains("post-rollback-marker"),
             "fd 1 should not still point at tmp_ok after rollback; tmp_ok contained: {written:?}"
         );
+    }
+
+    /// Redirecting an fd that is closed records it as closed and closes it
+    /// again on restore — even when `open` hands back the target number
+    /// itself (the file must not leak past the command).
+    #[test]
+    fn closed_target_fd_is_closed_again_on_restore() {
+        let _guard = FD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut env = make_env();
+        // A high fd nobody else in the test process uses.
+        let target: RawFd = 77;
+        unsafe { libc::close(target) };
+        let tmp = std::env::temp_dir().join("yosh_redirect_closed_target.txt");
+        let redirects = vec![Redirect {
+            fd: Some(target),
+            kind: RedirectKind::Output(Word::literal(tmp.to_str().unwrap())),
+        }];
+        let mut state = RedirectState::new();
+        state
+            .apply(&redirects, &mut env, true)
+            .expect("redirecting a closed fd must succeed");
+        assert_ne!(unsafe { libc::fcntl(target, libc::F_GETFD) }, -1);
+        state.restore();
+        assert_eq!(
+            unsafe { libc::fcntl(target, libc::F_GETFD) },
+            -1,
+            "fd must be closed again after restore"
+        );
+        let _ = std::fs::remove_file(&tmp);
     }
 }
