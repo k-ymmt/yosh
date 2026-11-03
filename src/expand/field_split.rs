@@ -44,7 +44,7 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
     // two small heap allocations per word expansion even before reaching
     // the "does any field need splitting" check below.
     if ifs == DEFAULT_IFS {
-        let delims = Delims::new(DEFAULT_WS, &[]);
+        let delims = Delims::new(DEFAULT_WS, &[], Vec::new());
         if fields.iter().all(|f| !needs_splitting(f, &delims)) {
             return fields;
         }
@@ -60,20 +60,27 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
         .bytes()
         .filter(|b| matches!(*b, b' ' | b'\t' | b'\n'))
         .collect();
-    // Restrict IFS non-whitespace delimiters to ASCII (< 0x80). Non-ASCII bytes
-    // in IFS would otherwise match UTF-8 lead or continuation bytes inside
-    // multi-byte content and break split_field's "i is a char boundary"
-    // invariant. See spec 2026-04-21-field-split-utf8-panic-fix §4.1 / §5.2.
+    // ASCII non-whitespace delimiters go in the byte table. Non-ASCII IFS
+    // characters (UTF-8 characters, and raw bytes held as byteenc escape
+    // characters) are matched as whole characters, never byte by byte:
+    // a single byte would match inside other multi-byte characters and
+    // break split_field's "i is a char boundary" invariant (spec
+    // 2026-04-21-field-split-utf8-panic-fix §4.1 / §5.2).
     let ifs_nws: Vec<u8> = ifs
         .bytes()
         .filter(|b| !matches!(*b, b' ' | b'\t' | b'\n'))
         .filter(|b| *b < 0x80)
         .collect();
+    let ifs_multi: Vec<String> = ifs
+        .chars()
+        .filter(|c| !c.is_ascii())
+        .map(String::from)
+        .collect();
 
     // Fast path: if no field contains an unquoted IFS byte, the state
     // machine would emit each input field unchanged. Return without
     // allocating a new Vec or rebuilding ExpandedFields via `emit`.
-    let delims = Delims::new(&ifs_ws, &ifs_nws);
+    let delims = Delims::new(&ifs_ws, &ifs_nws, ifs_multi);
     if fields.iter().all(|f| !needs_splitting(f, &delims)) {
         return fields;
     }
@@ -86,15 +93,24 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
 }
 
 /// Byte classification table for one IFS value: IFS whitespace, IFS
-/// non-whitespace, or not a delimiter.
-struct Delims([u8; 256]);
+/// non-whitespace, not a delimiter, or the lead byte of a non-ASCII IFS
+/// character (`multi`).
+struct Delims {
+    table: [u8; 256],
+    /// The non-ASCII IFS characters, as UTF-8. They are IFS non-whitespace
+    /// (IFS white space is space, tab and newline).
+    multi: Vec<String>,
+}
 
 const NOT_DELIM: u8 = 0;
 const WS_DELIM: u8 = 1;
 const NWS_DELIM: u8 = 2;
+/// Lead byte of a non-ASCII IFS character: a delimiter only where the
+/// whole character follows.
+const MB_LEAD: u8 = 3;
 
 impl Delims {
-    fn new(ifs_ws: &[u8], ifs_nws: &[u8]) -> Self {
+    fn new(ifs_ws: &[u8], ifs_nws: &[u8], multi: Vec<String>) -> Self {
         let mut t = [NOT_DELIM; 256];
         for &b in ifs_nws {
             t[b as usize] = NWS_DELIM;
@@ -102,18 +118,28 @@ impl Delims {
         for &b in ifs_ws {
             t[b as usize] = WS_DELIM;
         }
-        Delims(t)
+        for d in &multi {
+            t[d.as_bytes()[0] as usize] = MB_LEAD;
+        }
+        Delims { table: t, multi }
     }
 
-    /// Class of byte `i` of `field`: quoted bytes are never delimiters.
+    /// Class of the text at byte `i` of `field` (a char boundary) and the
+    /// delimiter's length in bytes: quoted bytes are never delimiters.
     #[inline]
-    fn class(&self, field: &ExpandedField, i: usize) -> u8 {
-        let c = self.0[field.as_bytes()[i] as usize];
-        if c != NOT_DELIM && field.is_split_protected(i) {
-            NOT_DELIM
-        } else {
-            c
+    fn class(&self, field: &ExpandedField, i: usize) -> (u8, usize) {
+        let c = self.table[field.as_bytes()[i] as usize];
+        if c == NOT_DELIM || field.is_split_protected(i) {
+            return (NOT_DELIM, 1);
         }
+        if c == MB_LEAD {
+            let rest = &field.as_bytes()[i..];
+            return match self.multi.iter().find(|d| rest.starts_with(d.as_bytes())) {
+                Some(d) => (NWS_DELIM, d.len()),
+                None => (NOT_DELIM, 1),
+            };
+        }
+        (c, 1)
     }
 }
 
@@ -153,7 +179,7 @@ fn split_field(field: &ExpandedField, delims: &Delims, out: &mut Vec<ExpandedFie
 
     let mut i = 0;
     while i < len {
-        let class = delims.class(field, i);
+        let (class, dlen) = delims.class(field, i);
         let is_ws = class == WS_DELIM;
         let is_nws = class == NWS_DELIM;
 
@@ -161,7 +187,7 @@ fn split_field(field: &ExpandedField, delims: &Delims, out: &mut Vec<ExpandedFie
             State::Start | State::AfterNws => {
                 if is_ws {
                     // Skip leading / trailing whitespace around a delimiter.
-                    i += 1;
+                    i += dlen;
                     // Stay in Start/AfterNws to keep skipping whitespace.
                 } else if is_nws {
                     // An IFS non-whitespace delimiter immediately after
@@ -171,7 +197,7 @@ fn split_field(field: &ExpandedField, delims: &Delims, out: &mut Vec<ExpandedFie
                         ..ExpandedField::new()
                     });
                     state = State::AfterNws;
-                    i += 1;
+                    i += dlen;
                 } else {
                     // Normal byte: start accumulating a field.
                     i = append_run(&mut current, field, i, delims);
@@ -184,12 +210,12 @@ fn split_field(field: &ExpandedField, delims: &Delims, out: &mut Vec<ExpandedFie
                     // IFS whitespace: end current field, enter AfterWs.
                     emit(&mut current, out);
                     state = State::AfterWs;
-                    i += 1;
+                    i += dlen;
                 } else if is_nws {
                     // IFS non-whitespace: end current field, enter AfterNws.
                     emit(&mut current, out);
                     state = State::AfterNws;
-                    i += 1;
+                    i += dlen;
                 } else {
                     i = append_run(&mut current, field, i, delims);
                 }
@@ -198,14 +224,14 @@ fn split_field(field: &ExpandedField, delims: &Delims, out: &mut Vec<ExpandedFie
             State::AfterWs => {
                 if is_ws {
                     // Consecutive whitespace — skip.
-                    i += 1;
+                    i += dlen;
                 } else if is_nws {
                     // Whitespace followed by non-whitespace delimiter:
                     // the whitespace we already consumed was the leading ws
                     // of this nws delimiter.  Do NOT emit an extra empty
                     // field; the field before the ws was already emitted.
                     state = State::AfterNws;
-                    i += 1;
+                    i += dlen;
                 } else {
                     // Normal byte after whitespace: start a new field.
                     i = append_run(&mut current, field, i, delims);
@@ -231,14 +257,15 @@ fn split_field(field: &ExpandedField, delims: &Delims, out: &mut Vec<ExpandedFie
 /// the slow-path state machine would emit each input field unchanged,
 /// so we can return the input Vec as-is without any allocation.
 fn needs_splitting(field: &ExpandedField, delims: &Delims) -> bool {
-    (0..field.byte_len()).any(|i| delims.class(field, i) != NOT_DELIM)
+    (0..field.byte_len()).any(|i| delims.class(field, i).0 != NOT_DELIM)
 }
 
 /// Append to `dest` the run of non-delimiter bytes starting at `i` that
 /// share byte `i`'s `(split_protected, glob_protected)` attribute pair,
 /// via the push method matching that classification; returns the run's
-/// end. Runs end at a delimiter (ASCII) or where the attributes change —
-/// both char boundaries, since every push covers whole strings.
+/// end. Runs end at a delimiter byte (ASCII, or the lead byte of a
+/// non-ASCII IFS character) or where the attributes change — all char
+/// boundaries, since lead bytes are and every push covers whole strings.
 ///
 /// Caller must ensure `i` is on a UTF-8 character boundary and is not a
 /// delimiter.
@@ -256,7 +283,7 @@ fn append_run(
     while j < len
         && source.is_split_protected(j) == split
         && source.is_glob_protected(j) == glob
-        && (split || delims.0[source.as_bytes()[j] as usize] == NOT_DELIM)
+        && (split || delims.table[source.as_bytes()[j] as usize] == NOT_DELIM)
     {
         j += 1;
     }
@@ -552,13 +579,34 @@ mod tests {
     }
 
     #[test]
-    fn test_non_ascii_ifs_byte_ignored() {
-        // Pin the documented behavior change (spec §5.2): non-ASCII IFS bytes
-        // are filtered out of ifs_nws and have no effect on splitting.
-        // 'À' is 0xC3 0x80; both bytes are ≥ 0x80 and therefore ignored.
+    fn test_non_ascii_ifs_char_splits_as_whole_char() {
+        // A non-ASCII IFS character is a delimiter as a whole character
+        // (dash/bash split on it); 'À' (0xC3 0x80) and 'é' (0xC3 0xA9)
+        // share a lead byte, so 'é' must not match.
         let env = env_with_ifs("\u{00c0}");
-        let input = vec![unquoted("À")];
-        assert_eq!(values(split(&env, input)), vec!["À"]);
+        let input = vec![unquoted("aÀbéÀ日"), unquoted("À")];
+        assert_eq!(values(split(&env, input)), vec!["a", "bé", "日", ""]);
+    }
+
+    #[test]
+    fn test_non_ascii_ifs_char_quoted_not_split() {
+        let env = env_with_ifs("é");
+        let input = vec![quoted_field("aéb")];
+        assert_eq!(values(split(&env, input)), vec!["aéb"]);
+    }
+
+    #[test]
+    fn test_raw_byte_ifs_splits_on_that_byte() {
+        // A raw (non-UTF-8) byte in IFS and in the value are both byteenc
+        // escape characters; they match each other and nothing else.
+        let ff = crate::byteenc::encode_bytes(b"\xff").into_owned();
+        let fe = crate::byteenc::encode_bytes(b"\xfe").into_owned();
+        let env = env_with_ifs(&ff);
+        let input = vec![unquoted(&format!("a{ff}b{fe}c"))];
+        assert_eq!(
+            values(split(&env, input)),
+            vec!["a".to_string(), format!("b{fe}c")]
+        );
     }
 
     // ── Literal bytes are not split (POSIX XCU §2.6.5) ──
