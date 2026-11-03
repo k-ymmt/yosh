@@ -319,12 +319,16 @@ fn read_logical_line<R: ByteReader>(raw: bool, reader: &mut R) -> std::io::Resul
                         });
                     }
                     Some(b'\n') => continue, // line continuation: drop both
+                    Some(0) => continue,
                     Some(other) => bytes.push(LineByte {
                         value: other,
                         escaped: true,
                     }),
                 }
             }
+            // A NUL byte cannot be part of a shell variable value; drop
+            // it (dash and bash both do) rather than store it.
+            Some(0) => continue,
             Some(other) => bytes.push(LineByte {
                 value: other,
                 escaped: false,
@@ -341,6 +345,59 @@ fn field_to_string(slice: &[LineByte]) -> String {
     crate::byteenc::encode_bytes(&bytes).into_owned()
 }
 
+/// One character of the logical line: a valid UTF-8 sequence, or a
+/// single byte that does not start one. IFS characters match whole
+/// units, so a multibyte IFS character is one delimiter (as in field
+/// splitting) and a raw IFS byte matches only that raw input byte.
+#[derive(Debug, Clone, Copy)]
+struct Unit {
+    start: usize,
+    end: usize,
+    /// The unit's first byte came through a backslash escape.
+    escaped: bool,
+}
+
+fn line_units(line: &[LineByte]) -> Vec<Unit> {
+    let mut units = Vec::with_capacity(line.len());
+    let mut i = 0;
+    while i < line.len() {
+        let len = match line[i].value {
+            0xC2..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF4 => 4,
+            _ => 1,
+        };
+        let mut end = i + 1;
+        if len > 1 && i + len <= line.len() && line[i + 1..i + len].iter().all(|b| !b.escaped) {
+            let mut buf = [0u8; 4];
+            for (dst, src) in buf.iter_mut().zip(&line[i..i + len]) {
+                *dst = src.value;
+            }
+            if std::str::from_utf8(&buf[..len]).is_ok() {
+                end = i + len;
+            }
+        }
+        units.push(Unit {
+            start: i,
+            end,
+            escaped: line[i].escaped,
+        });
+        i = end;
+    }
+    units
+}
+
+/// The IFS characters as byte sequences: a byteenc escape stands for its
+/// raw byte, any other character for its UTF-8 encoding.
+fn ifs_chars(ifs: &str) -> Vec<Vec<u8>> {
+    ifs.chars()
+        .map(|c| match crate::byteenc::unescape_char(c) {
+            Some(b) => vec![b],
+            None => c.to_string().into_bytes(),
+        })
+        .collect()
+}
+
 /// POSIX §2.6.5 field splitting for `read`. Returns exactly `n_vars`
 /// strings: var[0..n-1] are split fields, var[n-1] is the trailing
 /// remainder (with only trailing whitespace-IFS trimmed). When IFS is
@@ -350,37 +407,16 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
     // via ArgError::NoVarName.
     debug_assert!(n_vars >= 1);
 
-    // Classify IFS bytes.
-    let mut ws_ifs: Vec<u8> = Vec::new();
-    let mut sep_ifs: Vec<u8> = Vec::new();
-    for b in ifs.bytes() {
-        if b == b' ' || b == b'\t' || b == b'\n' {
-            ws_ifs.push(b);
+    // Classify IFS characters.
+    let mut ws_ifs: Vec<Vec<u8>> = Vec::new();
+    let mut sep_ifs: Vec<Vec<u8>> = Vec::new();
+    for c in ifs_chars(ifs) {
+        if matches!(c.as_slice(), b" " | b"\t" | b"\n") {
+            ws_ifs.push(c);
         } else {
-            sep_ifs.push(b);
+            sep_ifs.push(c);
         }
     }
-
-    // Helper: is byte `b` an unescaped IFS byte of the given class?
-    let is_ws = |lb: &LineByte| !lb.escaped && ws_ifs.contains(&lb.value);
-    let is_sep = |lb: &LineByte| !lb.escaped && sep_ifs.contains(&lb.value);
-    let is_any_ifs = |lb: &LineByte| is_ws(lb) || is_sep(lb);
-    // Skip one field terminator starting at `k` and return the index
-    // after it. Per XCU §2.6.5 a delimiter is a non-whitespace IFS byte
-    // together with any adjacent IFS whitespace (on BOTH sides), or a
-    // run of IFS whitespace alone: `ws* sep? ws*`.
-    let skip_terminator = |bytes: &[LineByte], mut k: usize| -> usize {
-        while k < bytes.len() && is_ws(&bytes[k]) {
-            k += 1;
-        }
-        if k < bytes.len() && is_sep(&bytes[k]) {
-            k += 1;
-            while k < bytes.len() && is_ws(&bytes[k]) {
-                k += 1;
-            }
-        }
-        k
-    };
 
     // Empty IFS → no splitting at all.
     if ws_ifs.is_empty() && sep_ifs.is_empty() {
@@ -390,9 +426,49 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
         return out;
     }
 
+    let units = line_units(line);
+    let matches = |u: &Unit, set: &[Vec<u8>]| {
+        !u.escaped
+            && set.iter().any(|c| {
+                c.len() == u.end - u.start
+                    && line[u.start..u.end]
+                        .iter()
+                        .zip(c)
+                        .all(|(b, x)| b.value == *x)
+            })
+    };
+    // Helper: is unit `u` an unescaped IFS character of the given class?
+    let is_ws = |u: &Unit| matches(u, &ws_ifs);
+    let is_sep = |u: &Unit| matches(u, &sep_ifs);
+    let is_any_ifs = |u: &Unit| is_ws(u) || is_sep(u);
+    // Skip one field terminator starting at `k` and return the index
+    // after it. Per XCU §2.6.5 a delimiter is a non-whitespace IFS
+    // character together with any adjacent IFS whitespace (on BOTH
+    // sides), or a run of IFS whitespace alone: `ws* sep? ws*`.
+    let skip_terminator = |units: &[Unit], mut k: usize| -> usize {
+        while k < units.len() && is_ws(&units[k]) {
+            k += 1;
+        }
+        if k < units.len() && is_sep(&units[k]) {
+            k += 1;
+            while k < units.len() && is_ws(&units[k]) {
+                k += 1;
+            }
+        }
+        k
+    };
+    // The text of units[s..e].
+    let span = |units: &[Unit], s: usize, e: usize| -> String {
+        if s >= e {
+            String::new()
+        } else {
+            field_to_string(&line[units[s].start..units[e - 1].end])
+        }
+    };
+
     // Trim leading ws_ifs.
     let mut i = 0;
-    while i < line.len() && is_ws(&line[i]) {
+    while i < units.len() && is_ws(&units[i]) {
         i += 1;
     }
 
@@ -400,29 +476,28 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
 
     // Emit fields 0..n_vars-2 (each terminated by IFS).
     for _ in 0..(n_vars - 1) {
-        if i >= line.len() {
+        if i >= units.len() {
             result.push(String::new());
             continue;
         }
-        // Field bytes: until the next IFS or end-of-line.
+        // Field characters: until the next IFS or end-of-line.
         let start = i;
-        while i < line.len() && !is_any_ifs(&line[i]) {
+        while i < units.len() && !is_any_ifs(&units[i]) {
             i += 1;
         }
-        let field = field_to_string(&line[start..i]);
-        result.push(field);
+        result.push(span(&units, start, i));
 
         // Consume one terminator (IFS whitespace on either side of an
         // optional non-whitespace delimiter collapses into it).
-        i = skip_terminator(line, i);
+        i = skip_terminator(&units, i);
     }
 
     // Remainder for var[n_vars-1]: trim trailing ws_ifs.
-    let mut j = line.len();
-    while j > i && is_ws(&line[j - 1]) {
+    let mut j = units.len();
+    while j > i && is_ws(&units[j - 1]) {
         j -= 1;
     }
-    let rest = &line[i..j];
+    let rest = &units[i..j];
     // If the remainder is exactly one field plus one terminator (`b:` in
     // `a:b:`), that delimiter only ends the last field — field splitting
     // yields no extra field for it — so the var gets the bare field, as
@@ -433,9 +508,9 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
         field_end += 1;
     }
     let remainder = if skip_terminator(rest, field_end) == rest.len() {
-        field_to_string(&rest[..field_end])
+        span(rest, 0, field_end)
     } else {
-        field_to_string(rest)
+        span(rest, 0, rest.len())
     };
     result.push(remainder);
 
@@ -788,5 +863,43 @@ mod tests {
         assert_eq!(t(":", "a:b:c:", 2), vec!["a", "b:c:"]);
         assert_eq!(t(": ", "a b c:", 2), vec!["a", "b c:"]);
         assert_eq!(t(": ", "a:b:", 1), vec!["a:b:"]);
+    }
+
+    #[test]
+    fn split_on_raw_byte_ifs() {
+        // IFS holds the byteenc escape for byte 0xFF.
+        let ifs = crate::byteenc::escape_char(0xFF).to_string();
+        let line: Vec<LineByte> = b"a\xFFb".iter().map(|&b| lb(b, false)).collect();
+        let out = split_for(&ifs, line, 2);
+        assert_eq!(out, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn split_multibyte_ifs_is_one_delimiter() {
+        // `é` (C3 A9) splits only on the whole character, never on a
+        // lone byte of it: `\xC3\xA8` (è) shares the lead byte.
+        let out = split_for("é", to_line("aébèc"), 3);
+        assert_eq!(
+            out,
+            vec!["a".to_string(), "bèc".to_string(), "".to_string()]
+        );
+        let out = split_for("é", to_line("aébéc"), 2);
+        assert_eq!(out, vec!["a".to_string(), "béc".to_string()]);
+    }
+
+    #[test]
+    fn split_escaped_multibyte_ifs_is_literal() {
+        let mut line = to_line("aéb");
+        line[1].escaped = true;
+        let out = split_for("é", line, 2);
+        assert_eq!(out, vec!["aéb".to_string(), "".to_string()]);
+    }
+
+    #[test]
+    fn read_line_drops_nul_bytes() {
+        let mut r = SliceReader::new(b"a\0b\\\0c\n");
+        let res = read_logical_line(false, &mut r).unwrap();
+        let bytes: Vec<u8> = res.bytes.iter().map(|b| b.value).collect();
+        assert_eq!(bytes, b"abc");
     }
 }
