@@ -214,7 +214,7 @@ impl TrapStore {
             match action {
                 TrapAction::Command(cmd) => Some(format!(
                     "trap -- {} {}",
-                    crate::builtin::special::single_quote(cmd),
+                    crate::builtin::quote::single_quote(cmd),
                     name
                 )),
                 TrapAction::Ignore => Some(format!("trap -- '' {}", name)),

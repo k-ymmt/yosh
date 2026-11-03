@@ -5,6 +5,7 @@ pub mod hash;
 pub(crate) mod output;
 pub(crate) mod path;
 pub mod printf;
+pub(crate) mod quote;
 pub mod read;
 pub mod regular;
 pub mod resolve;

@@ -13,7 +13,9 @@
 //! `Executor` for redirects/assignments.
 
 use crate::builtin::BuiltinKind;
-use crate::builtin::resolve::{CommandKind, escape_alias_value, resolve_command_kind};
+use crate::builtin::quote::single_quote;
+use crate::builtin::regular::alias_line;
+use crate::builtin::resolve::{CommandKind, resolve_command_kind};
 use crate::env::ShellEnv;
 
 /// Parsed form of a `command [...]` invocation.
@@ -82,10 +84,7 @@ pub fn parse_flags(args: &[String]) -> Result<CommandFlags, String> {
 /// When `name` is unknown, stdout is empty and exit is 1.
 pub fn render_brief(env: &mut ShellEnv, name: &str) -> (String, i32) {
     match resolve_command_kind(env, name) {
-        CommandKind::Alias(val) => {
-            let escaped = escape_alias_value(&val);
-            (format!("alias {}='{}'", name, escaped), 0)
-        }
+        CommandKind::Alias(val) => (alias_line(name, &val), 0),
         CommandKind::Keyword => (name.to_string(), 0),
         CommandKind::Function => (name.to_string(), 0),
         CommandKind::Builtin(_) => (name.to_string(), 0),
@@ -99,7 +98,7 @@ pub fn render_brief(env: &mut ShellEnv, name: &str) -> (String, i32) {
 pub fn render_verbose(env: &mut ShellEnv, name: &str) -> (String, String, i32) {
     match resolve_command_kind(env, name) {
         CommandKind::Alias(val) => (
-            format!("{} is aliased to '{}'", name, escape_alias_value(&val)),
+            format!("{} is aliased to {}", name, single_quote(&val)),
             String::new(),
             0,
         ),

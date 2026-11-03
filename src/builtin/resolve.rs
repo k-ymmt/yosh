@@ -25,13 +25,6 @@ pub enum CommandKind {
     NotFound,
 }
 
-/// Escape an alias value for display inside single quotes: each embedded
-/// `'` becomes `'\''` so the printed form can be pasted back into a shell.
-/// Shared by `type` and `command -v` / `-V` output rendering.
-pub(crate) fn escape_alias_value(val: &str) -> String {
-    val.replace('\'', r"'\''")
-}
-
 /// Walk yosh's name-resolution order and report what `name` would bind to.
 ///
 /// Order (matches bash `command -V` reporting order):

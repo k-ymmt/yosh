@@ -14,7 +14,8 @@
 //! - `<name> is <path>`
 
 use crate::builtin::BuiltinKind;
-use crate::builtin::resolve::{CommandKind, escape_alias_value, resolve_command_kind};
+use crate::builtin::quote::single_quote;
+use crate::builtin::resolve::{CommandKind, resolve_command_kind};
 use crate::env::ShellEnv;
 use crate::error::ShellError;
 
@@ -25,10 +26,11 @@ use crate::error::ShellError;
 /// `per_operand_exit` is 1 in that case (0 otherwise).
 pub(crate) fn format_type_line(env: &mut ShellEnv, name: &str) -> (String, Option<String>, i32) {
     match resolve_command_kind(env, name) {
-        CommandKind::Alias(val) => {
-            let escaped = escape_alias_value(&val);
-            (format!("{} is aliased to '{}'", name, escaped), None, 0)
-        }
+        CommandKind::Alias(val) => (
+            format!("{} is aliased to {}", name, single_quote(&val)),
+            None,
+            0,
+        ),
         CommandKind::Keyword => (format!("{} is a shell keyword", name), None, 0),
         CommandKind::Function => (format!("{} is a function", name), None, 0),
         CommandKind::Builtin(BuiltinKind::Special) => {

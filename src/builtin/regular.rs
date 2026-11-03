@@ -79,11 +79,11 @@ pub fn builtin_echo(args: &[String]) -> Result<i32, ShellError> {
 
 /// One alias in the re-input format shared with `command -v`
 /// (`alias name='value'`, embedded `'` as `'\''`).
-fn alias_line(name: &str, value: &str) -> String {
+pub(crate) fn alias_line(name: &str, value: &str) -> String {
     format!(
-        "alias {}='{}'",
+        "alias {}={}",
         name,
-        crate::builtin::resolve::escape_alias_value(value)
+        crate::builtin::quote::single_quote(value)
     )
 }
 
