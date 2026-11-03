@@ -1,3 +1,6 @@
+//! Prefix assignments (`name=value cmd`): expansion, persistent and
+//! temporary application, and restoration.
+
 use crate::env::vars::Variable;
 use crate::error::{RuntimeErrorKind, ShellError};
 use crate::parser::ast::Assignment;

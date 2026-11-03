@@ -1,3 +1,6 @@
+//! Running external utilities (and plugin commands): the posix_spawn
+//! fast path, the fork path, and the exec-in-place tail.
+
 use std::ffi::CString;
 
 use nix::errno::Errno;

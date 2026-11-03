@@ -1,3 +1,5 @@
+//! `set -x` (xtrace) output for simple commands.
+
 use crate::env::ShellEnv;
 
 use super::super::Executor;
