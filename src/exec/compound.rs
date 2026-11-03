@@ -73,19 +73,41 @@ impl Executor {
         let mut status = 0;
         for cmd in body {
             status = self.exec_complete_command(cmd);
-            if self.should_unwind() {
-                break;
-            }
-            self.check_errexit(status);
-            if self.exit_requested.is_some() {
-                break;
-            }
-            self.process_pending_signals();
-            if self.exit_requested.is_some() {
+            if self.list_item_stops_list(status) {
                 break;
             }
         }
         status
+    }
+
+    /// After one iteration of a loop body: consume a `break` / `continue`
+    /// aimed at this loop (passing a multi-level count on to the
+    /// enclosing loop) and report whether the loop must stop. Any other
+    /// pending flow control (`return`, a fatal expansion error) stays
+    /// raised and stops the loop.
+    fn loop_must_stop(&mut self) -> bool {
+        match self.env.exec.flow_control.take() {
+            Some(FlowControl::Break(n)) => {
+                if n > 1 {
+                    self.env.exec.flow_control = Some(FlowControl::Break(n - 1));
+                }
+                true
+            }
+            Some(FlowControl::Continue(n)) => {
+                if n > 1 {
+                    self.env.exec.flow_control = Some(FlowControl::Continue(n - 1));
+                    return true;
+                }
+                // n <= 1: continue this loop (a while/until loop
+                // re-evaluates its condition)
+                false
+            }
+            Some(other) => {
+                self.env.exec.flow_control = Some(other);
+                true
+            }
+            None => false,
+        }
     }
 
     fn exec_brace_group(&mut self, body: &[CompleteCommand]) -> i32 {
@@ -227,25 +249,8 @@ impl Executor {
 
             status = self.exec_body(body);
 
-            match self.env.exec.flow_control.take() {
-                Some(FlowControl::Break(n)) => {
-                    if n > 1 {
-                        self.env.exec.flow_control = Some(FlowControl::Break(n - 1));
-                    }
-                    break;
-                }
-                Some(FlowControl::Continue(n)) => {
-                    if n > 1 {
-                        self.env.exec.flow_control = Some(FlowControl::Continue(n - 1));
-                        break;
-                    }
-                    // n <= 1: continue this loop (re-evaluate condition)
-                }
-                Some(other) => {
-                    self.env.exec.flow_control = Some(other);
-                    break;
-                }
-                None => {}
+            if self.loop_must_stop() {
+                break;
             }
         }
         status
@@ -299,25 +304,8 @@ impl Executor {
 
             status = self.exec_body(body);
 
-            match self.env.exec.flow_control.take() {
-                Some(FlowControl::Break(n)) => {
-                    if n > 1 {
-                        self.env.exec.flow_control = Some(FlowControl::Break(n - 1));
-                    }
-                    break;
-                }
-                Some(FlowControl::Continue(n)) => {
-                    if n > 1 {
-                        self.env.exec.flow_control = Some(FlowControl::Continue(n - 1));
-                        break;
-                    }
-                    // n <= 1: continue this loop
-                }
-                Some(other) => {
-                    self.env.exec.flow_control = Some(other);
-                    break;
-                }
-                None => {}
+            if self.loop_must_stop() {
+                break;
             }
         }
         Ok(status)

@@ -384,21 +384,7 @@ impl Executor {
                 // Sequential execution
                 status = self.exec_and_or(and_or);
             }
-            if self.should_unwind() {
-                break;
-            }
-            self.check_errexit(status);
-            if self.exit_requested.is_some() {
-                break;
-            }
-            // POSIX §2.12: a trapped signal's action runs "after the
-            // execution of the current command" — i.e. between the items
-            // of this list, not only after the whole list finished
-            // (`trap 'echo T' USR1; kill -USR1 $$; echo one` prints T
-            // before one; bash/dash agree). Cheap when nothing is
-            // pending: gated on an atomic flag, zero syscalls.
-            self.process_pending_signals();
-            if self.exit_requested.is_some() {
+            if self.list_item_stops_list(status) {
                 break;
             }
         }
@@ -408,6 +394,28 @@ impl Executor {
         // `break` above skipped the in-loop drain.
         self.process_pending_signals();
         status
+    }
+
+    /// Bookkeeping after one item of a command list — an AND-OR list of a
+    /// complete command, or a complete command of a compound-list body:
+    /// unwinding, `set -e`, then pending trap actions. Returns true when
+    /// the rest of the list must not run.
+    pub(super) fn list_item_stops_list(&mut self, status: i32) -> bool {
+        if self.should_unwind() {
+            return true;
+        }
+        self.check_errexit(status);
+        if self.exit_requested.is_some() {
+            return true;
+        }
+        // POSIX §2.12: a trapped signal's action runs "after the
+        // execution of the current command" — i.e. between the items
+        // of this list, not only after the whole list finished
+        // (`trap 'echo T' USR1; kill -USR1 $$; echo one` prints T
+        // before one; bash/dash agree). Cheap when nothing is
+        // pending: gated on an atomic flag, zero syscalls.
+        self.process_pending_signals();
+        self.exit_requested.is_some()
     }
 
     /// Execute a program (sequence of complete commands).
