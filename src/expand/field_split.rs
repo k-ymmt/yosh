@@ -44,12 +44,13 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
     // two small heap allocations per word expansion even before reaching
     // the "does any field need splitting" check below.
     if ifs == DEFAULT_IFS {
-        if fields.iter().all(|f| !needs_splitting(f, DEFAULT_WS, &[])) {
+        let delims = Delims::new(DEFAULT_WS, &[]);
+        if fields.iter().all(|f| !needs_splitting(f, &delims)) {
             return fields;
         }
         let mut result = Vec::new();
         for field in fields {
-            split_field(&field, DEFAULT_WS, &[], &mut result);
+            split_field(&field, &delims, &mut result);
         }
         return result;
     }
@@ -72,18 +73,48 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
     // Fast path: if no field contains an unquoted IFS byte, the state
     // machine would emit each input field unchanged. Return without
     // allocating a new Vec or rebuilding ExpandedFields via `emit`.
-    if fields
-        .iter()
-        .all(|f| !needs_splitting(f, &ifs_ws, &ifs_nws))
-    {
+    let delims = Delims::new(&ifs_ws, &ifs_nws);
+    if fields.iter().all(|f| !needs_splitting(f, &delims)) {
         return fields;
     }
 
     let mut result = Vec::new();
     for field in fields {
-        split_field(&field, &ifs_ws, &ifs_nws, &mut result);
+        split_field(&field, &delims, &mut result);
     }
     result
+}
+
+/// Byte classification table for one IFS value: IFS whitespace, IFS
+/// non-whitespace, or not a delimiter.
+struct Delims([u8; 256]);
+
+const NOT_DELIM: u8 = 0;
+const WS_DELIM: u8 = 1;
+const NWS_DELIM: u8 = 2;
+
+impl Delims {
+    fn new(ifs_ws: &[u8], ifs_nws: &[u8]) -> Self {
+        let mut t = [NOT_DELIM; 256];
+        for &b in ifs_nws {
+            t[b as usize] = NWS_DELIM;
+        }
+        for &b in ifs_ws {
+            t[b as usize] = WS_DELIM;
+        }
+        Delims(t)
+    }
+
+    /// Class of byte `i` of `field`: quoted bytes are never delimiters.
+    #[inline]
+    fn class(&self, field: &ExpandedField, i: usize) -> u8 {
+        let c = self.0[field.as_bytes()[i] as usize];
+        if c != NOT_DELIM && field.is_split_protected(i) {
+            NOT_DELIM
+        } else {
+            c
+        }
+    }
 }
 
 // ─── Core splitter ───────────────────────────────────────────────────────────
@@ -97,7 +128,7 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
 ///   AfterWs     – just consumed one-or-more IFS-whitespace chars.
 ///   AfterNws    – just consumed an IFS non-whitespace delimiter; leading
 ///                 whitespace of the next token should be skipped.
-fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut Vec<ExpandedField>) {
+fn split_field(field: &ExpandedField, delims: &Delims, out: &mut Vec<ExpandedField>) {
     #[derive(Clone, Copy, PartialEq)]
     enum State {
         Start,
@@ -106,7 +137,6 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
         AfterNws,
     }
 
-    let bytes = field.as_bytes();
     let len = field.byte_len();
 
     // A quoted empty field (e.g. '' or "") should be preserved as-is.
@@ -123,11 +153,9 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
 
     let mut i = 0;
     while i < len {
-        let b = bytes[i];
-        let quoted = field.is_split_protected(i);
-
-        let is_ws = !quoted && ifs_ws.contains(&b);
-        let is_nws = !quoted && ifs_nws.contains(&b);
+        let class = delims.class(field, i);
+        let is_ws = class == WS_DELIM;
+        let is_nws = class == NWS_DELIM;
 
         match state {
             State::Start | State::AfterNws => {
@@ -145,10 +173,9 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
                     state = State::AfterNws;
                     i += 1;
                 } else {
-                    // Normal byte: start accumulating a full UTF-8 character.
-                    let ch_len = append_char(&mut current, field, i);
+                    // Normal byte: start accumulating a field.
+                    i = append_run(&mut current, field, i, delims);
                     state = State::InField;
-                    i += ch_len;
                 }
             }
 
@@ -164,8 +191,7 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
                     state = State::AfterNws;
                     i += 1;
                 } else {
-                    let ch_len = append_char(&mut current, field, i);
-                    i += ch_len;
+                    i = append_run(&mut current, field, i, delims);
                 }
             }
 
@@ -182,9 +208,8 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
                     i += 1;
                 } else {
                     // Normal byte after whitespace: start a new field.
-                    let ch_len = append_char(&mut current, field, i);
+                    i = append_run(&mut current, field, i, delims);
                     state = State::InField;
-                    i += ch_len;
                 }
             }
         }
@@ -205,30 +230,38 @@ fn split_field(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8], out: &mut V
 /// Used by `split()` as a pre-check: if every input field returns false,
 /// the slow-path state machine would emit each input field unchanged,
 /// so we can return the input Vec as-is without any allocation.
-fn needs_splitting(field: &ExpandedField, ifs_ws: &[u8], ifs_nws: &[u8]) -> bool {
-    field
-        .as_bytes()
-        .iter()
-        .copied()
-        .enumerate()
-        .any(|(i, b)| !field.is_split_protected(i) && (ifs_ws.contains(&b) || ifs_nws.contains(&b)))
+fn needs_splitting(field: &ExpandedField, delims: &Delims) -> bool {
+    (0..field.byte_len()).any(|i| delims.class(field, i) != NOT_DELIM)
 }
 
-/// Append the UTF-8 character starting at byte position `i` in `source` to
-/// `dest`, preserving the byte's `(split_protected, glob_protected)` attribute
-/// pair via the push method matching its origin classification.
+/// Append to `dest` the run of non-delimiter bytes starting at `i` that
+/// share byte `i`'s `(split_protected, glob_protected)` attribute pair,
+/// via the push method matching that classification; returns the run's
+/// end. Runs end at a delimiter (ASCII) or where the attributes change —
+/// both char boundaries, since every push covers whole strings.
 ///
-/// Caller must ensure `i` is on a UTF-8 character boundary.
+/// Caller must ensure `i` is on a UTF-8 character boundary and is not a
+/// delimiter.
 #[inline]
-fn append_char(dest: &mut ExpandedField, source: &ExpandedField, i: usize) -> usize {
-    let ch_len = source.value[i..]
-        .chars()
-        .next()
-        .expect("i on char boundary")
-        .len_utf8();
-    let slice = &source.value[i..i + ch_len];
+fn append_run(
+    dest: &mut ExpandedField,
+    source: &ExpandedField,
+    i: usize,
+    delims: &Delims,
+) -> usize {
     let split = source.is_split_protected(i);
     let glob = source.is_glob_protected(i);
+    let len = source.byte_len();
+    let mut j = i + 1;
+    while j < len
+        && source.is_split_protected(j) == split
+        && source.is_glob_protected(j) == glob
+        && (split || delims.0[source.as_bytes()[j] as usize] == NOT_DELIM)
+    {
+        j += 1;
+    }
+    debug_assert!(source.value.is_char_boundary(j));
+    let slice = &source.value[i..j];
     match (split, glob) {
         (true, true) => dest.push_quoted(slice),
         (true, false) => dest.push_literal(slice),
@@ -241,7 +274,7 @@ fn append_char(dest: &mut ExpandedField, source: &ExpandedField, i: usize) -> us
         // an isolated mask-mutation bug elsewhere can't crash expansion.
         (false, true) => dest.push_expanded(slice),
     }
-    ch_len
+    j
 }
 
 /// Push `current` into `out`, replacing `current` with a fresh empty field.
