@@ -43,6 +43,15 @@ fn div_zero_err(msg: &str) -> ShellError {
 /// Expands `$VAR`, `${VAR}`, `$(cmd)`, `` `cmd` ``, and nested `$((...))`
 /// first (via the shared dollar-scanner), then parses and evaluates.
 pub fn evaluate(env: &mut ShellEnv, expr: &str) -> crate::error::Result<String> {
+    // A nested `$((...))` in the text recurses back here through
+    // `expand_string` before any parsing happens, so `MAX_NEST_DEPTH`
+    // never sees it: `$(($(($((…1…))))))` thousands deep (built by a
+    // loop and `eval`ed) would overflow the native stack and abort the
+    // shell, skipping the EXIT trap. Check the absolute stack left on
+    // this recursion edge too.
+    if crate::exec::stack_guard::descent_stack_exhausted() {
+        return Err(arith_err("expression nested too deeply"));
+    }
     // Step 1: expand dollar references. Expansions substitute their
     // actual (possibly empty) text — `$((1${x}2))` with `x` unset is 12,
     // matching bash/dash. Text without `$`, `\` or `` ` `` expands to
