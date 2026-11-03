@@ -293,6 +293,41 @@
       advances); `test missing -ot existing` is true per POSIX.1-2024
       (the installed dash says false).
 
+## 2026-11-04 Refactor Round 1: Follow-ups
+
+- [ ] Deep shell-function recursion aborts the process with a Rust
+      stack overflow (`f 1000` in a debug build; dash completes
+      `f 10000`), skipping the EXIT trap. Needs a runtime guard on
+      function calls / `eval` / `.` that raises a shell error instead
+      (bash has `FUNCNEST`) or a growable stack (`src/exec/function.rs`,
+      `src/parser/nesting.rs::StackBudget`).
+- [ ] `exec_compound_command` returns early with `?` from
+      `exec_subshell` / `exec_for` / `exec_case`, skipping the restore of
+      saved redirections and temporary assignments:
+      `trap 'echo out' EXIT; for i in $((1/0)); do :; done >f1` writes
+      `out` into f1 (dash prints it) (`src/exec/compound.rs`).
+- [ ] vi-mode `*` and `\` insert matched pathnames unquoted, so a file
+      named `a;b` becomes two commands on Enter; bash and ksh quote
+      metacharacters. Reuse `completion::quoting::quote_for_insertion`
+      (`src/interactive/line_editor/vi_expand.rs`).
+- [ ] Listing builtins ignore stdout write errors: `export -p >&-`,
+      `readonly -p`, `set`, `trap`, `cd -` / CDPATH directory print exit
+      0; `times` uses `println!` (`src/builtin/vars.rs`,
+      `src/builtin/set.rs`, `src/builtin/trap.rs`, `src/builtin/cd.rs`,
+      `src/builtin/times.rs`).
+- [ ] Flaky fd unit tests: `redirect_only_*`,
+      `test_redirect_output_and_restore` and the `terminal_state` stdin
+      tests redirect process-wide fd 0/1 under different locks
+      (`STDIO_LOCK` vs `FD_TEST_LOCK`; `terminal_state` takes none) and
+      fail about 1 run in 3 on a loaded machine (`src/test_sync.rs`).
+- [ ] `Parser::snapshot` / `rewind` do not restore `pre_current_pos`,
+      so `consumed_bytes()` read right after a rewind is off; every
+      current caller advances first (`src/parser/mod.rs`).
+- [ ] `expand/param.rs::special_param` duplicates
+      `SpecialParam::from_byte` except for `0`; `parse_pipeline`'s
+      here-document body assignment may duplicate
+      `fill_heredoc_bodies_deep` (`src/parser/heredoc.rs`).
+
 ## History: Known Limitations
 
 - [ ] `suggest()` linear scan performance — iterates all history entries on each keystroke; acceptable for HISTSIZE ≤ 500, may need caching or indexing for larger histories (`src/interactive/history.rs`)
