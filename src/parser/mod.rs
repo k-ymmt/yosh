@@ -5,6 +5,7 @@ mod redirect;
 mod simple;
 pub(crate) mod word;
 
+use simple::is_assignment_word;
 pub(crate) use simple::try_parse_assignment;
 
 use crate::error::{self, ParseErrorKind, ShellError};
@@ -450,7 +451,12 @@ impl Parser {
         // is a compound-command start. If yes, consume for real and attach the
         // assignments to the compound. Otherwise fall through to the normal
         // simple-command / function-def paths which handle assignments themselves.
-        if let Token::Word(_) = &self.current.token {
+        // Only a leading assignment word can start that pattern; for any
+        // other word the scan below would stop at once (the compound
+        // check above already failed) and restore an unchanged state.
+        if let Token::Word(w) = &self.current.token
+            && is_assignment_word(w)
+        {
             // Full `save_state` (not the lexer's light `CursorState`) is
             // required here: the loop below calls `self.advance()`
             // (`Parser::advance`), which drives `Lexer::next_token()` and
