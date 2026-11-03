@@ -69,11 +69,12 @@ pub fn builtin_fc(args: &[String], executor: &mut Executor) -> Result<i32, Shell
     // Clone history entries to release the immutable borrow on executor,
     // allowing fc_edit to take &mut Executor.
     let entries: Vec<String> = executor.env.history.entries().to_vec();
-    let (start, end) = fc_resolve_range(&operands, list_mode, &entries)
+    let first = executor.env.history.first_number();
+    let (start, end) = fc_resolve_range(&operands, list_mode, &entries, first)
         .map_err(|msg| ShellError::runtime(RuntimeErrorKind::IoError, msg))?;
 
     if list_mode {
-        fc_list(&entries, start, end, suppress_numbers, reverse);
+        fc_list(&entries, first, start, end, suppress_numbers, reverse);
         Ok(0)
     } else {
         fc_edit(&entries, start, end, reverse, editor, executor)
@@ -82,8 +83,9 @@ pub fn builtin_fc(args: &[String], executor: &mut Executor) -> Result<i32, Shell
 
 /// Resolve one `first`/`last` operand to a 0-based index into `entries`.
 ///
-/// * a positive number `n` is history number `n` (clamped to the
-///   existing range);
+/// * a positive number `n` is history number `n`, where `first` is the
+///   history number of `entries[0]` (numbers stay stable after old
+///   entries are trimmed); clamped to the existing range;
 /// * `0` or a negative number `-n` is relative to the end (`-1` and `0`
 ///   are the most recent entry; offsets past the start clamp to the
 ///   oldest entry);
@@ -91,13 +93,13 @@ pub fn builtin_fc(args: &[String], executor: &mut Executor) -> Result<i32, Shell
 ///   first — `None` when no entry starts with it.
 ///
 /// `entries` must be non-empty (callers bail out on an empty history).
-fn fc_resolve_one(spec: &str, entries: &[String]) -> Option<usize> {
+fn fc_resolve_one(spec: &str, entries: &[String], first: usize) -> Option<usize> {
     let last = entries.len().saturating_sub(1);
     if let Ok(n) = spec.parse::<i64>() {
         if n > 0 {
-            // n >= 1, so n - 1 cannot overflow; clamp before converting
-            // so a huge history number on a 32-bit usize is safe too.
-            let idx = (n - 1).min(last as i64);
+            // Clamp in u64 so a huge history number (or one older than
+            // the oldest kept entry) can neither overflow nor go below 0.
+            let idx = (n as u64).saturating_sub(first as u64).min(last as u64);
             Some(idx as usize)
         } else {
             // unsigned_abs avoids the overflow `-i64::MIN` would hit.
@@ -119,10 +121,11 @@ fn fc_resolve_range(
     operands: &[String],
     is_list: bool,
     entries: &[String],
+    first: usize,
 ) -> Result<(usize, usize), String> {
     let last = entries.len().saturating_sub(1);
     let resolve = |spec: &str| {
-        fc_resolve_one(spec, entries).ok_or_else(|| {
+        fc_resolve_one(spec, entries, first).ok_or_else(|| {
             if is_list {
                 "fc: history specification out of range".to_string()
             } else {
@@ -150,7 +153,14 @@ fn fc_resolve_range(
     }
 }
 
-fn fc_list(entries: &[String], start: usize, end: usize, suppress_numbers: bool, reverse: bool) {
+fn fc_list(
+    entries: &[String],
+    first: usize,
+    start: usize,
+    end: usize,
+    suppress_numbers: bool,
+    reverse: bool,
+) {
     let (lo, hi) = if start <= end {
         (start, end)
     } else {
@@ -165,7 +175,7 @@ fn fc_list(entries: &[String], start: usize, end: usize, suppress_numbers: bool,
         if suppress_numbers {
             println!("\t{}", entries[i]);
         } else {
-            println!("{}\t{}", i + 1, entries[i]);
+            println!("{}\t{}", first + i, entries[i]);
         }
     }
 }
@@ -258,6 +268,7 @@ fn fc_edit(
 }
 
 fn fc_substitute(operands: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
+    let first = executor.env.history.first_number();
     let entries = executor.env.history.entries();
     if entries.is_empty() {
         return Err(ShellError::runtime(
@@ -278,7 +289,7 @@ fn fc_substitute(operands: &[String], executor: &mut Executor) -> Result<i32, Sh
     }
 
     let idx = match target_spec {
-        Some(spec) => match fc_resolve_one(spec, entries) {
+        Some(spec) => match fc_resolve_one(spec, entries, first) {
             Some(idx) => idx,
             None => {
                 // bash: `fc -s zzz` with no match is an error; it must
@@ -361,35 +372,45 @@ mod tests {
     #[test]
     fn resolve_positive_number_is_history_number_clamped() {
         let h = hist(5);
-        assert_eq!(fc_resolve_one("1", &h), Some(0));
-        assert_eq!(fc_resolve_one("5", &h), Some(4));
-        assert_eq!(fc_resolve_one("99", &h), Some(4));
-        assert_eq!(fc_resolve_one("9223372036854775807", &h), Some(4));
+        assert_eq!(fc_resolve_one("1", &h, 1), Some(0));
+        assert_eq!(fc_resolve_one("5", &h, 1), Some(4));
+        assert_eq!(fc_resolve_one("99", &h, 1), Some(4));
+        assert_eq!(fc_resolve_one("9223372036854775807", &h, 1), Some(4));
+    }
+
+    #[test]
+    fn resolve_positive_number_is_offset_by_first_number() {
+        // Entries 0..5 are history numbers 11..=15 after trimming.
+        let h = hist(5);
+        assert_eq!(fc_resolve_one("11", &h, 11), Some(0));
+        assert_eq!(fc_resolve_one("13", &h, 11), Some(2));
+        assert_eq!(fc_resolve_one("3", &h, 11), Some(0));
+        assert_eq!(fc_resolve_one("99", &h, 11), Some(4));
     }
 
     #[test]
     fn resolve_zero_is_most_recent_not_out_of_bounds() {
         let h = hist(5);
-        assert_eq!(fc_resolve_one("0", &h), Some(4));
-        assert_eq!(fc_resolve_one("-0", &h), Some(4));
+        assert_eq!(fc_resolve_one("0", &h, 1), Some(4));
+        assert_eq!(fc_resolve_one("-0", &h, 1), Some(4));
     }
 
     #[test]
     fn resolve_negative_is_relative_and_clamped() {
         let h = hist(5);
-        assert_eq!(fc_resolve_one("-1", &h), Some(4));
-        assert_eq!(fc_resolve_one("-5", &h), Some(0));
-        assert_eq!(fc_resolve_one("-6", &h), Some(0));
+        assert_eq!(fc_resolve_one("-1", &h, 1), Some(4));
+        assert_eq!(fc_resolve_one("-5", &h, 1), Some(0));
+        assert_eq!(fc_resolve_one("-6", &h, 1), Some(0));
         // `-i64::MIN` would overflow a plain negation.
-        assert_eq!(fc_resolve_one("-9223372036854775808", &h), Some(0));
+        assert_eq!(fc_resolve_one("-9223372036854775808", &h, 1), Some(0));
     }
 
     #[test]
     fn resolve_string_prefix_most_recent_first_or_none() {
         let h = vec!["echo a".to_string(), "ls".to_string(), "echo b".to_string()];
-        assert_eq!(fc_resolve_one("echo", &h), Some(2));
-        assert_eq!(fc_resolve_one("l", &h), Some(1));
-        assert_eq!(fc_resolve_one("zzz", &h), None);
+        assert_eq!(fc_resolve_one("echo", &h, 1), Some(2));
+        assert_eq!(fc_resolve_one("l", &h, 1), Some(1));
+        assert_eq!(fc_resolve_one("zzz", &h, 1), None);
     }
 
     #[test]
@@ -397,11 +418,11 @@ mod tests {
         let h = hist(3);
         let ops = vec!["zzz".to_string()];
         assert_eq!(
-            fc_resolve_range(&ops, false, &h),
+            fc_resolve_range(&ops, false, &h, 1),
             Err("fc: no command found".to_string())
         );
         assert_eq!(
-            fc_resolve_range(&ops, true, &h),
+            fc_resolve_range(&ops, true, &h, 1),
             Err("fc: history specification out of range".to_string())
         );
     }
@@ -409,11 +430,11 @@ mod tests {
     #[test]
     fn resolve_range_list_defaults_and_zero_operand() {
         let h = hist(20);
-        assert_eq!(fc_resolve_range(&[], true, &h), Ok((4, 19)));
-        assert_eq!(fc_resolve_range(&[], false, &h), Ok((19, 19)));
-        assert_eq!(fc_resolve_range(&["0".to_string()], true, &h), Ok((19, 19)));
+        assert_eq!(fc_resolve_range(&[], true, &h, 1), Ok((4, 19)));
+        assert_eq!(fc_resolve_range(&[], false, &h, 1), Ok((19, 19)));
+        assert_eq!(fc_resolve_range(&["0".to_string()], true, &h, 1), Ok((19, 19)));
         assert_eq!(
-            fc_resolve_range(&["0".to_string()], false, &h),
+            fc_resolve_range(&["0".to_string()], false, &h, 1),
             Ok((19, 19))
         );
     }

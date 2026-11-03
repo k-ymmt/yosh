@@ -86,14 +86,6 @@ impl History {
         self.base + 1
     }
 
-    /// History number of `entries()[idx]` (what `fc -l` prints).
-    // Consumed by the `fc` builtin's listing; the binary crate does not
-    // call it yet.
-    #[allow(dead_code)]
-    pub fn number_of(&self, idx: usize) -> usize {
-        self.base + idx + 1
-    }
-
     /// Index into `entries()` of history number `number`, or `None`
     /// when that command was trimmed or does not exist yet.
     pub fn index_of_number(&self, number: usize) -> Option<usize> {
@@ -376,8 +368,8 @@ mod tests {
         assert_eq!(h.entries()[h.index_of_number(5).unwrap()], "cmd5");
         assert_eq!(h.index_of_number(6), None);
         assert_eq!(h.index_of_number(0), None);
-        assert_eq!(h.number_of(0), 3);
-        assert_eq!(h.number_of(2), 5);
+        assert_eq!(h.first_number(), 3);
+        assert_eq!(h.first_number() + 2, 5);
     }
 
     #[test]
