@@ -1,10 +1,17 @@
+//! The `command` utility: `-v` / `-V` descriptions and execution that
+//! bypasses shell functions.
+
+use crate::builtin::special::exec_special_builtin;
+use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
+
 use super::super::Executor;
+use super::super::command::{PathLookup, lookup_in_path, lookup_in_path_uncached};
 use super::executor_hosted_builtin;
 
 impl Executor {
     /// POSIX `command` builtin. Dispatches by verbosity:
     /// - Brief (`-v`) / Verbose (`-V`) → print and return exit status
-    /// - Execute (`-p` or no flag) → handled in later tasks (returns 1 for now)
+    /// - Execute (`-p` or no flag) → run `name`, bypassing shell functions
     pub(crate) fn builtin_command(&mut self, args: &[String]) -> i32 {
         use crate::builtin::command::{Verbosity, parse_flags, render_brief, render_verbose};
 
@@ -38,20 +45,10 @@ impl Executor {
                 if parsed.use_default_path {
                     self.exec_command_with_default_path(&parsed.name, &parsed.rest)
                 } else {
-                    // No-flag path (function-skip): implemented in the next task.
                     self.exec_command_skip_functions(&parsed.name, &parsed.rest)
                 }
             }
         }
-    }
-
-    /// Run one of the regular builtins whose implementation lives on the
-    /// Executor (see [`executor_hosted_builtin`]). Returns `None` when
-    /// `name` is not one of them. Used by the `command` execution paths,
-    /// which must honor these as builtins (POSIX: `command` bypasses
-    /// functions only).
-    fn exec_executor_hosted_builtin(&mut self, name: &str, args: &[String]) -> Option<i32> {
-        executor_hosted_builtin(name).map(|builtin| builtin(self, args))
     }
 
     /// `command -p name args...`: look up `name` via the POSIX default PATH
@@ -59,31 +56,13 @@ impl Executor {
     /// for the name: POSIX says `command -p` runs the named utility in
     /// preference over functions, but builtins are part of the utility set.
     pub(crate) fn exec_command_with_default_path(&mut self, name: &str, args: &[String]) -> i32 {
-        use crate::builtin::special::exec_special_builtin;
-        use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
         use crate::env::default_path::default_path;
 
         // If `name` is a builtin, run the builtin (POSIX: command -p still
         // runs builtins; -p only affects external lookup).
-        match classify_builtin(name) {
-            BuiltinKind::Special => {
-                let status = exec_special_builtin(name, args, self);
-                return status;
-            }
-            BuiltinKind::Regular => {
-                // POSIX: `command` bypasses FUNCTIONS only — built-ins are
-                // still executed, including the Executor-hosted ones
-                // (`command wait` waits; running a PATH binary instead
-                // returned immediately).
-                if let Some(status) = self.exec_executor_hosted_builtin(name, args) {
-                    return status;
-                }
-                return exec_regular_builtin(name, args, &mut self.env);
-            }
-            BuiltinKind::NotBuiltin => {}
+        if let Some(status) = self.exec_builtin_for_command(name, args) {
+            return status;
         }
-
-        use crate::exec::command::{PathLookup, lookup_in_path_uncached};
 
         // Uncached lookup: `utility_hash` is keyed by name alone and is
         // (conceptually) scoped to $PATH. A `command -p` hit found via the
@@ -92,21 +71,8 @@ impl Executor {
         // cache-key mismatch fixed for `PATH=dir cmd` prefix overrides in
         // edb5254, which also resolves uncached.
         let dp = default_path(&self.env).to_string();
-        match lookup_in_path_uncached(name, &dp) {
-            // Simple-command redirects were already applied by the
-            // `command` special-case handler in exec_simple_command, and
-            // prefix assignments by apply_temp_assignments — hence the
-            // empty redirect/override slices.
-            PathLookup::Executable(p) => self.spawn_external_at_path(&p, name, args, &[], &[]),
-            PathLookup::NotExecutable(p) => {
-                eprintln!("yosh: command: {}: permission denied", p.display());
-                126
-            }
-            PathLookup::NotFound => {
-                eprintln!("yosh: command: {}: not found", name);
-                127
-            }
-        }
+        let lookup = lookup_in_path_uncached(name, &dp);
+        self.spawn_command_lookup(lookup, name, args)
     }
 
     /// `command name args...`: execute `name` using the current $PATH but
@@ -114,37 +80,47 @@ impl Executor {
     /// expanded at parse time, so `command` arrived here only if the
     /// parser saw `command` itself, not the expanded alias).
     pub(crate) fn exec_command_skip_functions(&mut self, name: &str, args: &[String]) -> i32 {
-        use crate::builtin::special::exec_special_builtin;
-        use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
-
         // Builtins take precedence over external; functions are deliberately
         // skipped.
-        match classify_builtin(name) {
-            BuiltinKind::Special => return exec_special_builtin(name, args, self),
-            BuiltinKind::Regular => {
-                // POSIX: `command name` bypasses functions only — the
-                // Executor-hosted builtins (wait/fg/bg/jobs/command) must
-                // run as builtins here too, not be looked up in PATH.
-                if let Some(status) = self.exec_executor_hosted_builtin(name, args) {
-                    return status;
-                }
-                return exec_regular_builtin(name, args, &mut self.env);
-            }
-            BuiltinKind::NotBuiltin => {}
+        if let Some(status) = self.exec_builtin_for_command(name, args) {
+            return status;
         }
 
         // External: resolve via $PATH (not the POSIX default path).
-        use crate::exec::command::{PathLookup, lookup_in_path};
-
         let path_var = self
             .env
             .vars
             .get("PATH")
             .map(|s| s.to_string())
             .unwrap_or_default();
-        match lookup_in_path(name, &path_var, &mut self.env.utility_hash) {
-            // See exec_command_with_default_path for why the redirect and
-            // override slices are empty here.
+        let lookup = lookup_in_path(name, &path_var, &mut self.env.utility_hash);
+        self.spawn_command_lookup(lookup, name, args)
+    }
+
+    /// Run `name` if it is a built-in, for the `command` execution paths;
+    /// `None` when it is not one. POSIX: `command` bypasses FUNCTIONS
+    /// only — built-ins are still executed, including the Executor-hosted
+    /// ones (`command wait` waits; running a PATH binary instead returned
+    /// immediately).
+    fn exec_builtin_for_command(&mut self, name: &str, args: &[String]) -> Option<i32> {
+        match classify_builtin(name) {
+            BuiltinKind::Special => Some(exec_special_builtin(name, args, self)),
+            BuiltinKind::Regular => Some(match executor_hosted_builtin(name) {
+                Some(builtin) => builtin(self, args),
+                None => exec_regular_builtin(name, args, &mut self.env),
+            }),
+            BuiltinKind::NotBuiltin => None,
+        }
+    }
+
+    /// Run the external utility a `command` PATH lookup found, or report
+    /// why there is none (126 / 127).
+    fn spawn_command_lookup(&mut self, lookup: PathLookup, name: &str, args: &[String]) -> i32 {
+        match lookup {
+            // Simple-command redirects were already applied by the
+            // hosted-builtin dispatch in exec_simple_command, and prefix
+            // assignments by apply_temp_assignments — hence the empty
+            // redirect/override slices.
             PathLookup::Executable(p) => self.spawn_external_at_path(&p, name, args, &[], &[]),
             PathLookup::NotExecutable(p) => {
                 eprintln!("yosh: command: {}: permission denied", p.display());
