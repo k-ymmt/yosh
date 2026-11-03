@@ -182,17 +182,25 @@ impl LineEditor {
                 self.record_kill_prepend(&killed, consecutive_kill, RegisterKind::Charwise);
                 KeyAction::Continue
             }
+            // With a numeric argument the words killed by ONE command form
+            // one kill-ring entry (readline: `M-3 C-w` then `C-y` restores
+            // all three words), so every kill after the first non-empty
+            // one merges into it.
             EditAction::KillBackwardWord => {
+                let mut merge = consecutive_kill;
                 for _ in 0..count {
                     let killed = self.kill_backward_word();
-                    self.record_kill_prepend(&killed, consecutive_kill, RegisterKind::Charwise);
+                    self.record_kill_prepend(&killed, merge, RegisterKind::Charwise);
+                    merge |= !killed.is_empty();
                 }
                 KeyAction::Continue
             }
             EditAction::KillForwardWord => {
+                let mut merge = consecutive_kill;
                 for _ in 0..count {
                     let killed = self.kill_forward_word();
-                    self.record_kill(&killed, consecutive_kill, RegisterKind::Charwise);
+                    self.record_kill(&killed, merge, RegisterKind::Charwise);
+                    merge |= !killed.is_empty();
                 }
                 KeyAction::Continue
             }

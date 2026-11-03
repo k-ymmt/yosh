@@ -56,6 +56,7 @@ impl LineEditor {
         term: &mut T,
     ) -> io::Result<Option<String>> {
         self.clear();
+        self.interrupted = false;
         term.enable_raw_mode()?;
         let result = self.read_line_loop(prompt, upper_lines, history, term);
         self.reset_cursor_style(term);
@@ -91,6 +92,7 @@ impl LineEditor {
                             self.clear_lingering_suggestion(term, prompt, prompt_width, "> ", &[])?;
                             self.finish_line(term)?;
                             self.clear();
+                            self.interrupted = true;
                             return Ok(Some(String::new()));
                         }
                         KeyAction::FuzzySearch => {
@@ -264,6 +266,7 @@ impl LineEditor {
         is_incomplete: &dyn Fn(&str) -> bool,
     ) -> io::Result<Option<String>> {
         self.clear();
+        self.interrupted = false;
         term.enable_raw_mode()?;
         let mut paint = PaintContext {
             scanner,
@@ -328,6 +331,7 @@ impl LineEditor {
                             history.reset_cursor();
                             self.end_read_screen(term, prompt, prompt_width, paint)?;
                             self.clear();
+                            self.interrupted = true;
                             return Ok(Some(String::new()));
                         }
                         KeyAction::FuzzySearch => {

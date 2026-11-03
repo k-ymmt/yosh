@@ -233,8 +233,17 @@ impl History {
             Ok(f) => f,
             Err(_) => return,
         };
+        // Read raw byte lines and byteenc-encode them: a line that is not
+        // valid UTF-8 (written by another tool, or a command containing
+        // raw bytes) must neither end the load — `BufRead::lines` would
+        // stop there, and the next `save` would then truncate every
+        // later entry out of the file — nor lose its bytes.
         let reader = BufReader::new(file);
-        let mut lines = reader.lines().map_while(Result::ok).peekable();
+        let mut lines = reader
+            .split(b'\n')
+            .map_while(Result::ok)
+            .map(|raw| crate::byteenc::encode_bytes(&raw).into_owned())
+            .peekable();
         let v2 = lines.peek().map(|l| l.as_str()) == Some(FILE_HEADER_V2);
         if v2 {
             lines.next();
@@ -279,9 +288,15 @@ impl History {
         } else {
             0
         };
+        // Write entries as their original bytes (the inverse of `load`'s
+        // byteenc encoding), buffered: one syscall per entry is slow for
+        // a large HISTFILESIZE.
+        let mut out = io::BufWriter::new(&mut file);
         for entry in &self.entries[start..] {
-            writeln!(file, "{}", escape_entry(entry))?;
+            out.write_all(&crate::byteenc::decode_bytes(&escape_entry(entry)))?;
+            out.write_all(b"\n")?;
         }
+        out.flush()?;
         Ok(())
     }
 }
@@ -592,6 +607,28 @@ mod tests {
         let mut h2 = History::new();
         h2.load(&path);
         assert_eq!(h2.entries(), &[r"printf 'a\nb'", r"echo \\"]);
+    }
+
+    /// A line that is not valid UTF-8 used to end the load (and the next
+    /// save then truncated every later entry out of the file).
+    #[test]
+    fn test_load_and_save_keep_invalid_utf8_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history");
+        let raw: &[u8] = b"#yosh-history-v2\necho one\necho \xff bad\necho three\n";
+        std::fs::write(&path, raw).unwrap();
+        let mut h = History::new();
+        h.load(&path);
+        assert_eq!(h.entries().len(), 3, "entries: {:?}", h.entries());
+        assert_eq!(h.entries()[0], "echo one");
+        assert_eq!(h.entries()[2], "echo three");
+        assert_eq!(
+            &*crate::byteenc::decode_bytes(&h.entries()[1]),
+            b"echo \xff bad"
+        );
+        // Saved back as the original bytes.
+        h.save(&path, 500).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), raw);
     }
 
     #[test]

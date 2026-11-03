@@ -2753,6 +2753,34 @@ fn test_mock_ctrl_y_yanks() {
     assert_eq!(result.unwrap().unwrap(), "worldhello ");
 }
 
+/// `M-3 C-w` kills three words as ONE kill-ring entry (readline), so
+/// `C-y` restores all of them, not just the last word killed.
+#[test]
+fn test_mock_numeric_arg_word_kills_form_one_entry() {
+    let run = |events: Vec<crossterm::event::Event>| {
+        let mut ed = LineEditor::new();
+        let mut history = History::new();
+        let mut term = MockTerminal::new(events);
+        ed.read_line("$ ", &[], &mut history, &mut term)
+            .unwrap()
+            .unwrap()
+    };
+    let backward = [
+        chars("echo a b c d"),
+        vec![alt('3'), ctrl('w'), ctrl('y')],
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    assert_eq!(run(backward), "echo a b c d");
+    let forward = [
+        chars("echo a b c d"),
+        vec![ctrl('a'), alt('3'), alt('d'), ctrl('e'), ctrl('y')],
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    assert_eq!(run(forward), " c decho a b");
+}
+
 #[test]
 fn test_mock_ctrl_underscore_undo() {
     let mut ed = LineEditor::new();

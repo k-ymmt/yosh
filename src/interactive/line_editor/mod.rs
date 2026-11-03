@@ -172,6 +172,10 @@ pub struct LineEditor {
     /// buffer changed — a no-op insert session commits nothing and
     /// preserves redo.
     vim_undo_staged: Option<(Vec<char>, usize)>,
+    /// Set when the last read ended with Ctrl+C (the line editor reads
+    /// with ISIG off, so the key never becomes a SIGINT). The REPL takes
+    /// it via [`LineEditor::take_interrupted`] to run an INT trap.
+    interrupted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -226,7 +230,14 @@ impl LineEditor {
             editor_command: "vi".to_string(),
             unnamed_register: UnnamedRegister::default(),
             vim_undo_staged: None,
+            interrupted: false,
         }
+    }
+
+    /// Whether the last read was ended by Ctrl+C (an interrupt rather
+    /// than an empty line); clears the flag.
+    pub fn take_interrupted(&mut self) -> bool {
+        std::mem::take(&mut self.interrupted)
     }
 
     /// Select the editing flavor for subsequent reads (`set -o emacs` /

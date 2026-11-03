@@ -387,6 +387,19 @@ impl Repl {
                 }
             };
 
+            // Ctrl+C at the prompt is the terminal's interrupt character,
+            // read as a key because the editor runs with ISIG off: run an
+            // INT trap action as the SIGINT it stands for would (bash and
+            // dash do). Default / ignored INT just discards the line.
+            if self.line_editor.take_interrupted()
+                && let Some(crate::env::traps::TrapAction::Command(_)) =
+                    self.executor.env.traps.get_signal_trap(libc::SIGINT)
+            {
+                input_buffer.clear();
+                self.executor.run_signal_traps(&[libc::SIGINT]);
+                continue;
+            }
+
             // Ctrl+C returns empty string — reset buffer and re-prompt
             if line.is_empty() && !input_buffer.is_empty() {
                 input_buffer.clear();

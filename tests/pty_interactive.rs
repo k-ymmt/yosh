@@ -264,6 +264,51 @@ fn test_pty_vim_mode_ctrl_x_ctrl_e_scripted_editor() {
     exit_shell(&mut s);
 }
 
+/// Ctrl+C at the prompt is the interrupt character: with an INT trap
+/// set, its action runs (bash and dash). The editor reads with ISIG
+/// off, so the key used to just discard the line.
+#[test]
+fn test_pty_ctrl_c_at_prompt_runs_int_trap() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+    s.send("trap 'echo int_trap_ran' INT\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("partial").unwrap();
+    s.send("\x03").unwrap();
+    expect_output(&mut s, "int_trap_ran", "INT trap did not run on Ctrl+C");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+/// vi `[count]v` edits history NUMBER `count` (as `fc -l` numbers it and
+/// as `[count]G` reads it). Once HISTSIZE trimming has advanced the
+/// numbering, the number is not the list index; `v` used to index the
+/// list and rang the bell (or edited the wrong command).
+#[test]
+fn test_pty_vi_mode_count_v_uses_history_number() {
+    let (mut s, _tmpdir) = helpers::pty::spawn_yosh_with_env(&[("VISUAL", Some("true"))]);
+    wait_for_prompt(&mut s);
+    // History numbers: 1 `set -o vi`, 2 `HISTSIZE=2`, 3..5 the echos;
+    // HISTSIZE=2 keeps only numbers 4 and 5.
+    for cmd in [
+        "set -o vi",
+        "HISTSIZE=2",
+        "echo v_aaa",
+        "echo v_bbb",
+        "echo v_ccc",
+    ] {
+        s.send(&format!("{cmd}\r")).unwrap();
+        wait_for_prompt(&mut s);
+    }
+    // `true` as the editor leaves the file unchanged: entry 4 runs.
+    s.send("\x1b").unwrap();
+    s.send("4v").unwrap();
+    expect_output(&mut s, "v_bbb", "[count]v did not edit history number 4");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
 #[test]
 fn test_pty_vi_mode_dollar_and_history_k() {
     let (mut s, _tmpdir) = spawn_yosh();

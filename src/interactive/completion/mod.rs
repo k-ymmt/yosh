@@ -201,16 +201,23 @@ pub fn is_command_position(buf: &str, word_start: usize) -> bool {
 ///
 /// Returns `(directory_string, prefix)`.
 pub fn split_path(word: &str, home: &str) -> (String, String) {
-    let tilde = word.starts_with('~');
+    // A tilde-prefix is the unquoted `~` and the characters up to the
+    // first `/`; any quoting inside it disables the expansion (POSIX
+    // 2.6.1), as in `'~'/a` or `~"user"/a`.
+    let prefix_end = word.find('/').unwrap_or(word.len());
+    let tilde = word.starts_with('~') && !word[..prefix_end].contains(['\'', '"', '\\']);
     let unquoted = shell_unquote(word);
 
     match unquoted.rfind('/') {
         Some(pos) => {
             let dir_part = &unquoted[..=pos]; // includes the '/'
             let prefix = unquoted[pos + 1..].to_string();
-            let dir_expanded = match dir_part.strip_prefix('~') {
-                Some(rest) if tilde => format!("{}{}", home, rest),
-                _ => dir_part.to_string(),
+            // `~/` is `home`; `~user/` is that user's home directory
+            // (an unknown user leaves the prefix as typed).
+            let dir_expanded = if tilde {
+                crate::expand::expand_tilde_prefix(Some(home), dir_part)
+            } else {
+                dir_part.to_string()
             };
             (dir_expanded, prefix)
         }
@@ -577,6 +584,22 @@ mod tests {
         let (dir, prefix) = split_path("~/Doc", "/home/user");
         assert_eq!(dir, "/home/user/");
         assert_eq!(prefix, "Doc");
+    }
+
+    /// `~user/` must resolve that user's home, not `$HOME` + `user/`.
+    #[test]
+    fn test_split_tilde_user_path() {
+        let root_home = crate::expand::expand_tilde_prefix(None, "~root");
+        assert!(!root_home.starts_with('~'), "no root user?");
+        let (dir, prefix) = split_path("~root/Li", "/home/user");
+        assert_eq!(dir, format!("{root_home}/"));
+        assert_eq!(prefix, "Li");
+        // Unknown user: the tilde-prefix stays literal.
+        let (dir, _) = split_path("~no_such_user_yosh/x", "/home/user");
+        assert_eq!(dir, "~no_such_user_yosh/");
+        // Quoting inside the tilde-prefix disables the expansion.
+        let (dir, _) = split_path("~\"root\"/x", "/home/user");
+        assert_eq!(dir, "~root/");
     }
 
     #[test]

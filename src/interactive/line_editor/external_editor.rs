@@ -52,8 +52,11 @@ impl LineEditor {
         };
         path = tmp_path;
         {
+            // Raw bytes out and back in (byteenc egress / ingress), so a
+            // line holding non-UTF-8 bytes survives the round trip.
             use std::io::Write as _;
-            writeln!(file, "{}", content)?;
+            file.write_all(&crate::byteenc::decode_bytes(content))?;
+            file.write_all(b"\n")?;
         }
         drop(file);
 
@@ -70,7 +73,10 @@ impl LineEditor {
 
         let ok = matches!(status, Some(Ok(st)) if st.success());
         let result = if ok {
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            // `read_to_string` would turn a file with any invalid UTF-8
+            // byte into an empty line.
+            let raw = std::fs::read(&path).unwrap_or_default();
+            let text = crate::byteenc::encode_bytes(&raw);
             Some(text.strip_suffix('\n').unwrap_or(&text).to_string())
         } else {
             self.pending_bell = true;
@@ -93,8 +99,11 @@ impl LineEditor {
         let content = if entry == 0 {
             self.buffer()
         } else {
-            match history.entries().get(entry as usize - 1) {
-                Some(e) => e.clone(),
+            // `count` is a history NUMBER (as `fc -l` shows it and as
+            // vi `G` reads it), which differs from the list index once
+            // HISTSIZE trimming has advanced the numbering base.
+            match history.index_of_number(entry as usize) {
+                Some(idx) => history.entries()[idx].clone(),
                 None => {
                     self.pending_bell = true;
                     return Ok(false);

@@ -37,10 +37,39 @@ pub fn expand_prompt(env: &mut ShellEnv, var_name: &str) -> String {
         return String::new();
     }
 
-    // 3. Expand as a double-quoted string (param/command-sub/arith).
+    // 3. PS1 only: exclamation-mark expansion (POSIX `sh`, PS1). It is
+    //    performed as its own pass BEFORE the other expansions (the
+    //    order is unspecified; this is bash's and ksh's), so a `!` that
+    //    a parameter value contains is never rewritten.
+    let raw = if var_name == "PS1" && raw.contains('!') {
+        let next = env.history.first_number() + env.history.entries().len();
+        expand_exclamation(&raw, next)
+    } else {
+        raw
+    };
+
+    // 4. Expand as a double-quoted string (param/command-sub/arith).
     //    Errors are non-fatal: expand_dquoted reports them and falls back
     //    to the raw value without cancelling the next command.
     crate::expand::expand_dquoted(env, &raw)
+}
+
+/// POSIX PS1 exclamation-mark expansion: each `!` becomes the history
+/// number of the next command to be typed, and `!!` a single `!`.
+fn expand_exclamation(raw: &str, next_history_number: usize) -> String {
+    let mut out = String::with_capacity(raw.len() + 8);
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '!' {
+            out.push(c);
+        } else if chars.peek() == Some(&'!') {
+            chars.next();
+            out.push('!');
+        } else {
+            out.push_str(&next_history_number.to_string());
+        }
+    }
+    out
 }
 
 /// Decomposed prompt for multi-line support.
@@ -84,6 +113,26 @@ impl PromptInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exclamation_expands_to_history_number() {
+        assert_eq!(expand_exclamation("[!|!!]$ ", 7), "[7|!]$ ");
+        assert_eq!(expand_exclamation("!!!", 3), "!3");
+        assert_eq!(expand_exclamation("no bang", 3), "no bang");
+    }
+
+    #[test]
+    fn ps1_bang_is_next_history_number_and_values_are_untouched() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.history.add("echo one", 500, "");
+        env.history.add("echo two", 500, "");
+        env.vars.set("x", "a!b").unwrap();
+        env.vars.set("PS1", "[!|!!|$x]$ ").unwrap();
+        env.vars.set("PS2", "! > ").unwrap();
+        assert_eq!(expand_prompt(&mut env, "PS1"), "[3|!|a!b]$ ");
+        // POSIX specifies the expansion for PS1 only.
+        assert_eq!(expand_prompt(&mut env, "PS2"), "! > ");
+    }
 
     #[test]
     fn single_line_prompt() {
