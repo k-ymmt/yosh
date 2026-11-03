@@ -55,8 +55,7 @@ impl Parser {
             }
             Token::DLess => {
                 self.advance()?;
-                let delimiter_word = self.expect_word("here-document delimiter")?;
-                let (delimiter, quoted) = self.extract_heredoc_delimiter(&delimiter_word);
+                let (delimiter, quoted) = self.parse_heredoc_delimiter()?;
                 let id = self.lexer.register_heredoc(delimiter, false, quoted);
                 RedirectKind::HereDoc(HereDoc {
                     id,
@@ -67,8 +66,7 @@ impl Parser {
             }
             Token::DLessDash => {
                 self.advance()?;
-                let delimiter_word = self.expect_word("here-document delimiter")?;
-                let (delimiter, quoted) = self.extract_heredoc_delimiter(&delimiter_word);
+                let (delimiter, quoted) = self.parse_heredoc_delimiter()?;
                 let id = self.lexer.register_heredoc(delimiter, true, quoted);
                 RedirectKind::HereDoc(HereDoc {
                     id,
@@ -101,42 +99,31 @@ impl Parser {
         Ok(redirects)
     }
 
-    fn extract_heredoc_delimiter(&self, word: &Word) -> (String, bool) {
-        let mut delimiter = String::new();
-        let mut quoted = false;
-        for part in &word.parts {
-            match part {
-                WordPart::Literal(s) => delimiter.push_str(s),
-                WordPart::EscapedLiteral(s) => {
-                    // Per POSIX §2.7.4, any escape in the heredoc delimiter word
-                    // marks the heredoc as quoted (body expansion disabled) and
-                    // the escaped character is part of the delimiter itself.
-                    delimiter.push_str(s);
-                    quoted = true;
-                }
-                WordPart::SingleQuoted(s) => {
-                    delimiter.push_str(s);
-                    quoted = true;
-                }
-                WordPart::DoubleQuoted(parts) => {
-                    quoted = true;
-                    for p in parts {
-                        match p {
-                            WordPart::Literal(s) | WordPart::EscapedLiteral(s) => {
-                                delimiter.push_str(s);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                WordPart::DollarSingleQuoted(s) => {
-                    delimiter.push_str(s);
-                    quoted = true;
-                }
-                _ => {}
-            }
-        }
-        (delimiter, quoted)
+    /// Read the here-document delimiter word (the current token) and return
+    /// the delimiter string plus whether any part of it was quoted.
+    ///
+    /// POSIX §2.7.4: the delimiter is the word after quote removal only — no
+    /// parameter, command, arithmetic, or tilde expansion. The lexer has
+    /// already split the word into expansion parts, so the delimiter is
+    /// rebuilt from the word's raw source text (`<<$x` is delimited by a
+    /// `$x` line, `<<~` by `~`, `<<a$b` by `a$b`).
+    fn parse_heredoc_delimiter(&mut self) -> error::Result<(String, bool)> {
+        // The current token was just lexed, so its source text spans from
+        // the pre-token position to the lexer's position. A token replayed
+        // from an alias expansion does not advance the lexer (empty span):
+        // fall back to the parts.
+        let source = self
+            .lexer
+            .source_text(self.pre_current_pos, self.lexer.position());
+        let word = self.expect_word("here-document delimiter")?;
+        let quoted = word_has_quoting(&word);
+        let source = trim_leading_blanks(&source);
+        let delimiter = if source.is_empty() {
+            delimiter_from_parts(&word)
+        } else {
+            delimiter_from_source(source, &word)
+        };
+        Ok((delimiter, quoted))
     }
 
     pub(super) fn fill_heredoc_bodies(&mut self, redirects: &mut Vec<Redirect>) {
@@ -233,6 +220,123 @@ impl Parser {
             self.fill_heredoc_bodies_deep(cc);
         }
     }
+}
+
+/// True if any part of the delimiter word was quoted or escaped, which
+/// disables expansion of the here-document body (POSIX §2.7.4).
+fn word_has_quoting(word: &Word) -> bool {
+    word.parts.iter().any(|p| {
+        matches!(
+            p,
+            WordPart::EscapedLiteral(_)
+                | WordPart::SingleQuoted(_)
+                | WordPart::DoubleQuoted(_)
+                | WordPart::DollarSingleQuoted(_)
+        )
+    })
+}
+
+/// Strip the blanks (and line continuations) the lexer skipped before the
+/// delimiter word.
+fn trim_leading_blanks(mut s: &str) -> &str {
+    loop {
+        if let Some(rest) = s.strip_prefix([' ', '\t']) {
+            s = rest;
+        } else if let Some(rest) = s.strip_prefix("\\\n") {
+            s = rest;
+        } else {
+            return s;
+        }
+    }
+}
+
+/// Apply quote removal to the delimiter's raw source text. `$'...'`
+/// segments take their decoded value from the word's matching
+/// `DollarSingleQuoted` parts (in order).
+fn delimiter_from_source(source: &str, word: &Word) -> String {
+    let mut dollar_single = word.parts.iter().filter_map(|p| match p {
+        WordPart::DollarSingleQuoted(s) => Some(s.as_str()),
+        _ => None,
+    });
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('\n') => {}
+                Some(n) => out.push(n),
+                None => out.push('\\'),
+            },
+            '\'' => {
+                for n in chars.by_ref() {
+                    if n == '\'' {
+                        break;
+                    }
+                    out.push(n);
+                }
+            }
+            '"' => {
+                while let Some(n) = chars.next() {
+                    match n {
+                        '"' => break,
+                        '\\' => match chars.peek().copied() {
+                            Some(e @ ('$' | '`' | '"' | '\\')) => {
+                                out.push(e);
+                                chars.next();
+                            }
+                            Some('\n') => {
+                                chars.next();
+                            }
+                            _ => out.push('\\'),
+                        },
+                        _ => out.push(n),
+                    }
+                }
+            }
+            '$' if chars.peek() == Some(&'\'') => {
+                chars.next();
+                while let Some(n) = chars.next() {
+                    match n {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '\'' => break,
+                        _ => {}
+                    }
+                }
+                out.push_str(dollar_single.next().unwrap_or(""));
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Fallback when no source text is available (delimiter word produced by
+/// alias substitution): concatenate the literal and quoted parts.
+fn delimiter_from_parts(word: &Word) -> String {
+    let mut delimiter = String::new();
+    for part in &word.parts {
+        match part {
+            WordPart::Literal(s)
+            | WordPart::EscapedLiteral(s)
+            | WordPart::SingleQuoted(s)
+            | WordPart::DollarSingleQuoted(s) => delimiter.push_str(s),
+            WordPart::DoubleQuoted(parts) => {
+                for p in parts {
+                    if let WordPart::Literal(s) | WordPart::EscapedLiteral(s) = p {
+                        delimiter.push_str(s);
+                    }
+                }
+            }
+            WordPart::Tilde(user) => {
+                delimiter.push('~');
+                delimiter.push_str(user.as_deref().unwrap_or(""));
+            }
+            _ => {}
+        }
+    }
+    delimiter
 }
 
 #[cfg(test)]

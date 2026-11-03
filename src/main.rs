@@ -449,50 +449,36 @@ fn run_string(
     // Parse and execute one complete command at a time so that aliases
     // defined by earlier commands are available for later ones.
     //
-    // `current_line` tracks the 1-based line number at the start of `remaining`
-    // so that the parser receives the correct initial line counter even after
-    // leading whitespace/newlines are stripped between commands.
-    let mut remaining = input;
-    let mut current_line: usize = 1;
+    // One parser reads the whole input. `parse_complete_command` stops at
+    // the newline ending a command without lexing the next line, so the
+    // next line is tokenized only after this command ran: aliases it
+    // defines apply (the alias table is refreshed before each command), a
+    // lexer error on a later line cannot discard it, and tokens queued by
+    // an alias whose value spans several lines are kept.
+    let mut p = parser::Parser::new_with_aliases(input, &executor.env.aliases);
     let mut status = 0;
 
     loop {
-        // Skip leading whitespace and newlines, counting the newlines so the
-        // parser can start with the correct source-file line number.
-        let before = remaining;
-        let trimmed = remaining.trim_start_matches([' ', '\t', '\n']);
-        if trimmed.is_empty() {
-            break;
-        }
-        // Count newlines in the skipped prefix to advance current_line.
-        let skipped = &before[..before.len() - trimmed.len()];
-        current_line += skipped.chars().filter(|&c| c == '\n').count();
-        remaining = trimmed;
-
-        let mut p = parser::Parser::new_with_aliases_at_line(
-            remaining,
-            &executor.env.aliases,
-            current_line,
-        );
-        if p.is_at_end() {
-            break;
-        }
-        match p.parse_complete_command() {
-            Ok(cmd) => {
-                let consumed = p.consumed_bytes();
-                // Advance remaining past the consumed bytes
-                if consumed == 0 {
-                    // Nothing consumed — avoid infinite loop.
-                    // This can happen if parse_complete_command succeeds but
-                    // the look-ahead didn't advance. Break out.
-                    break;
-                }
-                // Count newlines in the consumed bytes to keep current_line in sync.
-                let consumed_text = &remaining[..consumed];
-                current_line += consumed_text.chars().filter(|&c| c == '\n').count();
-                drop(p);
+        p.set_aliases(&executor.env.aliases);
+        let parsed = p.skip_newlines().and_then(|()| {
+            if p.is_at_end() {
+                return Ok(None);
+            }
+            let start = p.consumed_bytes();
+            let cmd = p.parse_complete_command()?;
+            Ok(Some((start, cmd)))
+        });
+        match parsed {
+            Ok(None) => break,
+            Ok(Some((start, cmd))) => {
                 // set -v: echo input to stderr as it is read (POSIX §2.15 set).
-                executor.verbose_print(consumed_text.trim_end_matches('\n'));
+                let text = p.source_text(start, p.input_position());
+                let text = text
+                    .trim_start_matches([' ', '\t', '\n'])
+                    .trim_end_matches('\n');
+                if !text.is_empty() {
+                    executor.verbose_print(text);
+                }
                 status = executor.exec_complete_command(&cmd);
                 // Check for flow control (exit handled by std::process::exit in builtin)
                 match executor.env.exec.flow_control {
@@ -518,7 +504,6 @@ fn run_string(
                     break;
                 }
                 executor.check_errexit(status);
-                remaining = &remaining[consumed..];
             }
             Err(e) => {
                 eprintln!("{}", e);

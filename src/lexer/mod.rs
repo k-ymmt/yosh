@@ -18,6 +18,7 @@ pub struct LexerState {
     alias_token_queue: VecDeque<SpannedToken>,
     check_alias: bool,
     expanding_aliases: HashSet<String>,
+    alias_ctx: alias::AliasCtx,
 }
 
 /// A cheap snapshot of only the byte-cursor fields (`pos`/`line`/`column`).
@@ -96,6 +97,8 @@ pub struct Lexer {
     /// cache each nesting level of `$(echo $(echo ...))` doubled the
     /// parse time.
     token_cache: HashMap<usize, CachedToken>,
+    /// Command-position / recursion-guard bookkeeping for alias substitution.
+    alias_ctx: alias::AliasCtx,
 }
 
 struct CachedToken {
@@ -131,6 +134,7 @@ impl Lexer {
             nest_depth: 0,
             subparse_count: 0,
             token_cache: HashMap::new(),
+            alias_ctx: alias::AliasCtx::default(),
         }
     }
 
@@ -155,6 +159,7 @@ impl Lexer {
             nest_depth: self.nest_depth + SUBPARSE_NEST_COST,
             subparse_count: 0,
             token_cache: HashMap::new(),
+            alias_ctx: alias::AliasCtx::default(),
         }
     }
 
@@ -187,24 +192,27 @@ impl Lexer {
         lexer
     }
 
-    /// Create a lexer whose initial line counter starts at `start_line` instead of 1.
-    /// Used when a script is split into chunks and each chunk must track its true
-    /// source-file line number.
-    pub fn new_with_aliases_at_line(
-        input: &str,
-        aliases: &crate::env::aliases::AliasStore,
-        start_line: usize,
-    ) -> Self {
-        let mut lexer = Self::new_with_aliases(input, aliases);
-        lexer.line = start_line;
-        lexer
-    }
-
     /// Returns the current byte position in the input.
     /// Since alias expansion uses a token queue instead of rewriting the buffer,
     /// this position always maps to the original input.
     pub fn position(&self) -> usize {
         self.pos
+    }
+
+    /// The raw source text between two byte positions (as returned by
+    /// `position`). Used to recover the literal text of a here-document
+    /// delimiter word.
+    pub(crate) fn source_text(&self, start: usize, end: usize) -> String {
+        String::from_utf8_lossy(&self.input[start.min(end)..end.min(self.input.len())]).into_owned()
+    }
+
+    /// Replace the alias table (used when a persistent parser reads a
+    /// script command by command and earlier commands changed aliases).
+    pub fn set_aliases(&mut self, aliases: &crate::env::aliases::AliasStore) {
+        self.aliases.clear();
+        for (name, value) in aliases.sorted_iter() {
+            self.aliases.insert(name.to_string(), value.to_string());
+        }
     }
 
     pub fn save_state(&self) -> LexerState {
@@ -215,6 +223,7 @@ impl Lexer {
             alias_token_queue: self.alias_token_queue.clone(),
             check_alias: self.check_alias,
             expanding_aliases: self.expanding_aliases.clone(),
+            alias_ctx: self.alias_ctx.clone(),
         }
     }
 
@@ -225,6 +234,7 @@ impl Lexer {
         self.alias_token_queue = state.alias_token_queue;
         self.check_alias = state.check_alias;
         self.expanding_aliases = state.expanding_aliases;
+        self.alias_ctx = state.alias_ctx;
     }
 
     /// Cheap cursor-only snapshot; see `CursorState` for the safety contract.

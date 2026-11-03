@@ -10,7 +10,7 @@
 //! Divergence from `src/main.rs::run_string`: this binary uses a single
 //! whole-program `parse_program` + `exec_program` pass instead of the
 //! per-command parse loop in main. Alias expansion (which main wires via
-//! `Parser::new_with_aliases_at_line`) is intentionally omitted — the W2
+//! `Parser::new_with_aliases` + `set_aliases`) is intentionally omitted — the W2
 //! workload does not use aliases, and keeping the pipeline short keeps
 //! the profile focused on parse/expand/exec cost.
 

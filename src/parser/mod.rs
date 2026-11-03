@@ -12,58 +12,105 @@ use crate::lexer::Lexer;
 use crate::lexer::token::{Span, SpannedToken, Token};
 use ast::{AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, SeparatorOp};
 
+/// Maximum syntactic nesting depth: compound commands (`(`, `{`, `if`,
+/// `while`, `for`, `case`, function bodies, ...) plus nested programs
+/// (`$(...)` / backquote bodies, which the lexer parses with a fresh
+/// parser on the same native stack). Parsing is recursive descent, so
+/// unbounded nesting would overflow the stack and abort the shell; past
+/// this depth the parser reports a syntax error instead. The limit is
+/// chosen to stay well inside the 8 MiB main-thread stack in debug builds.
+pub const MAX_NESTING_DEPTH: usize = 200;
+
+thread_local! {
+    /// Nesting depth summed over every parser active on this thread, so
+    /// that a command substitution inside deeply nested compounds counts
+    /// toward the same limit as the compounds around it.
+    static NESTING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// RAII token for one level of syntactic nesting (see `MAX_NESTING_DEPTH`).
+struct NestingGuard;
+
+impl NestingGuard {
+    fn enter(span: Span) -> error::Result<Self> {
+        NESTING.with(|n| {
+            if n.get() >= MAX_NESTING_DEPTH {
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnexpectedToken,
+                    span.line,
+                    span.column,
+                    format!("syntax error: nesting too deep (limit {MAX_NESTING_DEPTH})"),
+                ));
+            }
+            n.set(n.get() + 1);
+            Ok(NestingGuard)
+        })
+    }
+}
+
+impl Drop for NestingGuard {
+    fn drop(&mut self) {
+        NESTING.with(|n| n.set(n.get() - 1));
+    }
+}
+
 pub struct Parser {
     lexer: Lexer,
     current: SpannedToken,
     /// Lexer position before the current look-ahead token was read.
     pre_current_pos: usize,
+    /// A lexer error raised while reading the very first token (in the
+    /// constructor, which cannot fail). Reported by the first parse call.
+    init_error: Option<ShellError>,
+    /// Current compound-command nesting depth (0 = top level).
+    depth: usize,
 }
 
 impl Parser {
-    pub fn new(input: &str) -> Self {
-        let mut lexer = Lexer::new(input);
-        // Read first token; on error use Eof
-        let current = lexer.next_token().unwrap_or(SpannedToken {
-            token: Token::Eof,
-            span: Span::default(),
-        });
+    fn from_lexer(mut lexer: Lexer) -> Self {
+        // Reading the first token can recurse into a nested parser (a
+        // leading `$(...)`), so it counts as one nesting level.
+        let first =
+            NestingGuard::enter(Span { line: 1, column: 1 }).and_then(|_guard| lexer.next_token());
+        let (current, init_error) = match first {
+            Ok(tok) => (tok, None),
+            Err(e) => (
+                SpannedToken {
+                    token: Token::Eof,
+                    span: Span::default(),
+                },
+                Some(e),
+            ),
+        };
         Self {
             lexer,
             current,
             pre_current_pos: 0,
+            init_error,
+            depth: 0,
         }
+    }
+
+    pub fn new(input: &str) -> Self {
+        Self::from_lexer(Lexer::new(input))
     }
 
     pub fn new_with_aliases(input: &str, aliases: &crate::env::aliases::AliasStore) -> Self {
-        let mut lexer = Lexer::new_with_aliases(input, aliases);
-        let current = lexer.next_token().unwrap_or(SpannedToken {
-            token: Token::Eof,
-            span: Span::default(),
-        });
-        Self {
-            lexer,
-            current,
-            pre_current_pos: 0,
-        }
+        Self::from_lexer(Lexer::new_with_aliases(input, aliases))
     }
 
-    /// Like `new_with_aliases` but the lexer's line counter starts at `start_line`
-    /// instead of 1. Used when a script is split into chunks for incremental parsing
-    /// so that each chunk reports the correct source-file line number.
-    pub fn new_with_aliases_at_line(
-        input: &str,
-        aliases: &crate::env::aliases::AliasStore,
-        start_line: usize,
-    ) -> Self {
-        let mut lexer = Lexer::new_with_aliases_at_line(input, aliases, start_line);
-        let current = lexer.next_token().unwrap_or(SpannedToken {
-            token: Token::Eof,
-            span: Span::default(),
-        });
-        Self {
-            lexer,
-            current,
-            pre_current_pos: 0,
+    /// Replace the alias table used for tokens not yet read. A driver that
+    /// parses and executes one complete command at a time calls this after
+    /// each command so aliases it defined apply to the following lines.
+    pub fn set_aliases(&mut self, aliases: &crate::env::aliases::AliasStore) {
+        self.lexer.set_aliases(aliases);
+    }
+
+    /// Report a lexer error deferred from the constructor.
+    fn take_init_error(&mut self) -> error::Result<()> {
+        match self.init_error.take() {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
     }
 
@@ -71,6 +118,18 @@ impl Parser {
     /// look-ahead token. This is useful for incremental parsing.
     pub fn consumed_bytes(&self) -> usize {
         self.pre_current_pos
+    }
+
+    /// The lexer's byte position in the input: everything before it,
+    /// including the current look-ahead token, has been read.
+    pub fn input_position(&self) -> usize {
+        self.lexer.position()
+    }
+
+    /// The raw input text between two byte positions (`consumed_bytes` /
+    /// `input_position` values).
+    pub fn source_text(&self, start: usize, end: usize) -> String {
+        self.lexer.source_text(start, end)
     }
 
     pub fn current_token(&self) -> &Token {
@@ -114,7 +173,7 @@ impl Parser {
     }
 
     /// Consume all consecutive Newline tokens.
-    pub(super) fn skip_newlines(&mut self) -> error::Result<()> {
+    pub fn skip_newlines(&mut self) -> error::Result<()> {
         while self.current.token == Token::Newline {
             // Pending heredoc bodies start right after this newline, so they
             // must be read BEFORE advancing — advancing first would lex the
@@ -128,7 +187,7 @@ impl Parser {
     }
 
     pub fn is_at_end(&self) -> bool {
-        self.current.token == Token::Eof
+        self.current.token == Token::Eof && self.init_error.is_none()
     }
 
     pub(super) fn is_reserved(&self, keyword: &str) -> bool {
@@ -138,6 +197,10 @@ impl Parser {
     // ---- Grammar productions ----
 
     pub fn parse_program(&mut self) -> error::Result<Program> {
+        self.take_init_error()?;
+        // A program may itself be the body of a command substitution being
+        // lexed by an outer parser; count it toward the nesting limit.
+        let _nesting = NestingGuard::enter(self.current_span())?;
         self.skip_newlines()?;
         let mut commands = Vec::new();
         while !self.is_at_end() {
@@ -148,39 +211,46 @@ impl Parser {
         Ok(Program { commands })
     }
 
+    /// Parse one complete_command: and_or lists joined by `;` / `&`, ended
+    /// by a newline, EOF, or a token that closes an enclosing construct.
+    ///
+    /// A terminating newline is left as the look-ahead token (any pending
+    /// here-document bodies are read first): lexing past it would read the
+    /// next line before this command runs, so aliases it defines would not
+    /// apply and a lexer error on that line would discard this command.
+    /// Callers consume it with `skip_newlines`.
     pub fn parse_complete_command(&mut self) -> error::Result<CompleteCommand> {
+        self.take_init_error()?;
         let mut items = Vec::new();
 
-        let first_aol = self.parse_and_or()?;
-        let was_newline = self.current.token == Token::Newline;
-        let sep = self.parse_separator_op()?;
-        let ended = sep.is_none() || was_newline;
-        items.push((first_aol, sep));
-
-        if !ended {
-            // Continue parsing while there are more and_or lists separated by ; or &
-            loop {
-                if self.is_at_end() || self.is_complete_command_end() {
-                    break;
+        loop {
+            let aol = self.parse_and_or()?;
+            let (sep, ended) = match self.current.token {
+                Token::Semi => {
+                    self.advance()?;
+                    (Some(SeparatorOp::Semi), false)
                 }
-                if self.current.token == Token::Newline {
-                    // A terminator newline after `;` or `&`. If heredoc bodies
-                    // are pending they start here — read them and consume the
-                    // newline so the bodies count as parsed input.
-                    if self.lexer.has_pending_heredocs() {
-                        self.lexer.process_pending_heredocs()?;
-                        self.advance()?;
-                    }
-                    break;
+                Token::Amp => {
+                    self.advance()?;
+                    (Some(SeparatorOp::Amp), false)
                 }
-                let aol = self.parse_and_or()?;
-                let was_newline = self.current.token == Token::Newline;
-                let sep = self.parse_separator_op()?;
-                let ended = sep.is_none() || was_newline;
-                items.push((aol, sep));
-                if ended {
-                    break;
+                Token::Newline => {
+                    self.read_heredocs_at_newline()?;
+                    (Some(SeparatorOp::Semi), true)
                 }
+                _ => {
+                    self.check_command_terminator()?;
+                    (None, true)
+                }
+            };
+            items.push((aol, sep));
+            if ended || self.is_at_end() || self.is_complete_command_end() {
+                break;
+            }
+            if self.current.token == Token::Newline {
+                // A terminator newline after `;` or `&`.
+                self.read_heredocs_at_newline()?;
+                break;
             }
         }
 
@@ -193,28 +263,46 @@ impl Parser {
         Ok(cc)
     }
 
-    /// Parse separator: ; → Semi, & → Amp, Newline → Semi (as terminator)
-    /// Returns None if no separator found.
-    pub(super) fn parse_separator_op(&mut self) -> error::Result<Option<SeparatorOp>> {
-        match self.current.token {
-            Token::Semi => {
-                self.advance()?;
-                Ok(Some(SeparatorOp::Semi))
-            }
-            Token::Amp => {
-                self.advance()?;
-                Ok(Some(SeparatorOp::Amp))
-            }
-            Token::Newline => {
-                // Read pending heredoc bodies before advancing (see skip_newlines).
-                if self.lexer.has_pending_heredocs() {
-                    self.lexer.process_pending_heredocs()?;
-                }
-                self.advance()?;
-                Ok(Some(SeparatorOp::Semi))
-            }
-            _ => Ok(None),
+    /// The current token is a newline: read any here-document bodies that
+    /// start after it, without consuming the newline itself.
+    fn read_heredocs_at_newline(&mut self) -> error::Result<()> {
+        if self.lexer.has_pending_heredocs() {
+            self.lexer.process_pending_heredocs()?;
         }
+        Ok(())
+    }
+
+    /// After an and_or list with no `;`/`&`/newline separator, the next
+    /// token must end the enclosing construct. Anything else (`echo a
+    /// (echo b)`, `{ :; } echo b`, `(echo a) echo b`) is a syntax error.
+    /// At the top level nothing but EOF may follow.
+    fn check_command_terminator(&self) -> error::Result<()> {
+        let nested = self.depth > 0;
+        let ok = match &self.current.token {
+            Token::Eof | Token::Newline => true,
+            Token::RParen | Token::DSemi | Token::SemiAnd => nested,
+            Token::Word(w) => {
+                nested
+                    && matches!(
+                        w.as_literal(),
+                        Some("}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do")
+                    )
+            }
+            _ => false,
+        };
+        if ok {
+            return Ok(());
+        }
+        let span = self.current_span();
+        Err(ShellError::parse(
+            ParseErrorKind::UnexpectedToken,
+            span.line,
+            span.column,
+            format!(
+                "syntax error near unexpected token '{}'",
+                token_display(&self.current.token)
+            ),
+        ))
     }
 
     pub(super) fn parse_and_or(&mut self) -> error::Result<AndOrList> {
@@ -408,6 +496,35 @@ impl Parser {
     }
 }
 
+/// Short source-like rendering of a token for syntax error messages.
+pub(super) fn token_display(token: &Token) -> String {
+    let s = match token {
+        Token::Word(w) => return w.as_literal().unwrap_or("word").to_string(),
+        Token::IoNumber(n) => return n.to_string(),
+        Token::Newline => "newline",
+        Token::Eof => "end of file",
+        Token::Pipe => "|",
+        Token::AndIf => "&&",
+        Token::OrIf => "||",
+        Token::Semi => ";",
+        Token::Amp => "&",
+        Token::DSemi => ";;",
+        Token::SemiAnd => ";&",
+        Token::Less => "<",
+        Token::Great => ">",
+        Token::DLess => "<<",
+        Token::DGreat => ">>",
+        Token::LessAnd => "<&",
+        Token::GreatAnd => ">&",
+        Token::LessGreat => "<>",
+        Token::DLessDash => "<<-",
+        Token::Clobber => ">|",
+        Token::LParen => "(",
+        Token::RParen => ")",
+    };
+    s.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +642,114 @@ mod tests {
             "unexpected message: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn lexer_error_on_first_token_is_reported() {
+        for src in ["\"abc", "${x", "'abc"] {
+            let mut p = Parser::new(src);
+            assert!(
+                !p.is_at_end(),
+                "{src}: pending error must not look like EOF"
+            );
+            let err = p.parse_program().expect_err(src);
+            assert_eq!(err.exit_code(), 2, "{src}");
+        }
+        let err = Parser::new("\"abc").parse_complete_command().unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn missing_separator_after_command_is_syntax_error() {
+        for src in [
+            "echo a (echo b)",
+            "{ echo a; } echo b",
+            "(echo a) echo b",
+            "if true; then echo a; fi echo b",
+            "f() { :; } (echo y)",
+            "(echo a) fi",
+            "echo a )",
+            "echo a ;;",
+            "{ (echo a) echo b; }",
+        ] {
+            let err = Parser::new(src).parse_program().expect_err(src);
+            assert!(
+                err.to_string().contains("syntax error"),
+                "{src}: unexpected message {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn closer_may_follow_command_without_separator() {
+        for src in [
+            "if (true) then echo ok; fi",
+            "{ (echo b) }",
+            "case x in x) (echo c) esac",
+            "while (false) do :; done",
+            "(echo a)",
+        ] {
+            assert!(Parser::new(src).parse_program().is_ok(), "{src}");
+        }
+    }
+
+    #[test]
+    fn bang_only_before_a_whole_pipeline() {
+        assert!(Parser::new("echo a | ! cat").parse_program().is_err());
+        assert!(Parser::new("! ! true").parse_program().is_err());
+        assert!(Parser::new("! true | cat").parse_program().is_ok());
+        assert!(Parser::new("true && ! false").parse_program().is_ok());
+    }
+
+    #[test]
+    fn complete_command_leaves_terminating_newline_unread() {
+        // The next line must not be lexed before the command runs: a lexer
+        // error there may not discard the command, and aliases it defines
+        // must apply to the next line.
+        let mut p = Parser::new("echo 1\n'bad");
+        let cc = p.parse_complete_command().unwrap();
+        assert_eq!(cc.items.len(), 1);
+        assert_eq!(p.current_token(), &Token::Newline);
+        assert!(p.skip_newlines().is_err());
+    }
+
+    #[test]
+    fn set_aliases_applies_to_lines_not_yet_read() {
+        use crate::env::aliases::AliasStore;
+        let mut p = Parser::new_with_aliases("alias e=echo\ne hi\n", &AliasStore::default());
+        p.parse_complete_command().unwrap();
+        let mut aliases = AliasStore::default();
+        aliases.set("e", "echo");
+        p.set_aliases(&aliases);
+        p.skip_newlines().unwrap();
+        let cc = p.parse_complete_command().unwrap();
+        let Command::Simple(sc) = &cc.items[0].0.first.commands[0] else {
+            panic!("expected simple command");
+        };
+        assert_eq!(sc.words[0].as_literal(), Some("echo"));
+    }
+
+    #[test]
+    fn heredoc_delimiter_keeps_expansion_syntax_literally() {
+        use ast::RedirectKind;
+        for (src, delim) in [
+            ("cat <<$x\nbody\n$x\n", "$x"),
+            ("cat <<\"$x\"\nbody\n$x\n", "$x"),
+            ("cat <<~\nbody\n~\n", "~"),
+            ("cat <<a$b\nbody\na$b\n", "a$b"),
+            ("cat <<${x}y\nbody\n${x}y\n", "${x}y"),
+            ("cat <<a\"b\"'c'\\d\nbody\nabcd\n", "abcd"),
+        ] {
+            let sc = parse_first_simple(src);
+            let RedirectKind::HereDoc(hd) = &sc.redirects[0].kind else {
+                panic!("expected heredoc for {src:?}");
+            };
+            assert_eq!(
+                hd.body.len(),
+                1,
+                "{src:?} (delimiter {delim}) body not closed"
+            );
+        }
     }
 
     #[test]

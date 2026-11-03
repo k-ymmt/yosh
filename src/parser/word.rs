@@ -6,20 +6,24 @@ use crate::lexer::token::{Span, Token};
 
 impl Parser {
     /// Build a parser over a nested lexer, propagating an error from the
-    /// first token (unlike `Parser::new`, which maps it to EOF).
-    fn from_nested_lexer(mut lexer: Lexer) -> error::Result<Self> {
+    /// first token instead of deferring it. `depth` is the starting
+    /// compound nesting: 1 for a `$(...)` body, whose commands may be
+    /// followed directly by the closing `)`.
+    fn from_nested_lexer(mut lexer: Lexer, depth: usize) -> error::Result<Self> {
         let current = lexer.next_token()?;
         Ok(Parser {
             lexer,
             current,
             pre_current_pos: 0,
+            init_error: None,
+            depth,
         })
     }
 
     /// Parse a whole nested program (the body of a backquoted command
     /// substitution, already unescaped into its own input).
     pub(crate) fn parse_nested_program(lexer: Lexer) -> error::Result<Program> {
-        Self::from_nested_lexer(lexer)?.parse_program()
+        Self::from_nested_lexer(lexer, 0)?.parse_program()
     }
 
     /// Parse the body of a `$(...)` command substitution from `lexer`
@@ -44,7 +48,7 @@ impl Parser {
                 "unterminated command substitution",
             )
         };
-        let mut parser = Self::from_nested_lexer(lexer)?;
+        let mut parser = Self::from_nested_lexer(lexer, 1)?;
         match parser.parse_until_rparen() {
             Ok(commands) if parser.current.token == Token::RParen => {
                 Ok((Program { commands }, parser.lexer))

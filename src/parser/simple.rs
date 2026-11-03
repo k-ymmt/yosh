@@ -26,13 +26,16 @@ impl Parser {
                 // Compound-list terminators are normally consumed by the
                 // compound parsers before we get here; reaching this point
                 // with one means it is dangling (e.g. a bare `done`).
+                // `!` reaches here only after `|` or a leading `!`: the
+                // grammar allows Bang only before a whole pipe_sequence, so
+                // `a | ! b` and `! ! a` are syntax errors (as in dash).
                 if assignments.is_empty()
                     && words.is_empty()
                     && redirects.is_empty()
                     && let Token::Word(word) = &self.current.token
                     && let Some(
-                        kw
-                        @ ("}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do" | "in"),
+                        kw @ ("}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do" | "in"
+                        | "!"),
                     ) = word.as_literal()
                 {
                     let span = self.current_span();

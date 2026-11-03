@@ -6,6 +6,17 @@ use crate::lexer::token::Token;
 
 impl Parser {
     pub(super) fn parse_compound_command(&mut self) -> error::Result<CompoundCommand> {
+        // Every level of compound nesting recurses through this function;
+        // bound it so pathological input is a syntax error, not a native
+        // stack overflow (see MAX_NESTING_DEPTH).
+        let _nesting = super::NestingGuard::enter(self.current_span())?;
+        self.depth += 1;
+        let result = self.parse_compound_command_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_compound_command_inner(&mut self) -> error::Result<CompoundCommand> {
         let line = self.current.span.line;
         let kind = if self.is_reserved("if") {
             self.parse_if_clause()?
@@ -127,18 +138,10 @@ impl Parser {
                         format!("'{}' is not a valid variable name", name),
                     ));
                 }
-                if crate::lexer::reserved::is_posix_reserved_word(name) {
-                    let span = self.current_span();
-                    return Err(ShellError::parse(
-                        ParseErrorKind::UnexpectedToken,
-                        span.line,
-                        span.column,
-                        format!(
-                            "'{}' is a reserved word and cannot be used as a for-loop variable name",
-                            name
-                        ),
-                    ));
-                }
+                // No reserved-word check: POSIX §2.4 does not recognize
+                // reserved words in the position after `for`, and §2.10.2
+                // rule 5 only requires a valid NAME, so `for in in in` and
+                // `for if in a` are valid (as in dash, bash, and ksh).
                 let name = name.to_string();
                 self.advance()?;
                 name
@@ -714,30 +717,70 @@ mod tests {
     }
 
     #[test]
-    fn parse_for_reserved_word_if_rejected() {
-        // POSIX §2.10.2 Rule 5: NAME in `for` must not be a reserved word.
-        // `if` passes `is_valid_name`, so the only rejection path is
-        // Rule 5 — pin that exact message.
-        let src = "for if in a; do :; done\n";
-        let err = Parser::new(src).parse_program().unwrap_err();
-        let msg = format!("{}", err);
-        assert!(
-            msg.contains("reserved word"),
-            "expected reserved-word error, got: {}",
-            msg
-        );
+    fn parse_for_reserved_word_if_as_name() {
+        // POSIX §2.4: reserved words are not recognized in the word after
+        // `for`; §2.10.2 rule 5 only requires a valid NAME there.
+        let kind = parse_first_compound("for if in a; do :; done\n");
+        match kind {
+            CompoundCommandKind::For { var, .. } => assert_eq!(var, "if"),
+            _ => panic!("expected for"),
+        }
     }
 
     #[test]
-    fn parse_for_reserved_word_in_rejected() {
-        let src = "for in in a; do :; done\n";
-        let err = Parser::new(src).parse_program().unwrap_err();
-        let msg = format!("{}", err);
-        assert!(
-            msg.contains("reserved word"),
-            "expected reserved-word error, got: {}",
-            msg
-        );
+    fn parse_for_reserved_word_in_as_name() {
+        let kind = parse_first_compound("for in in in; do echo $in; done\n");
+        match kind {
+            CompoundCommandKind::For { var, words, .. } => {
+                assert_eq!(var, "in");
+                let words = words.expect("word list");
+                assert_eq!(words.len(), 1);
+                assert_eq!(words[0].as_literal(), Some("in"));
+            }
+            _ => panic!("expected for"),
+        }
+    }
+
+    /// Run `f` on a thread with the 8 MiB stack the shell's main thread
+    /// has (test threads default to 2 MiB).
+    fn on_main_sized_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn deep_nesting_is_a_syntax_error_not_a_stack_overflow() {
+        on_main_sized_stack(|| {
+            for (open, close) in [
+                ("(", ")"),
+                ("{ ", "; }"),
+                ("if true; then ", "; fi"),
+                ("echo $(", ")"),
+                ("case x in x) ", ";; esac"),
+            ] {
+                let src = format!("{}echo d{}", open.repeat(500), close.repeat(500));
+                let err = Parser::new(&src).parse_program().unwrap_err();
+                assert_eq!(err.exit_code(), 2);
+                assert!(
+                    err.to_string().contains("nesting too deep"),
+                    "unexpected message: {err}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn nesting_below_the_limit_parses() {
+        on_main_sized_stack(|| {
+            // parse_program itself takes one level.
+            let depth = super::super::MAX_NESTING_DEPTH - 1;
+            let src = format!("{}echo d{}", "(".repeat(depth), ")".repeat(depth));
+            assert!(Parser::new(&src).parse_program().is_ok());
+        });
     }
 
     #[test]
