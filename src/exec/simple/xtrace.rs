@@ -11,7 +11,7 @@ use super::super::Executor;
 /// `$?` is preserved across any command substitution inside PS4, and an
 /// expansion error in PS4 is diagnosed without aborting (both handled by
 /// `expand_dquoted`).
-pub(super) fn xtrace_prefix(env: &mut ShellEnv) -> String {
+fn xtrace_prefix(env: &mut ShellEnv) -> String {
     let raw = env.vars.get("PS4").unwrap_or("+ ").to_string();
 
     // Expand PS4 with xtrace off: a command substitution in PS4
@@ -66,6 +66,16 @@ impl Executor {
             line.push_str(a);
         }
         crate::byteenc::write_stderr_decoded_line(&line);
+    }
+
+    /// `set -x` trace line for one assignment of an assignment-only
+    /// command (`+ x=1`).
+    pub(super) fn xtrace_assignment(&mut self, name: &str, value: &str) {
+        if !self.env.mode.options.xtrace {
+            return;
+        }
+        let prefix = xtrace_prefix(&mut self.env);
+        crate::byteenc::write_stderr_decoded_line(&format!("{}{}={}", prefix, name, value));
     }
 }
 

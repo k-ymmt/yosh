@@ -3,17 +3,57 @@ use std::ffi::CString;
 use nix::unistd::{ForkResult, execve};
 
 use crate::env::jobs;
+use crate::error::ShellError;
 use crate::signal;
 
 use super::super::command::wait_child;
 use super::super::redirect::{ExpandedRedirect, RedirectState};
 use super::super::{Executor, fork_shell};
+use super::Invocation;
 use super::cstrings::{
     ExecCStringError, build_exec_cstrings_for_path, merge_envp, nul_terminated_ptrs,
 };
 use super::resolve::{ResolvedExec, effective_path_override, resolve_exec_path};
 
 impl Executor {
+    /// Run a command that is neither a function nor a built-in: a plugin
+    /// command if a plugin claims the name, otherwise an external utility
+    /// with the prefix assignments in its environment only.
+    pub(super) fn exec_non_builtin_command(
+        &mut self,
+        inv: &Invocation,
+        async_exec_in_place: bool,
+    ) -> Result<i32, ShellError> {
+        // Check plugin commands before external. The 3-valued
+        // return distinguishes "no plugin claimed this name"
+        // (fall through to PATH) from "plugin claimed it but
+        // failed" (do NOT fall through — the plugin owned it).
+        use crate::plugin::PluginExec;
+        let status = match self.plugins.exec_command(&mut self.env, inv.name, inv.args) {
+            PluginExec::Handled(status) => status,
+            PluginExec::Failed => 1,
+            PluginExec::NotHandled => {
+                let env_vars = self.build_env_vars(inv.assignments)?;
+                self.xtrace_simple(&env_vars, inv.name, inv.args);
+                // DEVIATION (async exec-in-place, 2026-09-01): plugins'
+                // post_exec does not fire for a background external
+                // simple command — the async child is replaced by the
+                // exec. pre_exec fired above, as it always did in the
+                // wrapper. Pre-optimization, post_exec ran inside the
+                // forked wrapper whose plugin state was discarded on
+                // exit, so only external side effects are lost.
+                self.exec_external_with_redirects(
+                    inv.name,
+                    inv.args,
+                    &env_vars,
+                    inv.redirs,
+                    async_exec_in_place,
+                )
+            }
+        };
+        Ok(self.finish_simple_command(inv.hook_cmd, status))
+    }
+
     /// Fork, apply redirects in child, exec the command, wait in parent.
     ///
     /// `env_overrides` are prefix-assignment (name, value) pairs from the

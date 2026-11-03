@@ -1,4 +1,5 @@
 use super::super::Executor;
+use super::executor_hosted_builtin;
 
 impl Executor {
     /// POSIX `command` builtin. Dispatches by verbosity:
@@ -45,25 +46,12 @@ impl Executor {
     }
 
     /// Run one of the regular builtins whose implementation lives on the
-    /// Executor (job table / signal access) rather than in
-    /// `exec_regular_builtin`: wait, fg, bg, jobs, fc, and `command` itself.
-    /// Returns `None` when `name` is not one of them. Used by the
-    /// `command` execution paths, which must honor these as builtins
-    /// (POSIX: `command` bypasses functions only).
+    /// Executor (see [`executor_hosted_builtin`]). Returns `None` when
+    /// `name` is not one of them. Used by the `command` execution paths,
+    /// which must honor these as builtins (POSIX: `command` bypasses
+    /// functions only).
     fn exec_executor_hosted_builtin(&mut self, name: &str, args: &[String]) -> Option<i32> {
-        let status = match name {
-            "wait" => self.builtin_wait(args),
-            "fg" => self.builtin_fg(args),
-            "bg" => self.builtin_bg(args),
-            "jobs" => self.builtin_jobs(args),
-            "fc" => crate::builtin::fc::builtin_fc(args, self),
-            "command" => return Some(self.builtin_command(args)),
-            _ => return None,
-        };
-        Some(status.unwrap_or_else(|e| {
-            eprintln!("{}", e);
-            e.exit_code()
-        }))
+        executor_hosted_builtin(name).map(|builtin| builtin(self, args))
     }
 
     /// `command -p name args...`: look up `name` via the POSIX default PATH

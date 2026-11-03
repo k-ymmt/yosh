@@ -1,9 +1,10 @@
 use crate::env::vars::Variable;
 use crate::error::{RuntimeErrorKind, ShellError};
-use crate::parser::ast::{Assignment, SimpleCommand};
+use crate::parser::ast::Assignment;
 
 use super::super::Executor;
-use super::super::redirect::{ExpandedRedirect, RedirectState};
+use super::super::redirect::RedirectState;
+use super::Invocation;
 
 /// Variables saved before temporary prefix assignments, as `(name, the
 /// whole variable or None if it did not exist)`, for
@@ -51,16 +52,13 @@ impl Executor {
     /// built-in and Executor-hosted built-in dispatches.
     pub(super) fn run_with_temp_assignments(
         &mut self,
-        cmd: &SimpleCommand,
-        redirs: &[ExpandedRedirect],
-        name: &str,
-        args: &[String],
+        inv: &Invocation,
         run: impl FnOnce(&mut Self) -> i32,
     ) -> Result<i32, ShellError> {
-        let (saved, assigned) = self.apply_temp_assignments_with_values(&cmd.assignments)?;
-        self.xtrace_simple(&assigned, name, args);
+        let (saved, assigned) = self.apply_temp_assignments_with_values(inv.assignments)?;
+        self.xtrace_simple(&assigned, inv.name, inv.args);
         let mut redirect_state = RedirectState::new();
-        if let Err(e) = redirect_state.apply_expanded(redirs, true) {
+        if let Err(e) = redirect_state.apply_expanded(inv.redirs, true) {
             self.restore_assignments(saved);
             return Err(e);
         }
@@ -82,7 +80,7 @@ impl Executor {
     /// A readonly variable cannot be overridden even for one command:
     /// that is a variable-assignment error (POSIX §2.8.1; dash refuses
     /// `readonly r=1; r=2 cmd` and exits a non-interactive shell).
-    pub(crate) fn build_env_vars(
+    pub(super) fn build_env_vars(
         &mut self,
         assignments: &[Assignment],
     ) -> crate::error::Result<Vec<(String, String)>> {
