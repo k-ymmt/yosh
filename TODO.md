@@ -251,11 +251,6 @@
 
 ## 2026-11-04 Bug-fix Round 1: Deferrals and Decisions
 
-- [ ] Aliases are not substituted inside `$(...)` bodies: the body is
-      parsed by a sub-lexer created with an empty alias table
-      (`src/lexer/mod.rs::sub_lexer`). dash substitutes them:
-      `alias e=echo; x=$(e inner); echo $x` prints `inner` in dash,
-      `e: command not found` in yosh.
 - [ ] DEVIATION (decided): nesting limits are far below dash/bash's
       (which handle ~5000 levels): parser compound nesting 200, lexer
       word nesting 400 (a `$(` body costs 4), arithmetic parentheses
@@ -295,38 +290,44 @@
 
 ## 2026-11-04 Refactor Round 1: Follow-ups
 
-- [ ] Deep shell-function recursion aborts the process with a Rust
-      stack overflow (`f 1000` in a debug build; dash completes
-      `f 10000`), skipping the EXIT trap. Needs a runtime guard on
-      function calls / `eval` / `.` that raises a shell error instead
-      (bash has `FUNCNEST`) or a growable stack (`src/exec/function.rs`,
-      `src/parser/nesting.rs::StackBudget`).
-- [ ] `exec_compound_command` returns early with `?` from
-      `exec_subshell` / `exec_for` / `exec_case`, skipping the restore of
-      saved redirections and temporary assignments:
-      `trap 'echo out' EXIT; for i in $((1/0)); do :; done >f1` writes
-      `out` into f1 (dash prints it) (`src/exec/compound.rs`).
-- [ ] vi-mode `*` and `\` insert matched pathnames unquoted, so a file
-      named `a;b` becomes two commands on Enter; bash and ksh quote
-      metacharacters. Reuse `completion::quoting::quote_for_insertion`
-      (`src/interactive/line_editor/vi_expand.rs`).
-- [ ] Listing builtins ignore stdout write errors: `export -p >&-`,
-      `readonly -p`, `set`, `trap`, `cd -` / CDPATH directory print exit
-      0; `times` uses `println!` (`src/builtin/vars.rs`,
-      `src/builtin/set.rs`, `src/builtin/trap.rs`, `src/builtin/cd.rs`,
-      `src/builtin/times.rs`).
-- [ ] Flaky fd unit tests: `redirect_only_*`,
-      `test_redirect_output_and_restore` and the `terminal_state` stdin
-      tests redirect process-wide fd 0/1 under different locks
-      (`STDIO_LOCK` vs `FD_TEST_LOCK`; `terminal_state` takes none) and
-      fail about 1 run in 3 on a loaded machine (`src/test_sync.rs`).
-- [ ] `Parser::snapshot` / `rewind` do not restore `pre_current_pos`,
-      so `consumed_bytes()` read right after a rewind is off; every
-      current caller advances first (`src/parser/mod.rs`).
+- [ ] Shell recursion depth is limited by the native stack: runaway
+      recursion is now a "maximum nesting level exceeded" error, but it
+      triggers at ~1800 function levels in release (~400 in debug),
+      where dash completes 10000. Running the shell on a thread with a
+      larger stack or shrinking executor frames would raise it. The
+      parser's `StackBudget` is relative to the outermost parse, so deep
+      nesting inside `eval` and deep arithmetic can still overflow;
+      `crate::exec::stack_guard::stack_nearly_exhausted()` could guard
+      them (`src/exec/stack_guard.rs`, `src/parser/nesting.rs`).
 - [ ] `expand/param.rs::special_param` duplicates
       `SpecialParam::from_byte` except for `0`; `parse_pipeline`'s
       here-document body assignment may duplicate
       `fill_heredoc_bodies_deep` (`src/parser/heredoc.rs`).
+
+## 2026-11-04 Bug-fix Round 2: Deferrals and Decisions
+
+- [ ] `shift N` with N > `$#` returns 1 and continues; dash exits the
+      non-interactive shell, bash continues. POSIX allows either
+      (`src/builtin/flow.rs`).
+- [ ] A non-interactive shell does not print `Terminated` (or other
+      signal names) when a foreground child dies from a signal; dash
+      and bash do. Informational only (`src/exec/job_control.rs`).
+- [ ] `times` with operands is an error; `cd` with `HOME=` (empty) is
+      an error (dash treats it as no-op / current dir).
+- [ ] Finished-but-unreported jobs keep their job number in a
+      non-interactive shell until `jobs` or `wait` reports them (dash
+      behaves the same; bash drops them silently).
+- [ ] Job preview of a double-quoted word: `sh -c "exit 3" &` reports
+      `Done(3)  (background)`; literal double-quoted words could be
+      rendered cheaply (`src/exec/mod.rs`, see the Word-to-source item).
+- [ ] Emacs-mode features missing (not bugs): Ctrl+V quoted-insert,
+      Alt-. / Alt-_ (yank last argument), negative numeric arguments,
+      completion of `$VAR/` and after `VAR=`.
+- [ ] DEVIATION (decided): Ctrl+W uses alphanumeric word boundaries
+      (readline uses whitespace; shells disagree); vi `U` on a freshly
+      typed line clears it (bash restores it; POSIX is ambiguous); `%`
+      in POSIX vi mode rings the bell (not in the POSIX command list).
+- [ ] No `local` builtin (not POSIX; would be a feature addition).
 
 ## History: Known Limitations
 
@@ -617,7 +618,6 @@ the items below are deferred work, not policy:
 - [ ] `exec_regular_builtin` "internal error" guards for `wait` / `fg`/`bg`/`jobs` / `command` are growing — consider factoring "Executor-requiring builtins" into an explicit classification or dispatch table instead of per-name guards (`src/builtin/mod.rs`)
 - [ ] `highlight_scanner` `KEYWORDS` duplicates POSIX §2.4 list — `src/interactive/highlight_scanner/helpers.rs` defines its own copy of the 16 reserved words, separate from the canonical `crate::lexer::reserved::RESERVED_WORDS`. Consolidate once the contextual subsets (`COMMAND_POSITION_KEYWORDS` includes `"time"`, command-position restoration logic) are re-expressed in terms of the canonical list (`src/interactive/highlight_scanner/helpers.rs`)
 - [ ] `expand_assignment_builtin_args` string round-trip — helper builds `"NAME=value"` strings that the builtin re-parses with `find('=')`. Lossless today, but couples the helper shape to the legacy builtin API. When a future refactor touches `builtin_export`/`builtin_readonly` signatures, consider passing `Vec<(String, Option<String>)>` directly to skip the round-trip (`src/exec/simple/mod.rs`, `src/builtin/vars.rs`).
-- [ ] Multi-byte IFS support in UTF-8 locale (bash-extension parity) — `field_split::split` currently matches IFS as an ASCII byte-set. `IFS="日"; set -- $"a日b"` yields `[a] [b]` under bash in UTF-8 locale (character-level match) but is silently ignored (post-fix A) or produces garbled bytes (pre-fix A) in yosh. POSIX leaves this locale-dependent; bash uses character-level matching when locale is multi-byte. Plan: introduce a `char`-level IFS match path (`char_indices` in `split_field`, char-mode `ifs` set) gated by locale detection. Deferred from the 2026-04-21 `append_byte` UTF-8 panic fix to keep scope minimal. See the brainstorming log for that fix; reference bash 3.2 behavior under `LC_ALL=en_US.UTF-8` as the target semantics.
 - [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard. The stdout-lock deadlock this hazard produced in the test harness (2026-08-26, ESCALATED 2026-09-02: three hangs per session in piped `cargo test --lib` runs — the fork child inherited libtest's stdout `ReentrantLock` locked and hung in `exit_child`'s `stdout().flush()`) was FIXED 2026-09-11: every fork site now goes through `src/exec/process.rs::fork_shell`, which holds the std stdout/stderr locks (flushed) across `fork()` and releases them in both processes — the `pthread_atfork` prepare/parent/child pattern for the two std handles. Pinned by `exec::process::tests::fork_shell_child_exits_despite_stdio_lock_contention` (plain `fork` under the same lock-hog thread: 20/20 children killed; `fork_shell`: 0/20). Other std-internal locks (allocator, `stack_overflow::thread_info`) remain out of scope of the wrapper; `exit_child`'s `_exit` covers the exit path, but a child stall pre-exit in the MT harness is still theoretically possible.
 - [ ] `Parser::current_token` API shape — `interactive/parse_status.rs:61` compares the result against `&Token::Newline` literally, which forces every caller to construct a borrowed `Token` value just for equality. Consider a predicate `fn is_token(&self, t: &Token) -> bool` (or an enum-tag helper) that hides the borrow. Discovered during the 2026-05-05 visibility-tightening spec follow-up (`docs/superpowers/specs/2026-05-05-parser-visibility-tightening-design.md` §4.2-1, `src/parser/mod.rs`).
 - [ ] Bench API surface — `Parser::new` and `parse_program` are the only two `Parser` items required to stay `pub`; their sole external consumers are `benches/parser_bench.rs` and `benches/exec_bench.rs`. Wrapping them in a bench-only helper module (e.g. an internal `pub(crate) fn parse_for_bench(s: &str) -> Program` reachable through a `#[cfg(any(test, feature = "internal_api"))]` shim) would let both `Parser::new` and `parse_program` drop to `pub(crate)`, shrinking the public Parser surface from 10 to 8. Requires bench-side refactor. Discovered during the 2026-05-05 visibility-tightening spec follow-up (§4.2-3, `benches/parser_bench.rs`, `benches/exec_bench.rs`).
