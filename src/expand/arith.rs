@@ -607,9 +607,8 @@ impl<'a> ArithParser<'a> {
         {
             self.pos += 1;
         }
-        let name = std::str::from_utf8(&self.input[start..self.pos])
-            .map_err(arith_err)?
-            .to_string();
+        let input = self.input;
+        let name = std::str::from_utf8(&input[start..self.pos]).map_err(arith_err)?;
 
         self.skip_whitespace();
 
@@ -619,10 +618,9 @@ impl<'a> ArithParser<'a> {
             if self.noeval {
                 return Ok(0);
             }
-            let cur = arith_name_lookup(self.env, &name);
             // Recursively evaluate the current value (`x=1+2; $((x+=1))`
             // is 4 in bash), same as the plain lookup path below.
-            let cur_val = self.eval_var_value(&name, &cur)?;
+            let cur_val = self.var_operand(name)?;
             let val = match compound_op {
                 CompoundOp::Add => cur_val.wrapping_add(rhs),
                 CompoundOp::Sub => cur_val.wrapping_sub(rhs),
@@ -647,7 +645,7 @@ impl<'a> ArithParser<'a> {
                 CompoundOp::Xor => cur_val ^ rhs,
                 CompoundOp::Or => cur_val | rhs,
             };
-            self.assign(&name, val)?;
+            self.assign(name, val)?;
             return Ok(val);
         }
 
@@ -659,15 +657,39 @@ impl<'a> ArithParser<'a> {
             self.pos += 1; // consume '='
             let val = self.nested(false, Self::ternary)?;
             if !self.noeval {
-                self.assign(&name, val)?;
+                self.assign(name, val)?;
             }
             return Ok(val);
         }
 
         // Variable lookup: the value is itself evaluated as an arithmetic
         // expression (POSIX §2.6.4 / C rules; `x=1+2; $((x))` is 3).
-        let raw = arith_name_lookup(self.env, &name);
-        self.eval_var_value(&name, &raw)
+        self.var_operand(name)
+    }
+
+    /// The value of variable `name` as an operand (see `eval_var_value`).
+    /// A plain decimal value (the common case) is read in place, without
+    /// copying the value string.
+    fn var_operand(&mut self, name: &str) -> crate::error::Result<i64> {
+        if self.noeval {
+            return Ok(0);
+        }
+        if name != "LINENO" {
+            let Some(raw) = self.env.vars.get(name) else {
+                return Ok(0);
+            };
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(0);
+            }
+            if is_plain_decimal(trimmed)
+                && let Ok(v) = trimmed.parse::<i64>()
+            {
+                return Ok(v);
+            }
+        }
+        let raw = arith_name_lookup(self.env, name);
+        self.eval_var_value(name, &raw)
     }
 
     /// Store an arithmetic assignment's result. LINENO is a computed
