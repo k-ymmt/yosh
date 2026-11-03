@@ -222,30 +222,32 @@
       disposition, so yosh assumes not-ignored and restores SIG_DFL
       (`src/signal.rs::capture_ignored_on_entry`). Revisit if std
       stabilizes `unix_sigpipe` / `-Zon-broken-pipe`.
-- [ ] Perf follow-ups (measure before acting, audit notes; re-measured
-      2026-09-16 with `scripts/perf/compare_shells.py --no-plugins`, where
-      every interpreter-bound workload now runs at 0.3–0.9× dash's wall
-      time, so these are low priority): variable lookups clone values on
-      several expansion paths — a `Cow<str>` return could avoid
-      per-expansion allocation (`src/env/vars.rs`, `src/expand/param.rs`);
-      arithmetic expressions are re-lexed and re-parsed on every
-      evaluation — an AST cache would help hot loops
-      (`src/expand/arith.rs`); command-substitution children clone the
-      full `ShellEnv` before forking (`src/expand/command_sub.rs`;
-      `cmd_sub.sh` measured 0.89× dash, so the clone is not dominant).
-- [ ] `posix_spawn` for plain external commands (measured 2026-09-16 on
-      macOS with `spawnbench.c`: fork+execve 1.13 ms vs posix_spawn 0.77 ms
-      per `/usr/bin/true`; yosh's `external.sh` workload is 1.24 ms/spawn
-      vs bash 1.16). Candidate subset: no redirects, no monitor mode —
-      signal dispositions via `POSIX_SPAWN_SETSIGDEF`/`SETSIGMASK`, envp
-      from `VarStore::envp()`. Redirects would need file actions that
-      replicate `RedirectState` (heredocs, fd saves, noclobber), so keep
-      the fork path for those (`src/exec/simple.rs::spawn_external_at_path`).
-- [ ] Remaining probe-workload gaps vs dash (2026-09-16,
-      `benches/data/workloads_probe/`, final run): `heredoc_big.sh` 1.19×,
-      `ifs_split_big.sh` 1.18×, `recursion.sh` 1.13×, `export_env_spawn.sh`
-      1.03× (was 1.19× before the envp cache). All fork- or
-      allocation-bound; none pathological.
+- [ ] Perf follow-ups (re-measured 2026-11-04 after the round-1 perf
+      pass with `scripts/perf/compare_shells.py --no-plugins`; every
+      interpreter-bound workload now runs at 0.2–0.9× dash's wall time,
+      so these are low priority):
+  - [ ] Startup: `yosh -c :` takes 3.7 ms vs dash 1.7 ms, all before
+        `main` (`--version` alone is 3.6 ms). Linking CoreFoundation
+        costs ~0.77 ms per launch (iana-time-zone ← cap-time-ext ←
+        wasmtime-wasi, and rustls-platform-verifier ← ureq ←
+        yosh-plugin-manager); the 15.9 MB binary costs ~1 ms more. This
+        is essentially the whole remaining gap on `heredoc_big` (1.10×),
+        `ifs_split_big` (1.08×) and `glob_dir` (1.06×), which are
+        otherwise bound by per-byte pipe reads and open/readdir calls.
+  - [ ] Arithmetic expressions are re-lexed and re-parsed on every
+        evaluation; the parser is ~17% of `arith_loop` — an AST cache
+        would help hot loops (`src/expand/arith.rs`).
+  - [ ] Variable lookups still allocate once per expansion; a
+        `Cow<str>` return would avoid it (small payoff now;
+        `src/env/vars.rs`, `src/expand/param.rs`).
+  - [ ] `posix_spawn` is used only for external commands without
+        redirections or monitor mode (2026-11-04); commands with
+        redirections would need spawn file actions replicating
+        `RedirectState` (heredocs, fd saves, noclobber)
+        (`src/exec/simple.rs`).
+  - [ ] Parse speed: 4000 plain function definitions parse in ~31 ms
+        vs dash ~11 ms (byte-by-byte pushes in the lexer, Vec growth;
+        `src/lexer/word.rs`).
 
 ## 2026-11-04 Bug-fix Round 1: Deferrals and Decisions
 
@@ -579,7 +581,6 @@ the items below are deferred work, not policy:
 
 - [ ] `exec_regular_builtin` "internal error" guards for `wait` / `fg`/`bg`/`jobs` / `command` are growing — consider factoring "Executor-requiring builtins" into an explicit classification or dispatch table instead of per-name guards (`src/builtin/mod.rs`)
 - [ ] `highlight_scanner` `KEYWORDS` duplicates POSIX §2.4 list — `src/interactive/highlight_scanner/helpers.rs` defines its own copy of the 16 reserved words, separate from the canonical `crate::lexer::reserved::RESERVED_WORDS`. Consolidate once the contextual subsets (`COMMAND_POSITION_KEYWORDS` includes `"time"`, command-position restoration logic) are re-expressed in terms of the canonical list (`src/interactive/highlight_scanner/helpers.rs`)
-- [ ] `try_parse_assignment` `other.clone()` deep-copies CommandSub — the non-Literal branch clones each remaining `WordPart`, which for `$(...)` substitutions clones the embedded `Program`. Same inefficiency as the prior `extend_from_slice`, so not a regression, but consider consuming `Word` (take ownership) or draining `word.parts` to avoid the copy (`src/parser/simple.rs`).
 - [ ] `expand_assignment_builtin_args` string round-trip — helper builds `"NAME=value"` strings that the builtin re-parses with `find('=')`. Lossless today, but couples the helper shape to the legacy builtin API. When a future refactor touches `builtin_export`/`builtin_readonly` signatures, consider passing `Vec<(String, Option<String>)>` directly to skip the round-trip (`src/exec/simple.rs`, `src/builtin/special.rs`).
 - [ ] Multi-byte IFS support in UTF-8 locale (bash-extension parity) — `field_split::split` currently matches IFS as an ASCII byte-set. `IFS="日"; set -- $"a日b"` yields `[a] [b]` under bash in UTF-8 locale (character-level match) but is silently ignored (post-fix A) or produces garbled bytes (pre-fix A) in yosh. POSIX leaves this locale-dependent; bash uses character-level matching when locale is multi-byte. Plan: introduce a `char`-level IFS match path (`char_indices` in `split_field`, char-mode `ifs` set) gated by locale detection. Deferred from the 2026-04-21 `append_byte` UTF-8 panic fix to keep scope minimal. See the brainstorming log for that fix; reference bash 3.2 behavior under `LC_ALL=en_US.UTF-8` as the target semantics.
 - [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard. The stdout-lock deadlock this hazard produced in the test harness (2026-08-26, ESCALATED 2026-09-02: three hangs per session in piped `cargo test --lib` runs — the fork child inherited libtest's stdout `ReentrantLock` locked and hung in `exit_child`'s `stdout().flush()`) was FIXED 2026-09-11: every fork site now goes through `src/exec/mod.rs::fork_shell`, which holds the std stdout/stderr locks (flushed) across `fork()` and releases them in both processes — the `pthread_atfork` prepare/parent/child pattern for the two std handles. Pinned by `exec::tests::fork_shell_child_exits_despite_stdio_lock_contention` (plain `fork` under the same lock-hog thread: 20/20 children killed; `fork_shell`: 0/20). Other std-internal locks (allocator, `stack_overflow::thread_info`) remain out of scope of the wrapper; `exit_child`'s `_exit` covers the exit path, but a child stall pre-exit in the MT harness is still theoretically possible.
