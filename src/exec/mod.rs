@@ -7,6 +7,7 @@ pub mod pipeline;
 mod process;
 pub mod redirect;
 mod simple;
+mod stack_guard;
 pub(crate) mod terminal_state;
 mod trap;
 
@@ -280,6 +281,9 @@ impl Executor {
 
     /// Evaluate a string as shell commands (used by trap actions and eval).
     pub fn eval_string(&mut self, input: &str) {
+        if self.recursion_too_deep("trap") {
+            return;
+        }
         match self.exec_text(input) {
             Ok(_) => {}
             Err(e) => {

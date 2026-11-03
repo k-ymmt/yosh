@@ -9,6 +9,9 @@ pub fn builtin_eval(args: &[String], executor: &mut Executor) -> Result<i32, She
     if args.is_empty() {
         return Ok(0);
     }
+    if executor.recursion_too_deep("eval") {
+        return Ok(1);
+    }
     let input = args.join(" ");
     match executor.exec_text(&input) {
         Ok(status) => Ok(status),
@@ -56,6 +59,9 @@ pub fn builtin_source(args: &[String], executor: &mut Executor) -> Result<i32, S
             os_path(filename)
         }
     };
+    if executor.recursion_too_deep(".") {
+        return Ok(1);
+    }
     match executor.source_file(&path) {
         Some(status) => Ok(status),
         None => Err(ShellError::runtime(

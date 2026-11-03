@@ -26,6 +26,12 @@ impl Executor {
     /// A Drop guard (`ScopeGuard`) ensures the scope is popped on every
     /// exit path, including panic unwinds.
     pub(crate) fn exec_function_call(&mut self, func_def: &FunctionDef, args: &[String]) -> i32 {
+        // Deep (or runaway) recursion must end in a shell error, not a
+        // native stack overflow that aborts the process and skips the
+        // EXIT trap.
+        if self.recursion_too_deep(&func_def.name) {
+            return 1;
+        }
         self.env.vars.push_scope(args.to_vec());
         self.env.exec.indirection_level += 1;
         // POSIX 2024: break/continue are lexically contained — a function
