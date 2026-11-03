@@ -142,6 +142,13 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
             if let Err(e) = file.read_to_end(&mut raw) {
                 eprintln!("yosh: command substitution: read error: {}", e);
             }
+            // A shell value cannot hold a NUL byte (it could never reach
+            // an argument, the environment or a pattern match intact):
+            // drop NULs from the output, as dash and bash do (POSIX
+            // leaves null bytes in the output unspecified).
+            if raw.contains(&0) {
+                raw.retain(|&b| b != 0);
+            }
             let mut output = crate::byteenc::encode_bytes(&raw).into_owned();
 
             // Wait for the child to finish
