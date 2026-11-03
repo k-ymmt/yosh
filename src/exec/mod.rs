@@ -202,6 +202,13 @@ impl Executor {
         self.env.exec.flow_control.is_some() || self.exit_requested.is_some()
     }
 
+    /// True when a fatal expansion error (`${x:?}`, a nounset failure)
+    /// has been diagnosed and is still pending as
+    /// `FlowControl::ExpansionError`.
+    pub(crate) fn expansion_error_pending(&self) -> bool {
+        self.env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError)
+    }
+
     /// The status a forked child shell (subshell, pipeline member, async
     /// list, command substitution) exits with after running `status`'s
     /// command: a pending exit request — a fatal special-builtin error, or
@@ -216,7 +223,7 @@ impl Executor {
         if let Some(code) = self.exit_requested {
             return code;
         }
-        if self.env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError) {
+        if self.expansion_error_pending() {
             return 1;
         }
         status

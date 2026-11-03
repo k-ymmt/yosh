@@ -281,7 +281,7 @@ impl Executor {
             },
             None => self.env.vars.positional_params().to_vec(),
         };
-        if self.env.exec.flow_control == Some(FlowControl::ExpansionError) {
+        if self.expansion_error_pending() {
             // `for i in ${x:?}`: already diagnosed; the loop does not run
             // and its status is the expansion error's, not 0.
             self.env.exec.last_exit_status = 1;
@@ -319,7 +319,7 @@ impl Executor {
                 return Err(e);
             }
         };
-        if self.env.exec.flow_control == Some(FlowControl::ExpansionError) {
+        if self.expansion_error_pending() {
             self.env.exec.last_exit_status = 1;
             return Ok(1);
         }

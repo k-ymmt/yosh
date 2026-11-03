@@ -127,9 +127,7 @@ impl Executor {
             // trap — with the expansion-error status, overriding the
             // status it was about to exit with (POSIX §2.8.1; dash exits
             // 2 here, and so does `out=$(trap ': ${x:?}' EXIT; :)`).
-            if !self.env.mode.is_interactive
-                && self.env.exec.flow_control == Some(FlowControl::ExpansionError)
-            {
+            if !self.env.mode.is_interactive && self.expansion_error_pending() {
                 shell_exit(1);
             }
             if self.env.exec.flow_control.is_none() {

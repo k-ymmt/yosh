@@ -27,7 +27,7 @@ impl Executor {
             return Ok(String::new());
         };
         let value = crate::expand::expand_word_to_string(&mut self.env, w)?;
-        if self.env.exec.flow_control == Some(crate::env::FlowControl::ExpansionError) {
+        if self.expansion_error_pending() {
             return Err(ShellError::expansion_already_reported());
         }
         Ok(value)
