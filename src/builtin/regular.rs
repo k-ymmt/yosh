@@ -3,7 +3,7 @@
 //! module; `wait`, `fg`, `bg`, `jobs`, `fc` and `command` need the
 //! executor and are dispatched from `exec/simple/` instead.
 
-use super::{alias, cd, echo, getopts, hash, kill, printf, read, test, r#type, ulimit, umask};
+use super::{alias, cd, echo, getopts, hash, kill, printf, pwd, read, test, r#type, ulimit, umask};
 use crate::env::ShellEnv;
 
 /// Execute a regular builtin command, returning its exit status.
@@ -14,6 +14,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "false" => Ok(1),
         "echo" => echo::builtin_echo(args),
         "printf" => printf::builtin_printf(args),
+        "pwd" => pwd::builtin_pwd(args, env),
         "umask" => umask::builtin_umask(args),
         "ulimit" => ulimit::builtin_ulimit(args),
         "alias" => alias::builtin_alias(args, env),

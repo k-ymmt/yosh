@@ -58,6 +58,14 @@ pub(crate) fn resolve_startup_pwd(
     physical()
 }
 
+/// The `pwd -L` value (POSIX XCU `pwd`): `pwd_var` when it is an
+/// absolute pathname of the current directory without dot or dot-dot
+/// components, otherwise the `pwd -P` value. `None` when the physical
+/// path cannot be determined either (a deleted working directory).
+pub(crate) fn logical_cwd(pwd_var: Option<&str>) -> Option<String> {
+    resolve_startup_pwd(pwd_var, inherited_names_cwd, physical_cwd)
+}
+
 /// POSIX: absolute, and no component that is dot or dot-dot.
 fn is_acceptable_form(p: &str) -> bool {
     p.starts_with('/') && !p.split('/').any(|c| c == "." || c == "..")
@@ -75,7 +83,7 @@ fn inherited_names_cwd(p: &str) -> bool {
     }
 }
 
-fn physical_cwd() -> Option<String> {
+pub(crate) fn physical_cwd() -> Option<String> {
     std::env::current_dir()
         .ok()
         .map(|p| crate::byteenc::encode_bytes(p.as_os_str().as_bytes()).into_owned())

@@ -13,6 +13,7 @@ pub(crate) mod options;
 pub(crate) mod output;
 pub(crate) mod path;
 pub mod printf;
+pub mod pwd;
 pub(crate) mod quote;
 pub mod read;
 pub mod regular;
@@ -35,7 +36,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "break", ":", "continue", ".", "eval", "exec", "exit", "export", "readonly", "return", "set",
     "shift", "times", "trap", "unset", // Regular builtins
     "fc", "cd", "command", "echo", "true", "false", "alias", "unalias", "kill", "wait", "fg", "bg",
-    "jobs", "umask", "ulimit", "test", "[", "type", "hash", "read", "getopts", "printf",
+    "jobs", "umask", "ulimit", "test", "[", "type", "hash", "read", "getopts", "printf", "pwd",
 ];
 
 /// Classification of a command name as a POSIX builtin kind.
@@ -57,7 +58,7 @@ pub fn classify_builtin(name: &str) -> BuiltinKind {
         | "return" | "set" | "shift" | "times" | "trap" | "unset" => BuiltinKind::Special,
         "fc" | "cd" | "command" | "echo" | "true" | "false" | "alias" | "unalias" | "kill"
         | "wait" | "fg" | "bg" | "jobs" | "umask" | "ulimit" | "test" | "[" | "type" | "hash"
-        | "read" | "getopts" | "printf" => BuiltinKind::Regular,
+        | "read" | "getopts" | "printf" | "pwd" => BuiltinKind::Regular,
         _ => BuiltinKind::NotBuiltin,
     }
 }
