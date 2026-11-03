@@ -168,6 +168,11 @@ fn wait_tty_readable(timeout_ms: libc::c_int) -> io::Result<TtyWait> {
     Ok(TtyWait::Ready)
 }
 
+/// The error `read_event` reports once the terminal has hung up.
+fn terminal_closed() -> io::Error {
+    io::Error::new(io::ErrorKind::UnexpectedEof, "terminal closed")
+}
+
 impl CrosstermTerminal {
     pub fn new() -> Self {
         Self::default()
@@ -193,10 +198,7 @@ impl Terminal for CrosstermTerminal {
             if self.stdin_is_tty
                 && let TtyWait::Hangup = wait_tty_readable(0)?
             {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "terminal closed",
-                ));
+                return Err(terminal_closed());
             }
             // Deliver whatever crossterm has parsed or can parse from
             // buffered bytes (also picks up SIGWINCH resize events).
@@ -212,10 +214,7 @@ impl Terminal for CrosstermTerminal {
                 // loop back to the hangup pre-check and the zero-timeout
                 // poll above, which consumes any new bytes.
                 if let TtyWait::Hangup = wait_tty_readable(50)? {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "terminal closed",
-                    ));
+                    return Err(terminal_closed());
                 }
             } else if event::poll(Duration::from_millis(50))? {
                 // Non-tty stdin (crossterm reads /dev/tty instead):
