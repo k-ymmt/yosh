@@ -138,6 +138,44 @@ pub fn decode_bytes(s: &str) -> Cow<'_, [u8]> {
     }
 }
 
+/// Length of the character unit at the start of `bytes` (non-empty): the
+/// length of the valid UTF-8 sequence there, or 1 for a byte that does not
+/// start one. This is how byte strings are segmented into characters
+/// wherever a shell character (an IFS delimiter, a `read` input unit) must
+/// be recognized independently of how byteenc happens to hold its bytes.
+pub fn utf8_unit_len(bytes: &[u8]) -> usize {
+    let len = match bytes[0] {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => 1,
+    };
+    if len > 1 && bytes.len() >= len && std::str::from_utf8(&bytes[..len]).is_ok() {
+        len
+    } else {
+        1
+    }
+}
+
+/// The characters of an encoded string as raw byte sequences: `s` is
+/// decoded to its bytes first and then segmented with [`utf8_unit_len`],
+/// so a character that byteenc holds as several escape characters (a raw
+/// byte run that forms valid UTF-8 — e.g. assembled from separate command
+/// substitutions — or a genuine U+10FE00.. codepoint, which byteenc
+/// escapes byte by byte) is still one character, while a lone raw byte is
+/// a character of its own.
+pub fn raw_char_units(s: &str) -> Vec<Vec<u8>> {
+    let bytes = decode_bytes(s);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let len = utf8_unit_len(&bytes[i..]);
+        out.push(bytes[i..i + len].to_vec());
+        i += len;
+    }
+    out
+}
+
 /// Write a byteenc-encoded string to stderr as raw bytes (escape
 /// codepoints become their original bytes), newline-terminated. Used for
 /// diagnostics that embed user data (xtrace lines, command names) so they

@@ -71,25 +71,44 @@ pub fn split(env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField> {
         .filter(|b| !matches!(*b, b' ' | b'\t' | b'\n'))
         .filter(|b| *b < 0x80)
         .collect();
+    // IFS is segmented into characters by its raw bytes (the same rule
+    // `read` uses), not by its `String` characters: an IFS assembled from
+    // separate pieces (`IFS=$(printf '\303')$(printf '\251')`) holds `é`
+    // as two escape characters but is still the one character `é`.
     let mut ifs_multi: Vec<String> = Vec::new();
-    for c in ifs.chars().filter(|c| !c.is_ascii()) {
-        ifs_multi.push(String::from(c));
-        // A valid character can also reach a field as its bytes held one
-        // by one in byteenc escapes, when they were produced separately
-        // (`$(printf 'a\303')$(printf '\251b')`): match that spelling
-        // too. Escapes and raw UTF-8 never mix within one character (a
-        // raw continuation byte cannot occur alone in a `String`), so
-        // these two spellings are the only ones.
-        if crate::byteenc::unescape_char(c).is_none() {
-            let mut buf = [0u8; 4];
-            let escaped: String = c
-                .encode_utf8(&mut buf)
-                .bytes()
-                .map(crate::byteenc::escape_char)
-                .collect();
-            ifs_multi.push(escaped);
+    let units = if ifs.is_ascii() {
+        Vec::new()
+    } else {
+        crate::byteenc::raw_char_units(ifs)
+    };
+    for unit in units {
+        if unit[0].is_ascii() {
+            continue;
         }
+        // A character reaches a field either as valid UTF-8 or, when its
+        // bytes were produced separately (`$(printf 'a\303')$(printf
+        // '\251b')`), as one byteenc escape per byte; match both
+        // spellings. Escapes and raw UTF-8 never mix within one character
+        // (a raw continuation byte cannot occur alone in a `String`), and
+        // a genuine U+10FE00.. codepoint is always held escaped, so these
+        // are the only spellings. A lone raw byte has only the escaped one.
+        if let Ok(s) = std::str::from_utf8(&unit)
+            && s.chars()
+                .all(|c| crate::byteenc::unescape_char(c).is_none())
+        {
+            ifs_multi.push(s.to_string());
+        }
+        ifs_multi.push(
+            unit.iter()
+                .copied()
+                .map(crate::byteenc::escape_char)
+                .collect(),
+        );
     }
+    // Where one spelling is a prefix of another (a lone raw byte and a
+    // character starting with that byte), the longer one is the character
+    // actually in the field: try it first.
+    ifs_multi.sort_by_key(|d| std::cmp::Reverse(d.len()));
 
     // Fast path: if no field contains an unquoted IFS byte, the state
     // machine would emit each input field unchanged. Return without
@@ -148,10 +167,13 @@ impl Delims {
         }
         if c == MB_LEAD {
             let rest = &field.as_bytes()[i..];
-            // The whole delimiter must be unquoted: an escaped-byte
-            // spelling spans several characters, which quoting can split.
+            // Every byte of the delimiter must be unquoted: an escaped-byte
+            // spelling spans several characters, any of which quoting can
+            // cover (`$(printf 'a\342')"$(printf '\202')"…` with IFS=€),
+            // and a quoted byte is never consumed as part of a delimiter.
             return match self.multi.iter().find(|d| {
-                rest.starts_with(d.as_bytes()) && !field.is_split_protected(i + d.len() - 1)
+                rest.starts_with(d.as_bytes())
+                    && (i + 1..i + d.len()).all(|k| !field.is_split_protected(k))
             }) {
                 Some(d) => (NWS_DELIM, d.len()),
                 None => (NOT_DELIM, 1),
@@ -646,6 +668,43 @@ mod tests {
         f.push_expanded(&format!("a{c3}"));
         f.push_quoted(&format!("{a9}b"));
         assert_eq!(values(split(&env, vec![f])), vec![format!("a{c3}{a9}b")]);
+    }
+
+    #[test]
+    fn test_escaped_delimiter_with_quoted_middle_byte_is_kept() {
+        // IFS=€; $(printf 'a\342')"$(printf '\202')"$(printf '\254b'):
+        // only the middle byte is quoted, so the three bytes are not an
+        // unquoted delimiter and every byte stays (bash in a UTF-8 locale:
+        // one field `a€b`). The quoted byte used to be swallowed.
+        let [e2, x82, ac] =
+            [b"\xe2", b"\x82", b"\xac"].map(|b| crate::byteenc::encode_bytes(b).into_owned());
+        let env = env_with_ifs("€");
+        let mut f = ExpandedField::new();
+        f.push_expanded(&format!("a{e2}"));
+        f.push_quoted(&x82);
+        f.push_expanded(&format!("{ac}b"));
+        assert_eq!(
+            values(split(&env, vec![f])),
+            vec![format!("a{e2}{x82}{ac}b")]
+        );
+    }
+
+    #[test]
+    fn test_ifs_assembled_from_escaped_bytes_is_one_character() {
+        // IFS=$(printf '\303')$(printf '\251') holds `é` as two escapes;
+        // it is still the one IFS character `é` in both spellings a value
+        // can hold it in (dash and bash: `<a>` `<b>`).
+        let c3 = crate::byteenc::encode_bytes(b"\xc3").into_owned();
+        let a9 = crate::byteenc::encode_bytes(b"\xa9").into_owned();
+        let env = env_with_ifs(&format!("{c3}{a9}"));
+        let input = vec![unquoted("aéb")];
+        assert_eq!(values(split(&env, input)), vec!["a", "b"]);
+        let input = vec![unquoted(&format!("c{c3}{a9}d"))];
+        assert_eq!(values(split(&env, input)), vec!["c", "d"]);
+        // A lone raw byte in IFS is still a character of its own.
+        let env = env_with_ifs(&c3);
+        let input = vec![unquoted(&format!("a{c3}b"))];
+        assert_eq!(values(split(&env, input)), vec!["a", "b"]);
     }
 
     // ── Literal bytes are not split (POSIX XCU §2.6.5) ──

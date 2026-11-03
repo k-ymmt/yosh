@@ -380,7 +380,7 @@ fn line_units(line: &[LineByte]) -> Vec<Unit> {
             buf[k] = b.value;
             n = k + 1;
         }
-        let end = i + utf8_unit_len(&buf[..n]);
+        let end = i + crate::byteenc::utf8_unit_len(&buf[..n]);
         units.push(Unit {
             start: i,
             end,
@@ -389,41 +389,6 @@ fn line_units(line: &[LineByte]) -> Vec<Unit> {
         i = end;
     }
     units
-}
-
-/// Length of the unit at the start of `bytes` (non-empty): the length of
-/// the valid UTF-8 sequence there, or 1 for a byte that does not start
-/// one.
-fn utf8_unit_len(bytes: &[u8]) -> usize {
-    let len = match bytes[0] {
-        0xC2..=0xDF => 2,
-        0xE0..=0xEF => 3,
-        0xF0..=0xF4 => 4,
-        _ => 1,
-    };
-    if len > 1 && bytes.len() >= len && std::str::from_utf8(&bytes[..len]).is_ok() {
-        len
-    } else {
-        1
-    }
-}
-
-/// The IFS characters as byte sequences, segmented exactly like the input
-/// line ([`line_units`]): IFS is decoded to its raw bytes first, so a
-/// character that byteenc holds as several escape characters (a raw byte
-/// run that forms valid UTF-8, or a genuine U+10FE00.. codepoint, which
-/// byteenc escapes byte by byte) is still one delimiter matching the same
-/// input unit, while a lone raw byte matches only that raw input byte.
-fn ifs_chars(ifs: &str) -> Vec<Vec<u8>> {
-    let bytes = crate::byteenc::decode_bytes(ifs);
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        let len = utf8_unit_len(&bytes[i..]);
-        out.push(bytes[i..i + len].to_vec());
-        i += len;
-    }
-    out
 }
 
 /// POSIX §2.6.5 field splitting for `read`. Returns exactly `n_vars`
@@ -438,7 +403,10 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
     // Classify IFS characters.
     let mut ws_ifs: Vec<Vec<u8>> = Vec::new();
     let mut sep_ifs: Vec<Vec<u8>> = Vec::new();
-    for c in ifs_chars(ifs) {
+    // IFS is segmented exactly like the input line (`line_units`), so a
+    // character held as several escape characters is still one delimiter
+    // and a lone raw byte matches only that raw input byte.
+    for c in crate::byteenc::raw_char_units(ifs) {
         if matches!(c.as_slice(), b" " | b"\t" | b"\n") {
             ws_ifs.push(c);
         } else {
