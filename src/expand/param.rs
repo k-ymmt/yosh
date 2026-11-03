@@ -63,9 +63,10 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
 
         // ── ${#name} — character count ───────────────────────────────────
         ParamExpr::Length(name) => {
-            let len = lookup_var(env, name)
-                .map(|v| v.chars().count())
-                .unwrap_or(0);
+            let Ok(val) = lookup_var_nounset(env, name) else {
+                return Ok(String::new());
+            };
+            let len = val.map(|v| v.chars().count()).unwrap_or(0);
             Ok(len.to_string())
         }
 
@@ -114,8 +115,12 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                 if name != "LINENO" {
                     // assign_var (not vars.set): invalidates the utility
                     // hash when PATH is assigned via `${PATH:=...}`.
-                    // Errors (readonly) stay ignored, as before.
-                    let _ = env.assign_var(name, new_val.as_str());
+                    // A readonly target is an expansion error, like
+                    // `${x?}` (dash/bash: `r: is read only`).
+                    if let Err(msg) = env.assign_var(name, new_val.as_str()) {
+                        expansion_error(env, format_args!("{msg}"));
+                        return Ok(String::new());
+                    }
                 }
                 Ok(new_val)
             } else {
@@ -172,28 +177,40 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
 
         // ── ${name%pattern} — remove shortest suffix ─────────────────────
         ParamExpr::StripShortSuffix(name, pattern_word) => {
-            let value = lookup_var(env, name).unwrap_or_default();
+            let Ok(value) = lookup_var_nounset(env, name) else {
+                return Ok(String::new());
+            };
+            let value = value.unwrap_or_default();
             let pat = expand_word_to_pattern(env, pattern_word)?;
             Ok(strip_suffix(&value, &pat, false))
         }
 
         // ── ${name%%pattern} — remove longest suffix ──────────────────────
         ParamExpr::StripLongSuffix(name, pattern_word) => {
-            let value = lookup_var(env, name).unwrap_or_default();
+            let Ok(value) = lookup_var_nounset(env, name) else {
+                return Ok(String::new());
+            };
+            let value = value.unwrap_or_default();
             let pat = expand_word_to_pattern(env, pattern_word)?;
             Ok(strip_suffix(&value, &pat, true))
         }
 
         // ── ${name#pattern} — remove shortest prefix ─────────────────────
         ParamExpr::StripShortPrefix(name, pattern_word) => {
-            let value = lookup_var(env, name).unwrap_or_default();
+            let Ok(value) = lookup_var_nounset(env, name) else {
+                return Ok(String::new());
+            };
+            let value = value.unwrap_or_default();
             let pat = expand_word_to_pattern(env, pattern_word)?;
             Ok(strip_prefix(&value, &pat, false))
         }
 
         // ── ${name##pattern} — remove longest prefix ──────────────────────
         ParamExpr::StripLongPrefix(name, pattern_word) => {
-            let value = lookup_var(env, name).unwrap_or_default();
+            let Ok(value) = lookup_var_nounset(env, name) else {
+                return Ok(String::new());
+            };
+            let value = value.unwrap_or_default();
             let pat = expand_word_to_pattern(env, pattern_word)?;
             Ok(strip_prefix(&value, &pat, true))
         }
@@ -241,6 +258,22 @@ pub(super) fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
         return env.vars.positional_params().get(n - 1).cloned();
     }
     env.vars.get(name).map(|s| s.to_string())
+}
+
+/// `lookup_var` for the expansion forms that `set -u` covers beyond a
+/// bare `$name` — `${#name}` and the four strip forms (POSIX §2.6.2 /
+/// `set -u`: expanding an unset parameter other than `@`/`*` is an
+/// error; dash/bash/ksh agree). An unset `name` raises the expansion
+/// error and yields `Err(())` so the caller skips the rest of the
+/// expansion (no pattern side effects). `@`/`*` stay exempt, as for
+/// bare `$@`.
+fn lookup_var_nounset(env: &mut ShellEnv, name: &str) -> Result<Option<String>, ()> {
+    let val = lookup_var(env, name);
+    if val.is_none() && env.mode.options.nounset && !matches!(name, "@" | "*") {
+        expansion_error(env, format_args!("{}: parameter not set", name));
+        return Err(());
+    }
+    Ok(val)
 }
 
 /// True when `name` denotes a positional or special parameter, which

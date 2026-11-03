@@ -5,6 +5,18 @@ use crate::error::{ExpansionErrorKind, ShellError};
 /// (`x=y; y=1; $((x))`). Prevents infinite loops like `x=x`.
 const MAX_RECURSION_DEPTH: u32 = 64;
 
+/// Maximum syntactic nesting depth (parentheses, unary operators,
+/// ternary/assignment chains) of one arithmetic evaluation, counted
+/// across recursive variable-as-expression evaluation. The evaluator is
+/// recursive descent, so unbounded nesting (`$(( ((((…1…)))) ))`) would
+/// overflow the native stack and abort the shell; past this depth it
+/// reports an ordinary arithmetic error instead. One parenthesis level
+/// costs ~13 KiB of stack in a debug build (~17 descent frames), which
+/// overflowed the 8 MiB main stack near 620 levels; 256 keeps the worst
+/// case near 3 MiB there and far less in release builds, while staying
+/// well beyond any hand-written expression.
+const MAX_NEST_DEPTH: u32 = 256;
+
 /// Build the `ShellError` for a general arithmetic evaluation failure.
 /// All arithmetic errors are `ShellError::expansion`, so the POSIX §2.8.1
 /// consequences table applies uniformly at every call site: a word-context
@@ -49,6 +61,8 @@ pub fn evaluate(env: &mut ShellEnv, expr: &str) -> crate::error::Result<String> 
         pos: 0,
         env,
         depth: 0,
+        nest: 0,
+        noeval: false,
     };
 
     // Callers print the diagnostic (word expansion via the ShellError path
@@ -75,6 +89,15 @@ struct ArithParser<'a> {
     /// Recursive variable-as-expression evaluation depth (see
     /// `eval_var_value`).
     depth: u32,
+    /// Current syntactic nesting depth (see `MAX_NEST_DEPTH`).
+    nest: u32,
+    /// True while parsing an operand that C semantics leave unevaluated:
+    /// the untaken branch of `?:` and the right operand of a
+    /// short-circuited `&&` / `||`. The operand is still parsed (syntax
+    /// errors are reported) but has no side effects: assignments are not
+    /// performed, variables are not evaluated, and division by zero is
+    /// not an error (`$((1 ? 2 : (x=5)))` leaves `x` alone; dash/bash).
+    noeval: bool,
 }
 
 impl<'a> ArithParser<'a> {
@@ -99,11 +122,20 @@ impl<'a> ArithParser<'a> {
     /// arithmetic expression (`x=1+2; $((x))` == 3, matching bash/dash),
     /// with a depth cap so self-referential values (`x=x`) terminate.
     fn eval_var_value(&mut self, name: &str, raw: &str) -> crate::error::Result<i64> {
+        if self.noeval {
+            return Ok(0);
+        }
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return Ok(0);
         }
-        if let Ok(v) = trimmed.parse::<i64>() {
+        // Fast path: a plain decimal integer. Values with a leading zero
+        // (octal `010`, hex `0x1f`, invalid `09`) take the full path so
+        // they are read as integer constants with the C rules a literal
+        // gets (`x=010; $((x))` is 8, `x=09` is an error; dash/bash).
+        if is_plain_decimal(trimmed)
+            && let Ok(v) = trimmed.parse::<i64>()
+        {
             return Ok(v);
         }
         if self.depth >= MAX_RECURSION_DEPTH {
@@ -117,8 +149,33 @@ impl<'a> ArithParser<'a> {
             pos: 0,
             env: self.env,
             depth: self.depth + 1,
+            nest: self.nest,
+            noeval: false,
         };
         sub.eval_full()
+    }
+
+    /// Parse a nested operand with `parse`: one more level of syntactic
+    /// nesting (an arithmetic error instead of a stack overflow past
+    /// `MAX_NEST_DEPTH`), in no-evaluation mode when `skip` is set (see
+    /// `noeval`; nested skips stay skipped). Every recursive cycle of the
+    /// descent — parentheses, unary operators, `?:` branches, assignment
+    /// right-hand sides — passes through here.
+    fn nested(
+        &mut self,
+        skip: bool,
+        parse: impl FnOnce(&mut Self) -> crate::error::Result<i64>,
+    ) -> crate::error::Result<i64> {
+        if self.nest >= MAX_NEST_DEPTH {
+            return Err(arith_err("expression nested too deeply"));
+        }
+        self.nest += 1;
+        let saved = self.noeval;
+        self.noeval |= skip;
+        let result = parse(self);
+        self.noeval = saved;
+        self.nest -= 1;
+        result
     }
 
     fn skip_whitespace(&mut self) {
@@ -133,10 +190,10 @@ impl<'a> ArithParser<'a> {
             self.pos += 1;
             Ok(())
         } else {
-            let got = self.input.get(self.pos).copied().unwrap_or(b'?');
             Err(arith_err(format!(
                 "expected '{}', got '{}'",
-                ch as char, got as char
+                ch as char,
+                self.char_at_pos().unwrap_or('?')
             )))
         }
     }
@@ -170,9 +227,10 @@ impl<'a> ArithParser<'a> {
         self.skip_whitespace();
         if self.pos < self.input.len() && self.input[self.pos] == b'?' {
             self.pos += 1;
-            let then_val = self.ternary()?;
+            // Only the selected branch is evaluated (C semantics).
+            let then_val = self.nested(cond == 0, Self::ternary)?;
             self.expect(b':')?;
-            let else_val = self.ternary()?;
+            let else_val = self.nested(cond != 0, Self::ternary)?;
             Ok(if cond != 0 { then_val } else { else_val })
         } else {
             Ok(cond)
@@ -190,7 +248,9 @@ impl<'a> ArithParser<'a> {
                 && self.input[self.pos + 1] == b'|'
             {
                 self.pos += 2;
-                let right = self.logical_and()?;
+                // Short-circuit: a true left operand leaves the right
+                // one unevaluated (no side effects).
+                let right = self.nested(left != 0, Self::logical_and)?;
                 left = if left != 0 || right != 0 { 1 } else { 0 };
             } else {
                 break;
@@ -210,7 +270,9 @@ impl<'a> ArithParser<'a> {
                 && self.input[self.pos + 1] == b'&'
             {
                 self.pos += 2;
-                let right = self.bitwise_or()?;
+                // Short-circuit: a false left operand leaves the right
+                // one unevaluated (no side effects).
+                let right = self.nested(left == 0, Self::bitwise_or)?;
                 left = if left != 0 && right != 0 { 1 } else { 0 };
             } else {
                 break;
@@ -406,6 +468,10 @@ impl<'a> ArithParser<'a> {
                 self.pos += 1;
                 let right = self.unary()?;
                 if right == 0 {
+                    if self.noeval {
+                        left = 0;
+                        continue;
+                    }
                     return Err(div_zero_err("division by zero"));
                 }
                 // wrapping: INT_MIN / -1 yields INT_MIN (C semantics) instead of panicking
@@ -414,6 +480,10 @@ impl<'a> ArithParser<'a> {
                 self.pos += 1;
                 let right = self.unary()?;
                 if right == 0 {
+                    if self.noeval {
+                        left = 0;
+                        continue;
+                    }
                     return Err(div_zero_err("division by zero (modulo)"));
                 }
                 // wrapping: INT_MIN % -1 yields 0 instead of panicking
@@ -433,21 +503,21 @@ impl<'a> ArithParser<'a> {
             match self.input[self.pos] {
                 b'-' => {
                     self.pos += 1;
-                    let v = self.unary()?;
+                    let v = self.nested(false, Self::unary)?;
                     Ok(v.wrapping_neg())
                 }
                 b'+' => {
                     self.pos += 1;
-                    self.unary()
+                    self.nested(false, Self::unary)
                 }
                 b'!' => {
                     self.pos += 1;
-                    let v = self.unary()?;
+                    let v = self.nested(false, Self::unary)?;
                     Ok(if v == 0 { 1 } else { 0 })
                 }
                 b'~' => {
                     self.pos += 1;
-                    let v = self.unary()?;
+                    let v = self.nested(false, Self::unary)?;
                     Ok(!v)
                 }
                 _ => self.primary(),
@@ -470,7 +540,7 @@ impl<'a> ArithParser<'a> {
         // Parenthesized expression
         if ch == b'(' {
             self.pos += 1;
-            let val = self.expr()?;
+            let val = self.nested(false, Self::expr)?;
             self.expect(b')')?;
             return Ok(val);
         }
@@ -485,7 +555,22 @@ impl<'a> ArithParser<'a> {
             return self.parse_name_or_assign();
         }
 
-        Err(arith_err(format!("unexpected character '{}'", ch as char)))
+        Err(arith_err(format!(
+            "unexpected character '{}'",
+            self.char_at_pos().unwrap_or('?')
+        )))
+    }
+
+    /// The whole (possibly multibyte) character at `pos`, for
+    /// diagnostics: `$((é+1))` must report `é`, not its first byte.
+    fn char_at_pos(&self) -> Option<char> {
+        let rest = self.input.get(self.pos..)?;
+        let head = &rest[..rest.len().min(4)];
+        let valid = match std::str::from_utf8(head) {
+            Ok(s) => s,
+            Err(e) => std::str::from_utf8(&head[..e.valid_up_to()]).unwrap_or(""),
+        };
+        valid.chars().next()
     }
 
     // ── Number literal: decimal, octal (0…), hex (0x…) ──────────────────────
@@ -530,7 +615,10 @@ impl<'a> ArithParser<'a> {
 
         // Check for compound assignment operators: +=, -=, *=, /=, %=, <<=, >>=, &=, ^=, |=
         if let Some(compound_op) = self.try_compound_assign_op() {
-            let rhs = self.ternary()?;
+            let rhs = self.nested(false, Self::ternary)?;
+            if self.noeval {
+                return Ok(0);
+            }
             let cur = arith_name_lookup(self.env, &name);
             // Recursively evaluate the current value (`x=1+2; $((x+=1))`
             // is 4 in bash), same as the plain lookup path below.
@@ -559,15 +647,7 @@ impl<'a> ArithParser<'a> {
                 CompoundOp::Xor => cur_val ^ rhs,
                 CompoundOp::Or => cur_val | rhs,
             };
-            // LINENO is a computed pseudo-variable (see `ExecState::lineno`);
-            // an assignment reads back the current line but does not
-            // persist (matches bash: `$((LINENO+=1))` does not "stick").
-            if name != "LINENO" {
-                // assign_var (not vars.set): invalidates the utility hash
-                // when PATH is assigned inside arithmetic. Errors
-                // (readonly) stay ignored, as before.
-                let _ = self.env.assign_var(&name, val.to_string());
-            }
+            self.assign(&name, val)?;
             return Ok(val);
         }
 
@@ -577,11 +657,9 @@ impl<'a> ArithParser<'a> {
             && self.input.get(self.pos + 1) != Some(&b'=')
         {
             self.pos += 1; // consume '='
-            let val = self.ternary()?;
-            // Assign into env (LINENO: see comment above; assign_var for
-            // PATH-cache invalidation, errors stay ignored)
-            if name != "LINENO" {
-                let _ = self.env.assign_var(&name, val.to_string());
+            let val = self.nested(false, Self::ternary)?;
+            if !self.noeval {
+                self.assign(&name, val)?;
             }
             return Ok(val);
         }
@@ -590,6 +668,22 @@ impl<'a> ArithParser<'a> {
         // expression (POSIX §2.6.4 / C rules; `x=1+2; $((x))` is 3).
         let raw = arith_name_lookup(self.env, &name);
         self.eval_var_value(&name, &raw)
+    }
+
+    /// Store an arithmetic assignment's result. LINENO is a computed
+    /// pseudo-variable (see `ExecState::lineno`): an assignment reads back
+    /// the value but does not persist (matches bash: `$((LINENO+=1))`
+    /// does not "stick"). `assign_var` (not `vars.set`) invalidates the
+    /// utility hash when PATH is assigned. A readonly target is an
+    /// expansion error (dash: `x: is read only`; bash: `x: readonly
+    /// variable`), never silently ignored.
+    fn assign(&mut self, name: &str, val: i64) -> crate::error::Result<()> {
+        if name == "LINENO" {
+            return Ok(());
+        }
+        self.env
+            .assign_var(name, val.to_string())
+            .map_err(|msg| ShellError::expansion(ExpansionErrorKind::InvalidArithmetic, msg))
     }
 
     /// Try to match a compound assignment operator at current position.
@@ -629,6 +723,19 @@ impl<'a> ArithParser<'a> {
             return op;
         }
         None
+    }
+}
+
+/// True for an optionally `-`-signed run of ASCII digits with no
+/// redundant leading zero (`0`, `42`, `-7`): the strings whose `i64`
+/// parse agrees with C integer-constant rules. Anything else (`010`,
+/// `0x1f`, `09`, `+5`, `1+2`) is evaluated as an expression.
+fn is_plain_decimal(s: &str) -> bool {
+    let digits = s.strip_prefix('-').unwrap_or(s).as_bytes();
+    match digits {
+        [] => false,
+        [b'0'] => true,
+        [first, ..] => *first != b'0' && digits.iter().all(u8::is_ascii_digit),
     }
 }
 
@@ -968,5 +1075,119 @@ mod tests {
         e.vars.set("x", "1+2").unwrap();
         assert_eq!(evaluate(&mut e, "x += 1"), Ok("4".to_string()));
         assert_eq!(e.vars.get("x"), Some("4"));
+    }
+
+    // ── Variable values are C integer constants (octal / hex) ──
+
+    #[test]
+    fn test_var_value_octal_and_hex() {
+        let mut e = env();
+        e.vars.set("x", "010").unwrap();
+        assert_eq!(evaluate(&mut e, "x"), Ok("8".to_string()));
+        e.vars.set("x", "-010").unwrap();
+        assert_eq!(evaluate(&mut e, "x"), Ok("-8".to_string()));
+        e.vars.set("x", "0x1f").unwrap();
+        assert_eq!(evaluate(&mut e, "x"), Ok("31".to_string()));
+        e.vars.set("x", "0").unwrap();
+        assert_eq!(evaluate(&mut e, "x"), Ok("0".to_string()));
+        e.vars.set("x", "-7").unwrap();
+        assert_eq!(evaluate(&mut e, "x + 1"), Ok("-6".to_string()));
+    }
+
+    #[test]
+    fn test_var_value_invalid_octal_is_error() {
+        let mut e = env();
+        e.vars.set("x", "09").unwrap();
+        assert!(evaluate(&mut e, "x").is_err());
+    }
+
+    #[test]
+    fn test_is_plain_decimal() {
+        for ok in ["0", "7", "42", "-7", "-0", "1234567890"] {
+            assert!(is_plain_decimal(ok), "{ok}");
+        }
+        for not in ["", "-", "010", "-010", "09", "0x1f", "+5", "1+2", "00"] {
+            assert!(!is_plain_decimal(not), "{not}");
+        }
+    }
+
+    // ── Unevaluated operands have no side effects ──
+
+    #[test]
+    fn test_ternary_evaluates_only_selected_branch() {
+        let mut e = env();
+        e.vars.set("x", "0").unwrap();
+        assert_eq!(evaluate(&mut e, "1 ? 2 : (x = 5)"), Ok("2".to_string()));
+        assert_eq!(e.vars.get("x"), Some("0"));
+        assert_eq!(evaluate(&mut e, "0 ? (x = 5) : 3"), Ok("3".to_string()));
+        assert_eq!(e.vars.get("x"), Some("0"));
+        assert_eq!(
+            evaluate(&mut e, "0 ? (x = 5) : (x = 6)"),
+            Ok("6".to_string())
+        );
+        assert_eq!(e.vars.get("x"), Some("6"));
+    }
+
+    #[test]
+    fn test_logical_and_or_short_circuit() {
+        let mut e = env();
+        e.vars.set("x", "0").unwrap();
+        assert_eq!(evaluate(&mut e, "0 && (x = 5)"), Ok("0".to_string()));
+        assert_eq!(evaluate(&mut e, "1 || (x += 5)"), Ok("1".to_string()));
+        assert_eq!(evaluate(&mut e, "0 && 1 / 0"), Ok("0".to_string()));
+        assert_eq!(evaluate(&mut e, "1 || 1 % 0"), Ok("1".to_string()));
+        assert_eq!(e.vars.get("x"), Some("0"));
+        assert_eq!(evaluate(&mut e, "1 && (x = 5)"), Ok("1".to_string()));
+        assert_eq!(e.vars.get("x"), Some("5"));
+        // Syntax errors in a skipped operand are still reported.
+        assert!(evaluate(&mut e, "0 && (1 +)").is_err());
+    }
+
+    // ── Readonly assignment is an error ──
+
+    #[test]
+    fn test_readonly_assignment_is_error() {
+        let mut e = env();
+        e.vars.set("r", "1").unwrap();
+        e.vars.set_readonly("r");
+        assert!(evaluate(&mut e, "r = 5").is_err());
+        assert!(evaluate(&mut e, "r += 5").is_err());
+        assert_eq!(e.vars.get("r"), Some("1"));
+        // An unevaluated assignment to a readonly variable is harmless.
+        assert_eq!(evaluate(&mut e, "0 && (r = 5)"), Ok("0".to_string()));
+    }
+
+    // ── Nesting depth limit ──
+
+    #[test]
+    fn test_deep_nesting_is_error_not_overflow() {
+        // One nesting level takes ~13 KiB of debug-build stack, so run on
+        // a thread with room for the full MAX_NEST_DEPTH.
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let mut e = env();
+                let n = MAX_NEST_DEPTH as usize;
+                let ok = format!("{}1{}", "(".repeat(n), ")".repeat(n));
+                assert_eq!(evaluate(&mut e, &ok), Ok("1".to_string()));
+                let deep = format!("{}1{}", "(".repeat(100_000), ")".repeat(100_000));
+                let err = evaluate(&mut e, &deep).unwrap_err();
+                assert!(err.to_string().contains("nested too deeply"), "{err}");
+                let unary = format!("{}1", "-".repeat(100_000));
+                assert!(evaluate(&mut e, &unary).is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    // ── Diagnostics decode whole characters ──
+
+    #[test]
+    fn test_unexpected_non_ascii_char_reported_whole() {
+        let err = evaluate(&mut env(), "é+1").unwrap_err();
+        assert!(err.to_string().contains("'é'"), "{err}");
+        let err = evaluate(&mut env(), "(1 日").unwrap_err();
+        assert!(err.to_string().contains("'日'"), "{err}");
     }
 }

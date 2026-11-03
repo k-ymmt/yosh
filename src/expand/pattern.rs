@@ -271,7 +271,7 @@ fn parse_bracket(pat: &str) -> Option<(usize, bool, Vec<BracketItem>)> {
         // `[a\]b]` matches `]`, and `sr[c\]` has no closer so the `[`
         // stays literal). Mirrors the mask-aware closer scan in
         // `pathname::bracket_has_close`.
-        let (m0, m0_escaped, after_m0) = decode_bracket_char(rest, c0);
+        let (mut m0, m0_escaped, mut after_m0) = decode_bracket_char(rest, c0);
 
         // POSIX character class [:class:] — only an unescaped `[` opens one.
         if !m0_escaped && m0 == '[' && after_m0.starts_with(':') {
@@ -284,12 +284,38 @@ fn parse_bracket(pat: &str) -> Option<(usize, bool, Vec<BracketItem>)> {
             // Fall through to literal handling on a malformed class.
         }
 
+        // Collating symbol `[.c.]` / equivalence class `[=c=]` (XBD
+        // §9.3.5). Only single-character collating elements exist in the
+        // C/POSIX locale yosh implements, where an equivalence class is
+        // just its one character — so both reduce to a plain member
+        // (a collating symbol may also be a range endpoint).
+        if !m0_escaped
+            && m0 == '['
+            && let Some((c, after)) = try_parse_collating_element(after_m0)
+        {
+            if after_m0.starts_with('=') {
+                members.push(BracketItem::Char(c));
+                rest = after;
+                continue;
+            }
+            m0 = c;
+            after_m0 = after;
+        }
+
         // Range: x-y (only if '-' is followed by another member char that
         // is not an unescaped ']'; an escaped `\]` endpoint is allowed).
         if let Some('-') = after_m0.chars().next() {
             let after_dash = &after_m0['-'.len_utf8()..];
             if let Some(h0) = after_dash.chars().next() {
-                let (hi, hi_escaped, after_hi) = decode_bracket_char(after_dash, h0);
+                let (mut hi, hi_escaped, mut after_hi) = decode_bracket_char(after_dash, h0);
+                if !hi_escaped
+                    && hi == '['
+                    && after_hi.starts_with('.')
+                    && let Some((c, after)) = try_parse_collating_element(after_hi)
+                {
+                    hi = c;
+                    after_hi = after;
+                }
                 if hi != ']' || hi_escaped {
                     members.push(BracketItem::Range(m0, hi));
                     rest = after_hi;
@@ -400,6 +426,26 @@ fn try_parse_posix_class(pat: &str) -> Option<(usize, PosixClass)> {
         }
     }
     None
+}
+
+/// Try to parse a `[.c.]` collating symbol or `[=c=]` equivalence class.
+///
+/// `pat` is the slice just after the opening `[`, so it starts with the
+/// `.` or `=` delimiter. The element must be exactly one character (the
+/// only collating elements in the C/POSIX locale); anything else is
+/// `None` and the caller falls back to treating the `[` literally.
+/// Returns the element and the remainder after the closing `.]` / `=]`.
+fn try_parse_collating_element(pat: &str) -> Option<(char, &str)> {
+    let delim = pat.chars().next().filter(|d| matches!(d, '.' | '='))?;
+    let body = &pat[delim.len_utf8()..];
+    let c = body.chars().next()?;
+    let after = &body[c.len_utf8()..];
+    let mut closer = after.chars();
+    if closer.next() == Some(delim) && closer.next() == Some(']') {
+        Some((c, &after[delim.len_utf8() + ']'.len_utf8()..]))
+    } else {
+        None
+    }
 }
 
 impl BracketItem {
@@ -956,5 +1002,45 @@ mod tests {
         // a multibyte sequence.
         assert!(matches("*語*b", "日本語日本語b"));
         assert!(!matches("*語*b", "日本日本"));
+    }
+
+    // ── Collating symbols / equivalence classes (XBD §9.3.5) ──
+
+    #[test]
+    fn test_bracket_collating_symbol() {
+        assert!(matches("[[.a.]]", "a"));
+        assert!(!matches("[[.a.]]", "b"));
+        assert!(matches("[x[.-.]]", "-"));
+        assert!(matches("[[.].]]", "]"));
+        assert!(matches("[[...]]", "."));
+        assert!(matches("[![.a.]]", "b"));
+        assert!(!matches("[![.a.]]", "a"));
+    }
+
+    #[test]
+    fn test_bracket_equivalence_class() {
+        assert!(matches("[[=a=]]", "a"));
+        assert!(!matches("[[=a=]]", "b"));
+        assert!(matches("[[=a=]b]", "b"));
+    }
+
+    #[test]
+    fn test_bracket_collating_symbol_range_endpoints() {
+        assert!(matches("[a-[.c.]]", "b"));
+        assert!(!matches("[a-[.c.]]", "d"));
+        assert!(matches("[[.a.]-c]", "c"));
+        assert!(matches("[[.a.]-[.c.]]", "b"));
+    }
+
+    #[test]
+    fn test_bracket_malformed_collating_falls_back() {
+        // Multi-char / unterminated elements are not collating symbols:
+        // the `[` stays an ordinary member, as before.
+        assert!(matches("[[.ab.]]", "a]"));
+        assert!(!matches("[[.ab.]]", "a"));
+        assert!(matches("[[.a]", "["));
+        // An escaped `[` never opens a collating symbol.
+        assert!(matches("[\\[.a.]]", "a]"));
+        assert!(!matches("[\\[.a.]]", "a"));
     }
 }

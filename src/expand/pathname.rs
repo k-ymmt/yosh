@@ -176,28 +176,46 @@ pub(crate) fn glob_match(pattern: &str) -> Vec<String> {
 
 /// Expand a slash-containing pattern into filesystem paths.
 ///
-/// Strategy: split the pattern on `/`, then expand each component.
-/// A component may itself contain glob chars (e.g., `src/*/mod.rs`).
+/// Strategy: split the pattern into path components, each paired with the
+/// run of `/` that follows it, then expand component by component. A
+/// component may itself contain glob chars (e.g., `src/*/mod.rs`).
+///
+/// Every part of the pattern that is not a glob component is reproduced
+/// verbatim in the results (POSIX §2.6.6 / §2.13.3 replace only the
+/// pattern components): an explicit `./` prefix stays (`./*` yields
+/// `./-x`, never a bare `-x` that a utility would read as an option),
+/// and `//` runs are kept as written (`.//ab*` yields `.//abc`) — both
+/// verified against dash and bash.
 fn glob_path(pattern: &str) -> Vec<String> {
-    // Split the pattern into a leading absolute/relative prefix and components.
-    // e.g., "src/*.rs"  → base="",  components=["src", "*.rs"]
-    //       "/usr/*/bin" → base="/", components=["usr", "*", "bin"]
-    let (base, components) = if let Some(stripped) = pattern.strip_prefix('/') {
-        ("/".to_string(), stripped.split('/').collect::<Vec<_>>())
-    } else {
-        (String::new(), pattern.split('/').collect::<Vec<_>>())
-    };
-
-    expand_components(base, &components)
-}
-
-/// Recursively expand each path component, returning matching paths.
-fn expand_components(dir: String, components: &[&str]) -> Vec<String> {
-    if components.is_empty() {
-        return if dir.is_empty() { vec![] } else { vec![dir] };
+    // e.g., "src/*.rs"   → prefix="",  [("src", "/"), ("*.rs", "")]
+    //       "/usr/*/bin" → prefix="/", [("usr", "/"), ("*", "/"), ("bin", "")]
+    //       "./*/"       → prefix="",  [(".", "/"), ("*", "/")]
+    let body = pattern.trim_start_matches('/');
+    let prefix = pattern[..pattern.len() - body.len()].to_string();
+    let mut components = Vec::new();
+    let mut rest = body;
+    while !rest.is_empty() {
+        let comp_end = rest.find('/').unwrap_or(rest.len());
+        let after = &rest[comp_end..];
+        let sep_len = after.len() - after.trim_start_matches('/').len();
+        components.push((&rest[..comp_end], &after[..sep_len]));
+        rest = &after[sep_len..];
     }
 
-    let component = components[0];
+    expand_components(prefix, &components)
+}
+
+/// Recursively expand each `(component, following-slashes)` pair onto
+/// `prefix` (the path matched so far, as written, including its trailing
+/// slashes), returning matching paths.
+fn expand_components(prefix: String, components: &[(&str, &str)]) -> Vec<String> {
+    let Some(&(component, sep)) = components.first() else {
+        return if prefix.is_empty() {
+            vec![]
+        } else {
+            vec![prefix]
+        };
+    };
     let rest = &components[1..];
 
     // Determine whether the component has glob chars. Like the field-level
@@ -205,23 +223,22 @@ fn expand_components(dir: String, components: &[&str]) -> Vec<String> {
     let is_glob = str_has_glob_chars(component);
 
     if is_glob {
-        let search_dir = if dir.is_empty() { "." } else { &dir };
+        let search_dir = if prefix.is_empty() { "." } else { &prefix };
         let entries = glob_in_dir(search_dir, component);
 
         let mut result = Vec::new();
         for entry in entries {
             // Build the full path so far.
-            let full = join_path(&dir, &entry);
-            if rest.is_empty() {
+            let full = format!("{prefix}{entry}");
+            if rest.is_empty() && sep.is_empty() {
                 result.push(full);
-            } else {
-                // Only recurse into directories.
-                if std::fs::metadata(fs_path(&full))
-                    .map(|m| m.is_dir())
-                    .unwrap_or(false)
-                {
-                    result.extend(expand_components(full, rest));
-                }
+            } else if std::fs::metadata(fs_path(&full))
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+            {
+                // A following `/` (as a separator or a trailing slash)
+                // only matches directories.
+                result.extend(expand_components(full + sep, rest));
             }
         }
         result
@@ -229,9 +246,9 @@ fn expand_components(dir: String, components: &[&str]) -> Vec<String> {
         // Literal component: strip pattern escapes (a `\x` from a quoted
         // metachar denotes the literal `x`) before touching the
         // filesystem or emitting the path, then append and recurse.
-        let full = join_path(&dir, &unescape_component(component));
+        let full = format!("{prefix}{}{sep}", unescape_component(component));
         if rest.is_empty() {
-            // Verify the path exists.
+            // Verify the path exists (a trailing `/` requires a directory).
             if fs_path(&full).exists() {
                 vec![full]
             } else {
@@ -250,17 +267,6 @@ fn fs_path(s: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&crate::byteenc::decode_bytes(
         s,
     )))
-}
-
-/// Join a directory and a filename into a path string.
-/// Handles the special case where `dir` is empty (relative, current dir).
-fn join_path(dir: &str, name: &str) -> String {
-    match dir {
-        "" => name.to_string(),
-        "." => name.to_string(),
-        "/" => format!("/{}", name),
-        d => format!("{}/{}", d, name),
-    }
 }
 
 /// List entries in `dir` that match `pattern`.

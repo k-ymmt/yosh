@@ -158,9 +158,7 @@ fn expand_param_to_fields(
             let val = param::lookup_var(env, name);
             if param::is_unset_or_null_inner(&val, *null_check) {
                 if let Some(w) = word.as_ref() {
-                    for part in &w.parts {
-                        expand_part_to_fields(env, part, fields, in_double_quote)?;
-                    }
+                    expand_modifier_word(env, w, fields, in_double_quote)?;
                 }
             } else if let Some(star) = positional_special(name) {
                 // Set `${@:-w}` / `${*:-w}` keep the bare `$@`/`$*` field
@@ -178,12 +176,10 @@ fn expand_param_to_fields(
             null_check,
         } => {
             let val = param::lookup_var(env, name);
-            if !param::is_unset_or_null_inner(&val, *null_check) {
-                if let Some(w) = word.as_ref() {
-                    for part in &w.parts {
-                        expand_part_to_fields(env, part, fields, in_double_quote)?;
-                    }
-                }
+            if !param::is_unset_or_null_inner(&val, *null_check)
+                && let Some(w) = word.as_ref()
+            {
+                expand_modifier_word(env, w, fields, in_double_quote)?;
             }
         }
 
@@ -208,9 +204,7 @@ fn expand_param_to_fields(
                 }
                 let mut sub = vec![ExpandedField::new()];
                 if let Some(w) = word.as_ref() {
-                    for part in &w.parts {
-                        expand_part_to_fields(env, part, &mut sub, in_double_quote)?;
-                    }
+                    expand_modifier_word(env, w, &mut sub, in_double_quote)?;
                 }
                 // Join like `expand_word_to_string`: each field's
                 // `scalar_join_sep` (IFS[0] for `$*`) precedes it.
@@ -227,7 +221,11 @@ fn expand_param_to_fields(
                     // assign_var (not vars.set): ${PATH:=…} must
                     // invalidate the utility hash (POSIX §2.5.3),
                     // matching the scalar Assign path in expand::param.
-                    let _ = env.assign_var(name, new_val.as_str());
+                    // A readonly target is an expansion error (dash/bash).
+                    if let Err(msg) = env.assign_var(name, new_val.as_str()) {
+                        param::expansion_error(env, format_args!("{msg}"));
+                        return Ok(());
+                    }
                 }
                 let mut sub = sub.into_iter();
                 if let Some(first) = sub.next() {
@@ -261,6 +259,30 @@ fn expand_param_to_fields(
         _ => {
             let value = param::expand(env, param)?;
             push_param_value(fields, &value, in_double_quote);
+        }
+    }
+    Ok(())
+}
+
+/// Expand the `word` of `${x:-word}` / `${x:+word}` / `${x:=word}` into
+/// `fields`, keeping its quote structure: quoted parts stay protected
+/// (an unquoted `${x:-"a b"}` is one field), but the word's *unquoted*
+/// literal text is part of the expansion result and so is subject to
+/// field splitting and pathname expansion like any other expansion
+/// output (POSIX §2.6.5: `set -- ${x:-a b}` gives two fields; verified
+/// against dash and bash). Inside double quotes everything is protected.
+fn expand_modifier_word(
+    env: &mut ShellEnv,
+    word: &Word,
+    fields: &mut Vec<ExpandedField>,
+    in_double_quote: bool,
+) -> crate::error::Result<()> {
+    for part in &word.parts {
+        match part {
+            WordPart::Literal(s) if !in_double_quote => {
+                fields.last_mut().unwrap().push_expanded(s);
+            }
+            _ => expand_part_to_fields(env, part, fields, in_double_quote)?,
         }
     }
     Ok(())
@@ -474,6 +496,69 @@ mod tests {
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].value, "a b");
         assert!((0..fields[0].value.len()).all(|i| fields[0].is_split_protected(i)));
+    }
+
+    #[test]
+    fn test_default_unquoted_literal_word_is_split_subject() {
+        // ${x:-a b} with x unset: the word's unquoted literal is expansion
+        // output, so it stays split- and glob-subject (dash/bash: 2 fields).
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let word = Word {
+            parts: vec![WordPart::Parameter(ParamExpr::Default {
+                name: "UNSET_XYZ".to_string(),
+                word: Some(Word {
+                    parts: vec![
+                        WordPart::Literal("a b".to_string()),
+                        WordPart::DoubleQuoted(vec![WordPart::Literal(" c".to_string())]),
+                    ],
+                }),
+                null_check: true,
+            })],
+        };
+        let fields = expand_word_to_fields(&mut env, &word).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].value, "a b c");
+        assert!((0..3).all(|i| !fields[0].is_split_protected(i)));
+        assert!((0..3).all(|i| !fields[0].is_glob_protected(i)));
+        assert!((3..5).all(|i| fields[0].is_split_protected(i)));
+    }
+
+    #[test]
+    fn test_default_literal_word_in_double_quotes_is_protected() {
+        // "${x:-a b}": inside double quotes the literal stays protected.
+        let mut env = ShellEnv::new("yosh", vec![]);
+        let word = Word {
+            parts: vec![WordPart::DoubleQuoted(vec![WordPart::Parameter(
+                ParamExpr::Default {
+                    name: "UNSET_XYZ".to_string(),
+                    word: Some(Word::literal("a b")),
+                    null_check: true,
+                },
+            )])],
+        };
+        let fields = expand_word_to_fields(&mut env, &word).unwrap();
+        assert_eq!(fields[0].value, "a b");
+        assert!((0..3).all(|i| fields[0].is_split_protected(i)));
+    }
+
+    #[test]
+    fn test_assign_readonly_target_is_expansion_error() {
+        let mut env = ShellEnv::new("yosh", vec![]);
+        env.vars.set("RO", "").unwrap();
+        env.vars.set_readonly("RO");
+        let word = Word {
+            parts: vec![WordPart::Parameter(ParamExpr::Assign {
+                name: "RO".to_string(),
+                word: Some(Word::literal("2")),
+                null_check: true,
+            })],
+        };
+        expand_word_to_fields(&mut env, &word).unwrap();
+        assert!(matches!(
+            env.exec.flow_control,
+            Some(crate::env::FlowControl::ExpansionError)
+        ));
+        assert_eq!(env.vars.get("RO"), Some(""));
     }
 
     #[test]
