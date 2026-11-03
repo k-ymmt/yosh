@@ -313,9 +313,9 @@ fn push_scalar_part(
         | WordPart::EscapedLiteral(s)
         | WordPart::SingleQuoted(s)
         | WordPart::DollarSingleQuoted(s) => out.push_str(s),
-        WordPart::Parameter(p) => out.push_str(&param::expand(env, p)?),
-        WordPart::ArithSub(expr) => out.push_str(&arith::evaluate(env, expr)?),
-        WordPart::CommandSub(program) => out.push_str(&command_sub::execute(env, program)),
+        WordPart::Parameter(p) => push_owned(out, param::expand(env, p)?),
+        WordPart::ArithSub(expr) => push_owned(out, arith::evaluate(env, expr)?),
+        WordPart::CommandSub(program) => push_owned(out, command_sub::execute(env, program)),
         WordPart::DoubleQuoted(inner) => {
             for p in inner {
                 push_scalar_part(env, p, out)?;
@@ -324,6 +324,15 @@ fn push_scalar_part(
         WordPart::Tilde(_) => unreachable!("rejected by scalar_part_ok"),
     }
     Ok(())
+}
+
+/// Append `s`, reusing its buffer when `out` is still empty.
+fn push_owned(out: &mut String, s: String) {
+    if out.is_empty() {
+        *out = s;
+    } else {
+        out.push_str(&s);
+    }
 }
 
 /// Fast path for a word that expands to exactly one string — the
