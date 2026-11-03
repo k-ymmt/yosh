@@ -144,7 +144,8 @@ impl<'a> ArithParser<'a> {
         {
             return Ok(v);
         }
-        if self.depth >= MAX_RECURSION_DEPTH {
+        if self.depth >= MAX_RECURSION_DEPTH || crate::exec::stack_guard::descent_stack_exhausted()
+        {
             return Err(arith_err(format!(
                 "{}: expression recursion level exceeded",
                 name
@@ -172,7 +173,7 @@ impl<'a> ArithParser<'a> {
         skip: bool,
         parse: impl FnOnce(&mut Self) -> crate::error::Result<i64>,
     ) -> crate::error::Result<i64> {
-        if self.nest >= MAX_NEST_DEPTH {
+        if self.nest >= MAX_NEST_DEPTH || crate::exec::stack_guard::descent_stack_exhausted() {
             return Err(arith_err("expression nested too deeply"));
         }
         self.nest += 1;

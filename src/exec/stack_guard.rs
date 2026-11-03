@@ -31,12 +31,27 @@ const STACK_RESERVE: usize = if cfg!(debug_assertions) {
     1 << 20
 };
 
+/// Stack that must still be free at one level of a recursive descent
+/// that has no fixed bound of its own fitting the stack: the parser and
+/// lexer (an `eval` / `.` parse can start with only [`STACK_RESERVE`]
+/// left, less than a maximal parse needs), arithmetic evaluation and the
+/// expansion of nested `${name-word}` words. Past it the descent fails
+/// with a shell error (syntax, arithmetic or expansion error) that
+/// unwinds to a shallower frame before anything else runs, so it only has
+/// to cover the frames between two checks plus building the error.
+const DESCENT_RESERVE: usize = if cfg!(debug_assertions) {
+    256 << 10
+} else {
+    64 << 10
+};
+
 thread_local! {
-    /// `(lowest usable stack address, reserve)` of this thread, computed
-    /// on first use (`(0, 0)` = not yet computed). The reserve is
-    /// [`STACK_RESERVE`], capped at half the thread's stack so a small
-    /// stack (a 2 MiB test thread) still runs shallow recursion.
-    static STACK_LIMIT: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    /// `(lowest usable stack address, reserve, descent reserve)` of this
+    /// thread, computed on first use (`(0, 0, 0)` = not yet computed). The
+    /// reserves are [`STACK_RESERVE`] and [`DESCENT_RESERVE`], capped at a
+    /// half and an eighth of the thread's stack so a small stack (a 2 MiB
+    /// test thread) still runs shallow recursion.
+    static STACK_LIMIT: Cell<(usize, usize, usize)> = const { Cell::new((0, 0, 0)) };
 }
 
 /// Approximate current stack pointer: the address of a local in a frame
@@ -103,12 +118,16 @@ fn estimate_stack() -> (usize, usize) {
     (approx_stack_pointer().saturating_sub(size), size)
 }
 
-fn stack_limit() -> (usize, usize) {
+fn stack_limit() -> (usize, usize, usize) {
     STACK_LIMIT.with(|c| {
         let mut limit = c.get();
         if limit.0 == 0 {
             let (low, size) = query_stack().unwrap_or_else(estimate_stack);
-            limit = (low.max(1), STACK_RESERVE.min(size / 2));
+            limit = (
+                low.max(1),
+                STACK_RESERVE.min(size / 2),
+                DESCENT_RESERVE.min(size / 8),
+            );
             c.set(limit);
         }
         limit
@@ -123,7 +142,18 @@ fn stack_remaining() -> usize {
 
 /// True when going one recursion level deeper could overflow the stack.
 pub(crate) fn stack_nearly_exhausted() -> bool {
-    let (low, reserve) = stack_limit();
+    let (low, reserve, _) = stack_limit();
+    approx_stack_pointer().saturating_sub(low) < reserve
+}
+
+/// True when one more level of a recursive descent (parsing, arithmetic,
+/// nested word expansion) could overflow the stack (see
+/// [`DESCENT_RESERVE`]). These levels check the absolute stack left, not
+/// only a depth counted from where the descent began, because a nested
+/// parse or expansion can begin as little as [`STACK_RESERVE`] from the
+/// end of the stack.
+pub(crate) fn descent_stack_exhausted() -> bool {
+    let (low, _, reserve) = stack_limit();
     approx_stack_pointer().saturating_sub(low) < reserve
 }
 
@@ -156,6 +186,7 @@ mod tests {
         // Test threads have at least a 2 MiB stack and this frame is shallow.
         assert!(remaining > stack_limit().1, "remaining = {remaining}");
         assert!(!stack_nearly_exhausted());
+        assert!(!descent_stack_exhausted());
         assert!(remaining < 1 << 30, "remaining = {remaining}");
     }
 

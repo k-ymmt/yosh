@@ -11,7 +11,9 @@
 //!   `$(...)` bodies), counted per lexer (`Lexer::check_nest_depth`) and
 //!   inherited by the sub-lexers of nested bodies.
 //! - `PARSE_STACK_BUDGET`: the actual stack depth, checked by every level
-//!   of both kinds through `StackBudget`.
+//!   of both kinds through `StackBudget`, which also checks the absolute
+//!   stack left (`exec::stack_guard::descent_stack_exhausted`) for a
+//!   parse that began deep in the stack.
 
 use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::token::Span;
@@ -94,6 +96,12 @@ pub(crate) struct StackBudget;
 
 impl StackBudget {
     pub(crate) fn enter(line: usize, column: usize) -> error::Result<Self> {
+        // The budget below is relative to where the outermost parse began;
+        // a parse begun deep in shell-level recursion (`eval` inside a
+        // recursive function) can run out of actual stack first.
+        if crate::exec::stack_guard::descent_stack_exhausted() {
+            return Err(too_deep(line, column, "syntax error: nesting too deep"));
+        }
         let sp = approx_stack_pointer();
         PARSE_STACK.with(|c| {
             let (base, active) = c.get();

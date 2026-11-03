@@ -15,6 +15,21 @@ pub(super) fn expansion_error(env: &mut ShellEnv, msg: std::fmt::Arguments<'_>) 
 
 /// Expand a `ParamExpr` to a String.
 pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<String> {
+    // A form with a word expands that word recursively, and the parser
+    // allows hundreds of `${x:-${x:-...}}` levels: past the end of the
+    // stack fail with an expansion error instead of overflowing (an
+    // `eval` deep in a recursive function starts with little stack left).
+    if !matches!(
+        param,
+        ParamExpr::Simple(_)
+            | ParamExpr::Positional(_)
+            | ParamExpr::Special(_)
+            | ParamExpr::Length(_)
+    ) && crate::exec::stack_guard::descent_stack_exhausted()
+    {
+        expansion_error(env, format_args!("maximum nesting level exceeded"));
+        return Ok(String::new());
+    }
     match param {
         // ── Simple variable ──────────────────────────────────────────────
         ParamExpr::Simple(name) => match lookup_var(env, name) {

@@ -7,7 +7,7 @@ pub mod pipeline;
 mod process;
 pub mod redirect;
 mod simple;
-mod stack_guard;
+pub(crate) mod stack_guard;
 pub(crate) mod terminal_state;
 mod trap;
 
