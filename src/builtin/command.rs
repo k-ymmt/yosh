@@ -12,11 +12,9 @@
 //! `exec/simple.rs` so the `command` invocation has access to the
 //! `Executor` for redirects/assignments.
 
-use crate::builtin::BuiltinKind;
 use crate::builtin::alias::alias_line;
 use crate::builtin::options::{invalid_flag, scan_flag_words};
-use crate::builtin::quote::single_quote;
-use crate::builtin::resolve::{CommandKind, resolve_command_kind};
+use crate::builtin::resolve::{CommandKind, describe_command, resolve_command_kind};
 use crate::env::ShellEnv;
 
 /// Parsed form of a `command [...]` invocation.
@@ -86,31 +84,9 @@ pub fn render_brief(env: &mut ShellEnv, name: &str) -> (String, i32) {
 /// Render `-V` verbose output. Returns `(stdout_or_empty, stderr_or_empty, exit_status)`.
 /// For NotFound, stdout is empty and stderr holds the "not found" message.
 pub fn render_verbose(env: &mut ShellEnv, name: &str) -> (String, String, i32) {
-    match resolve_command_kind(env, name) {
-        CommandKind::Alias(val) => (
-            format!("{} is aliased to {}", name, single_quote(&val)),
-            String::new(),
-            0,
-        ),
-        CommandKind::Keyword => (format!("{} is a shell keyword", name), String::new(), 0),
-        CommandKind::Function => (format!("{} is a function", name), String::new(), 0),
-        CommandKind::Builtin(BuiltinKind::Special) => (
-            format!("{} is a special shell builtin", name),
-            String::new(),
-            0,
-        ),
-        CommandKind::Builtin(BuiltinKind::Regular) => {
-            (format!("{} is a shell builtin", name), String::new(), 0)
-        }
-        CommandKind::Builtin(BuiltinKind::NotBuiltin) => {
-            unreachable!("resolve_command_kind never returns Builtin(NotBuiltin)")
-        }
-        CommandKind::External(p) => (
-            format!("{} is {}", name, p.to_string_lossy()),
-            String::new(),
-            0,
-        ),
-        CommandKind::NotFound => (
+    match describe_command(env, name) {
+        Some(line) => (line, String::new(), 0),
+        None => (
             String::new(),
             format!("yosh: command: {}: not found", name),
             1,

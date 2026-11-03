@@ -1,8 +1,9 @@
 //! Shared "what is this name?" resolver used by the `command -v` / `-V`
-//! builtin and (in the future) `type`.
+//! and `type` builtins.
 
 use std::path::PathBuf;
 
+use crate::builtin::quote::single_quote;
 use crate::builtin::{BuiltinKind, classify_builtin};
 use crate::env::ShellEnv;
 use crate::exec::command::find_in_path;
@@ -55,6 +56,31 @@ pub fn resolve_command_kind(env: &mut ShellEnv, name: &str) -> CommandKind {
         return CommandKind::External(p);
     }
     CommandKind::NotFound
+}
+
+/// Describe what `name` resolves to in the bash/dash wording shared by
+/// `type` and `command -V`, or `None` when nothing is found:
+/// - `<name> is aliased to '<value>'`
+/// - `<name> is a shell keyword`
+/// - `<name> is a function`
+/// - `<name> is a special shell builtin`
+/// - `<name> is a shell builtin`
+/// - `<name> is <path>`
+pub(crate) fn describe_command(env: &mut ShellEnv, name: &str) -> Option<String> {
+    Some(match resolve_command_kind(env, name) {
+        CommandKind::Alias(val) => format!("{} is aliased to {}", name, single_quote(&val)),
+        CommandKind::Keyword => format!("{} is a shell keyword", name),
+        CommandKind::Function => format!("{} is a function", name),
+        CommandKind::Builtin(BuiltinKind::Special) => {
+            format!("{} is a special shell builtin", name)
+        }
+        CommandKind::Builtin(BuiltinKind::Regular) => format!("{} is a shell builtin", name),
+        CommandKind::Builtin(BuiltinKind::NotBuiltin) => {
+            unreachable!("resolve_command_kind never returns Builtin(NotBuiltin)")
+        }
+        CommandKind::External(p) => format!("{} is {}", name, p.to_string_lossy()),
+        CommandKind::NotFound => return None,
+    })
 }
 
 #[cfg(test)]

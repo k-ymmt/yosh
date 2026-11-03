@@ -5,17 +5,10 @@
 //! reserved words, functions, special/regular builtins, and external
 //! commands resolvable via PATH.
 //!
-//! Output formats match bash/dash conventions:
-//! - `<name> is aliased to '<value>'`
-//! - `<name> is a shell keyword`
-//! - `<name> is a function`
-//! - `<name> is a special shell builtin`
-//! - `<name> is a shell builtin`
-//! - `<name> is <path>`
+//! Output formats match bash/dash conventions and are shared with
+//! `command -V` (see [`describe_command`]).
 
-use crate::builtin::BuiltinKind;
-use crate::builtin::quote::single_quote;
-use crate::builtin::resolve::{CommandKind, resolve_command_kind};
+use crate::builtin::resolve::describe_command;
 use crate::env::ShellEnv;
 use crate::error::ShellError;
 
@@ -25,25 +18,9 @@ use crate::error::ShellError;
 /// `stderr_line` is `Some` only when the name is not found, and
 /// `per_operand_exit` is 1 in that case (0 otherwise).
 pub(crate) fn format_type_line(env: &mut ShellEnv, name: &str) -> (String, Option<String>, i32) {
-    match resolve_command_kind(env, name) {
-        CommandKind::Alias(val) => (
-            format!("{} is aliased to {}", name, single_quote(&val)),
-            None,
-            0,
-        ),
-        CommandKind::Keyword => (format!("{} is a shell keyword", name), None, 0),
-        CommandKind::Function => (format!("{} is a function", name), None, 0),
-        CommandKind::Builtin(BuiltinKind::Special) => {
-            (format!("{} is a special shell builtin", name), None, 0)
-        }
-        CommandKind::Builtin(BuiltinKind::Regular) => {
-            (format!("{} is a shell builtin", name), None, 0)
-        }
-        CommandKind::Builtin(BuiltinKind::NotBuiltin) => {
-            unreachable!("resolve_command_kind never returns Builtin(NotBuiltin)")
-        }
-        CommandKind::External(p) => (format!("{} is {}", name, p.to_string_lossy()), None, 0),
-        CommandKind::NotFound => (
+    match describe_command(env, name) {
+        Some(line) => (line, None, 0),
+        None => (
             String::new(),
             Some(format!("yosh: type: {}: not found", name)),
             1,
