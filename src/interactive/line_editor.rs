@@ -3988,11 +3988,20 @@ impl LineEditor {
             is_command_position(&buf, word_start)
         };
 
+        // Command-name completion of a word the user quoted (`\printf`,
+        // `'ls`): the quoting suppresses alias substitution, so it must
+        // survive completion. Holds the unquoted word; candidates that
+        // extend it keep the typed text and only append the rest.
+        let mut quoted_cmd_word: Option<String> = None;
         let (candidates, common_prefix, dir_prefix) = if is_cmd_pos && !word.contains('/') {
             // Command name completion (matched against the unquoted word;
             // the whole typed word is replaced, so dir_prefix is empty)
+            let unquoted = completion::shell_unquote(&word);
+            if word.contains(['\\', '\'', '"']) {
+                quoted_cmd_word = Some(unquoted.clone());
+            }
             let (cands, common) = cmd_ctx.completer.complete_common_prefix(
-                &completion::shell_unquote(&word),
+                &unquoted,
                 cmd_ctx.path,
                 cmd_ctx.builtins,
                 cmd_ctx.aliases,
@@ -4019,6 +4028,13 @@ impl LineEditor {
         // became `cat "foobar" BAR"`. Only close the argument when the
         // cursor is at the end of the buffer.
         let at_end = self.pos == self.buf.len();
+        let replacement_for = |name: &str, finish: bool| match quoted_cmd_word
+            .as_deref()
+            .and_then(|unq| name.strip_prefix(unq))
+        {
+            Some(rest) => completion::completion_replacement(&word, rest, finish),
+            None => completion::completion_replacement(&dir_prefix, name, finish),
+        };
 
         // Candidates are raw names; `completion_replacement` quotes them
         // for the context open at the end of `dir_prefix` (backslash
@@ -4028,16 +4044,14 @@ impl LineEditor {
         if self.tab_count == 1 {
             if candidates.len() == 1 {
                 // Single candidate: replace word
-                let replacement =
-                    completion::completion_replacement(&dir_prefix, &candidates[0], at_end);
+                let replacement = replacement_for(&candidates[0], at_end);
                 self.replace_word(word_start, &replacement);
             } else {
                 // Multiple candidates: replace with common prefix if longer
                 // (byte lengths on both sides: `word_start`/`byte_pos` are
                 // byte offsets into the rendered buffer).
                 let current_word_len = self.buffer()[word_start..byte_pos].len();
-                let new_word =
-                    completion::completion_replacement(&dir_prefix, &common_prefix, false);
+                let new_word = replacement_for(&common_prefix, false);
                 if new_word.len() > current_word_len {
                     self.replace_word(word_start, &new_word);
                 }
@@ -4048,7 +4062,7 @@ impl LineEditor {
             term.disable_raw_mode()?;
             let selected = CompletionUI::run(&candidates, term)?;
             if let Some(sel) = selected {
-                let replacement = completion::completion_replacement(&dir_prefix, &sel, at_end);
+                let replacement = replacement_for(&sel, at_end);
                 self.replace_word(word_start, &replacement);
             }
             term.enable_raw_mode()?;

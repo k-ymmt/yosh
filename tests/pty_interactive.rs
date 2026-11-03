@@ -2274,6 +2274,37 @@ fn test_pty_tab_completion_keeps_mid_word_quote_balanced() {
 }
 
 #[test]
+fn test_pty_command_completion_keeps_alias_suppressing_quote() {
+    // `\yoshqcm` suppresses alias substitution; completing the command
+    // name must not drop the backslash (bash keeps it), or the alias
+    // `yoshqcmd='echo HIJACKED'` runs instead of the command.
+    use std::os::unix::fs::PermissionsExt;
+    let work = helpers::TempDir::new();
+    let bin = work.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let cmd = bin.join("yoshqcmd");
+    std::fs::write(&cmd, "#!/bin/sh\necho \"[real-$1]\"\n").unwrap();
+    std::fs::set_permissions(&cmd, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let (mut s, _home) = spawn_yosh_in(work.path(), &[("PATH", &path)]);
+    wait_for_prompt(&mut s);
+    s.send("alias yoshqcmd='echo HIJACKED'\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("\\yoshqcm").unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    s.send("\t").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    s.send("OK\r").unwrap();
+    expect_output(
+        &mut s,
+        r"\[real-OK\]",
+        "command-name completion dropped the alias-suppressing backslash",
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
+#[test]
 fn test_pty_startup_history_honors_inherited_histsize() {
     // bash: an inherited HISTSIZE bounds the list loaded from HISTFILE,
     // so HISTSIZE=0 starts with an empty history.
