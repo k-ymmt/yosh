@@ -17,12 +17,23 @@ fn open_decoded(path: &str, flags: OFlag, mode: Mode) -> nix::Result<std::os::fd
     open(std::ffi::OsStr::from_bytes(&bytes), flags, mode)
 }
 
+/// The C library's message for `e` (`No such file or directory`), for
+/// redirection diagnostics: nix's own `Display` adds the symbolic name
+/// (`ENOENT: ...`) and has its own wording for some codes.
+pub(crate) fn errno_text(e: nix::errno::Errno) -> String {
+    let msg = std::io::Error::from_raw_os_error(e as i32).to_string();
+    match msg.rfind(" (os error ") {
+        Some(pos) => msg[..pos].to_string(),
+        None => msg,
+    }
+}
+
 /// [`open_decoded`] as a raw fd, with the error formatted as the
 /// redirection diagnostic (`path: reason`).
 fn open_path(path: &str, flags: OFlag, mode: Mode) -> Result<RawFd, String> {
     open_decoded(path, flags, mode)
         .map(|fd| fd.into_raw_fd())
-        .map_err(|e| format!("{}: {}", path, e))
+        .map_err(|e| format!("{}: {}", path, errno_text(e)))
 }
 
 /// Mode for files created by `>`, `>>` and `<>`.
@@ -51,7 +62,7 @@ fn open_noclobber(path: &str) -> Result<RawFd, String> {
                 _ => Err(format!("{}: cannot overwrite existing file", path)),
             }
         }
-        Err(e) => Err(format!("{}: {}", path, e)),
+        Err(e) => Err(format!("{}: {}", path, errno_text(e))),
     }
 }
 
@@ -433,7 +444,8 @@ impl RedirectState {
                         if save {
                             self.save_fd(target_fd)?;
                         }
-                        raw_dup2(src_fd, target_fd).map_err(|e| format!("dup2: {}", e))?;
+                        raw_dup2(src_fd, target_fd)
+                            .map_err(|e| format!("{}: {}", src, errno_text(e)))?;
                     }
                     Ok(())
                 }
@@ -459,7 +471,7 @@ impl RedirectState {
         if fd != target_fd {
             let res = raw_dup2(fd, target_fd);
             unsafe { libc::close(fd) };
-            res.map_err(|e| format!("dup2: {}", e))?;
+            res.map_err(|e| format!("dup2: {}", errno_text(e)))?;
         }
         Ok(())
     }

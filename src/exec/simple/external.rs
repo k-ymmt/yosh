@@ -323,14 +323,18 @@ impl Executor {
                 // POSIX execvp fallback (see `enoexec_sh_fallback`).
                 let (sh, sh_args) = enoexec_sh_fallback(c_cmd, c_args);
                 let err2 = execve(&sh, &sh_args, &envp).unwrap_err();
-                eprintln!("yosh: {}: {}", cmd, err2);
+                eprintln!(
+                    "yosh: {}: {}",
+                    cmd,
+                    super::super::redirect::errno_text(err2)
+                );
                 126
             }
             // Found but not executable for another reason (E2BIG,
             // ETXTBSY, ENOMEM, ...): POSIX 2.8.2 status 126, as in
             // dash and bash. Only ENOENT means "not found" (127).
             _ => {
-                eprintln!("yosh: {}: {}", cmd, err);
+                eprintln!("yosh: {}: {}", cmd, super::super::redirect::errno_text(err));
                 126
             }
         };

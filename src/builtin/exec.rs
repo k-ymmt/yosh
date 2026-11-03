@@ -105,8 +105,16 @@ pub fn builtin_exec(args: &[String], executor: &mut Executor) -> Result<i32, She
             sh_args.push(c_path.clone());
             sh_args.extend_from_slice(&c_args[1..]);
             let err2 = nix::unistd::execve(&sh, &sh_args, &envp).unwrap_err();
-            exec_failure(executor, format!("exec: {}: {}", cmd, err2), 126)
+            exec_failure(
+                executor,
+                format!("exec: {}: {}", cmd, crate::exec::redirect::errno_text(err2)),
+                126,
+            )
         }
-        _ => exec_failure(executor, format!("exec: {}: {}", cmd, err), 126),
+        _ => exec_failure(
+            executor,
+            format!("exec: {}: {}", cmd, crate::exec::redirect::errno_text(err)),
+            126,
+        ),
     }
 }
