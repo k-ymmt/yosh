@@ -78,6 +78,13 @@ impl Parser {
         self.lexer.set_aliases(aliases);
     }
 
+    /// Let end of input end an unterminated here-document body (see
+    /// `Lexer::set_eof_ends_heredoc`): for complete input such as a
+    /// script, a `-c` string, `eval` or `.`, not for interactive lines.
+    pub fn set_eof_ends_heredoc(&mut self, on: bool) {
+        self.lexer.set_eof_ends_heredoc(on);
+    }
+
     /// Report a lexer error deferred from the constructor.
     fn take_init_error(&mut self) -> error::Result<()> {
         match self.init_error.take() {

@@ -50,6 +50,9 @@ impl Lexer {
         let mut body = String::new();
         loop {
             if self.at_end() {
+                if self.eof_ends_heredoc {
+                    break;
+                }
                 return Err(ShellError::parse(
                     ParseErrorKind::InvalidHereDoc,
                     self.line,
@@ -70,12 +73,13 @@ impl Lexer {
             // delimiter), but not tabs after earlier text (`a\<nl><tab>b`
             // keeps the tab).
             let mut line = String::new();
+            let mut had_newline;
             loop {
                 let mut phys = String::new();
                 while !self.at_end() && self.current_byte() != b'\n' {
                     self.push_current_char(&mut phys)?;
                 }
-                let had_newline = !self.at_end();
+                had_newline = !self.at_end();
                 if had_newline {
                     self.advance(); // consume newline
                 }
@@ -97,7 +101,11 @@ impl Lexer {
             }
 
             body.push_str(&line);
-            body.push('\n');
+            // A last line cut off by end of input (`eof_ends_heredoc`)
+            // keeps its missing newline missing, as in dash.
+            if had_newline {
+                body.push('\n');
+            }
         }
         Ok(vec![WordPart::Literal(body)])
     }

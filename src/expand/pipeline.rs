@@ -92,6 +92,11 @@ fn expand_part_tilde(
     };
     let field = fields.last_mut().unwrap();
     match expanded {
+        // An empty HOME contributes no quoted content, so a word that is
+        // just `~` expands to an empty field that is then removed like any
+        // unquoted empty expansion (POSIX §2.6: only quote characters in
+        // the word keep an empty field; dash and bash drop it).
+        Some(dir) if dir.is_empty() => {}
         Some(dir) => field.push_quoted(&dir),
         None => {
             let literal = format!("~{}", user.unwrap_or(""));

@@ -71,6 +71,9 @@ pub struct Lexer {
     /// substituted lazily when dequeued, but command substitutions inside
     /// the value still see `aliases`.
     substitute_aliases: bool,
+    /// End of input ends an unterminated here-document body instead of
+    /// being an error (see `set_eof_ends_heredoc`).
+    eof_ends_heredoc: bool,
     /// While non-zero, `\<newline>` line continuations are NOT removed by
     /// `advance` (single quotes, `$'...'`, here-document bodies).
     no_join: u32,
@@ -126,6 +129,7 @@ impl Lexer {
             aliases: Rc::default(),
             blocked_aliases: Rc::new([]),
             substitute_aliases: true,
+            eof_ends_heredoc: false,
             no_join: 0,
             nest_depth: 0,
             subparse_count: 0,
@@ -200,6 +204,14 @@ impl Lexer {
                 .map(|(name, value)| (name.to_string(), value.to_string()))
                 .collect(),
         );
+    }
+
+    /// Let end of input end a here-document whose delimiter line never
+    /// comes, as dash and bash do for scripts, `-c` strings, `eval` and
+    /// `.`. Off by default: the interactive parser needs the error to know
+    /// the user is still typing the body.
+    pub fn set_eof_ends_heredoc(&mut self, on: bool) {
+        self.eof_ends_heredoc = on;
     }
 
     /// Drop cached command-substitution tokens (see `token_cache`); the

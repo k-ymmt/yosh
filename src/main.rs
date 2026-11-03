@@ -456,6 +456,9 @@ fn run_string(
     // lexer error on a later line cannot discard it, and tokens queued by
     // an alias whose value spans several lines are kept.
     let mut p = parser::Parser::new_with_aliases(input, &executor.env.aliases);
+    // The whole input is here: end of input ends an unterminated
+    // here-document, as in dash and bash.
+    p.set_eof_ends_heredoc(true);
     let mut status = 0;
 
     loop {

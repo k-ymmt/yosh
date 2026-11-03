@@ -245,6 +245,7 @@ impl Executor {
     /// text; the commands before it have run.
     pub(crate) fn exec_text(&mut self, input: &str) -> Result<i32, crate::error::ShellError> {
         let mut parser = crate::parser::Parser::new_with_aliases(input, &self.env.aliases);
+        parser.set_eof_ends_heredoc(true);
         let mut status = 0;
         let mut first = true;
         loop {
