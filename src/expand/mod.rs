@@ -19,7 +19,7 @@ use pipeline::expand_word_to_fields;
 pub(crate) use tilde::expand_tilde_prefix;
 
 use crate::env::ShellEnv;
-use crate::parser::ast::Word;
+use crate::parser::ast::{Word, WordPart};
 
 // ─── ExpandedField ──────────────────────────────────────────────────────────
 
@@ -260,7 +260,108 @@ impl Default for ExpandedField {
 ///   2. Field splitting (IFS)
 ///   3. Pathname expansion (glob)
 ///   4. Quote removal  ← callers receive plain `String`s
+#[allow(dead_code)] // library API (benches, tests); the shell uses `expand_words`
 pub fn expand_word(env: &mut ShellEnv, word: &Word) -> crate::error::Result<Vec<String>> {
+    let mut out = Vec::new();
+    expand_word_into(env, word, &mut out)?;
+    Ok(out)
+}
+
+/// A word made only of literal text (no expansions), as the field
+/// pipeline would see it: its whole text, whether any part was quoted,
+/// and whether an unquoted part holds a pathname-expansion character.
+struct StaticWord<'a> {
+    text: std::borrow::Cow<'a, str>,
+    quoted: bool,
+    glob_meta: bool,
+}
+
+/// `Some` for a word with no expansions — the common case for command
+/// names and arguments. Such a word always expands to its text as one
+/// unsplit field (every byte comes from literal or quoted text), so the
+/// per-byte field machinery can be skipped.
+fn static_word(word: &Word) -> Option<StaticWord<'_>> {
+    fn is_glob_meta(s: &str) -> bool {
+        s.bytes().any(|b| matches!(b, b'*' | b'?' | b'['))
+    }
+    if let [part] = word.parts.as_slice() {
+        return match part {
+            WordPart::Literal(s) => Some(StaticWord {
+                text: s.as_str().into(),
+                quoted: false,
+                glob_meta: is_glob_meta(s),
+            }),
+            WordPart::EscapedLiteral(s)
+            | WordPart::SingleQuoted(s)
+            | WordPart::DollarSingleQuoted(s) => Some(StaticWord {
+                text: s.as_str().into(),
+                quoted: true,
+                glob_meta: false,
+            }),
+            WordPart::DoubleQuoted(inner) => match inner.as_slice() {
+                [] => Some(StaticWord {
+                    text: "".into(),
+                    quoted: true,
+                    glob_meta: false,
+                }),
+                [WordPart::Literal(s) | WordPart::EscapedLiteral(s)] => Some(StaticWord {
+                    text: s.as_str().into(),
+                    quoted: true,
+                    glob_meta: false,
+                }),
+                _ => None,
+            },
+            _ => None,
+        };
+    }
+    let mut text = String::new();
+    let mut quoted = false;
+    let mut glob_meta = false;
+    for part in &word.parts {
+        match part {
+            WordPart::Literal(s) => {
+                glob_meta |= is_glob_meta(s);
+                text.push_str(s);
+            }
+            WordPart::EscapedLiteral(s)
+            | WordPart::SingleQuoted(s)
+            | WordPart::DollarSingleQuoted(s) => {
+                quoted = true;
+                text.push_str(s);
+            }
+            WordPart::DoubleQuoted(inner) => {
+                quoted = true;
+                for p in inner {
+                    match p {
+                        WordPart::Literal(s) | WordPart::EscapedLiteral(s) => text.push_str(s),
+                        _ => return None,
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(StaticWord {
+        text: text.into(),
+        quoted,
+        glob_meta,
+    })
+}
+
+/// [`expand_word`], appending the resulting fields to `out`.
+fn expand_word_into(
+    env: &mut ShellEnv,
+    word: &Word,
+    out: &mut Vec<String>,
+) -> crate::error::Result<()> {
+    if let Some(sw) = static_word(word)
+        && (!sw.glob_meta || env.mode.options.noglob)
+    {
+        if !sw.text.is_empty() || sw.quoted {
+            out.push(sw.text.into_owned());
+        }
+        return Ok(());
+    }
     let fields = expand_word_to_fields(env, word)?;
     let fields = field_split::split(env, fields);
     let fields = if env.mode.options.noglob {
@@ -268,19 +369,21 @@ pub fn expand_word(env: &mut ShellEnv, word: &Word) -> crate::error::Result<Vec<
     } else {
         pathname::expand(env, fields)
     };
-    Ok(fields
-        .into_iter()
-        .filter(|f| !f.is_empty() || f.was_quoted)
-        .map(ExpandedField::into_string)
-        .collect())
+    out.extend(
+        fields
+            .into_iter()
+            .filter(|f| !f.is_empty() || f.was_quoted)
+            .map(ExpandedField::into_string),
+    );
+    Ok(())
 }
 
 /// Expand a slice of `Word`s — each word is expanded independently,
 /// then all resulting fields are concatenated.
 pub fn expand_words(env: &mut ShellEnv, words: &[Word]) -> crate::error::Result<Vec<String>> {
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(words.len());
     for word in words {
-        result.extend(expand_word(env, word)?);
+        expand_word_into(env, word, &mut result)?;
     }
     Ok(result)
 }
@@ -288,6 +391,9 @@ pub fn expand_words(env: &mut ShellEnv, words: &[Word]) -> crate::error::Result<
 /// Expand a `Word` to a single `String`, suitable for assignments and
 /// redirect targets (no field splitting, no glob).
 pub fn expand_word_to_string(env: &mut ShellEnv, word: &Word) -> crate::error::Result<String> {
+    if let Some(sw) = static_word(word) {
+        return Ok(sw.text.into_owned());
+    }
     let fields = expand_word_to_fields(env, word)?;
     // Concatenate all fields (there is normally only one here, but $@/$*
     // can produce multiple). Each field's `scalar_join_sep` names the
@@ -313,6 +419,10 @@ pub fn expand_word_to_string(env: &mut ShellEnv, word: &Word) -> crate::error::R
 /// escapes. Metachar bytes are ASCII, so byte-indexed mask lookups are
 /// UTF-8 safe.
 pub fn expand_word_to_pattern(env: &mut ShellEnv, word: &Word) -> crate::error::Result<String> {
+    // Unquoted literal text is used as-is (nothing to escape).
+    if let [WordPart::Literal(s)] = word.parts.as_slice() {
+        return Ok(s.clone());
+    }
     let fields = expand_word_to_fields(env, word)?;
     let mut result = String::new();
     for (i, f) in fields.iter().enumerate() {
