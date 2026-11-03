@@ -67,7 +67,7 @@ pub fn run_special_builtin(name: &str, args: &[String], executor: &mut Executor)
                 && matches!(name, "export" | "readonly" | "unset" | "set" | "times"),
         },
         Err(e) => {
-            eprintln!("{}", e);
+            crate::byteenc::write_stderr_decoded_line(&e.to_string());
             SpecialOutcome {
                 status: e.exit_code(),
                 // `fc` is dispatched here but is a regular built-in in

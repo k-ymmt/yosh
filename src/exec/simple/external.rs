@@ -297,7 +297,7 @@ impl Executor {
         // Apply redirects (no need to save — this process is replaced)
         let mut redir_state = RedirectState::new();
         if let Err(e) = redir_state.apply_expanded(redirects, false) {
-            eprintln!("{}", e);
+            crate::byteenc::write_stderr_decoded_line(&e.to_string());
             crate::exec::exit_child(1);
         }
 
@@ -355,7 +355,7 @@ impl Executor {
     ) -> i32 {
         let mut redirect_state = RedirectState::new();
         if let Err(e) = redirect_state.apply_expanded(redirects, true) {
-            eprintln!("{}", e);
+            crate::byteenc::write_stderr_decoded_line(&e.to_string());
             return 1;
         }
         crate::byteenc::write_stderr_decoded_line(msg);

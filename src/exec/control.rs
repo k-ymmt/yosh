@@ -77,7 +77,7 @@ impl Executor {
         // redirection error in `RedirectState::apply_one`). Printing here
         // would duplicate the line; dash/bash print it once.
         if !e.message.is_empty() {
-            eprintln!("{}", e);
+            crate::byteenc::write_stderr_decoded_line(&e.to_string());
         }
         let code = e.exit_code();
         self.env.exec.last_exit_status = code;
@@ -370,7 +370,7 @@ impl Executor {
                 status = match self.exec_async(and_or) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("{}", e);
+                        crate::byteenc::write_stderr_decoded_line(&e.to_string());
                         e.exit_code()
                     }
                 };

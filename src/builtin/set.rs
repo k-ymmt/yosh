@@ -124,10 +124,16 @@ fn apply_set(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
                         return Ok(write_lines_or_report("set", lines));
                     };
                     if let Err(e) = env.mode.options.set_by_name(name, on) {
-                        return Err(ShellError::runtime(RuntimeErrorKind::InvalidOption, e));
+                        return Err(ShellError::runtime(
+                            RuntimeErrorKind::InvalidOption,
+                            format!("set: {e}"),
+                        ));
                     }
                 } else if let Err(e) = env.mode.options.set_by_char(c, on) {
-                    return Err(ShellError::runtime(RuntimeErrorKind::InvalidOption, e));
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::InvalidOption,
+                        format!("set: {e}"),
+                    ));
                 }
             }
             i += 1;

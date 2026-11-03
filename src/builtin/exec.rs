@@ -18,7 +18,7 @@ pub fn builtin_exec(args: &[String], executor: &mut Executor) -> Result<i32, She
     // not executable (matches bash/dash errno semantics). An interactive
     // shell prints the diagnostic and continues.
     fn exec_failure(executor: &mut Executor, msg: String, code: i32) -> Result<i32, ShellError> {
-        eprintln!("yosh: {}", msg);
+        crate::byteenc::write_stderr_decoded_line(&format!("yosh: {}", msg));
         executor.env.exec.last_exit_status = code;
         if !executor.env.mode.is_interactive {
             executor.exit_shell(code);

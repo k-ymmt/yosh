@@ -398,7 +398,7 @@ impl Executor {
                         RuntimeErrorKind::CommandNotFound,
                         format!("wait: pid {} is not a child of this shell", pid),
                     );
-                    eprintln!("{}", err);
+                    crate::byteenc::write_stderr_decoded_line(&err.to_string());
                     return PidWait::Errored;
                 }
                 Err(_) | Ok(_) => return PidWait::Status(0),
@@ -410,7 +410,7 @@ impl Executor {
         let opts = match parse_options(args) {
             Ok(o) => o,
             Err(msg) => {
-                eprintln!("yosh: {}", msg);
+                crate::byteenc::write_stderr_decoded_line(&format!("yosh: {}", msg));
                 return Ok(1);
             }
         };

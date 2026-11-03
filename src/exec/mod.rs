@@ -151,11 +151,11 @@ impl Executor {
                 // ShellError's Display already starts with `yosh: `; name
                 // the sourced file instead of repeating it.
                 let msg = e.to_string();
-                eprintln!(
+                crate::byteenc::write_stderr_decoded_line(&format!(
                     "yosh: {}: {}",
                     path.display(),
                     msg.strip_prefix("yosh: ").unwrap_or(&msg)
-                );
+                ));
                 2
             }
         };
@@ -290,7 +290,7 @@ impl Executor {
                 // A trap action with a syntax error must not fail silently
                 // at fire time (bash/dash print the diagnostic).
                 // ShellError's Display already carries the "yosh: " prefix.
-                eprintln!("{}", e);
+                crate::byteenc::write_stderr_decoded_line(&e.to_string());
             }
         }
     }

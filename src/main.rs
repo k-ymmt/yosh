@@ -164,7 +164,7 @@ fn main() {
             match parser::Parser::new(&input).parse_program() {
                 Ok(ast) => println!("{:#?}", ast),
                 Err(e) => {
-                    eprintln!("{}", e);
+                    byteenc::write_stderr_decoded_line(&e.to_string());
                     process::exit(2);
                 }
             }
@@ -367,7 +367,7 @@ fn run_stdin(
         // and are not engaged.
         let mut raw = Vec::new();
         io::stdin().read_to_end(&mut raw).unwrap_or_else(|e| {
-            eprintln!("yosh: {}", e);
+            byteenc::write_stderr_decoded_line(&format!("yosh: {}", e));
             process::exit(1);
         });
         let input = byteenc::encode_bytes(&raw).into_owned();
@@ -510,7 +510,7 @@ fn run_string(
                 executor.check_errexit(status);
             }
             Err(e) => {
-                eprintln!("{}", e);
+                byteenc::write_stderr_decoded_line(&e.to_string());
                 executor.process_pending_signals();
                 executor.execute_exit_trap();
                 return 2;

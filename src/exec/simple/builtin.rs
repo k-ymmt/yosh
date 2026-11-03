@@ -22,7 +22,7 @@ pub(super) type HostedBuiltin = fn(&mut Executor, &[String]) -> i32;
 pub(super) fn executor_hosted_builtin(name: &str) -> Option<HostedBuiltin> {
     fn report(result: Result<i32, ShellError>) -> i32 {
         result.unwrap_or_else(|e| {
-            eprintln!("{}", e);
+            crate::byteenc::write_stderr_decoded_line(&e.to_string());
             e.exit_code()
         })
     }
@@ -101,7 +101,7 @@ impl Executor {
         self.env.exec.last_exit_status = 1;
         if !self.env.mode.is_interactive {
             if !e.message.is_empty() {
-                eprintln!("{}", e);
+                crate::byteenc::write_stderr_decoded_line(&e.to_string());
             }
             self.exit_shell(1);
         }

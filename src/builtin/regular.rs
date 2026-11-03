@@ -48,7 +48,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
     match result {
         Ok(status) => status,
         Err(e) => {
-            eprintln!("{}", e);
+            crate::byteenc::write_stderr_decoded_line(&e.to_string());
             e.exit_code()
         }
     }

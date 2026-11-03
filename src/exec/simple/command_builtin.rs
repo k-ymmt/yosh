@@ -19,7 +19,7 @@ impl Executor {
         let parsed = match parse_flags(args) {
             Ok(p) => p,
             Err(msg) => {
-                eprintln!("yosh: {}", msg);
+                crate::byteenc::write_stderr_decoded_line(&format!("yosh: {}", msg));
                 return 2;
             }
         };
@@ -38,7 +38,7 @@ impl Executor {
                     return 1;
                 }
                 if !err.is_empty() {
-                    eprintln!("{}", err);
+                    crate::byteenc::write_stderr_decoded_line(&err.to_string());
                 }
                 code
             }

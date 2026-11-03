@@ -18,7 +18,10 @@ pub fn builtin_eval(args: &[String], executor: &mut Executor) -> Result<i32, She
         Err(e) => {
             // ShellError's Display already starts with `yosh: `.
             let msg = e.to_string();
-            eprintln!("yosh: eval: {}", msg.strip_prefix("yosh: ").unwrap_or(&msg));
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: eval: {}",
+                msg.strip_prefix("yosh: ").unwrap_or(&msg)
+            ));
             Ok(2)
         }
     }
