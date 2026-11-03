@@ -34,8 +34,7 @@ pub fn builtin_umask(args: &[String]) -> Result<i32, ShellError> {
     // `-S` merely selects the output format (dash: `umask -S 077` sets
     // the mask silently). Extra operands are ignored, as in dash/bash.
     let Some(mask) = args.get(i) else {
-        let current = unsafe { libc::umask(0) };
-        unsafe { libc::umask(current) };
+        let current = current_umask();
         let line = if symbolic {
             umask_to_symbolic(current)
         } else {
@@ -77,39 +76,33 @@ fn umask_to_symbolic(mask: libc::mode_t) -> String {
 }
 
 fn umask_set_octal(s: &str) -> Result<i32, ShellError> {
-    for c in s.chars() {
-        if !('0'..='7').contains(&c) {
-            return Err(ShellError::runtime(
-                RuntimeErrorKind::InvalidArgument,
-                format!("umask: {}: invalid octal number", s),
-            ));
-        }
-    }
-    match libc::mode_t::from_str_radix(s, 8) {
-        Ok(mode) => {
-            unsafe { libc::umask(mode) };
-            Ok(0)
-        }
-        Err(_) => Err(ShellError::runtime(
+    let invalid_number = || {
+        ShellError::runtime(
             RuntimeErrorKind::InvalidArgument,
             format!("umask: {}: invalid octal number", s),
-        )),
+        )
+    };
+    if !s.chars().all(|c| ('0'..='7').contains(&c)) {
+        return Err(invalid_number());
     }
+    let mode = libc::mode_t::from_str_radix(s, 8).map_err(|_| invalid_number())?;
+    unsafe { libc::umask(mode) };
+    Ok(0)
 }
 
 fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
-    let current = unsafe { libc::umask(0) };
-    unsafe { libc::umask(current) };
-
-    let mut mask = current;
+    let invalid_mode = || {
+        ShellError::runtime(
+            RuntimeErrorKind::InvalidArgument,
+            format!("umask: {}: invalid symbolic mode", s),
+        )
+    };
+    let mut mask = current_umask();
 
     for clause in s.split(',') {
         let bytes = clause.as_bytes();
         if bytes.is_empty() {
-            return Err(ShellError::runtime(
-                RuntimeErrorKind::InvalidArgument,
-                format!("umask: {}: invalid symbolic mode", s),
-            ));
+            return Err(invalid_mode());
         }
 
         let mut i = 0;
@@ -134,10 +127,7 @@ fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
 
         // Parse operator (=, +, -)
         if i >= bytes.len() || !matches!(bytes[i], b'=' | b'+' | b'-') {
-            return Err(ShellError::runtime(
-                RuntimeErrorKind::InvalidArgument,
-                format!("umask: {}: invalid symbolic mode", s),
-            ));
+            return Err(invalid_mode());
         }
         let op = bytes[i] as char;
         i += 1;
@@ -150,10 +140,7 @@ fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
                 b'w' => perm_bits |= 0o222,
                 b'x' => perm_bits |= 0o111,
                 _ => {
-                    return Err(ShellError::runtime(
-                        RuntimeErrorKind::InvalidArgument,
-                        format!("umask: {}: invalid symbolic mode", s),
-                    ));
+                    return Err(invalid_mode());
                 }
             }
             i += 1;
@@ -181,4 +168,12 @@ fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
 
     unsafe { libc::umask(mask) };
     Ok(0)
+}
+
+/// The current file mode creation mask. `umask(2)` can only be read by
+/// setting it, so the old value is restored immediately.
+fn current_umask() -> libc::mode_t {
+    let current = unsafe { libc::umask(0) };
+    unsafe { libc::umask(current) };
+    current
 }

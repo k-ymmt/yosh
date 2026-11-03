@@ -29,33 +29,18 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
         .unwrap_or_else(|| "/".to_string());
 
     // 4. Compute and apply the chdir per mode
+    let chdir_error = |e: std::io::Error| {
+        ShellError::runtime(RuntimeErrorKind::IoError, format!("cd: {}: {}", target, e))
+    };
     let new_pwd = match mode {
         CdMode::Logical => {
             let candidate = lexical_canonicalize(&target, &old_pwd);
-            if let Err(e) = std::env::set_current_dir(os_path(&candidate)) {
-                return Err(ShellError::runtime(
-                    RuntimeErrorKind::IoError,
-                    format!("cd: {}: {}", target, e),
-                ));
-            }
+            std::env::set_current_dir(os_path(&candidate)).map_err(chdir_error)?;
             candidate
         }
         CdMode::Physical => {
-            if let Err(e) = std::env::set_current_dir(os_path(&target)) {
-                return Err(ShellError::runtime(
-                    RuntimeErrorKind::IoError,
-                    format!("cd: {}: {}", target, e),
-                ));
-            }
-            match std::env::current_dir() {
-                Ok(p) => encode_path(&p),
-                Err(e) => {
-                    return Err(ShellError::runtime(
-                        RuntimeErrorKind::IoError,
-                        format!("cd: {}: {}", target, e),
-                    ));
-                }
-            }
+            std::env::set_current_dir(os_path(&target)).map_err(chdir_error)?;
+            encode_path(&std::env::current_dir().map_err(chdir_error)?)
         }
     };
 
