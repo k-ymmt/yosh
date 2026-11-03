@@ -766,6 +766,16 @@ mod tests {
             ("cat <<a$b\nbody\na$b\n", "a$b"),
             ("cat <<${x}y\nbody\n${x}y\n", "${x}y"),
             ("cat <<a\"b\"'c'\\d\nbody\nabcd\n", "abcd"),
+            // A substitution in the delimiter is never run, so its body
+            // need not be a valid program (dash, bash).
+            ("cat <<\"$(if)\"\nbody\n$(if)\n", "$(if)"),
+            ("cat <<$(if (x) ')')y\nbody\n$(if (x) ))y\n", "$(if (x) ))y"),
+            ("cat <<\"${x:-$(if)}\"\nbody\n${x:-$(if)}\n", "${x:-$(if)}"),
+            (
+                "cat <<\"$(( $(if) ))\"\nbody\n$(( $(if) ))\n",
+                "$(( $(if) ))",
+            ),
+            ("cat <<\"`if`\"\nbody\n`if`\n", "`if`"),
         ] {
             let sc = parse_first_simple(src);
             let RedirectKind::HereDoc(hd) = &sc.redirects[0].kind else {

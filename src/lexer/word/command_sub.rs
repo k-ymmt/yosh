@@ -29,7 +29,24 @@ impl Lexer {
         self.subparse_count += 1;
         let body_start = self.pos;
         let sub = self.sub_lexer();
-        let (program, sub) = crate::parser::Parser::parse_command_sub_body(sub, span)?;
+        let (program, sub) = match crate::parser::Parser::parse_command_sub_body(sub, span) {
+            Ok(parsed) => parsed,
+            // A here-document delimiter only undergoes quote removal
+            // (POSIX §2.7.4): its `$(...)` is never run, so a body that is
+            // not a valid program (`cat <<"$(if)"`) must not be a syntax
+            // error (dash, bash). The grammar still finds the end of a
+            // valid body (`case` patterns); otherwise match parentheses.
+            Err(_) if self.alias_state.reading_heredoc_delimiter() => {
+                let body_end = self.skip_unparsed_command_sub(span)?;
+                return Ok((
+                    crate::parser::ast::Program {
+                        commands: Vec::new(),
+                    },
+                    body_start..body_end,
+                ));
+            }
+            Err(e) => return Err(e),
+        };
         // The sub-lexer stops right after the `)` (read raw, see
         // `next_token_raw`).
         let body_end = sub.pos - 1;
@@ -38,6 +55,59 @@ impl Lexer {
         self.column = sub.column;
         self.skip_line_continuations();
         Ok((program, body_start..body_end))
+    }
+
+    /// Skip a `$(...)` body that is not parsed as a program (current byte
+    /// just after the opening `(`), up to and including the matching `)`:
+    /// parentheses are counted outside single quotes, double quotes and
+    /// backslash escapes. Returns the position of the closing `)`.
+    fn skip_unparsed_command_sub(
+        &mut self,
+        span: crate::lexer::token::Span,
+    ) -> error::Result<usize> {
+        let unterminated = || {
+            ShellError::parse(
+                ParseErrorKind::UnterminatedCommandSub,
+                span.line,
+                span.column,
+                "unterminated command substitution",
+            )
+        };
+        let mut depth = 1usize;
+        let mut quote: Option<u8> = None;
+        loop {
+            if self.at_end() {
+                return Err(unterminated());
+            }
+            let ch = self.current_byte();
+            match (quote, ch) {
+                (Some(b'\''), b'\'') | (Some(b'"'), b'"') => quote = None,
+                (Some(b'\''), _) => {}
+                (_, b'\\') => {
+                    self.advance_raw();
+                    if self.at_end() {
+                        return Err(unterminated());
+                    }
+                }
+                (Some(_), _) => {}
+                (None, b'\'' | b'"') => quote = Some(ch),
+                (None, b'(') => depth += 1,
+                (None, b')') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let close = self.pos;
+                        self.advance();
+                        return Ok(close);
+                    }
+                }
+                _ => {}
+            }
+            if self.current_byte() < 0x80 {
+                self.advance_raw();
+            } else {
+                self.advance_char()?;
+            }
+        }
     }
 
     /// Byte-offset of the `)` that closes a `$(` whose body starts at the
@@ -106,7 +176,15 @@ impl Lexer {
 
         self.subparse_count += 1;
         let lexer = self.nested_lexer(&content);
-        let program = crate::parser::Parser::parse_nested_program(lexer)?;
+        let program = match crate::parser::Parser::parse_nested_program(lexer) {
+            Ok(program) => program,
+            // Never run in a here-document delimiter: see
+            // `parse_command_sub`.
+            Err(_) if self.alias_state.reading_heredoc_delimiter() => crate::parser::ast::Program {
+                commands: Vec::new(),
+            },
+            Err(e) => return Err(e),
+        };
         Ok(WordPart::CommandSub(std::rc::Rc::new(program)))
     }
 }
