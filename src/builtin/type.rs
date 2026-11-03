@@ -44,7 +44,7 @@ pub fn builtin_type(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
             return Ok(crate::builtin::output::report_write_error("type", &e));
         }
         if let Some(s) = stderr_line {
-            eprintln!("{}", s);
+            crate::byteenc::write_stderr_decoded_line(&s);
         }
         if per_exit != 0 {
             exit_status = per_exit;

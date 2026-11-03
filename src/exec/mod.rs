@@ -84,6 +84,11 @@ pub struct Executor {
     /// with `!`, or it came from a non-final component of an AND-OR list
     /// (short-circuit). Consumed by `check_errexit`.
     errexit_exempt_status: bool,
+    /// Number of trap actions currently running (nested when a trap
+    /// fires inside another's action). While nonzero the recursion guard
+    /// lets execution use half of its stack reserve (see
+    /// [`Self::recursion_too_deep`]).
+    trap_action_depth: usize,
     pub exit_requested: Option<i32>,
 }
 
@@ -94,6 +99,7 @@ impl Executor {
             plugins: PluginManager::new(),
             errexit_suppressed_depth: 0,
             errexit_exempt_status: false,
+            trap_action_depth: 0,
             exit_requested: None,
         }
     }
@@ -105,6 +111,7 @@ impl Executor {
             plugins: PluginManager::new(),
             errexit_suppressed_depth: 0,
             errexit_exempt_status: false,
+            trap_action_depth: 0,
             exit_requested: None,
         }
     }
@@ -137,7 +144,7 @@ impl Executor {
         let prev_dot_script = self.env.mode.in_dot_script;
         self.env.mode.in_dot_script = true;
         self.env.exec.indirection_level += 1;
-        let status = match self.exec_text(&content) {
+        let status = match self.exec_text(&content, true) {
             Ok(s) => {
                 if let Some(crate::env::FlowControl::Return(code)) = self.env.exec.flow_control {
                     self.env.exec.flow_control = None;
@@ -244,7 +251,18 @@ impl Executor {
     /// earlier lines ran. Stops early on `break` / `continue` / `return`,
     /// `exit`, or a fatal error. `Err` is the syntax error that ended the
     /// text; the commands before it have run.
-    pub(crate) fn exec_text(&mut self, input: &str) -> Result<i32, crate::error::ShellError> {
+    ///
+    /// `echo_input` marks `input` as shell input read from a file (a dot
+    /// script): under `set -v` each complete command is written to stderr
+    /// before it runs, like the top-level loop does (POSIX §2.15 set -v:
+    /// "write its input to standard error as it is read"; dash and bash
+    /// echo a dot script's lines). `eval` operands and trap actions are
+    /// not input — dash does not echo them.
+    pub(crate) fn exec_text(
+        &mut self,
+        input: &str,
+        echo_input: bool,
+    ) -> Result<i32, crate::error::ShellError> {
         let mut parser = crate::parser::Parser::new_with_aliases(input, &self.env.aliases);
         parser.set_eof_ends_heredoc(true);
         let mut status = 0;
@@ -258,12 +276,24 @@ impl Executor {
                 if parser.is_at_end() {
                     Ok(None)
                 } else {
-                    parser.parse_complete_command().map(Some)
+                    let start = parser.consumed_bytes();
+                    parser
+                        .parse_complete_command()
+                        .map(|cmd| Some((start, cmd)))
                 }
             });
             match parsed {
                 Ok(None) => break,
-                Ok(Some(cmd)) => {
+                Ok(Some((start, cmd))) => {
+                    if echo_input && self.env.mode.options.verbose {
+                        let text = parser.source_text(start, parser.input_position());
+                        let text = text
+                            .trim_start_matches([' ', '\t', '\n'])
+                            .trim_end_matches('\n');
+                        if !text.is_empty() {
+                            self.verbose_print(text);
+                        }
+                    }
                     status = self.exec_complete_command(&cmd);
                     if self.should_unwind() {
                         break;
@@ -279,12 +309,10 @@ impl Executor {
         Ok(status)
     }
 
-    /// Evaluate a string as shell commands (used by trap actions and eval).
+    /// Evaluate a string as shell commands (trap actions, `fc`), reporting
+    /// a syntax error that ends it.
     pub fn eval_string(&mut self, input: &str) {
-        if self.recursion_too_deep("trap") {
-            return;
-        }
-        match self.exec_text(input) {
+        match self.exec_text(input, false) {
             Ok(_) => {}
             Err(e) => {
                 // A trap action with a syntax error must not fail silently

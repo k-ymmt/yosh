@@ -24,10 +24,20 @@ impl Executor {
             return 0;
         }
         match cmd {
-            Command::Simple(simple) => match self.exec_simple_command(simple) {
-                Ok(status) => status,
-                Err(e) => self.report_command_error(&e),
-            },
+            Command::Simple(simple) => {
+                let status = match self.exec_simple_command(simple) {
+                    Ok(status) => status,
+                    Err(e) => self.report_command_error(&e),
+                };
+                // Only compound commands propagate the `set -e` exemption
+                // of their last AND-OR list. A simple command that ran
+                // shell code — `eval`, `.`, a function — is subject to
+                // `set -e` with its own status even when that code ended
+                // in an exempt list: `set -e; eval 'false && true'; echo
+                // no` exits 1 (dash and bash agree).
+                self.clear_errexit_exempt();
+                status
+            }
             Command::Compound(compound, redirects) => {
                 match self.exec_compound_command(compound, redirects) {
                     Ok(status) => status,
@@ -42,10 +52,10 @@ impl Executor {
                     crate::builtin::classify_builtin(&func_def.name),
                     crate::builtin::BuiltinKind::Special
                 ) {
-                    eprintln!(
+                    crate::byteenc::write_stderr_decoded_line(&format!(
                         "yosh: {}: cannot define a function named after a special builtin",
                         func_def.name
-                    );
+                    ));
                     self.env.exec.last_exit_status = 2;
                     if !self.env.mode.is_interactive {
                         self.exit_requested = Some(2);
@@ -316,7 +326,11 @@ impl Executor {
                 // control; plain non-interactive scripts stay silent
                 // (bash/dash agree).
                 if self.env.mode.is_interactive || self.env.mode.options.monitor {
-                    eprintln!("[{}] {}", job_id, child.as_raw());
+                    crate::byteenc::write_stderr_decoded_line(&format!(
+                        "[{}] {}",
+                        job_id,
+                        child.as_raw()
+                    ));
                 }
                 Ok(0)
             }

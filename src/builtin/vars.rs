@@ -97,7 +97,10 @@ fn declare(attr: Attribute, args: &[String], env: &mut ShellEnv) -> i32 {
             None => arg.as_str(),
         };
         if !is_valid_name(name) {
-            eprintln!("yosh: {}: `{}': not a valid identifier", keyword, name);
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: {}: `{}': not a valid identifier",
+                keyword, name
+            ));
             status = 1;
             continue;
         }
@@ -106,7 +109,7 @@ fn declare(attr: Attribute, args: &[String], env: &mut ShellEnv) -> i32 {
             // assign_var (not vars.set): `readonly PATH=…` must
             // invalidate the utility hash like any other PATH write.
             if let Err(e) = env.assign_var(name, raw_value) {
-                eprintln!("yosh: {}: {}", keyword, e);
+                crate::byteenc::write_stderr_decoded_line(&format!("yosh: {}: {}", keyword, e));
                 status = 1;
                 continue;
             }
@@ -143,7 +146,10 @@ pub fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellEr
     let idx = match flags {
         Ok(idx) => idx,
         Err(e) => {
-            eprintln!("yosh: {}", invalid_flag("unset", e.flag));
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: {}",
+                invalid_flag("unset", e.flag)
+            ));
             return Ok(2);
         }
     };
@@ -156,14 +162,17 @@ pub fn builtin_unset(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellEr
     let mut status = 0;
     for name in &args[idx..] {
         if !is_valid_name(name) {
-            eprintln!("yosh: unset: `{}': not a valid identifier", name);
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: unset: `{}': not a valid identifier",
+                name
+            ));
             status = 1;
             continue;
         }
         if unset_functions {
             env.functions.remove(name);
         } else if let Err(e) = env.unset_var(name) {
-            eprintln!("yosh: unset: {}", e);
+            crate::byteenc::write_stderr_decoded_line(&format!("yosh: unset: {}", e));
             status = 1;
         }
     }

@@ -331,7 +331,7 @@ fn fc_substitute(operands: &[String], executor: &mut Executor) -> Result<i32, Sh
     }
 
     // Informational output — not an error
-    eprintln!("{}", cmd);
+    crate::byteenc::write_stderr_decoded_line(&cmd);
 
     let (histsize, histcontrol) = crate::interactive::history::history_settings(&executor.env.vars);
     executor.env.history.add(&cmd, histsize, &histcontrol);

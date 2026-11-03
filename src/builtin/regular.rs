@@ -27,7 +27,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         }
         "fg" | "bg" | "jobs" | "fc" => {
             // Handled in Executor::exec_simple_command
-            eprintln!("yosh: {}: internal error", name);
+            crate::byteenc::write_stderr_decoded_line(&format!("yosh: {}: internal error", name));
             Ok(1)
         }
         "command" => {
@@ -41,7 +41,10 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "read" => read::builtin_read(args, env),
         "getopts" => getopts::builtin_getopts(args, env),
         _ => {
-            eprintln!("yosh: {}: not a regular builtin", name);
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: {}: not a regular builtin",
+                name
+            ));
             Ok(1)
         }
     };

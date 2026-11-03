@@ -316,7 +316,7 @@ impl Executor {
         // POSIX §2.9.3.1: the "[n] pid" notice belongs to job control;
         // plain non-interactive scripts stay silent (bash/dash agree).
         if self.env.mode.is_interactive || self.env.mode.options.monitor {
-            eprintln!("[{}] {}", job_id, last.as_raw());
+            crate::byteenc::write_stderr_decoded_line(&format!("[{}] {}", job_id, last.as_raw()));
         }
         Ok(0)
     }
@@ -386,14 +386,20 @@ fn connect_member_to_pipes(pipes: &[(RawFd, RawFd)], i: usize) {
     if i > 0 {
         let read_fd = pipes[i - 1].0;
         if unsafe { libc::dup2(read_fd, 0) } == -1 {
-            eprintln!("yosh: dup2: {}", std::io::Error::last_os_error());
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: dup2: {}",
+                std::io::Error::last_os_error()
+            ));
             super::exit_child(1);
         }
     }
     if i < pipes.len() {
         let write_fd = pipes[i].1;
         if unsafe { libc::dup2(write_fd, 1) } == -1 {
-            eprintln!("yosh: dup2: {}", std::io::Error::last_os_error());
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: dup2: {}",
+                std::io::Error::last_os_error()
+            ));
             super::exit_child(1);
         }
     }

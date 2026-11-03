@@ -44,7 +44,10 @@ pub fn builtin_alias(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellEr
                     }
                 }
                 None => {
-                    eprintln!("yosh: alias: {}: not found", arg);
+                    crate::byteenc::write_stderr_decoded_line(&format!(
+                        "yosh: alias: {}: not found",
+                        arg
+                    ));
                     status = 1;
                 }
             },
@@ -69,7 +72,10 @@ pub fn builtin_unalias(args: &[String], env: &mut ShellEnv) -> Result<i32, Shell
         } else if !operands_only && arg == "-a" {
             env.aliases.clear();
         } else if !env.aliases.remove(arg) {
-            eprintln!("yosh: unalias: {}: not found", arg);
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: unalias: {}: not found",
+                arg
+            ));
             status = 1;
         }
     }

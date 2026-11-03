@@ -20,11 +20,17 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         Err(ArgError::UnknownFlag(c)) => {
             // Usage error: status 2 like dash/bash (and yosh's other
             // builtins), distinct from read's EOF/assignment status 1.
-            eprintln!("yosh: {}", invalid_flag("read", c));
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: {}",
+                invalid_flag("read", c)
+            ));
             return Ok(2);
         }
         Err(ArgError::InvalidIdentifier(name)) => {
-            eprintln!("yosh: read: `{}': not a valid identifier", name);
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: read: `{}': not a valid identifier",
+                name
+            ));
             return Ok(1);
         }
     };
@@ -38,7 +44,7 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     let result = match line_result {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("yosh: read: {}", e);
+            crate::byteenc::write_stderr_decoded_line(&format!("yosh: read: {}", e));
             return Ok(1);
         }
     };
@@ -55,7 +61,10 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     // defined; bash exhibits the same partial-assignment behavior.
     for (name, value) in parsed.var_names.iter().zip(values) {
         if env.assign_var(name, value).is_err() {
-            eprintln!("yosh: read: `{}': readonly variable", name);
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: read: `{}': readonly variable",
+                name
+            ));
             return Ok(1);
         }
     }

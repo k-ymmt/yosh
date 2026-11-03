@@ -47,7 +47,10 @@ pub fn builtin_getopts(args: &[String], env: &mut ShellEnv) -> Result<i32, Shell
             return Ok(2);
         }
         Err(ArgError::InvalidVarName(name)) => {
-            eprintln!("yosh: getopts: `{}': not a valid identifier", name);
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: getopts: `{}': not a valid identifier",
+                name
+            ));
             return Ok(2);
         }
     };
@@ -88,7 +91,10 @@ pub fn builtin_getopts(args: &[String], env: &mut ShellEnv) -> Result<i32, Shell
     // bash returns rc=1 with `<name>: readonly variable` on this path.
     for target in [parsed.var_name, "OPTARG", "OPTIND"] {
         if env.vars.is_readonly(target) {
-            eprintln!("yosh: getopts: {}: readonly variable", target);
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: getopts: {}: readonly variable",
+                target
+            ));
             return Ok(1);
         }
     }
@@ -121,7 +127,7 @@ pub fn builtin_getopts(args: &[String], env: &mut ShellEnv) -> Result<i32, Shell
     env.vars.mark_getopts_observed_optind();
 
     if let Some(msg) = step.stderr {
-        eprintln!("yosh: getopts: {}", msg);
+        crate::byteenc::write_stderr_decoded_line(&format!("yosh: getopts: {}", msg));
     }
 
     Ok(step.exit)

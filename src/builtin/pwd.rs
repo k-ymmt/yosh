@@ -43,7 +43,9 @@ pub fn builtin_pwd(args: &[String], env: &ShellEnv) -> Result<i32, ShellError> {
             let reason = std::env::current_dir()
                 .err()
                 .map_or_else(|| "unknown error".to_string(), |e| e.to_string());
-            eprintln!("yosh: pwd: cannot determine the current directory: {reason}");
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: pwd: cannot determine the current directory: {reason}"
+            ));
             Ok(1)
         }
     }

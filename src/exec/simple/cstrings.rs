@@ -103,11 +103,14 @@ pub(super) fn exec_cstrings_or_report(
 ) -> Result<(CString, Vec<CString>), i32> {
     build_exec_cstrings_for_path(path, display_name, args).map_err(|e| match e {
         ExecCStringError::CommandName => {
-            eprintln!("yosh: {}: invalid command name", display_name);
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: {}: invalid command name",
+                display_name
+            ));
             127
         }
         ExecCStringError::Argument(arg) => {
-            eprintln!("yosh: {}: invalid argument", arg);
+            crate::byteenc::write_stderr_decoded_line(&format!("yosh: {}: invalid argument", arg));
             1
         }
     })

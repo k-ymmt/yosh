@@ -76,7 +76,7 @@ pub fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         match stored {
             Ok(()) => apply_trap_os_disposition(env, sig, &action),
             Err(e) => {
-                eprintln!("yosh: trap: {}", e);
+                crate::byteenc::write_stderr_decoded_line(&format!("yosh: trap: {}", e));
                 status = 1;
             }
         }

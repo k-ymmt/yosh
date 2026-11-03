@@ -181,7 +181,7 @@ impl Executor {
 
         match unsafe { fork_shell() } {
             Err(e) => {
-                eprintln!("yosh: fork: {}", e);
+                crate::byteenc::write_stderr_decoded_line(&format!("yosh: fork: {}", e));
                 1
             }
             Ok(ForkResult::Child) => {
@@ -312,29 +312,39 @@ impl Executor {
         let err = execve(c_cmd, c_args, &envp).unwrap_err();
         let exit_code = match err {
             Errno::ENOENT => {
-                eprintln!("yosh: {}: command not found", cmd);
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: {}: command not found",
+                    cmd
+                ));
                 127
             }
             Errno::EACCES => {
-                eprintln!("yosh: {}: permission denied", cmd);
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: {}: permission denied",
+                    cmd
+                ));
                 126
             }
             Errno::ENOEXEC => {
                 // POSIX execvp fallback (see `enoexec_sh_fallback`).
                 let (sh, sh_args) = enoexec_sh_fallback(c_cmd, c_args);
                 let err2 = execve(&sh, &sh_args, &envp).unwrap_err();
-                eprintln!(
+                crate::byteenc::write_stderr_decoded_line(&format!(
                     "yosh: {}: {}",
                     cmd,
                     super::super::redirect::errno_text(err2)
-                );
+                ));
                 126
             }
             // Found but not executable for another reason (E2BIG,
             // ETXTBSY, ENOMEM, ...): POSIX 2.8.2 status 126, as in
             // dash and bash. Only ENOENT means "not found" (127).
             _ => {
-                eprintln!("yosh: {}: {}", cmd, super::super::redirect::errno_text(err));
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: {}: {}",
+                    cmd,
+                    super::super::redirect::errno_text(err)
+                ));
                 126
             }
         };

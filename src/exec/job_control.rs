@@ -161,17 +161,26 @@ impl Executor {
                             if let Some(job) = self.env.process.jobs.get(job_id) {
                                 targets.push(WaitTarget::Job(job.pids.clone()));
                             } else {
-                                eprintln!("yosh: wait: {}: no such job", arg);
+                                crate::byteenc::write_stderr_decoded_line(&format!(
+                                    "yosh: wait: {}: no such job",
+                                    arg
+                                ));
                                 targets.push(WaitTarget::Unknown);
                             }
                         }
                         Err(JobSpecError::Ambiguous) => {
                             let display = strip_job_spec_prefix(arg);
-                            eprintln!("yosh: wait: {}: ambiguous job spec", display);
+                            crate::byteenc::write_stderr_decoded_line(&format!(
+                                "yosh: wait: {}: ambiguous job spec",
+                                display
+                            ));
                             targets.push(WaitTarget::Unknown);
                         }
                         Err(_) => {
-                            eprintln!("yosh: wait: {}: no such job", arg);
+                            crate::byteenc::write_stderr_decoded_line(&format!(
+                                "yosh: wait: {}: no such job",
+                                arg
+                            ));
                             targets.push(WaitTarget::Unknown);
                         }
                     }
@@ -460,11 +469,17 @@ impl Executor {
                     Ok(id) => resolved.push(id),
                     Err(JobSpecError::Ambiguous) => {
                         let display = strip_job_spec_prefix(spec);
-                        eprintln!("yosh: jobs: {}: ambiguous job spec", display);
+                        crate::byteenc::write_stderr_decoded_line(&format!(
+                            "yosh: jobs: {}: ambiguous job spec",
+                            display
+                        ));
                         exit_status = 1;
                     }
                     Err(_) => {
-                        eprintln!("yosh: jobs: {}: no such job", spec);
+                        crate::byteenc::write_stderr_decoded_line(&format!(
+                            "yosh: jobs: {}: no such job",
+                            spec
+                        ));
                         exit_status = 1;
                     }
                 }
@@ -578,7 +593,7 @@ impl Executor {
         };
 
         // Print the command being foregrounded
-        eprintln!("{}", command);
+        crate::byteenc::write_stderr_decoded_line(&command);
 
         // Update job state — the SIGCONT below resumes the whole
         // process group, so every stopped member becomes Running.
@@ -707,7 +722,7 @@ impl Executor {
         if let Some(job) = self.env.process.jobs.get_mut(job_id) {
             job.resume_stopped_members();
             job.foreground = false;
-            eprintln!("[{}]+ {} &", job.id, job.command);
+            crate::byteenc::write_stderr_decoded_line(&format!("[{}]+ {} &", job.id, job.command));
         }
         // bash: `$!` is the job most recently placed in the background,
         // whether started with `&` or resumed with `bg`.
@@ -836,7 +851,7 @@ impl Executor {
                     };
                     self.record_stopped_state(job_id, sig as i32, captured);
                     if let Some(line) = self.env.process.jobs.format_job(job_id) {
-                        eprintln!("{}", line);
+                        crate::byteenc::write_stderr_decoded_line(&line);
                     }
                     last_status = 128 + sig as i32;
                     return ForegroundWaitResult {
@@ -869,7 +884,7 @@ impl Executor {
         let pending = self.env.process.jobs.pending_notifications();
         for id in &pending {
             if let Some(line) = self.env.process.jobs.format_job(*id) {
-                eprintln!("{}", line);
+                crate::byteenc::write_stderr_decoded_line(&line);
             }
             self.env.process.jobs.mark_notified(*id);
         }

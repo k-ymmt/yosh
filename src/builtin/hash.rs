@@ -30,7 +30,10 @@ pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     let idx = match flags {
         Ok(idx) => idx,
         Err(e) => {
-            eprintln!("yosh: {}", invalid_flag("hash", e.flag));
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: {}",
+                invalid_flag("hash", e.flag)
+            ));
             return Ok(1);
         }
     };
@@ -79,7 +82,7 @@ pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
             .unwrap_or_default();
         // On success find_in_path has already inserted into the cache.
         if find_in_path(name, &path_var, &mut env.utility_hash).is_none() {
-            eprintln!("yosh: hash: {}: not found", name);
+            crate::byteenc::write_stderr_decoded_line(&format!("yosh: hash: {}: not found", name));
             exit_status = 1;
         }
     }

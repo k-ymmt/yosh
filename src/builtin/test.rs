@@ -46,7 +46,7 @@ pub fn builtin_test(name: &str, args: &[String]) -> i32 {
         Ok(true) => 0,
         Ok(false) => 1,
         Err(e) => {
-            eprintln!("yosh: {}: {}", name, e.message);
+            crate::byteenc::write_stderr_decoded_line(&format!("yosh: {}: {}", name, e.message));
             2
         }
     }

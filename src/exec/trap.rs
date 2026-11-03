@@ -23,10 +23,30 @@ impl Executor {
             .exec
             .trap_context_status
             .replace(self.env.exec.last_exit_status);
-        self.with_errexit_context_reset(|exec| {
-            exec.eval_string(cmd);
-        });
+        self.with_errexit_context_reset(|exec| exec.eval_trap_text(cmd));
         self.env.exec.trap_context_status = prev;
+    }
+
+    /// Run a trap action's text as a trap action: the recursion guard
+    /// lets it use half of its stack reserve. A trap fires at a command
+    /// boundary — `exit` deep in a recursion that the guard accepted
+    /// level by level, a signal arriving there — where the remaining
+    /// stack can be just under the reserve the guard demands of one more
+    /// level; refusing the action there would skip an EXIT trap's
+    /// cleanup and change the exit status (`trap 'echo t' EXIT; f() { if
+    /// [ "$1" -gt 0 ]; then f $(($1-1)); else exit 7; fi; }; f 413`
+    /// prints t and exits 7 in dash and bash). The half reserve still
+    /// covers a command's execution, and descent-checked parsing,
+    /// arithmetic and expansion fail gracefully below it, so the action
+    /// itself — including functions it calls, held to the same half
+    /// reserve — cannot overflow. Trap actions nested by signals that
+    /// keep firing inside the action stop at that same bound.
+    fn eval_trap_text(&mut self, cmd: &str) {
+        self.trap_action_depth += 1;
+        if !self.recursion_too_deep("trap") {
+            self.eval_string(cmd);
+        }
+        self.trap_action_depth -= 1;
     }
 
     /// Run `f` (a trap action) as a fresh errexit context: an action that
@@ -66,7 +86,7 @@ impl Executor {
     fn run_signal_trap_action(&mut self, cmd: &str) {
         let saved_status = self.env.exec.last_exit_status;
         let prev = self.env.exec.trap_context_status.replace(saved_status);
-        self.with_errexit_context_reset(|exec| exec.eval_string(cmd));
+        self.with_errexit_context_reset(|exec| exec.eval_trap_text(cmd));
         self.env.exec.trap_context_status = prev;
         if self.exit_requested.is_none() && self.env.exec.flow_control.is_none() {
             self.env.exec.last_exit_status = saved_status;

@@ -22,7 +22,10 @@ pub fn builtin_exit(args: &[String], executor: &mut Executor) -> Result<i32, She
                 // POSIX §2.8.1: a special-builtin error still terminates the
                 // shell — diagnose and fall through to the normal exit
                 // sequence with status 2 instead of returning to the caller.
-                eprintln!("yosh: exit: {}: numeric argument required", args[0]);
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: exit: {}: numeric argument required",
+                    args[0]
+                ));
                 2
             }
         }
@@ -58,7 +61,10 @@ pub fn builtin_return(args: &[String], executor: &mut Executor) -> Result<i32, S
             Err(_) => {
                 // POSIX §2.8.1: a special-builtin error terminates a
                 // non-interactive shell with status 2 (matches dash).
-                eprintln!("yosh: return: {}: numeric argument required", args[0]);
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: return: {}: numeric argument required",
+                    args[0]
+                ));
                 env.exec.last_exit_status = 2;
                 if !env.mode.is_interactive {
                     executor.exit_requested = Some(2);
@@ -88,10 +94,10 @@ fn loop_control(
     flow: fn(usize) -> FlowControl,
 ) -> Result<i32, ShellError> {
     if env.exec.loop_depth == 0 {
-        eprintln!(
+        crate::byteenc::write_stderr_decoded_line(&format!(
             "yosh: {}: only meaningful in a `for', `while', or `until' loop",
             name
-        );
+        ));
         return Ok(1);
     }
     let n = if args.is_empty() {

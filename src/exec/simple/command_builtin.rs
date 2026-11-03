@@ -124,11 +124,17 @@ impl Executor {
             // redirect/override slices.
             PathLookup::Executable(p) => self.spawn_external_at_path(&p, name, args, &[], &[]),
             PathLookup::NotExecutable(p) => {
-                eprintln!("yosh: command: {}: permission denied", p.display());
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: command: {}: permission denied",
+                    p.display()
+                ));
                 126
             }
             PathLookup::NotFound => {
-                eprintln!("yosh: command: {}: not found", name);
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: command: {}: not found",
+                    name
+                ));
                 127
             }
         }

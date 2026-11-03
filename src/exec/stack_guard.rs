@@ -141,8 +141,16 @@ fn stack_remaining() -> usize {
 }
 
 /// True when going one recursion level deeper could overflow the stack.
-pub(crate) fn stack_nearly_exhausted() -> bool {
+#[cfg(test)]
+fn stack_nearly_exhausted() -> bool {
+    stack_below_reserve(false)
+}
+
+/// True when less than the recursion reserve — or half of it for
+/// `in_trap_action` (see [`Executor::recursion_too_deep`]) — is left.
+fn stack_below_reserve(in_trap_action: bool) -> bool {
     let (low, reserve, _) = stack_limit();
+    let reserve = if in_trap_action { reserve / 2 } else { reserve };
     approx_stack_pointer().saturating_sub(low) < reserve
 }
 
@@ -165,11 +173,18 @@ impl Executor {
     /// fatal expansion error: a non-interactive shell then exits with
     /// status 1 after running its EXIT trap, an interactive shell abandons
     /// the command line. Returns true when the caller must not recurse.
+    ///
+    /// Inside a trap action the guard only demands half of the reserve
+    /// (see `eval_trap_text`): the action must still run where the code
+    /// it interrupted stood just under the full reserve.
     pub(crate) fn recursion_too_deep(&mut self, what: &str) -> bool {
-        if !stack_nearly_exhausted() {
+        if !stack_below_reserve(self.trap_action_depth > 0) {
             return false;
         }
-        eprintln!("yosh: {}: maximum nesting level exceeded", what);
+        crate::byteenc::write_stderr_decoded_line(&format!(
+            "yosh: {}: maximum nesting level exceeded",
+            what
+        ));
         self.env.exec.last_exit_status = 1;
         self.env.exec.flow_control = Some(FlowControl::ExpansionError);
         true

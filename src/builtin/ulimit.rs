@@ -184,11 +184,16 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
     let req = match parse_ulimit(args) {
         Ok(r) => r,
         Err(UlimitArgError::UnknownOption(o)) => {
-            eprintln!("yosh: {}", invalid_option("ulimit", &o));
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: {}",
+                invalid_option("ulimit", &o)
+            ));
             return Ok(1);
         }
         Err(UlimitArgError::InvalidNumber(n)) => {
-            eprintln!("yosh: ulimit: {n}: invalid number");
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: ulimit: {n}: invalid number"
+            ));
             return Ok(1);
         }
         Err(UlimitArgError::TooManyArgs) => {
@@ -216,7 +221,7 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
             let rl = match get_rlimit(r.resource) {
                 Ok(rl) => rl,
                 Err(e) => {
-                    eprintln!("yosh: ulimit: {e}");
+                    crate::byteenc::write_stderr_decoded_line(&format!("yosh: ulimit: {e}"));
                     return Ok(1);
                 }
             };
@@ -253,7 +258,9 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
             UlimitValue::Units(n) => match n.checked_mul(r.unit) {
                 Some(v) if v != libc::RLIM_INFINITY => v,
                 _ => {
-                    eprintln!("yosh: ulimit: {n}: limit out of range");
+                    crate::byteenc::write_stderr_decoded_line(&format!(
+                        "yosh: ulimit: {n}: limit out of range"
+                    ));
                     return Ok(1);
                 }
             },
@@ -261,7 +268,7 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
         let mut rl = match get_rlimit(r.resource) {
             Ok(rl) => rl,
             Err(e) => {
-                eprintln!("yosh: ulimit: {e}");
+                crate::byteenc::write_stderr_decoded_line(&format!("yosh: ulimit: {e}"));
                 return Ok(1);
             }
         };
@@ -273,11 +280,11 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
         }
         // SAFETY: `rl` is a valid rlimit; setrlimit only reads it.
         if unsafe { libc::setrlimit(r.resource, &rl) } != 0 {
-            eprintln!(
+            crate::byteenc::write_stderr_decoded_line(&format!(
                 "yosh: ulimit: {}: cannot modify limit: {}",
                 r.desc,
                 std::io::Error::last_os_error()
-            );
+            ));
             return Ok(1);
         }
     }

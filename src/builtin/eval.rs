@@ -13,7 +13,7 @@ pub fn builtin_eval(args: &[String], executor: &mut Executor) -> Result<i32, She
         return Ok(1);
     }
     let input = args.join(" ");
-    match executor.exec_text(&input) {
+    match executor.exec_text(&input, false) {
         Ok(status) => Ok(status),
         Err(e) => {
             // ShellError's Display already starts with `yosh: `.

@@ -42,7 +42,7 @@ pub fn builtin_printf(args: &[String]) -> Result<i32, ShellError> {
         run.diags.push(format!("write error: {}", e));
     }
     for d in &run.diags {
-        eprintln!("yosh: printf: {}", d);
+        crate::byteenc::write_stderr_decoded_line(&format!("yosh: printf: {}", d));
     }
     Ok(if run.usage {
         2

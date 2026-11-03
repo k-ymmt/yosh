@@ -53,12 +53,18 @@ pub fn builtin_kill(args: &[String], env: &ShellEnv) -> Result<i32, ShellError> 
             match pgid {
                 Some(pgid) => {
                     if let Err(e) = send_signal(-pgid.as_raw(), sig_num) {
-                        eprintln!("yosh: kill: ({}) - {}", pid_str, e);
+                        crate::byteenc::write_stderr_decoded_line(&format!(
+                            "yosh: kill: ({}) - {}",
+                            pid_str, e
+                        ));
                         status = 1;
                     }
                 }
                 None => {
-                    eprintln!("yosh: kill: {}: no such job", pid_str);
+                    crate::byteenc::write_stderr_decoded_line(&format!(
+                        "yosh: kill: {}: no such job",
+                        pid_str
+                    ));
                     status = 1;
                 }
             }
@@ -67,7 +73,10 @@ pub fn builtin_kill(args: &[String], env: &ShellEnv) -> Result<i32, ShellError> 
         let pid: i32 = match pid_str.parse() {
             Ok(n) => n,
             Err(_) => {
-                eprintln!("yosh: kill: {}: invalid pid", pid_str);
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: kill: {}: invalid pid",
+                    pid_str
+                ));
                 status = 1;
                 continue;
             }
@@ -87,7 +96,10 @@ pub fn builtin_kill(args: &[String], env: &ShellEnv) -> Result<i32, ShellError> 
             pid
         };
         if let Err(e) = send_signal(target, sig_num) {
-            eprintln!("yosh: kill: ({}) - {}", pid_str, e);
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: kill: ({}) - {}",
+                pid_str, e
+            ));
             status = 1;
         }
     }
