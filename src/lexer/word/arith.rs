@@ -28,13 +28,7 @@ impl Lexer {
             let ch = self.current_byte();
             match ch {
                 b'$' if self.peek_byte() == b'(' && self.peek_byte2() != b'(' => {
-                    // Nested $(cmd) — find its end with the real grammar
-                    // and keep its body text verbatim.
-                    self.advance(); // consume '$', now at '('
-                    let (_, body) = self.parse_command_sub()?;
-                    expr.push_str("$(");
-                    expr.push_str(&String::from_utf8_lossy(&self.input[body]));
-                    expr.push(')');
+                    self.push_command_sub_text(&mut expr)?;
                 }
                 b'$' if self.peek_byte() == b'(' => {
                     // Nested $((...)) — balanced, quote-aware scan.
@@ -53,11 +47,7 @@ impl Lexer {
                     while !self.at_end() {
                         let bch = self.current_byte();
                         if bch == b'\\' {
-                            expr.push('\\');
-                            self.advance_raw();
-                            if !self.at_end() {
-                                self.push_current_char(&mut expr)?;
-                            }
+                            self.push_escape_raw(&mut expr)?;
                         } else {
                             self.push_current_char(&mut expr)?;
                             if bch == b'`' {
@@ -104,34 +94,29 @@ impl Lexer {
     /// an arithmetic expansion (the parenthesized arithmetic text).
     /// Returns content between outer parens (not including them).
     fn read_balanced_parens(&mut self, span: Span) -> error::Result<String> {
+        let unterminated = |message: &str| {
+            ShellError::parse(
+                ParseErrorKind::UnterminatedCommandSub,
+                span.line,
+                span.column,
+                message,
+            )
+        };
         self.advance(); // consume opening '('
         let mut content = String::new();
         let mut depth: usize = 1;
 
         loop {
             if self.at_end() {
-                return Err(ShellError::parse(
-                    ParseErrorKind::UnterminatedCommandSub,
-                    span.line,
-                    span.column,
-                    "unterminated command substitution",
-                ));
+                return Err(unterminated("unterminated command substitution"));
             }
             let ch = self.current_byte();
             match ch {
                 b'$' if self.peek_byte() == b'(' && self.peek_byte2() != b'(' => {
-                    self.advance(); // consume '$', now at '('
-                    let (_, body) = self.parse_command_sub()?;
-                    content.push_str("$(");
-                    content.push_str(&String::from_utf8_lossy(&self.input[body]));
-                    content.push(')');
+                    self.push_command_sub_text(&mut content)?;
                 }
                 b'\\' => {
-                    content.push('\\');
-                    self.advance_raw();
-                    if !self.at_end() {
-                        self.push_current_char(&mut content)?;
-                    }
+                    self.push_escape_raw(&mut content)?;
                 }
                 b'(' => {
                     depth += 1;
@@ -153,10 +138,7 @@ impl Lexer {
                     self.advance();
                     loop {
                         if self.at_end() {
-                            return Err(ShellError::parse(
-                                ParseErrorKind::UnterminatedCommandSub,
-                                span.line,
-                                span.column,
+                            return Err(unterminated(
                                 "unterminated single quote in command substitution",
                             ));
                         }
@@ -173,10 +155,7 @@ impl Lexer {
                     self.advance();
                     loop {
                         if self.at_end() {
-                            return Err(ShellError::parse(
-                                ParseErrorKind::UnterminatedCommandSub,
-                                span.line,
-                                span.column,
+                            return Err(unterminated(
                                 "unterminated double quote in command substitution",
                             ));
                         }
@@ -187,11 +166,7 @@ impl Lexer {
                             break;
                         }
                         if qch == b'\\' {
-                            content.push('\\');
-                            self.advance_raw();
-                            if !self.at_end() {
-                                self.push_current_char(&mut content)?;
-                            }
+                            self.push_escape_raw(&mut content)?;
                         } else {
                             self.push_current_char(&mut content)?;
                         }
@@ -204,5 +179,27 @@ impl Lexer {
         }
 
         Ok(content)
+    }
+
+    /// Copy a nested `$(...)` (current byte `$`) into `out` verbatim,
+    /// finding its closing `)` with the real grammar.
+    fn push_command_sub_text(&mut self, out: &mut String) -> error::Result<()> {
+        self.advance(); // consume '$', now at '('
+        let (_, body) = self.parse_command_sub()?;
+        out.push_str("$(");
+        out.push_str(&String::from_utf8_lossy(&self.input[body]));
+        out.push(')');
+        Ok(())
+    }
+
+    /// Copy a backslash (current byte) and the character it escapes,
+    /// which is taken raw, into `out`.
+    fn push_escape_raw(&mut self, out: &mut String) -> error::Result<()> {
+        out.push('\\');
+        self.advance_raw();
+        if !self.at_end() {
+            self.push_current_char(out)?;
+        }
+        Ok(())
     }
 }
