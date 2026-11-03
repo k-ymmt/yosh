@@ -2,7 +2,7 @@
 //! `unset` (POSIX XCU §2.15).
 
 use crate::builtin::options::{invalid_flag, scan_flag_words, strip_end_of_options};
-use crate::builtin::output::write_stdout_decoded;
+use crate::builtin::output::{write_lines_or_report, write_stdout_or_report};
 use crate::builtin::quote::quote_for_reinput;
 use crate::env::ShellEnv;
 use crate::env::vars::Variable;
@@ -81,10 +81,12 @@ fn declare(attr: Attribute, args: &[String], env: &mut ShellEnv) -> i32 {
             .map(|(k, v)| (k.to_string(), v.value.clone()))
             .collect();
         listed.sort_by(|a, b| a.0.cmp(&b.0));
-        for (name, value) in listed {
-            write_stdout_decoded(&attr.reinput_line(&name, value.as_deref()), true);
-        }
-        return 0;
+        return write_lines_or_report(
+            attr.keyword(),
+            listed
+                .iter()
+                .map(|(name, value)| attr.reinput_line(name, value.as_deref())),
+        );
     }
 
     let keyword = attr.keyword();
@@ -112,8 +114,10 @@ fn declare(attr: Attribute, args: &[String], env: &mut ShellEnv) -> i32 {
         } else if print_mode {
             // `export -p name`: print only this variable (if it has the
             // attribute).
-            if let Some(v) = env.vars.get_var(name).filter(|v| attr.is_set(v)) {
-                write_stdout_decoded(&attr.reinput_line(name, v.value()), true);
+            if let Some(v) = env.vars.get_var(name).filter(|v| attr.is_set(v))
+                && write_stdout_or_report(keyword, &attr.reinput_line(name, v.value()), true) != 0
+            {
+                status = 1;
             }
         } else {
             attr.apply(env, name);
@@ -248,7 +252,7 @@ mod tests {
         exec_special_builtin("readonly", &["myvar=v".to_string()], &mut executor);
         let status = exec_special_builtin("readonly", &["-p".to_string()], &mut executor);
         assert_eq!(status, 0);
-        // The actual listing is on stdout (println!) which we don't capture here;
+        // The actual listing is written to stdout, which we don't capture here;
         // smoke-test via the e2e suite for output content.
     }
 

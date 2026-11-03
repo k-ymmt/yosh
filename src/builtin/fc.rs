@@ -75,8 +75,14 @@ pub fn builtin_fc(args: &[String], executor: &mut Executor) -> Result<i32, Shell
         .map_err(|msg| ShellError::runtime(RuntimeErrorKind::IoError, msg))?;
 
     if list_mode {
-        fc_list(&entries, first, start, end, suppress_numbers, reverse);
-        Ok(0)
+        Ok(fc_list(
+            &entries,
+            first,
+            start,
+            end,
+            suppress_numbers,
+            reverse,
+        ))
     } else {
         fc_edit(&entries, start, end, reverse, editor, executor)
     }
@@ -161,7 +167,7 @@ fn fc_list(
     end: usize,
     suppress_numbers: bool,
     reverse: bool,
-) {
+) -> i32 {
     let (lo, hi) = if start <= end {
         (start, end)
     } else {
@@ -172,13 +178,16 @@ fn fc_list(
     } else {
         (lo..=hi).collect()
     };
-    for i in range {
-        if suppress_numbers {
-            println!("\t{}", entries[i]);
-        } else {
-            println!("{}\t{}", first + i, entries[i]);
-        }
-    }
+    crate::builtin::output::write_lines_or_report(
+        "fc",
+        range.into_iter().map(|i| {
+            if suppress_numbers {
+                format!("\t{}", entries[i])
+            } else {
+                format!("{}\t{}", first + i, entries[i])
+            }
+        }),
+    )
 }
 
 fn fc_edit(

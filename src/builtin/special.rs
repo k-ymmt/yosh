@@ -34,6 +34,7 @@ pub fn exec_special_builtin(name: &str, args: &[String], executor: &mut Executor
 /// `trap` is left out on purpose: dash and bash both keep running after
 /// `trap : BADSIG`.
 pub fn run_special_builtin(name: &str, args: &[String], executor: &mut Executor) -> SpecialOutcome {
+    crate::builtin::output::take_write_error_reported();
     let result = match name {
         ":" => Ok(0),
         "exit" => flow::builtin_exit(args, executor),
@@ -55,10 +56,14 @@ pub fn run_special_builtin(name: &str, args: &[String], executor: &mut Executor)
             format!("{}: not a special builtin", name),
         )),
     };
+    // A failed write of a listing (`export -p >&-`) is reported with
+    // status 1 but does not end the shell (dash agrees).
+    let write_failed = crate::builtin::output::take_write_error_reported();
     match result {
         Ok(status) => SpecialOutcome {
             status,
             utility_error: status != 0
+                && !write_failed
                 && matches!(name, "export" | "readonly" | "unset" | "set" | "times"),
         },
         Err(e) => {

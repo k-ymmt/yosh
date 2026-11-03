@@ -143,24 +143,21 @@ impl ShellOptions {
         Ok(())
     }
 
-    /// Print all options in "name    on/off" format (sorted alphabetically).
-    pub fn display_all(&self) {
-        let entries = self.all_entries();
-        for (name, value) in &entries {
-            println!("{:<12} {}", name, if *value { "on" } else { "off" });
-        }
+    /// The `set -o` listing: one "name    on/off" line per option
+    /// (sorted alphabetically).
+    pub fn display_all(&self) -> Vec<String> {
+        self.all_entries()
+            .into_iter()
+            .map(|(name, value)| format!("{:<12} {}", name, if value { "on" } else { "off" }))
+            .collect()
     }
 
-    /// Print in "set -o name" / "set +o name" format.
-    pub fn display_restorable(&self) {
-        let entries = self.all_entries();
-        for (name, value) in &entries {
-            if *value {
-                println!("set -o {}", name);
-            } else {
-                println!("set +o {}", name);
-            }
-        }
+    /// The `set +o` listing: "set -o name" / "set +o name" lines.
+    pub fn display_restorable(&self) -> Vec<String> {
+        self.all_entries()
+            .into_iter()
+            .map(|(name, value)| format!("set {}o {}", if value { '-' } else { '+' }, name))
+            .collect()
     }
 
     /// Returns all options as sorted (name, value) pairs.

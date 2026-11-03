@@ -438,18 +438,18 @@ impl Executor {
             resolved
         };
 
-        for id in &job_ids {
+        let jobs = &self.env.process.jobs;
+        let lines = job_ids.iter().filter_map(|id| {
             if opts.pgid_only {
-                if let Some(job) = self.env.process.jobs.get(*id) {
-                    println!("{}", job.pgid.as_raw());
-                }
+                jobs.get(*id).map(|job| job.pgid.as_raw().to_string())
             } else if opts.long_format {
-                if let Some(line) = self.env.process.jobs.format_job_long(*id) {
-                    println!("{}", line);
-                }
-            } else if let Some(line) = self.env.process.jobs.format_job(*id) {
-                println!("{}", line);
+                jobs.format_job_long(*id)
+            } else {
+                jobs.format_job(*id)
             }
+        });
+        if crate::builtin::output::write_lines_or_report("jobs", lines) != 0 {
+            exit_status = 1;
         }
 
         // Mark done/terminated jobs as notified.

@@ -24,7 +24,11 @@ pub fn builtin_times(args: &[String]) -> Result<i32, ShellError> {
         let s = secs - (m as f64 * 60.0);
         format!("{}m{:.3}s", m, s)
     };
-    println!("{} {}", fmt(tms.tms_utime), fmt(tms.tms_stime));
-    println!("{} {}", fmt(tms.tms_cutime), fmt(tms.tms_cstime));
-    Ok(0)
+    Ok(crate::builtin::output::write_lines_or_report(
+        "times",
+        [
+            format!("{} {}", fmt(tms.tms_utime), fmt(tms.tms_stime)),
+            format!("{} {}", fmt(tms.tms_cutime), fmt(tms.tms_cstime)),
+        ],
+    ))
 }

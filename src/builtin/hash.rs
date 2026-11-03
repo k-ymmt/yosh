@@ -50,15 +50,20 @@ pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         // without a fresh PATH walk.
         let mut names: Vec<&String> = env.utility_hash.keys().collect();
         names.sort();
-        if !names.is_empty() {
-            println!("hits\tcommand");
+        if names.is_empty() {
+            return Ok(0);
         }
-        for name in names {
-            if let Some(entry) = env.utility_hash.get(name) {
-                println!("{:4}\t{}", entry.hits, entry.path.display());
-            }
-        }
-        return Ok(0);
+        let mut lines = vec!["hits\tcommand".to_string()];
+        lines.extend(names.into_iter().filter_map(|name| {
+            env.utility_hash.get(name).map(|entry| {
+                format!(
+                    "{:4}\t{}",
+                    entry.hits,
+                    crate::builtin::path::encode_path(&entry.path)
+                )
+            })
+        }));
+        return Ok(crate::builtin::output::write_lines_or_report("hash", lines));
     }
 
     let mut exit_status = 0;

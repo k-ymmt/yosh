@@ -14,6 +14,7 @@ impl Executor {
     /// - Execute (`-p` or no flag) → run `name`, bypassing shell functions
     pub(crate) fn builtin_command(&mut self, args: &[String]) -> i32 {
         use crate::builtin::command::{Verbosity, parse_flags, render_brief, render_verbose};
+        use crate::builtin::output::write_stdout_or_report;
 
         let parsed = match parse_flags(args) {
             Ok(p) => p,
@@ -26,15 +27,15 @@ impl Executor {
         match parsed.verbose {
             Verbosity::Brief => {
                 let (out, code) = render_brief(&mut self.env, &parsed.name);
-                if !out.is_empty() {
-                    println!("{}", out);
+                if !out.is_empty() && write_stdout_or_report("command", &out, true) != 0 {
+                    return 1;
                 }
                 code
             }
             Verbosity::Verbose => {
                 let (out, err, code) = render_verbose(&mut self.env, &parsed.name);
-                if !out.is_empty() {
-                    println!("{}", out);
+                if !out.is_empty() && write_stdout_or_report("command", &out, true) != 0 {
+                    return 1;
                 }
                 if !err.is_empty() {
                     eprintln!("{}", err);

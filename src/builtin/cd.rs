@@ -2,7 +2,7 @@
 //! search, `cd -`, and lexical canonicalization of logical paths.
 
 use crate::builtin::options::{invalid_flag, scan_flag_words};
-use crate::builtin::output::write_stdout_decoded;
+use crate::builtin::output::write_stdout_or_report;
 use crate::builtin::path::{encode_path, os_path};
 use crate::env::ShellEnv;
 use crate::error::{RuntimeErrorKind, ShellError};
@@ -49,8 +49,9 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
     let _ = env.vars.set("PWD", new_pwd.clone());
 
     // 6. Print new PWD if the operand came from CDPATH or was "-"
+    // (the directory change itself stands even if the write fails).
     if from_cdpath {
-        write_stdout_decoded(&new_pwd, true);
+        return Ok(write_stdout_or_report("cd", &new_pwd, true));
     }
 
     Ok(0)

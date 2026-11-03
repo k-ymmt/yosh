@@ -1,7 +1,7 @@
 //! `set` and `shift` special builtins: shell options and the
 //! positional parameters (POSIX XCU §2.15 `set`, `shift`).
 
-use crate::builtin::output::write_stdout_decoded;
+use crate::builtin::output::write_lines_or_report;
 use crate::builtin::quote::quote_for_reinput;
 use crate::env::ShellEnv;
 use crate::error::{RuntimeErrorKind, ShellError};
@@ -86,10 +86,11 @@ fn apply_set(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
             .filter_map(|(k, v)| v.value().map(|val| (k.to_string(), val.to_string())))
             .collect();
         vars.sort_by(|a, b| a.0.cmp(&b.0));
-        for (name, value) in vars {
-            write_stdout_decoded(&format!("{}={}", name, quote_for_reinput(&value)), true);
-        }
-        return Ok(0);
+        return Ok(write_lines_or_report(
+            "set",
+            vars.iter()
+                .map(|(name, value)| format!("{}={}", name, quote_for_reinput(value))),
+        ));
     }
 
     let mut i = 0;
@@ -115,12 +116,12 @@ fn apply_set(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
                     // as in dash/bash): each `o` takes the next word.
                     i += 1;
                     let Some(name) = args.get(i) else {
-                        if on {
-                            env.mode.options.display_all();
+                        let lines = if on {
+                            env.mode.options.display_all()
                         } else {
-                            env.mode.options.display_restorable();
-                        }
-                        return Ok(0);
+                            env.mode.options.display_restorable()
+                        };
+                        return Ok(write_lines_or_report("set", lines));
                     };
                     if let Err(e) = env.mode.options.set_by_name(name, on) {
                         return Err(ShellError::runtime(RuntimeErrorKind::InvalidOption, e));
