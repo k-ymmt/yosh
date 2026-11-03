@@ -233,9 +233,10 @@ const WAS_CLOSED: RawFd = -1;
 /// Tracks saved file descriptors so they can be restored after a builtin runs.
 #[derive(Default)]
 pub struct RedirectState {
-    /// (original_fd, saved_copy_fd) — used for restore. `saved_copy_fd`
-    /// is [`WAS_CLOSED`] when `original_fd` was not open.
-    saved_fds: Vec<(RawFd, RawFd)>,
+    /// (original_fd, saved_copy_fd, original_was_cloexec) — used for
+    /// restore. `saved_copy_fd` is [`WAS_CLOSED`] when `original_fd` was
+    /// not open.
+    saved_fds: Vec<(RawFd, RawFd, bool)>,
 }
 
 impl RedirectState {
@@ -365,22 +366,31 @@ impl RedirectState {
         if saved == -1 {
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(libc::EBADF) {
-                self.saved_fds.push((fd, WAS_CLOSED));
+                self.saved_fds.push((fd, WAS_CLOSED, false));
                 return Ok(());
             }
             return Err(format!("dup: {}", err));
         }
-        self.saved_fds.push((fd, saved));
+        // dup2 on restore clears FD_CLOEXEC; remember it so an internal
+        // close-on-exec fd (the signal self-pipe, the terminal fd) that a
+        // user redirection temporarily overwrote does not leak into
+        // children afterwards (`: 10>&1; external` with a posix_spawn
+        // child would otherwise inherit the self-pipe).
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        let cloexec = flags != -1 && flags & libc::FD_CLOEXEC != 0;
+        self.saved_fds.push((fd, saved, cloexec));
         Ok(())
     }
 
     /// Restore all saved fds in reverse order (LIFO).
     pub fn restore(&mut self) {
-        for (original, saved) in self.saved_fds.drain(..).rev() {
+        for (original, saved, cloexec) in self.saved_fds.drain(..).rev() {
             if saved == WAS_CLOSED {
                 unsafe { libc::close(original) };
             } else {
-                raw_dup2(saved, original).ok();
+                if raw_dup2(saved, original).is_ok() && cloexec {
+                    unsafe { libc::fcntl(original, libc::F_SETFD, libc::FD_CLOEXEC) };
+                }
                 unsafe { libc::close(saved) };
             }
         }
@@ -390,7 +400,7 @@ impl RedirectState {
 impl Drop for RedirectState {
     fn drop(&mut self) {
         // Close any saved fds that were never restored
-        for (_original, saved) in self.saved_fds.drain(..) {
+        for (_original, saved, _cloexec) in self.saved_fds.drain(..) {
             if saved != WAS_CLOSED {
                 unsafe { libc::close(saved) };
             }
