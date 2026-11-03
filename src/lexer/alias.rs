@@ -71,8 +71,12 @@ enum CaseState {
     Subject,
     /// After the subject, expecting `in`.
     In,
-    /// Reading a pattern list (`a | b )`), or `esac`.
+    /// At the start of a case item: a pattern list (`a | b )`), an
+    /// optional `(`, or `esac`.
     Pattern,
+    /// Inside a pattern list, after `(`, a pattern word, or `|`: a literal
+    /// `esac` here is an ordinary pattern, not the end of the case.
+    PatternList,
     /// Inside a case item's compound list.
     Body,
 }
@@ -199,9 +203,13 @@ impl Lexer {
                         Some(CaseState::Pattern) => {
                             if lit == Some("esac") {
                                 ctx.case_stack.pop();
+                            } else {
+                                *ctx.case_stack.last_mut().expect("non-empty") =
+                                    CaseState::PatternList;
                             }
                             false
                         }
+                        Some(CaseState::PatternList) => false,
                         _ if !cmd_pos => false,
                         _ => match lit {
                             Some("if" | "then" | "else" | "elif" | "do" | "while" | "until")
@@ -223,10 +231,19 @@ impl Lexer {
                     }
                 }
             }
-            Token::Newline => !matches!(case_top, Some(CaseState::In | CaseState::Pattern)),
-            Token::LParen | Token::Pipe => case_top != Some(CaseState::Pattern),
+            Token::Newline => !matches!(
+                case_top,
+                Some(CaseState::In | CaseState::Pattern | CaseState::PatternList)
+            ),
+            Token::LParen | Token::Pipe => match case_top {
+                Some(CaseState::Pattern | CaseState::PatternList) => {
+                    *ctx.case_stack.last_mut().expect("non-empty") = CaseState::PatternList;
+                    false
+                }
+                _ => true,
+            },
             Token::RParen => {
-                if case_top == Some(CaseState::Pattern) {
+                if matches!(case_top, Some(CaseState::Pattern | CaseState::PatternList)) {
                     *ctx.case_stack.last_mut().expect("non-empty") = CaseState::Body;
                 }
                 true
@@ -336,6 +353,20 @@ mod tests {
             [
                 "case", "e", "in", "NL", "e", "RParen", "echo", "NL", "DSemi", "NL", "esac",
                 "Semi", "echo"
+            ]
+        );
+    }
+
+    #[test]
+    fn literal_esac_pattern_alternative_does_not_end_case() {
+        let e = [("e", "echo")];
+        // `esac` after `|` or `(` is an ordinary pattern word, so the case
+        // context (and command-name position afterwards) stays in sync.
+        assert_eq!(
+            words("case x in foo|esac) e;; (esac) e;; esac; e", &e),
+            [
+                "case", "x", "in", "foo", "Pipe", "esac", "RParen", "echo", "DSemi", "LParen",
+                "esac", "RParen", "echo", "DSemi", "esac", "Semi", "echo"
             ]
         );
     }
