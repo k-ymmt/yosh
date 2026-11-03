@@ -14,9 +14,15 @@ use nesting::NestingGuard;
 pub(crate) use nesting::{SUBPARSE_NEST_COST, StackBudget, enter_word_level};
 
 use crate::error::{self, ParseErrorKind, ShellError};
-use crate::lexer::Lexer;
 use crate::lexer::token::{Span, SpannedToken, Token};
+use crate::lexer::{Lexer, LexerState};
 use ast::{AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, SeparatorOp};
+
+/// A look-ahead snapshot taken by `Parser::snapshot`.
+pub(super) struct Snapshot {
+    lexer: LexerState,
+    current: SpannedToken,
+}
 
 pub struct Parser {
     lexer: Lexer,
@@ -102,6 +108,32 @@ impl Parser {
 
     pub(super) fn current_span(&self) -> Span {
         self.current.span
+    }
+
+    /// Save the lexer state and the current token for look-ahead that may
+    /// have to be undone with `rewind`.
+    ///
+    /// The full `Lexer::save_state` (not the lexer's light `CursorState`)
+    /// is required: look-ahead calls `advance`, which drives
+    /// `Lexer::next_token()` and can dequeue the alias token queue / flip
+    /// command-name position / change the alias recursion guard when the
+    /// look-ahead words came from (or trigger) alias expansion. A
+    /// cursor-only snapshot would lose that state and corrupt subsequent
+    /// alias expansion. See `Lexer::try_read_io_number` for the
+    /// contrasting call site where the light snapshot IS safe.
+    ///
+    /// `pre_current_pos` is not part of the snapshot.
+    pub(super) fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            lexer: self.lexer.save_state(),
+            current: self.current.clone(),
+        }
+    }
+
+    /// Return to a state saved by `snapshot`.
+    pub(super) fn rewind(&mut self, snapshot: Snapshot) {
+        self.lexer.restore_state(snapshot.lexer);
+        self.current = snapshot.current;
     }
 
     pub fn advance(&mut self) -> error::Result<()> {
@@ -248,13 +280,7 @@ impl Parser {
         let ok = match &self.current.token {
             Token::Eof | Token::Newline => true,
             Token::RParen | Token::DSemi | Token::SemiAnd => nested,
-            Token::Word(w) => {
-                nested
-                    && matches!(
-                        w.as_literal(),
-                        Some("}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do")
-                    )
-            }
+            Token::Word(w) => nested && w.as_literal().is_some_and(is_closing_reserved_word),
             _ => false,
         };
         if ok {
@@ -339,82 +365,8 @@ impl Parser {
             return Ok(Command::Compound(compound, redirects));
         }
 
-        // POSIX §2.4: reserved words are recognized at command position even
-        // after a leading assignment prefix. Scan ahead (saving and restoring
-        // lexer state) to check whether the token after any leading assignments
-        // is a compound-command start. If yes, consume for real and attach the
-        // assignments to the compound. Otherwise fall through to the normal
-        // simple-command / function-def paths which handle assignments themselves.
-        // Only a leading assignment word can start that pattern; for any
-        // other word the scan below would stop at once (the compound
-        // check above already failed) and restore an unchanged state.
-        if let Token::Word(w) = &self.current.token
-            && is_assignment_word(w)
-        {
-            // Full `save_state` (not the lexer's light `CursorState`) is
-            // required here: the loop below calls `self.advance()`
-            // (`Parser::advance`), which drives `Lexer::next_token()` and
-            // can dequeue the alias token queue / flip command-name
-            // position / change the alias recursion guard when the
-            // look-ahead words came from (or trigger) alias expansion. A cursor-only snapshot would lose
-            // that state on the restore path below and corrupt subsequent
-            // alias expansion. See `Lexer::try_read_io_number` for the
-            // contrasting call site where the light snapshot IS safe.
-            let saved_state = self.lexer.save_state();
-            let saved_current = self.current.clone();
-
-            let mut prefix_assignments = Vec::new();
-            let found_compound = loop {
-                if let Token::Word(word) = &self.current.token
-                    && let Some(a) = try_parse_assignment(word)
-                {
-                    if self.advance().is_err() {
-                        break false;
-                    }
-                    prefix_assignments.push(a);
-                    continue;
-                }
-                break self.is_compound_command_start();
-            };
-
-            if found_compound && !prefix_assignments.is_empty() {
-                // We're committed: parse the compound and attach assignments.
-                let mut compound = self.parse_compound_command()?;
-                compound.assignments = prefix_assignments;
-                let redirects = self.parse_redirect_list()?;
-                return Ok(Command::Compound(compound, redirects));
-            }
-
-            // `x=1 f() ...`: the POSIX grammar has no assignment prefix
-            // before a function definition (function_definition derives
-            // from `fname '(' ')'` with no cmd_prefix). Without this check
-            // the words would fall through to parse_simple_command, which
-            // stops at `(` and later produces a misleading downstream
-            // error ("empty compound list in subshell") after executing
-            // `x=1 f` as a command. Detect the pattern while still inside
-            // the look-ahead (state is restored / abandoned either way)
-            // and emit an accurate diagnostic. bash/dash both report a
-            // syntax error near the `(` here.
-            if !prefix_assignments.is_empty() {
-                let name_candidate = match &self.current.token {
-                    Token::Word(w) => w.as_literal().is_some_and(word::is_valid_name),
-                    _ => false,
-                };
-                if name_candidate && self.advance().is_ok() && self.current.token == Token::LParen {
-                    let span = self.current_span();
-                    return Err(ShellError::parse(
-                        ParseErrorKind::UnexpectedToken,
-                        span.line,
-                        span.column,
-                        "syntax error near unexpected token '(': \
-                         assignments may not precede a function definition",
-                    ));
-                }
-            }
-
-            // Not a compound-after-assignments case: restore and fall through.
-            self.lexer.restore_state(saved_state);
-            self.current = saved_current;
+        if let Some(compound) = self.try_parse_prefixed_compound()? {
+            return Ok(compound);
         }
 
         if let Some(func_def) = self.try_parse_function_def()? {
@@ -425,7 +377,81 @@ impl Parser {
         Ok(Command::Simple(simple))
     }
 
-    /// Returns true when we've reached a token that ends a complete command.
+    /// `x=1 if ...`: a compound command after a leading assignment prefix.
+    ///
+    /// POSIX §2.4: reserved words are recognized at command position even
+    /// after a leading assignment prefix. Scan ahead (saving and restoring
+    /// lexer state) to check whether the token after any leading assignments
+    /// is a compound-command start. If yes, consume for real and attach the
+    /// assignments to the compound. Otherwise rewind and return `None`, so
+    /// the normal simple-command / function-def paths handle the
+    /// assignments themselves. Only a leading assignment word can start
+    /// that pattern; for any other word the scan would stop at once (the
+    /// caller's compound check already failed) and restore an unchanged
+    /// state.
+    fn try_parse_prefixed_compound(&mut self) -> error::Result<Option<Command>> {
+        let Token::Word(w) = &self.current.token else {
+            return Ok(None);
+        };
+        if !is_assignment_word(w) {
+            return Ok(None);
+        }
+        let saved = self.snapshot();
+
+        let mut prefix_assignments = Vec::new();
+        let found_compound = loop {
+            if let Token::Word(word) = &self.current.token
+                && let Some(a) = try_parse_assignment(word)
+            {
+                if self.advance().is_err() {
+                    break false;
+                }
+                prefix_assignments.push(a);
+                continue;
+            }
+            break self.is_compound_command_start();
+        };
+
+        if found_compound && !prefix_assignments.is_empty() {
+            // We're committed: parse the compound and attach assignments.
+            let mut compound = self.parse_compound_command()?;
+            compound.assignments = prefix_assignments;
+            let redirects = self.parse_redirect_list()?;
+            return Ok(Some(Command::Compound(compound, redirects)));
+        }
+
+        // `x=1 f() ...`: the POSIX grammar has no assignment prefix
+        // before a function definition (function_definition derives
+        // from `fname '(' ')'` with no cmd_prefix). Without this check
+        // the words would fall through to parse_simple_command, which
+        // stops at `(` and later produces a misleading downstream
+        // error ("empty compound list in subshell") after executing
+        // `x=1 f` as a command. Detect the pattern while still inside
+        // the look-ahead (state is restored / abandoned either way)
+        // and emit an accurate diagnostic. bash/dash both report a
+        // syntax error near the `(` here.
+        if !prefix_assignments.is_empty() {
+            let name_candidate = match &self.current.token {
+                Token::Word(w) => w.as_literal().is_some_and(word::is_valid_name),
+                _ => false,
+            };
+            if name_candidate && self.advance().is_ok() && self.current.token == Token::LParen {
+                let span = self.current_span();
+                return Err(ShellError::parse(
+                    ParseErrorKind::UnexpectedToken,
+                    span.line,
+                    span.column,
+                    "syntax error near unexpected token '(': \
+                     assignments may not precede a function definition",
+                ));
+            }
+        }
+
+        // Not a compound-after-assignments case: restore and fall through.
+        self.rewind(saved);
+        Ok(None)
+    }
+
     /// Error when input ends right after a `|`, `&&`, or `||` operator:
     /// POSIX requires a following command, not a phantom empty one.
     /// `UnexpectedEof` so interactive parsing classifies it as incomplete.
@@ -442,14 +468,12 @@ impl Parser {
         Ok(())
     }
 
+    /// Returns true when we've reached a token that ends a complete command.
     pub(super) fn is_complete_command_end(&self) -> bool {
         match &self.current.token {
             Token::Eof => true,
             Token::RParen => true,
-            Token::Word(word) => matches!(
-                word.as_literal(),
-                Some("}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do")
-            ),
+            Token::Word(word) => word.as_literal().is_some_and(is_closing_reserved_word),
             _ => false,
         }
     }
@@ -466,6 +490,16 @@ impl Parser {
             _ => false,
         }
     }
+}
+
+/// Reserved words that close a compound command or one of its parts, and
+/// so may end a command list without a separator (`{ :; }`, `if a; then
+/// b; fi`, ...).
+pub(super) fn is_closing_reserved_word(word: &str) -> bool {
+    matches!(
+        word,
+        "}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do"
+    )
 }
 
 /// Short source-like rendering of a token for syntax error messages.
@@ -740,8 +774,8 @@ mod tests {
 
     // ---- Task 4 item 17 locking tests ----
     //
-    // `parse_command`'s assignment-prefix lookahead (this file, around
-    // `save_state`/`restore_state`) calls `self.advance()` inside the loop,
+    // `try_parse_prefixed_compound`'s assignment-prefix lookahead (this
+    // file, around `snapshot`/`rewind`) calls `self.advance()` inside the loop,
     // which is `Parser::advance` — it drives the lexer's `next_token()` and
     // CAN dequeue from the alias token queue / change command-name position
     // or the recursion guard. That means this call site must keep the FULL

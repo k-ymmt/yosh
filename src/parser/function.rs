@@ -25,26 +25,21 @@ impl Parser {
         };
 
         // Save state for backtracking
-        let saved_lexer_state = self.lexer.save_state();
-        let saved_current = self.current.clone();
+        let saved = self.snapshot();
 
         // Advance past the name
         self.advance()?;
 
         // Check for (
         if self.current.token != Token::LParen {
-            // Restore state
-            self.lexer.restore_state(saved_lexer_state);
-            self.current = saved_current;
+            self.rewind(saved);
             return Ok(None);
         }
         self.advance()?;
 
         // Check for )
         if self.current.token != Token::RParen {
-            // Restore state
-            self.lexer.restore_state(saved_lexer_state);
-            self.current = saved_current;
+            self.rewind(saved);
             return Ok(None);
         }
         self.advance()?;

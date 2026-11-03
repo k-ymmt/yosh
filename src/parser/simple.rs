@@ -1,6 +1,6 @@
-use super::Parser;
 use super::ast::{Assignment, SimpleCommand, Word, WordPart};
 use super::word::{is_valid_name, split_tildes_in_literal};
+use super::{Parser, is_closing_reserved_word};
 use crate::error::{self, ParseErrorKind, ShellError};
 use crate::lexer::token::Token;
 
@@ -33,10 +33,8 @@ impl Parser {
                     && words.is_empty()
                     && redirects.is_empty()
                     && let Token::Word(word) = &self.current.token
-                    && let Some(
-                        kw @ ("}" | "fi" | "done" | "esac" | "then" | "else" | "elif" | "do" | "in"
-                        | "!"),
-                    ) = word.as_literal()
+                    && let Some(kw) = word.as_literal()
+                    && (is_closing_reserved_word(kw) || matches!(kw, "in" | "!"))
                 {
                     let span = self.current_span();
                     return Err(ShellError::parse(
