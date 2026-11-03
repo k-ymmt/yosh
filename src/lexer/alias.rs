@@ -69,6 +69,9 @@ pub(crate) struct AliasState {
     /// from the input (so the input text does not spell it): the token's
     /// raw text in the alias value, leading blanks included.
     last_source: Option<Rc<str>>,
+    /// The token most recently returned by `next_token` was `<<` or
+    /// `<<-`, so the word being read now is a here-document delimiter.
+    heredoc_delimiter: bool,
 }
 
 impl Default for AliasState {
@@ -81,6 +84,7 @@ impl Default for AliasState {
             redirect_target: None,
             after_trailing_blank: false,
             last_source: None,
+            heredoc_delimiter: false,
         }
     }
 }
@@ -95,6 +99,11 @@ impl AliasState {
     /// See `last_source`.
     pub(crate) fn last_source(&self) -> Option<&str> {
         self.last_source.as_deref()
+    }
+
+    /// See `heredoc_delimiter`.
+    pub(crate) fn reading_heredoc_delimiter(&self) -> bool {
+        self.heredoc_delimiter
     }
 }
 
@@ -166,6 +175,8 @@ impl Lexer {
 
             self.alias_state.last_source = alias_source;
             self.alias_state.after_trailing_blank = false;
+            self.alias_state.heredoc_delimiter =
+                matches!(tok.token, Token::DLess | Token::DLessDash);
             self.update_check_alias_after(&tok.token);
             return Ok(tok);
         }

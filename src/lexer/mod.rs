@@ -152,19 +152,30 @@ impl Lexer {
 
     /// A fresh lexer over `input` that inherits this lexer's nesting depth
     /// and alias table (for re-parsing a backquoted command body).
+    ///
+    /// The body text is complete (its closing backquote has been found),
+    /// so its end also ends an unterminated here-document in it, as in
+    /// dash and bash, even when the outer parser is interactive: no
+    /// further input could ever continue it.
     pub(crate) fn nested_lexer(&self, input: &str) -> Lexer {
         let mut lexer = Lexer::new(input);
         lexer.inherit_aliases(self);
+        lexer.eof_ends_heredoc = true;
         lexer
     }
 
     /// Set up a lexer for a command substitution body found by `parent`:
     /// one nesting level deeper, with the parent's alias table and alias
-    /// recursion guard.
+    /// recursion guard. A substitution inside a here-document delimiter
+    /// word gets no aliases: the delimiter only undergoes quote removal
+    /// (POSIX §2.7.4), its text is never parsed as commands, so
+    /// `cat <<"$(a)"` must not fail on what alias `a` expands to.
     fn inherit_aliases(&mut self, parent: &Lexer) {
         self.nest_depth = parent.nest_depth + crate::parser::SUBPARSE_NEST_COST;
-        self.aliases = Rc::clone(&parent.aliases);
-        self.blocked_aliases = Rc::clone(&parent.blocked_aliases);
+        if !parent.alias_state.reading_heredoc_delimiter() {
+            self.aliases = Rc::clone(&parent.aliases);
+            self.blocked_aliases = Rc::clone(&parent.blocked_aliases);
+        }
     }
 
     /// Error out once word-level nesting gets too deep (see
