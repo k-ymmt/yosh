@@ -471,10 +471,11 @@ impl Executor {
         }
 
         // wait / fg / bg / jobs / command need Executor access (job
-        // table, signal processing, -p / no-flag execution paths).
+        // table, signal processing, -p / no-flag execution paths); fc (a
+        // regular builtin) needs it to re-execute history entries.
         if matches!(
             command_name.as_str(),
-            "wait" | "fg" | "bg" | "jobs" | "command"
+            "wait" | "fg" | "bg" | "jobs" | "command" | "fc"
         ) {
             let status = self
                 .run_with_temp_assignments(cmd, &redirs, &command_name, &args, |exec| {
@@ -483,6 +484,7 @@ impl Executor {
                         "fg" => exec.builtin_fg(&args),
                         "bg" => exec.builtin_bg(&args),
                         "jobs" => exec.builtin_jobs(&args),
+                        "fc" => crate::builtin::fc::builtin_fc(&args, exec),
                         "command" => Ok(exec.builtin_command(&args)),
                         _ => unreachable!(),
                     };
@@ -1156,7 +1158,7 @@ impl Executor {
 
     /// Run one of the regular builtins whose implementation lives on the
     /// Executor (job table / signal access) rather than in
-    /// `exec_regular_builtin`: wait, fg, bg, jobs, and `command` itself.
+    /// `exec_regular_builtin`: wait, fg, bg, jobs, fc, and `command` itself.
     /// Returns `None` when `name` is not one of them. Used by the
     /// `command` execution paths, which must honor these as builtins
     /// (POSIX: `command` bypasses functions only).
@@ -1166,6 +1168,7 @@ impl Executor {
             "fg" => self.builtin_fg(args),
             "bg" => self.builtin_bg(args),
             "jobs" => self.builtin_jobs(args),
+            "fc" => crate::builtin::fc::builtin_fc(args, self),
             "command" => return Some(self.builtin_command(args)),
             _ => return None,
         };

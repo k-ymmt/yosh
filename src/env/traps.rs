@@ -23,9 +23,16 @@ impl TrapStore {
     /// Convert a signal name or number string to a signal number.
     /// Returns None for unknown signals.
     pub fn signal_name_to_number(name: &str) -> Option<i32> {
-        // Try numeric parse first
-        if let Ok(n) = name.parse::<i32>() {
-            return Some(n);
+        // A numeric condition must be an unsigned decimal integer naming
+        // EXIT (0) or a signal this platform defines: `trap x 999` /
+        // `trap x -5` are errors in dash and bash, not a phantom
+        // "SIGUNKNOWN" trap.
+        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
+            let n = name.parse::<i32>().ok()?;
+            if n == 0 || crate::signal::signal_number_to_name(n).is_some() {
+                return Some(n);
+            }
+            return None;
         }
         // "EXIT" is trap-specific (signal 0)
         if name.eq_ignore_ascii_case("EXIT") {
@@ -88,24 +95,29 @@ impl TrapStore {
 
     /// Remove/reset the trap for the given condition.
     /// Delegates to [`Self::remove_trap_with`].
-    pub fn remove_trap(&mut self, condition: &str) {
+    pub fn remove_trap(&mut self, condition: &str) -> Result<(), String> {
         self.remove_trap_with(condition, &crate::signal::is_ignored_on_entry)
     }
 
     /// Remove/reset a trap with an injected ignored-on-entry predicate.
-    /// Silent no-op for ignored-on-entry signals per POSIX §2.12.
-    pub(crate) fn remove_trap_with(&mut self, condition: &str, is_ignored: &dyn Fn(i32) -> bool) {
-        let Some(num) = Self::signal_name_to_number(condition) else {
-            return;
-        };
+    /// Silent no-op for ignored-on-entry signals per POSIX §2.12. An
+    /// unknown condition is an error (`trap - FOO`: dash/bash rc 1).
+    pub(crate) fn remove_trap_with(
+        &mut self,
+        condition: &str,
+        is_ignored: &dyn Fn(i32) -> bool,
+    ) -> Result<(), String> {
+        let num = Self::signal_name_to_number(condition)
+            .ok_or_else(|| format!("invalid signal name: {}", condition))?;
         if num == 0 {
             self.exit_trap = None;
-            return;
+            return Ok(());
         }
         if is_ignored(num) {
-            return;
+            return Ok(());
         }
         self.signal_traps.remove(&num);
+        Ok(())
     }
 
     /// Reset all non-ignored traps to default (POSIX subshell behavior).
@@ -168,52 +180,15 @@ impl TrapStore {
         self.signal_traps.get(&sig)
     }
 
-    /// Print all active traps in a format suitable for re-input.
-    /// Format: `trap -- 'cmd' SIGNAME` or `trap -- '' SIGNAME`.
+    /// Print all active traps in a format suitable for re-input:
+    /// `trap -- 'cmd' NAME` / `trap -- '' NAME`, with the action
+    /// single-quoted (embedded `'` as `'\''`) and the condition named
+    /// without the `SIG` prefix (POSIX, dash, `bash --posix`).
     /// Default actions are skipped. Exit trap first, then signals sorted by number.
     /// In subshells, displays the saved parent traps (POSIX requirement).
     pub fn display_all(&self) {
-        let (exit_trap, signal_traps) = if let Some(saved) = &self.saved_traps {
-            (&saved.0, &saved.1)
-        } else {
-            (&self.exit_trap, &self.signal_traps)
-        };
-
-        // Exit trap first
-        if let Some(action) = exit_trap {
-            match action {
-                TrapAction::Command(cmd) => crate::builtin::regular::write_stdout_decoded(
-                    &format!("trap -- '{}' EXIT", cmd),
-                    true,
-                ),
-                TrapAction::Ignore => println!("trap -- '' EXIT"),
-                TrapAction::Default => {}
-            }
-        }
-
-        // Union signal_traps keys with ignored-on-entry signals (POSIX §2.12:
-        // these must appear in `trap` output even though we didn't install a
-        // TrapAction for them). BTreeSet gives deterministic sort-by-number.
-        let mut keys: BTreeSet<i32> = signal_traps.keys().copied().collect();
-        if let Some(entry_set) = crate::signal::ignored_on_entry_set_opt() {
-            for &sig in entry_set {
-                keys.insert(sig);
-            }
-        }
-        for num in keys {
-            let name = Self::signal_number_to_name(num);
-            match signal_traps.get(&num) {
-                Some(TrapAction::Command(cmd)) => crate::builtin::regular::write_stdout_decoded(
-                    &format!("trap -- '{}' SIG{}", cmd, name),
-                    true,
-                ),
-                Some(TrapAction::Ignore) => println!("trap -- '' SIG{}", name),
-                Some(TrapAction::Default) => {}
-                None => {
-                    // Ignored-on-entry with no explicit trap — display as ''.
-                    println!("trap -- '' SIG{}", name);
-                }
-            }
+        for line in self.listing(None) {
+            crate::builtin::regular::write_stdout_decoded(&line, true);
         }
     }
 
@@ -222,44 +197,72 @@ impl TrapStore {
     /// [`Self::display_all`]. Unknown condition names and conditions at
     /// their default action print nothing.
     pub fn display_conditions(&self, conditions: &[String]) {
+        for line in self.listing(Some(conditions)) {
+            crate::builtin::regular::write_stdout_decoded(&line, true);
+        }
+    }
+
+    /// Build the re-input lines for [`Self::display_all`] (`conditions`
+    /// = `None`) or [`Self::display_conditions`].
+    pub(crate) fn listing(&self, conditions: Option<&[String]>) -> Vec<String> {
         let (exit_trap, signal_traps) = if let Some(saved) = &self.saved_traps {
             (&saved.0, &saved.1)
         } else {
             (&self.exit_trap, &self.signal_traps)
         };
-
-        for cond in conditions {
-            let Some(num) = Self::signal_name_to_number(cond) else {
-                continue;
-            };
-            if num == 0 {
-                match exit_trap {
-                    Some(TrapAction::Command(cmd)) => {
-                        crate::builtin::regular::write_stdout_decoded(
-                            &format!("trap -- '{}' EXIT", cmd),
-                            true,
-                        )
-                    }
-                    Some(TrapAction::Ignore) => println!("trap -- '' EXIT"),
-                    _ => {}
-                }
-                continue;
+        let line = |action: &TrapAction, name: &str| -> Option<String> {
+            match action {
+                TrapAction::Command(cmd) => Some(format!(
+                    "trap -- {} {}",
+                    crate::builtin::special::single_quote(cmd),
+                    name
+                )),
+                TrapAction::Ignore => Some(format!("trap -- '' {}", name)),
+                TrapAction::Default => None,
             }
+        };
+        let signal_line = |num: i32| -> Option<String> {
             let name = Self::signal_number_to_name(num);
             match signal_traps.get(&num) {
-                Some(TrapAction::Command(cmd)) => crate::builtin::regular::write_stdout_decoded(
-                    &format!("trap -- '{}' SIG{}", cmd, name),
-                    true,
-                ),
-                Some(TrapAction::Ignore) => println!("trap -- '' SIG{}", name),
-                Some(TrapAction::Default) => {}
-                None => {
-                    if crate::signal::is_ignored_on_entry(num) {
-                        println!("trap -- '' SIG{}", name);
+                Some(action) => line(action, name),
+                // Ignored-on-entry with no explicit trap (POSIX §2.12:
+                // these must still be listed) — display as ''.
+                None if crate::signal::is_ignored_on_entry(num) => {
+                    Some(format!("trap -- '' {}", name))
+                }
+                None => None,
+            }
+        };
+
+        let mut out = Vec::new();
+        match conditions {
+            None => {
+                if let Some(action) = exit_trap {
+                    out.extend(line(action, "EXIT"));
+                }
+                // Union signal_traps keys with ignored-on-entry signals.
+                // BTreeSet gives deterministic sort-by-number.
+                let mut keys: BTreeSet<i32> = signal_traps.keys().copied().collect();
+                if let Some(entry_set) = crate::signal::ignored_on_entry_set_opt() {
+                    keys.extend(entry_set.iter().copied());
+                }
+                out.extend(keys.into_iter().filter_map(signal_line));
+            }
+            Some(conds) => {
+                for cond in conds {
+                    match Self::signal_name_to_number(cond) {
+                        Some(0) => {
+                            if let Some(action) = exit_trap {
+                                out.extend(line(action, "EXIT"));
+                            }
+                        }
+                        Some(num) => out.extend(signal_line(num)),
+                        None => {}
                     }
                 }
             }
         }
+        out
     }
 }
 
@@ -317,7 +320,7 @@ mod tests {
         store
             .set_trap("EXIT", TrapAction::Command("echo bye".to_string()))
             .expect("set_trap with a valid signal name must succeed");
-        store.remove_trap("EXIT");
+        store.remove_trap("EXIT").unwrap();
         assert!(store.exit_trap.is_none());
     }
 
@@ -404,7 +407,7 @@ mod tests {
         let mut store = TrapStore::default();
         store.signal_traps.insert(2, TrapAction::Ignore);
         let is_ignored = |sig: i32| sig == 2;
-        store.remove_trap_with("INT", &is_ignored);
+        store.remove_trap_with("INT", &is_ignored).unwrap();
         assert_eq!(
             store.signal_traps.get(&2),
             Some(&TrapAction::Ignore),

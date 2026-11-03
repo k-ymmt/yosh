@@ -54,8 +54,12 @@ pub fn builtin_printf(args: &[String]) -> Result<i32, ShellError> {
 /// Write `buf` to fd 1 with `write(2)` directly. `std::io::Stdout`
 /// silently swallows `EBADF` (a closed stdout, `printf x >&-`), but
 /// POSIX requires `printf` to report a write failure with status 1.
-fn write_all_stdout(buf: &[u8]) -> std::io::Result<()> {
-    let _lock = std::io::stdout().lock();
+pub(crate) fn write_all_stdout(buf: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut lock = std::io::stdout().lock();
+    // Anything still sitting in std's buffer must go out first so the
+    // raw write below cannot overtake it.
+    let _ = lock.flush();
     let mut rest = buf;
     while !rest.is_empty() {
         let n = unsafe { libc::write(1, rest.as_ptr().cast(), rest.len()) };

@@ -6,15 +6,15 @@
 //!   table, sorted by name; nothing is printed when the cache is empty).
 //!   POSIX leaves the format implementation-defined.
 //! - `-r`: clear the cache.
-//! - `name...`: for each name, record its location. If `name` contains
-//!   `/`, the path is taken as-is and validated. Otherwise it is
-//!   searched via PATH and inserted into the cache.
-
-use std::path::PathBuf;
+//! - `name...`: for each name, search PATH and record its location in
+//!   the cache. A `name` containing `/` is never searched for (POSIX
+//!   command search skips PATH for such names), so — like dash and
+//!   bash — it is silently ignored rather than cached under its
+//!   basename, which would make a later bare `ls` run `./d2/ls`.
 
 use crate::env::ShellEnv;
 use crate::error::ShellError;
-use crate::exec::command::{find_in_path, is_executable_file};
+use crate::exec::command::find_in_path;
 
 pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
     // Parse leading -X flags.
@@ -70,34 +70,18 @@ pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     let mut exit_status = 0;
     for name in operands {
         if name.contains('/') {
-            let path = PathBuf::from(name);
-            if !is_executable_file(&path) {
-                eprintln!("yosh: hash: {}: not found", name);
-                exit_status = 1;
-                continue;
-            }
-            // POSIX: cache the basename; the operand path becomes the value.
-            let basename = path
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| name.clone());
-            env.utility_hash
-                .insert(basename, crate::env::HashEntry::new(path));
-        } else {
-            let path_var = env
-                .vars
-                .get("PATH")
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            match find_in_path(name, &path_var, &mut env.utility_hash) {
-                Some(_) => {
-                    // find_in_path already inserted into the cache.
-                }
-                None => {
-                    eprintln!("yosh: hash: {}: not found", name);
-                    exit_status = 1;
-                }
-            }
+            // Not subject to PATH search: nothing to remember.
+            continue;
+        }
+        let path_var = env
+            .vars
+            .get("PATH")
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        // On success find_in_path has already inserted into the cache.
+        if find_in_path(name, &path_var, &mut env.utility_hash).is_none() {
+            eprintln!("yosh: hash: {}: not found", name);
+            exit_status = 1;
         }
     }
     Ok(exit_status)
@@ -106,6 +90,7 @@ pub fn builtin_hash(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn env_with_path(path: &str) -> ShellEnv {
         let mut env = ShellEnv::new("yosh", vec![]);
@@ -127,11 +112,16 @@ mod tests {
     }
 
     #[test]
-    fn slash_path_to_nonexistent_returns_error() {
+    fn slash_operand_is_ignored_not_cached() {
         let mut env = env_with_path("/bin:/usr/bin");
-        let args = vec!["/no/such/cmd_definitely_missing_12345".to_string()];
+        // dash/bash: names with `/` are skipped silently (rc 0), whether
+        // or not they exist, and never seed the cache under a basename.
+        let args = vec![
+            "/no/such/cmd_definitely_missing_12345".to_string(),
+            "/bin/sh".to_string(),
+        ];
         let r = builtin_hash(&args, &mut env).unwrap();
-        assert_eq!(r, 1);
+        assert_eq!(r, 0);
         assert!(env.utility_hash.is_empty());
     }
 

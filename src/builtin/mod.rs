@@ -1,4 +1,5 @@
 pub mod command;
+pub mod fc;
 pub mod getopts;
 pub mod hash;
 pub mod printf;
@@ -15,8 +16,8 @@ use crate::env::ShellEnv;
 pub const BUILTIN_NAMES: &[&str] = &[
     // Special builtins
     "break", ":", "continue", ".", "eval", "exec", "exit", "export", "readonly", "return", "set",
-    "shift", "times", "trap", "unset", "fc", // Regular builtins
-    "cd", "command", "echo", "true", "false", "alias", "unalias", "kill", "wait", "fg", "bg",
+    "shift", "times", "trap", "unset", // Regular builtins
+    "fc", "cd", "command", "echo", "true", "false", "alias", "unalias", "kill", "wait", "fg", "bg",
     "jobs", "umask", "ulimit", "test", "[", "type", "hash", "read", "getopts", "printf",
 ];
 
@@ -36,10 +37,10 @@ pub enum BuiltinKind {
 pub fn classify_builtin(name: &str) -> BuiltinKind {
     match name {
         "break" | ":" | "continue" | "." | "eval" | "exec" | "exit" | "export" | "readonly"
-        | "return" | "set" | "shift" | "times" | "trap" | "unset" | "fc" => BuiltinKind::Special,
-        "cd" | "command" | "echo" | "true" | "false" | "alias" | "unalias" | "kill" | "wait"
-        | "fg" | "bg" | "jobs" | "umask" | "ulimit" | "test" | "[" | "type" | "hash" | "read"
-        | "getopts" | "printf" => BuiltinKind::Regular,
+        | "return" | "set" | "shift" | "times" | "trap" | "unset" => BuiltinKind::Special,
+        "fc" | "cd" | "command" | "echo" | "true" | "false" | "alias" | "unalias" | "kill"
+        | "wait" | "fg" | "bg" | "jobs" | "umask" | "ulimit" | "test" | "[" | "type" | "hash"
+        | "read" | "getopts" | "printf" => BuiltinKind::Regular,
         _ => BuiltinKind::NotBuiltin,
     }
 }
@@ -62,7 +63,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
             eprintln!("yosh: wait: internal error");
             Ok(1)
         }
-        "fg" | "bg" | "jobs" => {
+        "fg" | "bg" | "jobs" | "fc" => {
             // Handled in Executor::exec_simple_command
             eprintln!("yosh: {}: internal error", name);
             Ok(1)
@@ -159,7 +160,8 @@ mod tests {
 
     #[test]
     fn test_classify_fc() {
-        assert!(matches!(classify_builtin("fc"), BuiltinKind::Special));
+        // POSIX: fc is a regular built-in, not a special one.
+        assert!(matches!(classify_builtin("fc"), BuiltinKind::Regular));
     }
 
     #[test]

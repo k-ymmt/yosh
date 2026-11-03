@@ -75,11 +75,11 @@ fn trap_reset_on_ignored_on_entry_sigint_is_silent() {
 
 #[test]
 fn trap_display_shows_ignored_on_entry() {
-    // `trap` with no args should list SIGTERM as `trap -- '' SIGTERM`.
+    // `trap` with no args should list SIGTERM as `trap -- '' TERM`.
     let (stdout, _stderr, code) = spawn_yosh_with_ignored(&[libc::SIGTERM], "trap");
     assert_eq!(code, 0);
     assert!(
-        stdout.contains("trap -- '' SIGTERM"),
+        stdout.contains("trap -- '' TERM"),
         "expected 'trap -- \\'\\' SIGTERM' in stdout; got {:?}",
         stdout
     );
@@ -91,7 +91,7 @@ fn subshell_inherits_ignored_on_entry() {
     let (stdout, _stderr, code) = spawn_yosh_with_ignored(&[libc::SIGTERM], "( trap )");
     assert_eq!(code, 0);
     assert!(
-        stdout.contains("trap -- '' SIGTERM"),
+        stdout.contains("trap -- '' TERM"),
         "subshell should inherit ignored-on-entry; stdout={:?}",
         stdout
     );

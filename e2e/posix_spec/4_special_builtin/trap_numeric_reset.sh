@@ -6,4 +6,4 @@
 trap 'echo t' TERM
 trap 15
 trap -p > "$TEST_TMPDIR/traps"
-if grep -q SIGTERM "$TEST_TMPDIR/traps"; then echo still-trapped; else echo reset-ok; fi
+if grep -q TERM "$TEST_TMPDIR/traps"; then echo still-trapped; else echo reset-ok; fi

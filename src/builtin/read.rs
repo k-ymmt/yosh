@@ -17,8 +17,10 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
             return Ok(1);
         }
         Err(ArgError::UnknownFlag(c)) => {
+            // Usage error: status 2 like dash/bash (and yosh's other
+            // builtins), distinct from read's EOF/assignment status 1.
             eprintln!("yosh: read: -{}: invalid option", c);
-            return Ok(1);
+            return Ok(2);
         }
         Err(ArgError::InvalidIdentifier(name)) => {
             eprintln!("yosh: read: `{}': not a valid identifier", name);
@@ -372,6 +374,22 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
     let is_ws = |lb: &LineByte| !lb.escaped && ws_ifs.contains(&lb.value);
     let is_sep = |lb: &LineByte| !lb.escaped && sep_ifs.contains(&lb.value);
     let is_any_ifs = |lb: &LineByte| is_ws(lb) || is_sep(lb);
+    // Skip one field terminator starting at `k` and return the index
+    // after it. Per XCU §2.6.5 a delimiter is a non-whitespace IFS byte
+    // together with any adjacent IFS whitespace (on BOTH sides), or a
+    // run of IFS whitespace alone: `ws* sep? ws*`.
+    let skip_terminator = |bytes: &[LineByte], mut k: usize| -> usize {
+        while k < bytes.len() && is_ws(&bytes[k]) {
+            k += 1;
+        }
+        if k < bytes.len() && is_sep(&bytes[k]) {
+            k += 1;
+            while k < bytes.len() && is_ws(&bytes[k]) {
+                k += 1;
+            }
+        }
+        k
+    };
 
     // Empty IFS → no splitting at all.
     if ws_ifs.is_empty() && sep_ifs.is_empty() {
@@ -385,16 +403,6 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
     let mut i = 0;
     while i < line.len() && is_ws(&line[i]) {
         i += 1;
-    }
-
-    // N=1 shortcut: trim trailing ws_ifs and return the whole remainder.
-    if n_vars == 1 {
-        let mut j = line.len();
-        while j > i && is_ws(&line[j - 1]) {
-            j -= 1;
-        }
-        let s = field_to_string(&line[i..j]);
-        return vec![s];
     }
 
     let mut result: Vec<String> = Vec::with_capacity(n_vars);
@@ -413,24 +421,31 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
         let field = field_to_string(&line[start..i]);
         result.push(field);
 
-        // Consume one terminator: at most one sep_ifs byte, then any
-        // adjacent run of ws_ifs (which collapses with the terminator).
-        if i < line.len() {
-            if is_sep(&line[i]) {
-                i += 1;
-            }
-            while i < line.len() && is_ws(&line[i]) {
-                i += 1;
-            }
-        }
+        // Consume one terminator (IFS whitespace on either side of an
+        // optional non-whitespace delimiter collapses into it).
+        i = skip_terminator(line, i);
     }
 
-    // Remainder for var[n_vars-1]: trim trailing ws_ifs only.
+    // Remainder for var[n_vars-1]: trim trailing ws_ifs.
     let mut j = line.len();
     while j > i && is_ws(&line[j - 1]) {
         j -= 1;
     }
-    let remainder = field_to_string(&line[i..j]);
+    let rest = &line[i..j];
+    // If the remainder is exactly one field plus one terminator (`b:` in
+    // `a:b:`), that delimiter only ends the last field — field splitting
+    // yields no extra field for it — so the var gets the bare field, as
+    // in dash/bash. With more fields left over (`b::`, `b:c:`), the
+    // whole remainder, delimiters included, is assigned.
+    let mut field_end = 0;
+    while field_end < rest.len() && !is_any_ifs(&rest[field_end]) {
+        field_end += 1;
+    }
+    let remainder = if skip_terminator(rest, field_end) == rest.len() {
+        field_to_string(&rest[..field_end])
+    } else {
+        field_to_string(rest)
+    };
     result.push(remainder);
 
     debug_assert_eq!(result.len(), n_vars);
@@ -754,5 +769,33 @@ mod tests {
         ];
         let out = split_fields(" \t\n", &line, 2);
         assert_eq!(out, vec!["a b".to_string(), "".to_string()]);
+    }
+
+    #[test]
+    fn split_ws_before_sep_collapses_into_terminator() {
+        // `IFS=" :"`, "a :b": " :" is ONE delimiter (dash/bash [a][b][]).
+        let out = split_for(" :", to_line("a :b"), 3);
+        assert_eq!(out, vec!["a".to_string(), "b".to_string(), "".to_string()]);
+        let out = split_for(" :", to_line("a : b"), 2);
+        assert_eq!(out, vec!["a".to_string(), "b".to_string()]);
+        // Two separators are still two delimiters.
+        let out = split_for(" :", to_line("a: :b"), 3);
+        assert_eq!(out, vec!["a".to_string(), "".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn split_last_var_drops_single_trailing_delimiter() {
+        let t = |ifs: &str, line: &str, n: usize| split_for(ifs, to_line(line), n);
+        assert_eq!(t(":", "a:b:", 2), vec!["a", "b"]);
+        assert_eq!(t(": ", "a:b : ", 2), vec!["a", "b"]);
+        assert_eq!(t(": ", "a::", 2), vec!["a", ""]);
+        assert_eq!(t(": ", "a : :", 2), vec!["a", ""]);
+        assert_eq!(t(": ", "a:", 1), vec!["a"]);
+        assert_eq!(t(": ", " a :", 1), vec!["a"]);
+        // More than one field left: delimiters are kept verbatim.
+        assert_eq!(t(":", "a:b::", 2), vec!["a", "b::"]);
+        assert_eq!(t(":", "a:b:c:", 2), vec!["a", "b:c:"]);
+        assert_eq!(t(": ", "a b c:", 2), vec!["a", "b c:"]);
+        assert_eq!(t(": ", "a:b:", 1), vec!["a:b:"]);
     }
 }

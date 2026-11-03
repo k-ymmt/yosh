@@ -161,6 +161,16 @@ fn step_getopts(
 
     let elt = operands[optind_in - 1];
 
+    // A saved subindex at or past the end of the current element is
+    // stale: the operands changed under us (`set -- …`, or a different
+    // explicit arg list) since the call that stored it. Like bash, start
+    // over at the beginning of the current element instead of indexing
+    // out of bounds (`set -- -ab; getopts ab o; set -- -x; getopts ab o`
+    // reports `-x` as illegal in both bash and dash).
+    if subindex_in != 0 && subindex_in >= elt.len() {
+        return step_getopts(spec, operands, optind_in, 0, silent);
+    }
+
     let cursor = if subindex_in == 0 {
         if elt == "--" {
             return GetoptsStep {
@@ -192,7 +202,10 @@ fn step_getopts(
     let next_cursor = cursor + 1;
     let rest_of_elt = next_cursor < bytes.len();
 
-    let pos = if bytes[cursor].is_ascii() {
+    // `:` in the optstring only marks "takes an argument" (or silent
+    // mode when leading); it is never itself an option character, so
+    // `-:` is an illegal option like in dash/bash.
+    let pos = if bytes[cursor].is_ascii() && bytes[cursor] != b':' {
         spec.bytes().position(|b| b == bytes[cursor])
     } else {
         None
@@ -711,5 +724,45 @@ mod tests {
         assert_eq!(rc, 1);
         assert_eq!(env.vars.get("opt"), None);
         assert_eq!(env.vars.get("OPTARG"), Some("prev"));
+    }
+
+    #[test]
+    fn step_stale_subindex_past_end_restarts_element_instead_of_panicking() {
+        // `getopts ab o -abc; getopts ab o -x`: the saved subindex (2)
+        // belongs to the old `-abc` operand; `-x` is only 2 bytes long.
+        let step = step_getopts("ab", &["-x"], 1, 2, false);
+        assert_eq!(step.var_value, "?");
+        assert_eq!(step.stderr.as_deref(), Some("-x: illegal option"));
+        assert_eq!(step.optind, 2);
+        assert_eq!(step.subindex, 0);
+        let step = step_getopts("ab", &["-b", "-a"], 1, 5, false);
+        assert_eq!(step.var_value, "b");
+        assert_eq!(step.optind, 2);
+    }
+
+    #[test]
+    fn step_colon_is_never_an_option_character() {
+        let step = step_getopts("a:b", &["-:"], 1, 0, false);
+        assert_eq!(step.var_value, "?");
+        assert_eq!(step.stderr.as_deref(), Some("-:: illegal option"));
+        let step = step_getopts("a:b", &["-:"], 1, 0, true);
+        assert_eq!(step.var_value, "?");
+        assert_eq!(step.optarg.as_deref(), Some(":"));
+    }
+
+    #[test]
+    fn builtin_stale_subindex_after_set_does_not_panic() {
+        let mut env = make_env();
+        env.vars.set_positional_params(vec!["-ab".into()]);
+        assert_eq!(
+            super::builtin_getopts(&s(&["ab", "o"]), &mut env).unwrap(),
+            0
+        );
+        env.vars.set_positional_params(vec!["-x".into()]);
+        assert_eq!(
+            super::builtin_getopts(&s(&["ab", "o"]), &mut env).unwrap(),
+            0
+        );
+        assert_eq!(env.vars.get("o"), Some("?"));
     }
 }

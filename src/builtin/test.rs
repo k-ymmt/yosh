@@ -1,8 +1,9 @@
 //! POSIX `test` and `[` builtin implementation (XCU `test`).
 //!
-//! Evaluation dispatches by operand count. Operators outside POSIX
-//! (e.g. `<`, `>`, `-a`, `-o`, deep `(` `)` nesting) are deliberately
-//! not supported — see the design doc for rationale.
+//! Evaluation dispatches by operand count. The POSIX.1-2024 binary
+//! primaries `-nt`, `-ot`, `-ef`, `<` and `>` are supported; the
+//! obsolescent `-a`/`-o` and deep `(` `)` nesting are deliberately not
+//! — see the design doc for rationale.
 
 /// Error returned by `evaluate`. Always produces exit status 2 plus a
 /// message prefixed by `yosh: {name}: ` in the caller.
@@ -95,12 +96,7 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
 
     // File operands are byteenc-encoded shell strings; decode so
     // non-UTF-8 path names reach the OS as their original raw bytes.
-    let path = {
-        use std::os::unix::ffi::OsStrExt;
-        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&crate::byteenc::decode_bytes(
-            arg,
-        )))
-    };
+    let path = operand_path(arg);
     let path = path.as_path();
 
     match op {
@@ -171,8 +167,35 @@ fn eval_unary(op: &str, arg: &str) -> Result<bool, TestError> {
 fn is_binary_primary(op: &str) -> bool {
     matches!(
         op,
-        "=" | "!=" | "-eq" | "-ne" | "-lt" | "-gt" | "-le" | "-ge"
+        "=" | "!="
+            | "<"
+            | ">"
+            | "-eq"
+            | "-ne"
+            | "-lt"
+            | "-gt"
+            | "-le"
+            | "-ge"
+            | "-nt"
+            | "-ot"
+            | "-ef"
     )
+}
+
+/// Byteenc-decode a file operand into an OS path carrying its raw bytes.
+fn operand_path(arg: &str) -> std::path::PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&crate::byteenc::decode_bytes(
+        arg,
+    )))
+}
+
+/// Last data-modification time `(sec, nsec)` of the file `arg`
+/// resolves to (symlinks followed), or `None` if it cannot be resolved.
+fn mtime_of(arg: &str) -> Option<(i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(operand_path(arg)).ok()?;
+    Some((m.mtime(), m.mtime_nsec()))
 }
 
 fn eval_binary(lhs: &str, op: &str, rhs: &str) -> Result<bool, TestError> {
@@ -183,6 +206,40 @@ fn eval_binary(lhs: &str, op: &str, rhs: &str) -> Result<bool, TestError> {
         // defined).
         "=" => Ok(lhs == rhs),
         "!=" => Ok(lhs != rhs),
+        // POSIX.1-2024 `<` / `>`: collation order. Compare the decoded
+        // raw bytes (C-locale order) — the byteenc escape codepoints do
+        // not sort like the bytes they stand for.
+        "<" | ">" => {
+            let l = crate::byteenc::decode_bytes(lhs);
+            let r = crate::byteenc::decode_bytes(rhs);
+            Ok(if op == "<" { l < r } else { l > r })
+        }
+        // POSIX.1-2024: `a -nt b` is true if a resolves to an existing
+        // file and b does not, or both exist and a's mtime is newer
+        // (nanosecond resolution); `-ot` is the mirror image.
+        "-nt" => Ok(match (mtime_of(lhs), mtime_of(rhs)) {
+            (Some(l), Some(r)) => l > r,
+            (Some(_), None) => true,
+            _ => false,
+        }),
+        "-ot" => Ok(match (mtime_of(lhs), mtime_of(rhs)) {
+            (Some(l), Some(r)) => l < r,
+            (None, Some(_)) => true,
+            _ => false,
+        }),
+        // Both resolve to existing files that are the same file.
+        "-ef" => {
+            use std::os::unix::fs::MetadataExt;
+            Ok(
+                match (
+                    std::fs::metadata(operand_path(lhs)),
+                    std::fs::metadata(operand_path(rhs)),
+                ) {
+                    (Ok(l), Ok(r)) => l.dev() == r.dev() && l.ino() == r.ino(),
+                    _ => false,
+                },
+            )
+        }
         "-eq" | "-ne" | "-lt" | "-gt" | "-le" | "-ge" => {
             let l = parse_integer(lhs)?;
             let r = parse_integer(rhs)?;
@@ -222,8 +279,8 @@ mod tests {
 
     /// The byteenc encoding is injective, so `=`/`!=` on encoded operands
     /// is exactly raw-byte equality — invalid UTF-8 bytes compare
-    /// byte-faithfully with no decode step needed. (POSIX `test` has no
-    /// string ordering primaries, so equality is the whole story.)
+    /// byte-faithfully with no decode step needed. (The ordering
+    /// primaries `<`/`>` decode first; see `string_order_is_raw_bytes`.)
     #[test]
     fn string_equality_is_byte_exact_for_invalid_utf8() {
         let e9 = crate::byteenc::encode_bytes(b"a\xe9b").into_owned();
@@ -546,5 +603,66 @@ mod tests {
     #[test]
     fn five_or_more_operands_is_error() {
         assert_eq!(t(&["a", "b", "c", "d", "e"]), 2);
+    }
+
+    #[test]
+    fn string_order_primaries() {
+        assert_eq!(t(&["a", "<", "b"]), 0);
+        assert_eq!(t(&["b", "<", "a"]), 1);
+        assert_eq!(t(&["b", ">", "a"]), 0);
+        assert_eq!(t(&["a", ">", "a"]), 1);
+        assert_eq!(t(&["B", "<", "a"]), 0); // C-locale byte order
+        assert_eq!(t(&["", "<", "a"]), 0);
+        assert_eq!(b(&["!", "a", "<", "b", "]"]), 1);
+    }
+
+    #[test]
+    fn string_order_is_raw_bytes() {
+        // Raw 0xff sorts after the UTF-8 lead byte of U+00E9 (0xc3);
+        // the byteenc escape for 0xff must not change that.
+        let ff = crate::byteenc::encode_bytes(b"\xff").into_owned();
+        assert_eq!(t(&["\u{e9}", "<", &ff]), 0);
+        assert_eq!(t(&[&ff, ">", "\u{e9}"]), 0);
+    }
+
+    #[test]
+    fn file_time_and_identity_primaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        let link = dir.path().join("link");
+        std::fs::write(&old, "o").unwrap();
+        std::fs::write(&new, "n").unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        std::os::unix::fs::symlink(&old, &link).unwrap();
+        let (o, n, l) = (
+            old.to_str().unwrap(),
+            new.to_str().unwrap(),
+            link.to_str().unwrap(),
+        );
+        let missing = dir.path().join("missing");
+        let m = missing.to_str().unwrap();
+
+        assert_eq!(t(&[n, "-nt", o]), 0);
+        assert_eq!(t(&[o, "-nt", n]), 1);
+        assert_eq!(t(&[o, "-ot", n]), 0);
+        assert_eq!(t(&[n, "-ot", o]), 1);
+        assert_eq!(t(&[o, "-nt", o]), 1);
+        // Existing vs missing.
+        assert_eq!(t(&[o, "-nt", m]), 0);
+        assert_eq!(t(&[m, "-nt", o]), 1);
+        assert_eq!(t(&[m, "-ot", o]), 0);
+        assert_eq!(t(&[o, "-ot", m]), 1);
+        assert_eq!(t(&[m, "-nt", m]), 1);
+        // -ef follows symlinks and needs both files to exist.
+        assert_eq!(t(&[o, "-ef", l]), 0);
+        assert_eq!(t(&[o, "-ef", n]), 1);
+        assert_eq!(t(&[m, "-ef", m]), 1);
     }
 }
