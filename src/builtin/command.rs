@@ -9,7 +9,7 @@
 //!
 //! This file holds only the flag parser + description output paths. The
 //! actual execution (for `-p` and no-flag forms) is dispatched from
-//! `exec/simple.rs` so the `command` invocation has access to the
+//! `exec/simple/` so the `command` invocation has access to the
 //! `Executor` for redirects/assignments.
 
 use crate::builtin::alias::alias_line;

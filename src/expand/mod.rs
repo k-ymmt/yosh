@@ -1015,7 +1015,7 @@ mod tests {
     // asserted here: libtest captures the forked builtin's Rust-level stdout
     // before it reaches the OS pipe, so the substitution reads back empty. The
     // path works at runtime (verified via `echo "x=$(echo ok)"`) and exit-status
-    // propagation is covered by simple.rs command-sub tests.
+    // propagation is covered by the exec/simple command-sub tests.
 
     #[test]
     fn expand_dquoted_arithmetic() {

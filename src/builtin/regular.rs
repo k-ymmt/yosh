@@ -1,7 +1,7 @@
 //! Dispatch of the POSIX regular builtins (see
 //! [`super::classify_builtin`]). Each utility is implemented in its own
 //! module; `wait`, `fg`, `bg`, `jobs`, `fc` and `command` need the
-//! executor and are dispatched from `exec/simple.rs` instead.
+//! executor and are dispatched from `exec/simple/` instead.
 
 use super::{alias, cd, echo, getopts, hash, kill, printf, read, test, r#type, ulimit, umask};
 use crate::env::ShellEnv;
@@ -30,7 +30,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
             Ok(1)
         }
         "command" => {
-            // Dispatched from exec/simple.rs — should not reach here.
+            // Dispatched from exec/simple/ — should not reach here.
             eprintln!("yosh: command: internal error");
             Ok(1)
         }
