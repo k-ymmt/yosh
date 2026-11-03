@@ -222,10 +222,6 @@
       disposition, so yosh assumes not-ignored and restores SIG_DFL
       (`src/signal.rs::capture_ignored_on_entry`). Revisit if std
       stabilizes `unix_sigpipe` / `-Zon-broken-pipe`.
-- [ ] Arithmetic `$((x || y))` / `$((x && y))` evaluate both operands
-      eagerly: side effects in the right operand (assignments,
-      `$((0 && (x=5)))`) are not short-circuited the way C semantics and
-      bash/dash prescribe (`src/expand/arith.rs::{logical_or,logical_and}`).
 - [ ] Perf follow-ups (measure before acting, audit notes; re-measured
       2026-09-16 with `scripts/perf/compare_shells.py --no-plugins`, where
       every interpreter-bound workload now runs at 0.3–0.9× dash's wall
@@ -250,6 +246,50 @@
       `ifs_split_big.sh` 1.18×, `recursion.sh` 1.13×, `export_env_spawn.sh`
       1.03× (was 1.19× before the envp cache). All fork- or
       allocation-bound; none pathological.
+
+## 2026-11-04 Bug-fix Round 1: Deferrals and Decisions
+
+- [ ] Aliases are not substituted inside `$(...)` bodies: the body is
+      parsed by a sub-lexer created with an empty alias table
+      (`src/lexer/mod.rs::sub_lexer`). dash substitutes them:
+      `alias e=echo; x=$(e inner); echo $x` prints `inner` in dash,
+      `e: command not found` in yosh.
+- [ ] DEVIATION (decided): nesting limits are far below dash/bash's
+      (which handle ~5000 levels): parser compound nesting 200, lexer
+      word nesting 400 (a `$(` body costs 4), arithmetic parentheses
+      256, plus a shared 6 MiB native-stack budget
+      (`src/parser/mod.rs::StackBudget`). Deeper input is a syntax /
+      arithmetic error instead of a stack-overflow abort. Raising them
+      needs iterative (non-recursive) parsing.
+- [ ] `set -v` echoes a multi-line alias's replacement split per
+      command (`ml` then `; echo 3`) because the verbose echo slices the
+      source per complete command (`src/main.rs::run_string`).
+- [ ] `trap - SEGV` / `trap - BUS` in the top-level shell resets the
+      signal to SIG_DFL and drops the Rust runtime's stack-overflow
+      guard handler; children keep it (`src/signal.rs`).
+- [ ] In an interactive shell, a failed `x=1 exec missing` leaves `x`
+      exported (the prefix assignment is exported before exec is
+      attempted; `src/exec/simple.rs`, special-builtin branch).
+- [ ] DEVIATION (decided): `eval` / `.` syntax errors return 2 and a
+      non-interactive shell continues; dash exits (POSIX 2.8.1 special
+      built-in rule), bash --posix continues like yosh.
+- [ ] DEVIATION (decided): expansion errors (`${x?}`, `set -u`,
+      readonly assignment in `${x:=}` / `$((x=1))`) exit a
+      non-interactive shell with status 1; dash uses 2, bash 1 or 127.
+- [ ] DEVIATION (decided): `alias` listing keeps the `alias ` prefix
+      (bash style, re-input safe); POSIX and dash print bare
+      `name=value`. `command -v` output and
+      `tests/parser_integration.rs` rely on the prefix
+      (`src/builtin/regular.rs`).
+- [ ] DEVIATION (decided): `PS2='> '` is defined only for interactive
+      shells (bash); dash also defines it non-interactively. `PS4='+ '`
+      is always defined (`src/env/mod.rs::ShellEnv::new`).
+- [ ] DEVIATION (dash and bash disagree; yosh follows bash):
+      `` `echo \"hi\"` `` inside a here-document prints `"hi"` (dash
+      `hi`); `"${x:-\}}"` gives `\}` (dash `}`); getopts with a stale
+      in-word index after `set --` restarts the current word (dash
+      advances); `test missing -ot existing` is true per POSIX.1-2024
+      (the installed dash says false).
 
 ## History: Known Limitations
 
@@ -545,7 +585,6 @@ the items below are deferred work, not policy:
 - [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard. The stdout-lock deadlock this hazard produced in the test harness (2026-08-26, ESCALATED 2026-09-02: three hangs per session in piped `cargo test --lib` runs — the fork child inherited libtest's stdout `ReentrantLock` locked and hung in `exit_child`'s `stdout().flush()`) was FIXED 2026-09-11: every fork site now goes through `src/exec/mod.rs::fork_shell`, which holds the std stdout/stderr locks (flushed) across `fork()` and releases them in both processes — the `pthread_atfork` prepare/parent/child pattern for the two std handles. Pinned by `exec::tests::fork_shell_child_exits_despite_stdio_lock_contention` (plain `fork` under the same lock-hog thread: 20/20 children killed; `fork_shell`: 0/20). Other std-internal locks (allocator, `stack_overflow::thread_info`) remain out of scope of the wrapper; `exit_child`'s `_exit` covers the exit path, but a child stall pre-exit in the MT harness is still theoretically possible.
 - [ ] `Parser::current_token` API shape — `interactive/parse_status.rs:61` compares the result against `&Token::Newline` literally, which forces every caller to construct a borrowed `Token` value just for equality. Consider a predicate `fn is_token(&self, t: &Token) -> bool` (or an enum-tag helper) that hides the borrow. Discovered during the 2026-05-05 visibility-tightening spec follow-up (`docs/superpowers/specs/2026-05-05-parser-visibility-tightening-design.md` §4.2-1, `src/parser/mod.rs`).
 - [ ] Bench API surface — `Parser::new` and `parse_program` are the only two `Parser` items required to stay `pub`; their sole external consumers are `benches/parser_bench.rs` and `benches/exec_bench.rs`. Wrapping them in a bench-only helper module (e.g. an internal `pub(crate) fn parse_for_bench(s: &str) -> Program` reachable through a `#[cfg(any(test, feature = "internal_api"))]` shim) would let both `Parser::new` and `parse_program` drop to `pub(crate)`, shrinking the public Parser surface from 10 to 8. Requires bench-side refactor. Discovered during the 2026-05-05 visibility-tightening spec follow-up (§4.2-3, `benches/parser_bench.rs`, `benches/exec_bench.rs`).
-- [ ] `ulimit` `-f` block arithmetic assumes `libc::rlim_t == u64` — `BLOCK_SIZE: libc::rlim_t = 512` and `SetBlocks(n: u64).saturating_mul(BLOCK_SIZE)` (`src/builtin/regular.rs`) compile only where `rlim_t` is `u64` (macOS, 64-bit Linux). On 32-bit Linux `rlim_t` is `u32`, making the `u64 * u32` a type error. Not a runtime risk and the project has no Linux CI / targets macOS, but if a 32-bit target is ever added, type `BLOCK_SIZE` as `u64` and cast at the `set_fsize` / `format_fsize_limit` call sites. Final-review follow-up from 2026-05-26 ulimit native -f branch.
 
 ## Future: Release Skill Enhancements
 
