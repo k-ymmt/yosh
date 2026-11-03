@@ -374,11 +374,9 @@ mod tests {
 
     #[test]
     fn export_p_then_double_dash_remains_listing() {
-        // Regression guard: `export -p --` triggers listing because
-        // `args[0] == "-p"` matches first; helper is never reached.
-        // The `--` is harmless: the listing branch returns Ok(0) before
-        // consume_end_of_options is called, so the operand is silently
-        // ignored.
+        // Regression guard: `export -p --` still lists: `-p` is the
+        // first word and the `--` after it is consumed as the end of
+        // options (strip_end_of_options), leaving no operands.
         let mut executor = Executor::new("yosh", vec![]);
         let status = exec_special_builtin(
             "export",
@@ -468,11 +466,9 @@ mod tests {
 
     #[test]
     fn readonly_p_then_double_dash_remains_listing() {
-        // Regression guard: `readonly -p --` triggers listing because
-        // `args[0] == "-p"` matches first; helper is never reached.
-        // The `--` is harmless: the listing branch returns Ok(0) before
-        // consume_end_of_options is called, so the operand is silently
-        // ignored. Mirrors export_p_then_double_dash_remains_listing.
+        // Regression guard: `readonly -p --` still lists: `-p` is the
+        // first word and the `--` after it is consumed as the end of
+        // options (strip_end_of_options), leaving no operands. Mirrors export_p_then_double_dash_remains_listing.
         let mut executor = Executor::new("yosh", vec![]);
         let status = exec_special_builtin(
             "readonly",

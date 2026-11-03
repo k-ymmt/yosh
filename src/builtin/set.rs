@@ -58,7 +58,7 @@ fn set_args_mention_monitor(args: &[String]) -> bool {
             break;
         };
         // Each `o` in the cluster consumes the next word as an option
-        // name (`-o monitor`, `-eo monitor`), mirroring builtin_set.
+        // name (`-o monitor`, `-eo monitor`), mirroring apply_set.
         let mut consumed = 0;
         for c in rest.chars() {
             if c == 'o' {
