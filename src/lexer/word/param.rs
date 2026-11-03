@@ -156,21 +156,17 @@ impl Lexer {
                     self.expect_byte(b'}', span)?;
                     return Ok(WordPart::Parameter(ParamExpr::Special(SpecialParam::Hash)));
                 }
-                c if is_name_start(c) || c.is_ascii_digit() => {
-                    self.advance(); // consume '#'
-                    let name = self.read_param_name(span)?;
-                    self.expect_byte(b'}', span)?;
-                    // ${#name} where name is a positional or special — still Length
-                    // But ${#@}, ${#*} etc. in POSIX are technically invalid; we return Length anyway
-                    return Ok(WordPart::Parameter(ParamExpr::Length(name)));
-                }
+                // ${#name} / ${#1}: string length.
+                //
                 // ${#X} where X is a special parameter and the brace closes
                 // immediately after: string length of $X (`${#?}` is the
                 // length of `$?`, not `${#?word}` on `$#` — bash and dash
                 // agree). With more content before `}` the '#' stays the
                 // parameter (`${#-word}`, `${##pat}`, …).
-                c if matches!(c, b'@' | b'*' | b'?' | b'-' | b'$' | b'!' | b'#')
-                    && self.peek_byte2() == b'}' =>
+                c if is_name_start(c)
+                    || c.is_ascii_digit()
+                    || (matches!(c, b'@' | b'*' | b'?' | b'-' | b'$' | b'!' | b'#')
+                        && self.peek_byte2() == b'}') =>
                 {
                     self.advance(); // consume '#'
                     let name = self.read_param_name(span)?;
@@ -209,28 +205,18 @@ impl Lexer {
                 self.advance(); // consume '}'
                 Ok(WordPart::Parameter(self.classify_param_name(&name)))
             }
-            b'%' => {
-                self.advance(); // consume '%'
-                if !self.at_end() && self.current_byte() == b'%' {
-                    self.advance(); // consume second '%'
-                    let word = self.read_word_in_brace(span)?;
-                    Ok(WordPart::Parameter(ParamExpr::StripLongSuffix(name, word)))
-                } else {
-                    let word = self.read_word_in_brace(span)?;
-                    Ok(WordPart::Parameter(ParamExpr::StripShortSuffix(name, word)))
-                }
-            }
-            b'#' => {
-                self.advance(); // consume '#'
-                if !self.at_end() && self.current_byte() == b'#' {
-                    self.advance(); // consume second '#'
-                    let word = self.read_word_in_brace(span)?;
-                    Ok(WordPart::Parameter(ParamExpr::StripLongPrefix(name, word)))
-                } else {
-                    let word = self.read_word_in_brace(span)?;
-                    Ok(WordPart::Parameter(ParamExpr::StripShortPrefix(name, word)))
-                }
-            }
+            b'%' => self.read_strip_param(
+                span,
+                name,
+                ParamExpr::StripShortSuffix,
+                ParamExpr::StripLongSuffix,
+            ),
+            b'#' => self.read_strip_param(
+                span,
+                name,
+                ParamExpr::StripShortPrefix,
+                ParamExpr::StripLongPrefix,
+            ),
             b':' => {
                 self.advance(); // consume ':'
                 self.read_conditional_param(span, name, true, in_dq)
@@ -244,6 +230,28 @@ impl Lexer {
                 ),
             )),
         }
+    }
+
+    /// Reads a pattern-removal operator (`%`/`%%` or `#`/`##`, the current
+    /// byte) and its pattern word: `short` for the single form, `long`
+    /// when the operator byte is doubled.
+    fn read_strip_param(
+        &mut self,
+        span: Span,
+        name: String,
+        short: fn(String, Word) -> ParamExpr,
+        long: fn(String, Word) -> ParamExpr,
+    ) -> error::Result<WordPart> {
+        let op = self.current_byte();
+        self.advance(); // consume the operator
+        let make = if !self.at_end() && self.current_byte() == op {
+            self.advance(); // consume the doubled operator
+            long
+        } else {
+            short
+        };
+        let word = self.read_word_in_brace(span)?;
+        Ok(WordPart::Parameter(make(name, word)))
     }
 
     /// Reads the conditional operator (`-`, `=`, `?`, `+`) and its word argument.
