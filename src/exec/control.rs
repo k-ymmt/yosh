@@ -322,7 +322,7 @@ impl Executor {
                 }
 
                 let status = self.exec_and_or(and_or);
-                exit_child(status);
+                exit_child(self.child_exit_status(status));
             }
             Ok(ForkResult::Parent { child }) => {
                 let _ = nix::sys::signal::sigprocmask(

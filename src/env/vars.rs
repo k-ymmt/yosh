@@ -264,7 +264,6 @@ impl VarStore {
 
     /// Get the full Variable struct, if set.
     /// Walks scopes from top to bottom.
-    #[allow(dead_code)]
     pub fn get_var(&self, name: &str) -> Option<&Variable> {
         for scope in self.scopes.iter().rev() {
             if let Some(var) = scope.vars.get(name) {

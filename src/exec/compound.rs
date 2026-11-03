@@ -132,6 +132,8 @@ impl Executor {
                 // POSIX §2.12: EXIT pseudo-signal handler runs on shell exit,
                 // including subshell exit. Fire BEFORE _exit so the action runs
                 // in the child's environment.
+                let status = self.child_exit_status(status);
+                self.env.exec.last_exit_status = status;
                 self.execute_exit_trap();
                 super::exit_child(status);
             }

@@ -350,10 +350,33 @@ impl Executor {
     }
 
     /// Execute the EXIT trap if set.
+    ///
+    /// A pending exit request (the fatal error that is ending the shell,
+    /// e.g. `unset -Z x`) is set aside while the action runs, so it does
+    /// not cut the action short: `trap 'echo a; echo b' EXIT; unset -Z x`
+    /// prints both lines (dash and bash agree). A fatal error raised by the
+    /// action itself ends a non-interactive shell with that error's status
+    /// (`trap 'unset -Z x' EXIT; true` exits 2).
     pub fn execute_exit_trap(&mut self) {
         if let Some(crate::env::TrapAction::Command(cmd)) = self.env.traps.exit_trap.take() {
+            let pending = self.exit_requested.take();
             self.run_trap_action(&cmd);
+            match self.exit_requested {
+                Some(code) if !self.env.mode.is_interactive => shell_exit(code),
+                Some(_) => {}
+                None => self.exit_requested = pending,
+            }
         }
+    }
+
+    /// The status a forked child shell (subshell, pipeline member, async
+    /// list, command substitution) exits with after running `status`'s
+    /// command: a pending exit request — a fatal special-builtin error, or
+    /// `exit` / errexit in an interactive shell's child — wins over the
+    /// status the interrupted command list reported, which `!` may have
+    /// inverted (`( ! unset -Z x )` exits 2, not 0).
+    pub(crate) fn child_exit_status(&self, status: i32) -> i32 {
+        self.exit_requested.unwrap_or(status)
     }
 
     /// Process any pending signals from the self-pipe.

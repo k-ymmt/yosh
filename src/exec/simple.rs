@@ -6,6 +6,7 @@ use crate::builtin::special::run_special_builtin;
 use crate::builtin::{BuiltinKind, classify_builtin, exec_regular_builtin};
 use crate::env::ShellEnv;
 use crate::env::jobs;
+use crate::env::vars::Variable;
 use crate::error::{RuntimeErrorKind, ShellError, ShellErrorKind};
 use crate::expand::expand_words;
 use crate::parser::ast::{Assignment, ParamExpr, SimpleCommand, Word, WordPart};
@@ -15,6 +16,11 @@ use crate::signal;
 use super::command::wait_child;
 use super::redirect::{ExpandedRedirect, RedirectState, expand_redirects};
 use super::{Executor, fork_shell};
+
+/// Variables saved before temporary prefix assignments, as `(name, the
+/// whole variable or None if it did not exist)`, for
+/// [`Executor::restore_assignments`].
+pub(crate) type SavedVars = Vec<(String, Option<Variable>)>;
 
 /// For export/readonly, re-process each Word argument by trying to parse
 /// it as an Assignment first. Words that successfully parse as `NAME=value`
@@ -1030,7 +1036,7 @@ impl Executor {
     pub(crate) fn apply_temp_assignments(
         &mut self,
         assignments: &[Assignment],
-    ) -> crate::error::Result<Vec<(String, Option<String>)>> {
+    ) -> crate::error::Result<SavedVars> {
         self.apply_temp_assignments_with_values(assignments)
             .map(|(saved, _)| saved)
     }
@@ -1042,11 +1048,10 @@ impl Executor {
     /// readonly variable rejecting the temporary assignment is a
     /// variable-assignment error (POSIX §2.8.1: the command is not run
     /// and a non-interactive shell exits — dash agrees).
-    #[allow(clippy::type_complexity)]
     fn apply_temp_assignments_with_values(
         &mut self,
         assignments: &[Assignment],
-    ) -> crate::error::Result<(Vec<(String, Option<String>)>, Vec<(String, String)>)> {
+    ) -> crate::error::Result<(SavedVars, Vec<(String, String)>)> {
         let mut saved = Vec::with_capacity(assignments.len());
         let mut assigned = Vec::with_capacity(assignments.len());
         for assignment in assignments {
@@ -1060,7 +1065,10 @@ impl Executor {
                 },
                 None => String::new(),
             };
-            let old_val = self.env.vars.get(&assignment.name).map(|s| s.to_string());
+            // The whole variable, not just its value: an exported name
+            // without a value (`export x` while unset) must get its
+            // export attribute back (dash/bash agree).
+            let old_val = self.env.vars.get_var(&assignment.name).cloned();
             if let Err(e) = self.env.assign_var(&assignment.name, value.clone()) {
                 self.restore_assignments(saved);
                 return Err(ShellError::runtime(
@@ -1098,11 +1106,23 @@ impl Executor {
 
     /// Restore variables to their pre-assignment values. Restores in
     /// reverse order so `a=1 a=2 cmd` ends with `a`'s original value.
-    pub(crate) fn restore_assignments(&mut self, saved: Vec<(String, Option<String>)>) {
-        for (name, old_val) in saved.into_iter().rev() {
-            match old_val {
-                Some(val) => {
+    pub(crate) fn restore_assignments(&mut self, saved: SavedVars) {
+        for (name, old_var) in saved.into_iter().rev() {
+            match old_var {
+                Some(Variable {
+                    value: Some(val), ..
+                }) => {
                     let _ = self.env.assign_var(&name, val);
+                }
+                Some(Variable {
+                    value: None,
+                    exported,
+                    ..
+                }) => {
+                    let _ = self.env.unset_var(&name);
+                    if exported {
+                        self.env.vars.export(&name);
+                    }
                 }
                 None => {
                     let _ = self.env.unset_var(&name);

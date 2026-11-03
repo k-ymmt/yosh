@@ -154,6 +154,7 @@ impl Executor {
                     // `{ trap 'echo t' EXIT; :; } | cat`. Bash (5.x) fires
                     // on every member; dash only on the rightmost. We adopt
                     // the bash stance, mirroring exec_subshell's sequence.
+                    let status = self.child_exit_status(status);
                     self.execute_exit_trap();
                     super::exit_child(status);
                 }
@@ -389,6 +390,7 @@ impl Executor {
                     let status = self.exec_command(cmd);
                     // Member EXIT traps fire like foreground pipeline
                     // members' do (bash fires on every member).
+                    let status = self.child_exit_status(status);
                     self.execute_exit_trap();
                     super::exit_child(status);
                 }
