@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::VisualKind;
 use super::command::{VisualCmd, VisualOutcome};
-use super::engine::{COUNT_CAP, MotionKey, Pending, ViEngine, motion_key};
+use super::engine::{MotionKey, Pending, ViEngine, count_digit, g_motion, motion_key};
 use super::motion::ViMotion;
 
 impl ViEngine {
@@ -18,8 +18,7 @@ impl ViEngine {
         let alt = mods.contains(KeyModifiers::ALT);
 
         if ctrl && !alt {
-            self.count = None;
-            self.pending = Pending::None;
+            self.clear_pending();
             return match key.code {
                 // Vim: Ctrl-C exits VISUAL; it does not cancel the line.
                 KeyCode::Char('c') => VisualOutcome::Cmd(VC::Exit, 1),
@@ -32,17 +31,13 @@ impl ViEngine {
 
         match key.code {
             KeyCode::Enter => {
-                self.count = None;
-                self.pending = Pending::None;
+                self.clear_pending();
                 return VisualOutcome::Cmd(VC::Submit, 1);
             }
             KeyCode::Esc => {
                 // A pending prefix (find char, `r`) is cancelled first;
                 // only a bare Esc exits VISUAL.
-                let had_pending = self.count.is_some() || self.pending != Pending::None;
-                self.count = None;
-                self.pending = Pending::None;
-                return if had_pending {
+                return if self.cancel_pending() {
                     VisualOutcome::Pending
                 } else {
                     VisualOutcome::Cmd(VC::Exit, 1)
@@ -67,39 +62,27 @@ impl ViEngine {
             _ => {}
         }
 
-        let ch = match key.code {
-            KeyCode::Char(c) if !alt => c,
-            // Fast ESC-then-key (Alt encoding): cancel pending input,
-            // then the key acts fresh — but a bare Alt+key exits like
-            // Esc would and replays nothing (VISUAL has no Alt chords).
-            KeyCode::Char(c) => {
-                self.count = None;
-                self.pending = Pending::None;
-                c
-            }
-            KeyCode::Backspace => 'h',
-            _ => return VisualOutcome::Cmd(VC::Bell, 1),
+        // Fast ESC-then-key (Alt encoding): cancel pending input, then
+        // the key acts fresh — but a bare Alt+key exits like Esc would
+        // and replays nothing (VISUAL has no Alt chords).
+        let Some(ch) = self.key_char(key.code, alt) else {
+            return VisualOutcome::Cmd(VC::Bell, 1);
         };
 
         match self.pending {
             Pending::FindChar(kind, _) => {
-                self.pending = Pending::None;
-                let n = self.take_count();
-                self.last_find = Some((kind, ch));
-                return VisualOutcome::Cmd(VC::Move(ViMotion::FindChar(kind, ch)), n);
+                let (motion, n) = self.take_find(kind, ch);
+                return VisualOutcome::Cmd(VC::Move(motion), n);
             }
             Pending::ReplaceChar => {
-                self.pending = Pending::None;
-                self.count = None;
+                self.clear_pending();
                 return VisualOutcome::Cmd(VC::ReplaceChar(ch), 1);
             }
             Pending::G(_) => {
                 self.pending = Pending::None;
                 let n = self.take_count();
-                let motion = match ch {
-                    'e' => ViMotion::WordEndBack { big: false },
-                    'E' => ViMotion::WordEndBack { big: true },
-                    _ => return VisualOutcome::Cmd(VC::Bell, 1),
+                let Some(motion) = g_motion(ch) else {
+                    return VisualOutcome::Cmd(VC::Bell, 1);
                 };
                 return VisualOutcome::Cmd(VC::Move(motion), n);
             }
@@ -111,35 +94,28 @@ impl ViEngine {
             Pending::None => {}
             // Command-mode-only pendings cannot be active in VISUAL.
             _ => {
-                self.pending = Pending::None;
-                self.count = None;
+                self.clear_pending();
                 return VisualOutcome::Cmd(VC::Bell, 1);
             }
         }
 
-        if let Some(d) = ch.to_digit(10)
-            && (d != 0 || self.count.is_some())
-        {
-            let cur = self.count.unwrap_or(0);
-            self.count = Some(cur.saturating_mul(10).saturating_add(d).min(COUNT_CAP));
+        if let Some(count) = count_digit(self.count, ch) {
+            self.count = Some(count);
             return VisualOutcome::Pending;
         }
 
         let n = self.take_count();
         if let Some(mk) = motion_key(ch) {
             return match mk {
-                MotionKey::Simple(motion) => VisualOutcome::Cmd(VC::Move(motion), n),
-                MotionKey::CountIgnored(motion) => VisualOutcome::Cmd(VC::Move(motion), n),
+                MotionKey::Simple(motion) | MotionKey::CountIgnored(motion) => {
+                    VisualOutcome::Cmd(VC::Move(motion), n)
+                }
                 MotionKey::Find(kind) => {
-                    self.pending = Pending::FindChar(kind, None);
-                    self.count = Some(n);
+                    self.await_arg(Pending::FindChar(kind, None), n);
                     VisualOutcome::Pending
                 }
-                MotionKey::Repeat { rev } => match self.last_find {
-                    Some((kind, c)) => {
-                        let kind = if rev { kind.reversed() } else { kind };
-                        VisualOutcome::Cmd(VC::Move(ViMotion::FindChar(kind, c)), n)
-                    }
+                MotionKey::Repeat { rev } => match self.repeat_find(rev) {
+                    Some(motion) => VisualOutcome::Cmd(VC::Move(motion), n),
                     None => VisualOutcome::Cmd(VC::Bell, 1),
                 },
             };
@@ -150,13 +126,11 @@ impl ViEngine {
             'j' => VC::LineDown,
             '%' => return VisualOutcome::Cmd(VC::Move(ViMotion::MatchPair), 1),
             'g' => {
-                self.pending = Pending::G(None);
-                self.count = Some(n);
+                self.await_arg(Pending::G(None), n);
                 return VisualOutcome::Pending;
             }
             'i' | 'a' => {
-                self.pending = Pending::VisualObject { around: ch == 'a' };
-                self.count = Some(n);
+                self.await_arg(Pending::VisualObject { around: ch == 'a' }, n);
                 return VisualOutcome::Pending;
             }
             'd' | 'x' => VC::Delete,

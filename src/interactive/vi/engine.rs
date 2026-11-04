@@ -2,6 +2,8 @@
 //! mode (pending count, pending char argument, find and change memory),
 //! plus the motion-key table both modes resolve motions through.
 
+use crossterm::event::KeyCode;
+
 use super::command::{ChangeRecord, OpKind, ViCmd};
 use super::motion::{FindKind, ViMotion};
 use super::{ViFlavor, ViMode};
@@ -82,6 +84,33 @@ pub(super) fn motion_key(ch: char) -> Option<MotionKey> {
 /// only serves to stall the editor.
 pub(super) const COUNT_CAP: u32 = 1_000_000;
 
+/// The count after typing `ch`, when `ch` continues one: `1`-`9`, or
+/// `0` once a count is in progress (a bare `0` is the line-start
+/// motion). Capped at [`COUNT_CAP`] so an absurd repeat (e.g.
+/// `999999999999p`) cannot stall the editor.
+pub(super) fn count_digit(cur: Option<u32>, ch: char) -> Option<u32> {
+    let d = ch.to_digit(10)?;
+    if d == 0 && cur.is_none() {
+        return None;
+    }
+    Some(
+        cur.unwrap_or(0)
+            .saturating_mul(10)
+            .saturating_add(d)
+            .min(COUNT_CAP),
+    )
+}
+
+/// vim `g` prefix target: `ge` / `gE` (end of the previous word /
+/// WORD). `None` for any other key.
+pub(super) fn g_motion(ch: char) -> Option<ViMotion> {
+    match ch {
+        'e' => Some(ViMotion::WordEndBack { big: false }),
+        'E' => Some(ViMotion::WordEndBack { big: true }),
+        _ => None,
+    }
+}
+
 /// Command-mode key state machine. Holds only key-resolution state
 /// (pending count / pending char argument / find memory); buffer state
 /// stays in `LineEditor`.
@@ -96,7 +125,7 @@ pub struct ViEngine {
     pub(super) count: Option<u32>,
     pub(super) pending: Pending,
     /// Most recent `f`/`F`/`t`/`T` for `;` / `,`.
-    pub(super) last_find: Option<(FindKind, char)>,
+    last_find: Option<(FindKind, char)>,
     /// Most recent buffer-modifying command, replayed by `.`.
     last_change: Option<ChangeRecord>,
 }
@@ -119,6 +148,61 @@ impl ViEngine {
     /// Take the accumulated count (default 1).
     pub(super) fn take_count(&mut self) -> u32 {
         self.count.take().unwrap_or(1).max(1)
+    }
+
+    /// Drop any pending count and char argument.
+    pub(super) fn clear_pending(&mut self) {
+        self.count = None;
+        self.pending = Pending::None;
+    }
+
+    /// Wait for more input: `pending` names what the next key completes,
+    /// and `count` is parked until then.
+    pub(super) fn await_arg(&mut self, pending: Pending, count: u32) {
+        self.pending = pending;
+        self.count = Some(count);
+    }
+
+    /// Esc: cancel any pending count / char argument. Returns whether
+    /// anything was pending.
+    pub(super) fn cancel_pending(&mut self) -> bool {
+        let had_pending = self.count.is_some() || self.pending != Pending::None;
+        self.clear_pending();
+        had_pending
+    }
+
+    /// The character a non-control key resolves as: `Backspace` acts as
+    /// `h`, and an Alt+char (the terminal's encoding of a fast ESC
+    /// followed by the char) first cancels pending input. `None` for
+    /// keys with no command meaning.
+    pub(super) fn key_char(&mut self, code: KeyCode, alt: bool) -> Option<char> {
+        match code {
+            KeyCode::Char(c) if !alt => Some(c),
+            KeyCode::Char(c) => {
+                self.clear_pending();
+                Some(c)
+            }
+            KeyCode::Backspace => Some('h'),
+            _ => None,
+        }
+    }
+
+    /// Complete a pending `f`/`F`/`t`/`T` with its target character:
+    /// remember it for `;` / `,` and return the motion together with
+    /// the accumulated count.
+    pub(super) fn take_find(&mut self, kind: FindKind, ch: char) -> (ViMotion, u32) {
+        self.pending = Pending::None;
+        let n = self.take_count();
+        self.last_find = Some((kind, ch));
+        (ViMotion::FindChar(kind, ch), n)
+    }
+
+    /// The remembered find, for `;` (`rev == false`) or `,` (reversed).
+    pub(super) fn repeat_find(&self, rev: bool) -> Option<ViMotion> {
+        self.last_find.map(|(kind, c)| {
+            let kind = if rev { kind.reversed() } else { kind };
+            ViMotion::FindChar(kind, c)
+        })
     }
 
     /// Record the most recent buffer-modifying command for `.`.

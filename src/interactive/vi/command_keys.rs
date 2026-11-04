@@ -5,7 +5,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::command::{InsertAt, OpKind, SearchDir, ViCmd, ViOutcome};
-use super::engine::{COUNT_CAP, MotionKey, Pending, ViEngine, motion_key};
+use super::engine::{COUNT_CAP, MotionKey, Pending, ViEngine, count_digit, g_motion, motion_key};
 use super::motion::ViMotion;
 use super::{ViFlavor, VisualKind};
 
@@ -23,13 +23,11 @@ impl ViEngine {
         // then the control key acts fresh — same as typing them slowly.
         if ctrl {
             if alt {
-                self.count = None;
-                self.pending = Pending::None;
+                self.clear_pending();
             }
             // A pending vim Ctrl-X consumes the next control key.
             if self.pending == Pending::CtrlX {
-                self.count = None;
-                self.pending = Pending::None;
+                self.clear_pending();
                 return match key.code {
                     KeyCode::Char('e') => ViOutcome::Cmd(ViCmd::EditBuffer, 1),
                     _ => ViOutcome::Cmd(ViCmd::Bell, 1),
@@ -61,16 +59,12 @@ impl ViEngine {
 
         match key.code {
             KeyCode::Enter => {
-                self.count = None;
-                self.pending = Pending::None;
+                self.clear_pending();
                 return ViOutcome::Cmd(ViCmd::Submit, 1);
             }
             KeyCode::Esc => {
                 // Cancel any pending count / char argument.
-                let had_pending = self.count.is_some() || self.pending != Pending::None;
-                self.count = None;
-                self.pending = Pending::None;
-                return if had_pending {
+                return if self.cancel_pending() {
                     ViOutcome::Pending
                 } else {
                     ViOutcome::Cmd(ViCmd::Bell, 1)
@@ -96,35 +90,18 @@ impl ViEngine {
             _ => {}
         }
 
-        let ch = match key.code {
-            KeyCode::Char(c) if !alt => c,
-            // A fast ESC-then-key arrives as Alt+key (terminal ESC
-            // prefix encoding). ESC cancels pending input, then the key
-            // acts as a fresh command — matching what typing them
-            // slowly does.
-            KeyCode::Char(c) => {
-                self.count = None;
-                self.pending = Pending::None;
-                c
-            }
-            KeyCode::Backspace => 'h',
-            _ => return ViOutcome::Cmd(ViCmd::Bell, 1),
+        // A fast ESC-then-key arrives as Alt+key (terminal ESC prefix
+        // encoding). ESC cancels pending input, then the key acts as a
+        // fresh command — matching what typing them slowly does.
+        let Some(ch) = self.key_char(key.code, alt) else {
+            return ViOutcome::Cmd(ViCmd::Bell, 1);
         };
 
         // A pending char argument consumes the next character verbatim.
         match self.pending {
             Pending::FindChar(kind, op) => {
-                self.pending = Pending::None;
-                let n = self.take_count();
-                self.last_find = Some((kind, ch));
-                let motion = ViMotion::FindChar(kind, ch);
-                return ViOutcome::Cmd(
-                    match op {
-                        Some(op) => ViCmd::Op(op, motion),
-                        None => ViCmd::Move(motion),
-                    },
-                    n,
-                );
+                let (motion, n) = self.take_find(kind, ch);
+                return ViOutcome::Cmd(ViCmd::motion(op, motion), n);
             }
             Pending::ReplaceChar => {
                 self.pending = Pending::None;
@@ -132,15 +109,13 @@ impl ViEngine {
                 return ViOutcome::Cmd(ViCmd::ReplaceChar(ch), n);
             }
             Pending::AliasChar => {
-                self.pending = Pending::None;
-                self.count = None;
+                self.clear_pending();
                 return ViOutcome::Cmd(ViCmd::AliasMacro(ch), 1);
             }
             Pending::Op(op, count_after) => return self.resolve_op_motion(op, count_after, ch),
             Pending::CtrlX => {
                 // Ctrl-X followed by a non-control key: not a chord.
-                self.pending = Pending::None;
-                self.count = None;
+                self.clear_pending();
                 return ViOutcome::Cmd(ViCmd::Bell, 1);
             }
             Pending::TextObject { op, around } => {
@@ -158,24 +133,15 @@ impl ViEngine {
             Pending::G(op) => {
                 self.pending = Pending::None;
                 let n = self.take_count();
-                let motion = match ch {
-                    'e' => ViMotion::WordEndBack { big: false },
-                    'E' => ViMotion::WordEndBack { big: true },
-                    // `g` + other → bell.
-                    _ => return ViOutcome::Cmd(ViCmd::Bell, 1),
+                // `g` + other → bell.
+                let Some(motion) = g_motion(ch) else {
+                    return ViOutcome::Cmd(ViCmd::Bell, 1);
                 };
-                return ViOutcome::Cmd(
-                    match op {
-                        Some(op) => ViCmd::Op(op, motion),
-                        None => ViCmd::Move(motion),
-                    },
-                    n,
-                );
+                return ViOutcome::Cmd(ViCmd::motion(op, motion), n);
             }
             Pending::VisualObject { .. } => {
                 // VISUAL-only pending cannot be active in Command mode.
-                self.pending = Pending::None;
-                self.count = None;
+                self.clear_pending();
                 return ViOutcome::Cmd(ViCmd::Bell, 1);
             }
             Pending::None => {}
@@ -184,11 +150,8 @@ impl ViEngine {
         // Count digits. `0` is the line-start motion unless a count is
         // already in progress. Counts are capped so an absurd repeat
         // (e.g. `999999999999p`) cannot stall the editor.
-        if let Some(d) = ch.to_digit(10)
-            && (d != 0 || self.count.is_some())
-        {
-            let cur = self.count.unwrap_or(0);
-            self.count = Some(cur.saturating_mul(10).saturating_add(d).min(COUNT_CAP));
+        if let Some(count) = count_digit(self.count, ch) {
+            self.count = Some(count);
             return ViOutcome::Pending;
         }
 
@@ -229,8 +192,7 @@ impl ViEngine {
                 // `%`: count ignored (Vim's [count]% is percent-of-file).
                 '%' => return ViOutcome::Cmd(ViCmd::Move(ViMotion::MatchPair), 1),
                 'g' => {
-                    self.pending = Pending::G(None);
-                    self.count = Some(n);
+                    self.await_arg(Pending::G(None), n);
                     return ViOutcome::Pending;
                 }
                 _ => {}
@@ -248,8 +210,7 @@ impl ViEngine {
             'x' => ViCmd::DeleteChar,
             'X' => ViCmd::DeleteCharBack,
             'r' => {
-                self.pending = Pending::ReplaceChar;
-                self.count = Some(n);
+                self.await_arg(Pending::ReplaceChar, n);
                 return ViOutcome::Pending;
             }
             '~' => ViCmd::ToggleCase,
@@ -259,8 +220,7 @@ impl ViEngine {
                     'c' => OpKind::Change,
                     _ => OpKind::Yank,
                 };
-                self.pending = Pending::Op(op, None);
-                self.count = Some(n);
+                self.await_arg(Pending::Op(op, None), n);
                 return ViOutcome::Pending;
             }
             'D' => ViCmd::Op(OpKind::Delete, ViMotion::LineEnd),
@@ -300,14 +260,8 @@ impl ViEngine {
     fn resolve_op_motion(&mut self, op: OpKind, count_after: Option<u32>, ch: char) -> ViOutcome {
         // A count typed between operator and motion accumulates and
         // multiplies the pre-operator count (`2d3w` = 6 words).
-        if let Some(d) = ch.to_digit(10)
-            && (d != 0 || count_after.is_some())
-        {
-            let cur = count_after.unwrap_or(0);
-            self.pending = Pending::Op(
-                op,
-                Some(cur.saturating_mul(10).saturating_add(d).min(COUNT_CAP)),
-            );
+        if let Some(count) = count_digit(count_after, ch) {
+            self.pending = Pending::Op(op, Some(count));
             return ViOutcome::Pending;
         }
         self.pending = Pending::None;
@@ -325,16 +279,12 @@ impl ViEngine {
             match ch {
                 // Text-object pending: `d`/`c`/`y` + `i`/`a`.
                 'i' | 'a' => {
-                    self.pending = Pending::TextObject {
-                        op,
-                        around: ch == 'a',
-                    };
-                    self.count = Some(total);
+                    let around = ch == 'a';
+                    self.await_arg(Pending::TextObject { op, around }, total);
                     return ViOutcome::Pending;
                 }
                 'g' => {
-                    self.pending = Pending::G(Some(op));
-                    self.count = Some(total);
+                    self.await_arg(Pending::G(Some(op)), total);
                     return ViOutcome::Pending;
                 }
                 // Inclusive motion; count ignored.
@@ -353,25 +303,18 @@ impl ViEngine {
     /// policy: a plain motion (`op == None`) yields `Move`, an
     /// operator-pending one yields `Op`.
     fn apply_motion_key(&mut self, mk: MotionKey, total: u32, op: Option<OpKind>) -> ViOutcome {
-        let wrap = |motion: ViMotion, n: u32| match op {
-            Some(op) => ViOutcome::Cmd(ViCmd::Op(op, motion), n),
-            None => ViOutcome::Cmd(ViCmd::Move(motion), n),
-        };
+        let wrap = |motion: ViMotion, n: u32| ViOutcome::Cmd(ViCmd::motion(op, motion), n);
         match mk {
             MotionKey::Simple(motion) => wrap(motion, total),
             // POSIX: a count shall be ignored for the motions 0 ^ $
             // under an operator.
             MotionKey::CountIgnored(motion) => wrap(motion, if op.is_some() { 1 } else { total }),
             MotionKey::Find(kind) => {
-                self.pending = Pending::FindChar(kind, op);
-                self.count = Some(total);
+                self.await_arg(Pending::FindChar(kind, op), total);
                 ViOutcome::Pending
             }
-            MotionKey::Repeat { rev } => match self.last_find {
-                Some((kind, c)) => {
-                    let kind = if rev { kind.reversed() } else { kind };
-                    wrap(ViMotion::FindChar(kind, c), total)
-                }
+            MotionKey::Repeat { rev } => match self.repeat_find(rev) {
+                Some(motion) => wrap(motion, total),
                 None => ViOutcome::Cmd(ViCmd::Bell, if op.is_some() { 1 } else { total }),
             },
         }

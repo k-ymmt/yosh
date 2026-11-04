@@ -1,6 +1,8 @@
 //! Motion types and the motion-target math: pure functions over
 //! `(&[char], pos)` so they can be unit-tested without a terminal.
 
+use std::cmp::Ordering;
+
 use crate::interactive::vim;
 
 /// Direction/kind of a pending `f`/`F`/`t`/`T` character search.
@@ -210,6 +212,42 @@ fn find_char_index(
     }
 }
 
+/// Index of the last character of the logical line `[ls, le)` (`ls`
+/// for an empty line): where line-scoped forward motions stop.
+fn line_last_index(ls: usize, le: usize) -> usize {
+    if le > ls { le - 1 } else { ls }
+}
+
+/// Target of `|`: column `count` (1-based) of the line `[ls, le)`,
+/// capped at its last character.
+fn column_index(ls: usize, le: usize, count: usize) -> usize {
+    (ls + count - 1).min(line_last_index(ls, le))
+}
+
+/// Apply a one-step word motion up to `count` times from `pos`,
+/// stopping early once it can no longer advance. `None` when not even
+/// the first step moves.
+fn repeat_step(pos: usize, count: usize, step: impl Fn(usize) -> Option<usize>) -> Option<usize> {
+    let mut p = step(pos)?;
+    for _ in 1..count {
+        match step(p) {
+            Some(np) => p = np,
+            None => break,
+        }
+    }
+    Some(p)
+}
+
+/// The range between the cursor and a target on its line, in whichever
+/// direction the target lies. `None` when they coincide.
+fn range_to(pos: usize, target: usize) -> Option<(usize, usize)> {
+    match target.cmp(&pos) {
+        Ordering::Less => Some((target, pos)),
+        Ordering::Greater => Some((pos, target)),
+        Ordering::Equal => None,
+    }
+}
+
 /// Cursor destination for a plain (non-operator) motion. `None` = the
 /// motion cannot move the cursor (alert). Forward motions cap at the
 /// last character; command-mode cursors rest *on* a character, so the
@@ -218,7 +256,7 @@ pub fn motion_move(buf: &[char], pos: usize, motion: ViMotion, count: u32) -> Op
     let count = count.max(1) as usize;
     let ls = line_start(buf, pos);
     let le = line_end(buf, pos);
-    let line_last = if le > ls { le - 1 } else { ls };
+    let line_last = line_last_index(ls, le);
     match motion {
         ViMotion::CharForward => {
             if pos >= line_last {
@@ -250,40 +288,12 @@ pub fn motion_move(buf: &[char], pos: usize, motion: ViMotion, count: u32) -> Op
             }
             if p == pos { None } else { Some(p) }
         }
-        ViMotion::WordEnd { big } => {
-            let mut p = pos;
-            for step in 0..count {
-                match word_end_after(buf, p, big) {
-                    Some(np) => p = np,
-                    None => {
-                        if step == 0 {
-                            return None;
-                        }
-                        break;
-                    }
-                }
-            }
-            Some(p)
-        }
-        ViMotion::WordBack { big } => {
-            let mut p = pos;
-            for step in 0..count {
-                match prev_word_start(buf, p, big) {
-                    Some(np) => p = np,
-                    None => {
-                        if step == 0 {
-                            return None;
-                        }
-                        break;
-                    }
-                }
-            }
-            Some(p)
-        }
+        ViMotion::WordEnd { big } => repeat_step(pos, count, |p| word_end_after(buf, p, big)),
+        ViMotion::WordBack { big } => repeat_step(pos, count, |p| prev_word_start(buf, p, big)),
         ViMotion::LineStart => Some(ls),
         ViMotion::FirstNonBlank => Some(first_non_blank(buf, pos)),
         ViMotion::LineEnd => Some(line_last),
-        ViMotion::Column => Some((ls + count - 1).min(line_last)),
+        ViMotion::Column => Some(column_index(ls, le, count)),
         ViMotion::FindChar(kind, target) => {
             let idx = find_char_index(buf, pos, kind, target, count as u32)?;
             match kind {
@@ -294,19 +304,7 @@ pub fn motion_move(buf: &[char], pos: usize, motion: ViMotion, count: u32) -> Op
         }
         ViMotion::MatchPair => vim::match_pair_target(buf, pos),
         ViMotion::WordEndBack { big } => {
-            let mut p = pos;
-            for step in 0..count {
-                match vim::prev_word_end(buf, p, big) {
-                    Some(np) => p = np,
-                    None => {
-                        if step == 0 {
-                            return None;
-                        }
-                        break;
-                    }
-                }
-            }
-            Some(p)
+            repeat_step(pos, count, |p| vim::prev_word_end(buf, p, big))
         }
     }
 }
@@ -361,32 +359,12 @@ pub fn motion_range(
             if p == pos { None } else { Some((pos, p)) }
         }
         ViMotion::WordEnd { big } => {
-            let mut p = pos;
-            let mut moved = false;
-            for _ in 0..count {
-                match word_end_after(buf, p, big) {
-                    Some(np) => {
-                        p = np;
-                        moved = true;
-                    }
-                    None => break,
-                }
-            }
-            if moved { Some((pos, p + 1)) } else { None }
+            let p = repeat_step(pos, count, |p| word_end_after(buf, p, big))?;
+            Some((pos, p + 1))
         }
         ViMotion::WordBack { big } => {
-            let mut p = pos;
-            let mut moved = false;
-            for _ in 0..count {
-                match prev_word_start(buf, p, big) {
-                    Some(np) => {
-                        p = np;
-                        moved = true;
-                    }
-                    None => break,
-                }
-            }
-            if moved { Some((p, pos)) } else { None }
+            let p = repeat_step(pos, count, |p| prev_word_start(buf, p, big))?;
+            Some((p, pos))
         }
         ViMotion::LineStart => {
             if pos > ls {
@@ -395,14 +373,7 @@ pub fn motion_range(
                 None
             }
         }
-        ViMotion::FirstNonBlank => {
-            let f = first_non_blank(buf, pos);
-            match f.cmp(&pos) {
-                std::cmp::Ordering::Less => Some((f, pos)),
-                std::cmp::Ordering::Greater => Some((pos, f)),
-                std::cmp::Ordering::Equal => None,
-            }
-        }
+        ViMotion::FirstNonBlank => range_to(pos, first_non_blank(buf, pos)),
         ViMotion::LineEnd => {
             if pos < le {
                 Some((pos, le))
@@ -410,15 +381,7 @@ pub fn motion_range(
                 None
             }
         }
-        ViMotion::Column => {
-            let line_last = if le > ls { le - 1 } else { ls };
-            let t = (ls + count - 1).min(line_last);
-            match t.cmp(&pos) {
-                std::cmp::Ordering::Less => Some((t, pos)),
-                std::cmp::Ordering::Greater => Some((pos, t)),
-                std::cmp::Ordering::Equal => None,
-            }
-        }
+        ViMotion::Column => range_to(pos, column_index(ls, le, count)),
         ViMotion::FindChar(kind, target) => {
             let idx = find_char_index(buf, pos, kind, target, count as u32)?;
             match kind {
@@ -436,18 +399,8 @@ pub fn motion_range(
         // Inclusive backward motion: `dge` deletes through the cursor
         // character.
         ViMotion::WordEndBack { big } => {
-            let mut p = pos;
-            let mut moved = false;
-            for _ in 0..count {
-                match vim::prev_word_end(buf, p, big) {
-                    Some(np) => {
-                        p = np;
-                        moved = true;
-                    }
-                    None => break,
-                }
-            }
-            if moved { Some((p, pos + 1)) } else { None }
+            let p = repeat_step(pos, count, |p| vim::prev_word_end(buf, p, big))?;
+            Some((p, pos + 1))
         }
     }
 }

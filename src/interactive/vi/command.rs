@@ -145,6 +145,17 @@ pub enum ViCmd {
     Bell,
 }
 
+impl ViCmd {
+    /// A motion as a plain move, or as the object of a pending
+    /// operator.
+    pub(super) fn motion(op: Option<OpKind>, motion: ViMotion) -> Self {
+        match op {
+            Some(op) => Self::Op(op, motion),
+            None => Self::Move(motion),
+        }
+    }
+}
+
 /// Resolution result: either a command with its effective count, or
 /// "waiting for more input" (count digits, char argument).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
