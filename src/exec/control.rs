@@ -328,10 +328,10 @@ impl Executor {
                     .process
                     .jobs
                     .add_job(child, vec![child], command_name, false);
-                // POSIX §2.9.3.1: the "[n] pid" notice belongs to job
-                // control; plain non-interactive scripts stay silent
+                // POSIX §2.9.3.1: the "[n] pid" notice is written only by an
+                // interactive shell; scripts stay silent, also under `set -m`
                 // (bash/dash agree).
-                if self.env.mode.is_interactive || self.env.mode.options.monitor {
+                if self.env.mode.is_interactive {
                     crate::byteenc::write_stderr_decoded_line(&format!(
                         "[{}] {}",
                         job_id,

@@ -1589,6 +1589,29 @@ fn test_pty_dash_m_c_foreground_job_control_setup() {
 }
 
 #[test]
+fn test_pty_dash_m_c_background_job_prints_no_notice() {
+    // POSIX §2.9.3.1: only an interactive shell writes the "[n] pid"
+    // notice for a background job; a non-interactive shell with job
+    // control on (`-m -c`, `set -m` in a script) stays silent (bash and
+    // dash agree).
+    let (mut s, _tmpdir) = spawn_yosh_with_args(&[
+        "-m",
+        "-c",
+        "echo flags-$-; /bin/sleep 0 & /bin/sleep 0 | /bin/cat & wait; echo end-of-jobs",
+    ]);
+    let (before, _) = s
+        .expect("end-of-jobs")
+        .map(|c| (String::from_utf8_lossy(c.before()).into_owned(), ()))
+        .expect("the script must finish");
+    assert!(before.contains("flags-"), "output: {before:?}");
+    assert!(
+        !before.contains("[1]") && !before.contains("[2]"),
+        "non-interactive -m must not print job notices: {before:?}"
+    );
+    let _ = s.expect(Eof);
+}
+
+#[test]
 fn test_pty_dash_m_with_redirected_stdin_keeps_job_control() {
     // Regression: the -m ownership gate used to probe stdin, so a
     // foreground `yosh -m ... <file` silently lost job control. The
@@ -1606,6 +1629,35 @@ fn test_pty_dash_m_with_redirected_stdin_keeps_job_control() {
     s.set_expect_timeout(Some(TIMEOUT));
     s.expect(Regex(r"flags-[a-z]*m"))
         .expect("redirected stdin must not disable job control for a foreground -m shell");
+    let _ = s.expect(Eof);
+}
+
+#[test]
+fn test_pty_stderr_not_a_terminal_is_not_interactive() {
+    // POSIX XCU sh: with no operands the shell is interactive only when
+    // stdin AND stderr are terminals (bash agrees). With stderr
+    // redirected, the terminal stdin is read as a script: no line
+    // editor, no `i` in $-.
+    let bin = env!("CARGO_BIN_EXE_yosh");
+    let tmpdir = helpers::TempDir::new();
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg("-c").arg(format!("exec '{}' 2>/dev/null", bin));
+    cmd.env("TERM", "dumb");
+    cmd.env("HOME", tmpdir.path());
+    let mut s = expectrl::Session::spawn(cmd).expect("failed to spawn sh wrapper");
+    s.set_expect_timeout(Some(TIMEOUT));
+    s.send("echo flags-$-+end\r").unwrap();
+    let (flags, _) = s
+        .expect(Regex(r"flags-([a-zA-Z]*)\+end"))
+        .map(|c| {
+            (
+                String::from_utf8_lossy(c.get(1).unwrap_or_default()).into_owned(),
+                (),
+            )
+        })
+        .expect("the command line must run");
+    assert!(!flags.contains('i'), "flags: {flags:?}");
+    s.send("exit\r").unwrap();
     let _ = s.expect(Eof);
 }
 

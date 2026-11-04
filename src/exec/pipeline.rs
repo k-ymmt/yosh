@@ -318,9 +318,9 @@ impl Executor {
         // process-group leader.
         let last = *children.last().expect("pipeline has >= 2 members");
         self.env.process.jobs.set_last_bg_pid(last);
-        // POSIX §2.9.3.1: the "[n] pid" notice belongs to job control;
-        // plain non-interactive scripts stay silent (bash/dash agree).
-        if self.env.mode.is_interactive || self.env.mode.options.monitor {
+        // POSIX §2.9.3.1: the "[n] pid" notice is written only by an
+        // interactive shell, not by a `set -m` script (bash/dash agree).
+        if self.env.mode.is_interactive {
             crate::byteenc::write_stderr_decoded_line(&format!("[{}] {}", job_id, last.as_raw()));
         }
         Ok(0)
