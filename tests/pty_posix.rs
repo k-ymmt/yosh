@@ -210,7 +210,7 @@ mod ps1 {
     fn default_value_set() {
         // Start with PS1 stripped from the inherited env so yosh's
         // Repl::new must be the one to set it. The is_none() guard
-        // in src/interactive/mod.rs ensures the POSIX default value
+        // in src/interactive/startup.rs ensures the POSIX default value
         // ("$ " / "# ") is written to the variable.
         let (mut session, _tmpdir) = spawn_yosh_with_env(&[("PS1", None)]);
         wait_for_prompt(&mut session);

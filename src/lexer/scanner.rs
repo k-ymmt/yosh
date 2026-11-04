@@ -446,8 +446,9 @@ impl Lexer {
     /// `current_byte`/`at_end` — none of which touch the alias state
     /// (token queue, command-name position, recursion guard). It is only
     /// ever mutated inside `Lexer::next_token`, which is never called in this
-    /// scan. Contrast with `Parser::parse_command`'s assignment lookahead
-    /// (src/parser/mod.rs), which DOES call `next_token` (via
+    /// scan. Contrast with the parser's assignment lookahead
+    /// (`try_parse_prefixed_compound` in src/parser/pipeline.rs, snapshots
+    /// in src/parser/cursor.rs), which DOES call `next_token` (via
     /// `Parser::advance`) between save and restore and therefore must keep
     /// the full `save_state`/`restore_state`.
     pub(crate) fn try_read_io_number(&mut self) -> Option<Token> {

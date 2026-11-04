@@ -68,7 +68,7 @@
       a real fix would re-dup internal fds away in the redirection
       code when a user targets one. Wrap-up review 2026-08-25 round 3
       residual (`src/signal/`, `src/env/jobs/terminal.rs`,
-      `src/exec/redirect.rs`).
+      `src/exec/redirect/`).
 - [ ] Async wrapper residuals after the 2026-09-01 exec-in-place fix
       and the 2026-09-02 async-pipeline direct fork — `cmd &` (single
       external simple command) execs in the async child, and `a | b &`
@@ -81,7 +81,7 @@
       run in a wrapper subshell whose grandchild stops remain invisible
       to job control and whose exec'd commands see the wrapper as
       `$PPID`. Revisit if real scripts hit the remaining shapes
-      (`src/exec/control.rs::exec_async`,
+      (`src/exec/control/background.rs::exec_async`,
       `src/exec/pipeline.rs::exec_async_pipeline`).
       DEVIATION note (2026-09-01, recorded in the spec): plugins'
       post_exec hook does not fire for an exec-in-place background
@@ -163,7 +163,7 @@
       the async-wrapper-residuals item above; noted per adversarial
       review round 1 (`src/exec/pipeline.rs::exec_async_pipeline`)
 - [ ] Task 7 (`fg` job-termios replay) has no direct PTY assertion — Task 9/10 verify end-state only (Task 6 shell-restore). On macOS/BSD, `/bin/cat`'s `read()` inherits `SIG_DFL` for SIGCONT and BSD does not auto-restart `read()` without `SA_RESTART`, so cat exits with EINTR immediately after `fg`. Linux auto-restarts `read()` on terminals for `SIG_DFL` signals, masking this asymmetry. Revisit by using a sleep/read-loop helper that retries on EINTR, or by reading `tcgetattr` directly via the PTY master between `fg\r` and cat's exit (the diagnosis details currently live in the `DEVIATION` comment of `test_pty_termios_preserved_across_suspend_fg` in `tests/pty_interactive.rs`).
-- [ ] `JobTable.shell_tmodes` is a one-time startup snapshot — `stty` invoked at the interactive prompt modifies the real terminal but not the cached snapshot, so the post-foreground shell-restore overwrites user-applied `stty` changes (`src/interactive/mod.rs` + `src/env/jobs/mod.rs`). Matches glibc manual behavior; revisit if user reports surface.
+- [ ] `JobTable.shell_tmodes` is a one-time startup snapshot — `stty` invoked at the interactive prompt modifies the real terminal but not the cached snapshot, so the post-foreground shell-restore overwrites user-applied `stty` changes (`src/interactive/startup.rs` + `src/env/jobs/mod.rs`). Matches glibc manual behavior; revisit if user reports surface.
 
 ## Parameter Expansion: Known Limitations
 
@@ -175,14 +175,14 @@
       redirect targets were fixed via `ExpandedField::scalar_join_sep`
       (2026-08-25); heredocs deliberately left bash-matching. Revisit
       if a real script depends on the dash behavior
-      (`src/expand/dollar.rs`, `src/expand/param.rs::expand_special`).
+      (`src/expand/dollar.rs`, `src/expand/param/lookup.rs::expand_special`).
 - [ ] DEVIATION (decided 2026-08-25): scalar-context `$@` (`x=$@`)
       joins with a space, matching bash; dash joins with IFS[0]. POSIX
       leaves unquoted `$@` in non-splitting contexts unspecified.
       `${#*}` / `${#@}` likewise follow dash (length of the joined
       string) where bash returns `$#`; POSIX calls both unspecified
       (`src/expand/pipeline.rs::push_positionals`,
-      `src/expand/param.rs`).
+      `src/expand/param/`).
 
 ## POSIX Compliance: Audit Deferrals (recorded 2026-08-26)
 
@@ -210,7 +210,7 @@
 - [ ] `save_fd` parks saved fds at >=10 via F_DUPFD with no reservation
       against user scripts that redirect multi-digit fds, so
       `exec 10>...` can collide with a save slot (audit L9,
-      `src/exec/redirect.rs::save_fd`; same exposure family as the
+      `src/exec/redirect/mod.rs::save_fd`; same exposure family as the
       internal self-pipe/terminal fd item in the Job Control section).
 - [ ] `$(trap 'x' INT; trap)` inside a command substitution prints the
       parent shell's trap snapshot, not the subshell's own updated table
@@ -233,14 +233,14 @@
   - [ ] `sh -c` execs only a lone last simple command in place; dash
         also execs the last pipeline of an `&&`/`||` list
         (`arm_exec_in_place_if_shell_tail` in
-        `src/exec/simple/external.rs`).
+        `src/exec/simple/external/in_place.rs`).
   - [ ] `posix_spawn` is used only for external commands without
         redirections or monitor mode. Commands with redirections would
         need parent-side opens (noclobber `O_EXCL` cannot be redone),
         temp-fd/target collision handling, `>&-` via addclose (EBADF on
         macOS) and a child to report errors; `redir_external` is
         already 0.93x dash, so the risk outweighs the payoff
-        (`src/exec/simple/external.rs`).
+        (`src/exec/simple/external/spawn.rs`).
   - [ ] Parse speed: 4000 plain function definitions cost 154.5M
         instructions vs dash 80M after the round-3 lexer/parser pass.
         `env.functions` and `utility_hash` still use SipHash (inserts
@@ -251,25 +251,25 @@
         thin-LTO inlining shifts in code that did not change.
   - [ ] `read_loop` is about +2.8% over the round-1 baseline (round 3
         removed its own regression): `read` classifies fd 0 with one
-        fstat or lseek per call (`src/builtin/read.rs`).
+        fstat or lseek per call (`src/builtin/read/stdin.rs`).
   - [ ] Seekable stdin (`yosh < file`) costs one relative lseek per
         command (+12-18% on 5000-20000 one-line commands vs the
         pre-round-3 reader), needed so commands that read stdin start
         at the right offset. Piped stdin reads one byte per read(2) to
         avoid reading ahead, as bash does (`cat file | yosh` is ~3.5x
-        `yosh < file`) (`src/script_input.rs`).
+        `yosh < file`) (`src/script_input/`).
   - [ ] Piped stdin: an alias whose value could close a compound
         command or ends in an operator, and `-i`, keep the old per-line
         re-parse below the 16 KiB limit (quadratic for long groups), as
         do lines with an unmatched `)` (each `pat)` of a long piped
         `case`: 3000 items take ~6 s CPU in a debug build) and the line
         after one ending in `)`; pending text holding `<<` runs one
-        extra probe parse per re-parse (`src/script_input.rs`).
+        extra probe parse per re-parse (`src/script_input/incomplete.rs`, `more_lines.rs`).
   - [ ] Piped stdin inside an open compound command reads lines that
         cannot close it without parsing them, so a syntax error there
         is reported only once the closer arrives, after the shell has
         consumed more input (visible to an EXIT trap that reads stdin;
-        bash stops at the bad line) (`src/script_input.rs`).
+        bash stops at the bad line) (`src/script_input/more_lines.rs`).
   - [ ] `spawn_default_sigset` still queries signals that were ignored
         on entry and never changed; exec in place drops a signal that
         arrives between draining the self-pipe and the exec (dash has
@@ -439,17 +439,17 @@ Invocation / input / signals:
 - [ ] Piped compound commands or here-docs over the 16 KiB re-parse
       limit batch already-available whole lines, so a `read` inside a
       huge compound command can miss lines the shell consumed (dash
-      also reads ahead there) (`src/script_input.rs`).
+      also reads ahead there) (`src/script_input/more_lines.rs`).
 - [ ] `exec 11>&1` (or any redirection onto fd 10/11) overwrites the
       signal self-pipe: a trapped signal then writes its number byte to
       the redirected file and the trap never runs (`exec 11>&1; trap
       'echo T' USR1; kill -USR1 $$` prints `\036`, not `T`). bash moves
       its internal fds out of the way; dash rejects fds above 9. The
       self-pipe fds live in a `OnceLock` and would need to become
-      movable (`src/signal/self_pipe.rs`, `src/exec/redirect.rs`).
+      movable (`src/signal/self_pipe.rs`, `src/exec/redirect/saved_fds.rs`).
 - [ ] With `trap '...' HUP` set, SIGHUP at the terminal prompt runs the
       action and then ends the REPL (its read loop breaks on the
-      error); dash keeps prompting (`src/interactive/mod.rs`).
+      error); dash keeps prompting (`src/interactive/repl_loop.rs`).
 - [ ] A NUL byte in a script acts as a separator (unspecified); no PATH
       search for a script operand without a slash (POSIX "may"; dash
       does not, bash does); `yosh -o` with no argument is an error
@@ -533,7 +533,7 @@ Interactive:
         on terminal ownership, but the implicit interactive default and
         the full `Repl::new` terminal setup (take_terminal, termios
         snapshot) remain REPL-only (`src/main.rs::run_string`,
-        `src/interactive/mod.rs`).
+        `src/interactive/startup.rs`).
 - [ ] 2026-08-25 invocation-options review residuals (set-option
       letters/-o/+o/-s landed 2026-08-24; adversarial review round 1+2
       fixes landed 2026-08-25 — interactive `-n` ignore incl. command
@@ -568,12 +568,12 @@ Interactive:
         prompt appears, the first typed command runs, then the shell
         exits with the rc file's status, and the EXIT trap fired at
         startup is skipped on the real exit
-        (`src/interactive/mod.rs::{new,run}`).
+        (`src/interactive/startup.rs::new`, `repl_loop.rs::run`).
   - [ ] `-o nolog` — POSIX `set -o` option name not in
         `ShellOptions::set_by_name`, so `yosh -o nolog ...` exits 2;
         the behavior (don't enter function definitions into history)
         is also unimplemented (`src/env/shell_mode.rs`,
-        `src/interactive/mod.rs`). `-o vi` landed 2026-08-25 with the
+        `src/interactive/repl_loop.rs`). `-o vi` landed 2026-08-25 with the
         full vi line-editing implementation.
   - [ ] Attached `-oNAME` (`yosh -oerrexit`) is accepted at invocation
         but `set -oerrexit` is rejected by the builtin's char-cluster
@@ -605,7 +605,7 @@ Interactive:
       waiting at the prompt. bash fires them immediately via its readline
       event loop. Would need a self-pipe check inside the terminal
       `read_event` poll loop plus executor access from the line editor
-      (`src/interactive/terminal.rs`, `src/interactive/mod.rs`).
+      (`src/interactive/terminal.rs`, `src/interactive/repl_loop.rs`).
 - [ ] `set -x` does not emit bash-style structural headers for `for` / `case` (yosh matches dash here; POSIX leaves the header format implementation-defined). Empirical survey 2026-05-28 confirmed compound bodies and pipeline members are already traced via `exec_simple_command`; the assignment-only gap was closed in the 2026-05-28 assignment-trace work. Adding bash parity for the headers requires Word→source rendering plus an xtrace argument-quoting algorithm; the latter also affects existing simple-command trace output (`echo "a b" c` traces as `+ echo a b c` not `+ echo 'a b' c`). Tracked together because both want the same quoting helper. See `docs/superpowers/specs/2026-05-28-set-x-assignment-trace-design.md` §5 for the closed assignment portion (`src/exec/compound.rs`, `src/exec/simple/assignment_only.rs`).
 - [ ] vi editing mode residuals (core landed 2026-08-25: full POSIX XCU
       command set — motions/operators/counts, x X r R ~ s S C D Y p P,
@@ -667,7 +667,7 @@ Interactive:
 - [ ] History expansion — `!!` (last command), `!n` (by number)
 - [ ] Right-aligned prompt (`PS1_RIGHT`) — starship-style right-side prompt display based on terminal width (`src/interactive/line_editor/`)
 - [ ] Prompt segment API — structured segment registration for multiple plugins to contribute prompt sections without PS1 conflicts (`src/plugin/`, `crates/yosh-plugin-sdk/`)
-- [ ] Ctrl+C / empty-Enter type distinction — both return `Ok(Some(""))` from `read_line`; introduce a dedicated variant for clearer intent (`src/interactive/line_editor/`, `src/interactive/mod.rs`)
+- [ ] Ctrl+C / empty-Enter type distinction — both return `Ok(Some(""))` from `read_line`; introduce a dedicated variant for clearer intent (`src/interactive/line_editor/`, `src/interactive/repl_loop.rs`)
 - [ ] Parse status edge-case tests — `||` continuation, `for...do` incomplete, nested structures, unterminated here-document (`tests/interactive.rs`)
 - [ ] Tab completion: unify `read_line` and `read_line_with_completion` — `read_line` is now only used by tests; consider merging into a single method (`src/interactive/line_editor/`)
 - [ ] Syntax highlighting: color palette customization — allow users to override colors via environment variables like `YOSH_COLOR_KEYWORD=blue` (`src/interactive/highlight.rs`)
@@ -743,7 +743,7 @@ the items below are deferred work, not policy:
       a fresh child-private pipe), so a signal delivered to the child in that
       window is written into the SHARED pipe and later misread by the parent
       as its own (parent then exits via `handle_default_signal`). `exec_async`
-      (`src/exec/control.rs`) now blocks all signals across the fork and
+      (`src/exec/control/background.rs`) now blocks all signals across the fork and
       restores the mask on both sides after dispositions are set (as does
       the async-pipeline fork loop `exec_async_pipeline`, 2026-09-02); the
       same latent race exists in `exec_subshell` (`src/exec/compound.rs`),
@@ -757,7 +757,7 @@ the items below are deferred work, not policy:
 - [ ] `highlight_scanner` `KEYWORDS` duplicates POSIX §2.4 list — `src/interactive/highlight_scanner/helpers.rs` defines its own copy of the 16 reserved words, separate from the canonical `crate::lexer::reserved::RESERVED_WORDS`. Consolidate once the contextual subsets (`COMMAND_POSITION_KEYWORDS` includes `"time"`, command-position restoration logic) are re-expressed in terms of the canonical list (`src/interactive/highlight_scanner/helpers.rs`)
 - [ ] `expand_assignment_builtin_args` string round-trip — helper builds `"NAME=value"` strings that the builtin re-parses with `find('=')`. Lossless today, but couples the helper shape to the legacy builtin API. When a future refactor touches `builtin_export`/`builtin_readonly` signatures, consider passing `Vec<(String, Option<String>)>` directly to skip the round-trip (`src/exec/simple/mod.rs`, `src/builtin/vars.rs`).
 - [ ] `fork + run-Rust-shell-code-in-child` is fundamentally POSIX-UB in MT contexts — even with `exit_child` helper, `exec_subshell` runs `self.exec_body(body)` in the child, which touches arbitrary Rust std (mutexes, allocators, env) and is technically only legal between `fork()` and `exec()` if all calls are async-signal-safe. Currently safe in practice because interactive shell parent is single-threaded; test harness is the exception. Long-term architectural consideration: reevaluate whether subshells should use `fork+exec` (separate yosh invocation with serialized state) instead of `fork+in-process interpreter`. Out of scope for the immediate fix; record to avoid forgetting the latent hazard. The stdout-lock deadlock this hazard produced in the test harness (2026-08-26, ESCALATED 2026-09-02: three hangs per session in piped `cargo test --lib` runs — the fork child inherited libtest's stdout `ReentrantLock` locked and hung in `exit_child`'s `stdout().flush()`) was FIXED 2026-09-11: every fork site now goes through `src/exec/process.rs::fork_shell`, which holds the std stdout/stderr locks (flushed) across `fork()` and releases them in both processes — the `pthread_atfork` prepare/parent/child pattern for the two std handles. Pinned by `exec::process::tests::fork_shell_child_exits_despite_stdio_lock_contention` (plain `fork` under the same lock-hog thread: 20/20 children killed; `fork_shell`: 0/20). Other std-internal locks (allocator, `stack_overflow::thread_info`) remain out of scope of the wrapper; `exit_child`'s `_exit` covers the exit path, but a child stall pre-exit in the MT harness is still theoretically possible.
-- [ ] `Parser::current_token` API shape — `interactive/parse_status.rs:61` compares the result against `&Token::Newline` literally, which forces every caller to construct a borrowed `Token` value just for equality. Consider a predicate `fn is_token(&self, t: &Token) -> bool` (or an enum-tag helper) that hides the borrow. Discovered during the 2026-05-05 visibility-tightening spec follow-up (`docs/superpowers/specs/2026-05-05-parser-visibility-tightening-design.md` §4.2-1, `src/parser/mod.rs`).
+- [ ] `Parser::current_token` API shape — `interactive/parse_status.rs:61` compares the result against `&Token::Newline` literally, which forces every caller to construct a borrowed `Token` value just for equality. Consider a predicate `fn is_token(&self, t: &Token) -> bool` (or an enum-tag helper) that hides the borrow. Discovered during the 2026-05-05 visibility-tightening spec follow-up (`docs/superpowers/specs/2026-05-05-parser-visibility-tightening-design.md` §4.2-1, `src/parser/cursor.rs`).
 - [ ] Bench API surface — `Parser::new` and `parse_program` are the only two `Parser` items required to stay `pub`; their sole external consumers are `benches/parser_bench.rs` and `benches/exec_bench.rs`. Wrapping them in a bench-only helper module (e.g. an internal `pub(crate) fn parse_for_bench(s: &str) -> Program` reachable through a `#[cfg(any(test, feature = "internal_api"))]` shim) would let both `Parser::new` and `parse_program` drop to `pub(crate)`, shrinking the public Parser surface from 10 to 8. Requires bench-side refactor. Discovered during the 2026-05-05 visibility-tightening spec follow-up (§4.2-3, `benches/parser_bench.rs`, `benches/exec_bench.rs`).
 
 ## Future: Release Skill Enhancements
