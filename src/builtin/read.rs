@@ -391,6 +391,11 @@ fn line_units(line: &[LineByte]) -> Vec<Unit> {
     units
 }
 
+/// Byte classes of `split_fields`'s IFS table.
+const NOT_IFS: u8 = 0;
+const WS_IFS: u8 = 1;
+const SEP_IFS: u8 = 2;
+
 /// POSIX §2.6.5 field splitting for `read`. Returns exactly `n_vars`
 /// strings: var[0..n-1] are split fields, var[n-1] is the trailing
 /// remainder (with only trailing whitespace-IFS trimmed). When IFS is
@@ -400,22 +405,31 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
     // via ArgError::NoVarName.
     debug_assert!(n_vars >= 1);
 
-    // Classify IFS characters.
-    let mut ws_ifs: Vec<Vec<u8>> = Vec::new();
-    let mut sep_ifs: Vec<Vec<u8>> = Vec::new();
-    // IFS is segmented exactly like the input line (`line_units`), so a
-    // character held as several escape characters is still one delimiter
-    // and a lone raw byte matches only that raw input byte.
-    for c in crate::byteenc::raw_char_units(ifs) {
-        if matches!(c.as_slice(), b" " | b"\t" | b"\n") {
-            ws_ifs.push(c);
-        } else {
-            sep_ifs.push(c);
+    // Classify IFS characters. IFS is segmented exactly like the input
+    // line (`line_units`), so a character held as several escape
+    // characters is still one delimiter and a lone raw byte matches only
+    // that raw input byte. One-byte characters (all IFS whitespace, and
+    // every character of an ASCII IFS) go in a byte table; the rare
+    // multi-byte ones are compared unit by unit.
+    let mut class = [NOT_IFS; 256];
+    let mut sep_multi: Vec<Vec<u8>> = Vec::new();
+    let mut classify = |c: &[u8]| match c {
+        [b' ' | b'\t' | b'\n'] => class[c[0] as usize] = WS_IFS,
+        [b] => class[*b as usize] = SEP_IFS,
+        _ => sep_multi.push(c.to_vec()),
+    };
+    if ifs.is_ascii() {
+        for b in ifs.bytes() {
+            classify(&[b]);
+        }
+    } else {
+        for c in crate::byteenc::raw_char_units(ifs) {
+            classify(&c);
         }
     }
 
     // Empty IFS → no splitting at all.
-    if ws_ifs.is_empty() && sep_ifs.is_empty() {
+    if ifs.is_empty() {
         let whole = field_to_string(line);
         let mut out = vec![whole];
         out.extend((1..n_vars).map(|_| String::new()));
@@ -423,20 +437,27 @@ fn split_fields(ifs: &str, line: &[LineByte], n_vars: usize) -> Vec<String> {
     }
 
     let units = line_units(line);
-    let matches = |u: &Unit, set: &[Vec<u8>]| {
-        !u.escaped
-            && set.iter().any(|c| {
-                c.len() == u.end - u.start
-                    && line[u.start..u.end]
-                        .iter()
-                        .zip(c)
-                        .all(|(b, x)| b.value == *x)
-            })
+    let unit_class = |u: &Unit| -> u8 {
+        if u.escaped {
+            NOT_IFS
+        } else if u.end - u.start == 1 {
+            class[line[u.start].value as usize]
+        } else if sep_multi.iter().any(|c| {
+            c.len() == u.end - u.start
+                && line[u.start..u.end]
+                    .iter()
+                    .zip(c)
+                    .all(|(b, x)| b.value == *x)
+        }) {
+            SEP_IFS
+        } else {
+            NOT_IFS
+        }
     };
     // Helper: is unit `u` an unescaped IFS character of the given class?
-    let is_ws = |u: &Unit| matches(u, &ws_ifs);
-    let is_sep = |u: &Unit| matches(u, &sep_ifs);
-    let is_any_ifs = |u: &Unit| is_ws(u) || is_sep(u);
+    let is_ws = |u: &Unit| unit_class(u) == WS_IFS;
+    let is_sep = |u: &Unit| unit_class(u) == SEP_IFS;
+    let is_any_ifs = |u: &Unit| unit_class(u) != NOT_IFS;
     // Skip one field terminator starting at `k` and return the index
     // after it. Per XCU §2.6.5 a delimiter is a non-whitespace IFS
     // character together with any adjacent IFS whitespace (on BOTH
