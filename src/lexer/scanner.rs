@@ -165,8 +165,10 @@ impl Lexer {
             .checked_add(len)
             .filter(|end| *end <= self.input.len())
             .ok_or_else(|| self.invalid_utf8_error())?;
-        let s = std::str::from_utf8(&self.input.as_bytes()[self.pos..end])
-            .map_err(|_| self.invalid_utf8_error())?;
+        let s = self
+            .input
+            .get(self.pos..end)
+            .ok_or_else(|| self.invalid_utf8_error())?;
         let ch = s.chars().next().ok_or_else(|| self.invalid_utf8_error())?;
         Ok((ch, len))
     }
