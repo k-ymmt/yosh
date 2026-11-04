@@ -8,7 +8,7 @@ use nix::unistd::{ForkResult, execve};
 
 use crate::env::jobs;
 use crate::error::ShellError;
-use crate::parser::ast::{Command, CompleteCommand, SeparatorOp};
+use crate::parser::ast::{AndOrList, Command, CompleteCommand, SeparatorOp};
 use crate::signal;
 
 use super::super::command::wait_child;
@@ -54,6 +54,42 @@ impl Executor {
             && and_or.rest.is_empty()
             && !and_or.first.negated
             && matches!(and_or.first.commands.as_slice(), [Command::Simple(_)])
+        {
+            self.arm_subshell_exec_in_place();
+        }
+    }
+
+    /// `sh -c` tail call: `and_or` is the last list of the command string
+    /// (see `Executor::mark_shell_tail`). When it is one plain simple
+    /// command and nothing could observe the shell after it, arm the
+    /// exec-in-place marker so an external utility replaces the shell
+    /// instead of being spawned and waited for — one process creation
+    /// and wait fewer per `sh -c 'cmd'`, as dash (EV_EXIT) and bash do.
+    ///
+    /// Kept as a fork (the marker stays clear) when anything would still
+    /// run or be reported after the command: any trap — the EXIT action,
+    /// a signal action run after the command, even `trap ''` (dash's
+    /// `have_traps` is narrower; this is the conservative choice) — any
+    /// job in the table, an interactive shell or monitor mode (job
+    /// control and the terminal handoff need the shell), `&&`/`||`/`!`
+    /// (the shell still computes the status) and every non-simple
+    /// command. Builtins, functions and plugin commands ignore the
+    /// marker (see `dispatch_simple_command`), and plugins with exec
+    /// hooks never get it armed (`arm_subshell_exec_in_place`). As with
+    /// dash, the command then *is* the shell process: a parent sees it
+    /// die of a signal itself instead of the shell exiting 128+N.
+    pub(crate) fn arm_exec_in_place_if_shell_tail(&mut self, and_or: &AndOrList) {
+        if and_or.rest.is_empty()
+            && !and_or.first.negated
+            && matches!(and_or.first.commands.as_slice(), [Command::Simple(_)])
+            && !self.env.mode.is_interactive
+            && !self.env.mode.flag_i
+            && !self.env.mode.options.monitor
+            && self.env.traps.exit_trap.is_none()
+            && self.env.traps.signal_traps.is_empty()
+            && self.env.process.jobs.is_empty()
+            && self.exit_requested.is_none()
+            && self.env.exec.flow_control.is_none()
         {
             self.arm_subshell_exec_in_place();
         }
@@ -171,6 +207,13 @@ impl Executor {
                     // the now correctly tracked stop is visible.
                     let ignored = self.env.traps.ignored_signals();
                     signal::reset_child_signals(&ignored);
+                    {
+                        // Output the shell buffered (`printf x; cmd` as
+                        // an `sh -c` tail) must precede the command's.
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                        let _ = std::io::stderr().flush();
+                    }
                     self.exec_child_prepared(&c_cmd, &c_args, cmd, env_overrides, redirects);
                 }
                 self.spawn_external_at_path(&path, cmd, args, env_overrides, redirects)

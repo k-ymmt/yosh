@@ -89,6 +89,12 @@ pub struct Executor {
     /// applies that command's redirections without saving them, as part
     /// of the subshell's environment (see `exec_async`).
     async_compound_redirects_permanent: bool,
+    /// One-shot hint from the `sh -c` driver: the complete command about
+    /// to run is the last text of the command string, so after it the
+    /// shell only exits. Taken by `exec_complete_command`, which may
+    /// then let the final simple command replace the shell process
+    /// (see `arm_exec_in_place_if_shell_tail`).
+    shell_tail: bool,
     pub exit_requested: Option<i32>,
     /// An interactive shell is ending because of this untrapped signal
     /// (see `handle_default_signal`): once its EXIT trap ran and history
@@ -105,6 +111,7 @@ impl Executor {
             errexit_suppressed_depth: 0,
             errexit_exempt_status: false,
             async_compound_redirects_permanent: false,
+            shell_tail: false,
             exit_requested: None,
             exit_signal: None,
         }
@@ -118,9 +125,17 @@ impl Executor {
             errexit_suppressed_depth: 0,
             errexit_exempt_status: false,
             async_compound_redirects_permanent: false,
+            shell_tail: false,
             exit_requested: None,
             exit_signal: None,
         }
+    }
+
+    /// Tell the executor that the next complete command is the last
+    /// thing the shell runs before it exits (`sh -c` with nothing but
+    /// blank text after the command). See the `shell_tail` field.
+    pub(crate) fn mark_shell_tail(&mut self) {
+        self.shell_tail = true;
     }
 
     /// Load plugins from the lock file (~/.config/yosh/plugins.lock).

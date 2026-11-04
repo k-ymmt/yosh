@@ -870,6 +870,18 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
                     cmd_start = end;
                     pending_aliases = p.pending_aliases();
                     cmd_aliases = None;
+                    // `sh -c`: with only blank text left, this command is
+                    // the shell's last; its final simple command may
+                    // replace the shell (Executor::mark_shell_tail).
+                    if reader.is_none()
+                        && executor.env.mode.options.cmd_string
+                        && pending_aliases.is_none()
+                        && text[end..]
+                            .bytes()
+                            .all(|b| matches!(b, b' ' | b'\t' | b'\n'))
+                    {
+                        executor.mark_shell_tail();
+                    }
                     status = executor.exec_complete_command(&cmd);
                     // Check for flow control (exit handled by std::process::exit in builtin)
                     match executor.env.exec.flow_control {

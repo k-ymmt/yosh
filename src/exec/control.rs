@@ -379,6 +379,9 @@ impl Executor {
 
     /// Execute a complete command (list of AND-OR lists with separators).
     pub(crate) fn exec_complete_command(&mut self, cmd: &CompleteCommand) -> i32 {
+        // Taken first so no nested complete command (eval, a function
+        // body, a forked subshell's copy) ever sees the hint.
+        let shell_tail = std::mem::take(&mut self.shell_tail);
         // noexec (set -n) stubs the whole complete command here, above
         // the AND-OR machinery: returning 0 from exec_command alone is
         // not enough — a trailing `! cmd` would negate the stub 0 into
@@ -398,8 +401,9 @@ impl Executor {
         }
 
         let mut status = 0;
+        let last = cmd.items.len().saturating_sub(1);
 
-        for (and_or, separator) in &cmd.items {
+        for (i, (and_or, separator)) in cmd.items.iter().enumerate() {
             if separator == &Some(SeparatorOp::Amp) {
                 status = match self.exec_async(and_or) {
                     Ok(s) => s,
@@ -409,6 +413,9 @@ impl Executor {
                     }
                 };
             } else {
+                if shell_tail && i == last {
+                    self.arm_exec_in_place_if_shell_tail(and_or);
+                }
                 // Sequential execution
                 status = self.exec_and_or(and_or);
             }
