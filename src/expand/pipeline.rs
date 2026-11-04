@@ -215,7 +215,7 @@ fn expand_param_to_fields(
             null_check,
         } => {
             let val = param::lookup_var(env, name);
-            if param::is_unset_or_null_inner(&val, *null_check) {
+            if param::is_unset_or_null_inner(val.as_deref(), *null_check) {
                 if let Some(w) = word.as_ref() {
                     expand_modifier_word(env, w, fields, in_double_quote)?;
                 }
@@ -224,7 +224,7 @@ fn expand_param_to_fields(
                 // shape instead of collapsing to one scalar field.
                 push_positionals(env, fields, star, in_double_quote);
             } else {
-                push_param_value(fields, &val.unwrap_or_default(), in_double_quote);
+                push_param_value(fields, val.as_deref().unwrap_or_default(), in_double_quote);
             }
         }
 
@@ -235,7 +235,7 @@ fn expand_param_to_fields(
             null_check,
         } => {
             let val = param::lookup_var(env, name);
-            if !param::is_unset_or_null_inner(&val, *null_check)
+            if !param::is_unset_or_null_inner(val.as_deref(), *null_check)
                 && let Some(w) = word.as_ref()
             {
                 expand_modifier_word(env, w, fields, in_double_quote)?;
@@ -251,7 +251,7 @@ fn expand_param_to_fields(
             null_check,
         } => {
             let val = param::lookup_var(env, name);
-            if param::is_unset_or_null_inner(&val, *null_check) {
+            if param::is_unset_or_null_inner(val.as_deref(), *null_check) {
                 // POSIX §2.6.2: attempting to assign a positional or special
                 // parameter with ${name=word} is an error.
                 if param::is_unassignable_param(name) {
@@ -294,7 +294,7 @@ fn expand_param_to_fields(
             } else if let Some(star) = positional_special(name) {
                 push_positionals(env, fields, star, in_double_quote);
             } else {
-                push_param_value(fields, &val.unwrap_or_default(), in_double_quote);
+                push_param_value(fields, val.as_deref().unwrap_or_default(), in_double_quote);
             }
         }
 
@@ -304,7 +304,10 @@ fn expand_param_to_fields(
         ParamExpr::Error {
             name, null_check, ..
         } if positional_special(name).is_some()
-            && !param::is_unset_or_null_inner(&param::lookup_var(env, name), *null_check) =>
+            && !param::is_unset_or_null_inner(
+                param::lookup_var(env, name).as_deref(),
+                *null_check,
+            ) =>
         {
             push_positionals(
                 env,
@@ -335,10 +338,15 @@ fn expand_param_to_fields(
             push_positional_values(env, fields, &params, star, in_double_quote);
         }
 
-        // Everything else: expand to a string, then push.
+        // Everything else: expand to a string, then push. A set `$name`
+        // or `$1` is pushed straight from the variable, without a copy.
         _ => {
-            let value = param::expand(env, param)?;
-            push_param_value(fields, &value, in_double_quote);
+            if let Some(value) = param::set_scalar_value(env, param) {
+                push_param_value(fields, &value, in_double_quote);
+            } else {
+                let value = param::expand(env, param)?;
+                push_param_value(fields, &value, in_double_quote);
+            }
         }
     }
     Ok(())

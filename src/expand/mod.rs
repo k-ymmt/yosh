@@ -18,6 +18,8 @@ pub use heredoc::expand_body as expand_heredoc_body;
 use pipeline::expand_word_to_fields;
 pub(crate) use tilde::expand_tilde_prefix;
 
+use std::borrow::Cow;
+
 use crate::env::ShellEnv;
 use crate::parser::ast::{ParamExpr, SpecialParam, Word, WordPart};
 
@@ -338,7 +340,14 @@ fn push_scalar_part(
         | WordPart::EscapedLiteral(s)
         | WordPart::SingleQuoted(s)
         | WordPart::DollarSingleQuoted(s) => out.push_str(s),
-        WordPart::Parameter(p) => push_owned(out, param::expand(env, p)?),
+        WordPart::Parameter(p) => match param::set_scalar_value(env, p) {
+            // A set `$name` / `$1`: copied once, straight from the
+            // variable (`out.push_str` on an empty `out` allocates just
+            // what a clone would).
+            Some(Cow::Borrowed(value)) => out.push_str(value),
+            Some(Cow::Owned(value)) => push_owned(out, value),
+            None => push_owned(out, param::expand(env, p)?),
+        },
         WordPart::ArithSub(expr) => push_owned(out, arith::evaluate(env, expr)?),
         WordPart::CommandSub(program) => push_owned(out, command_sub::execute(env, program)),
         WordPart::DoubleQuoted(inner) => {

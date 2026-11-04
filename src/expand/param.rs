@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::{expand_word_to_pattern, expand_word_to_string, pattern};
 use crate::env::ShellEnv;
 use crate::parser::ast::{ParamExpr, SpecialParam};
@@ -33,7 +35,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
     match param {
         // ── Simple variable ──────────────────────────────────────────────
         ParamExpr::Simple(name) => match lookup_var(env, name) {
-            Some(val) => Ok(val),
+            Some(val) => Ok(val.into_owned()),
             None => {
                 if env.mode.options.nounset {
                     expansion_error(env, format_args!("{}: parameter not set", name));
@@ -92,14 +94,14 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             null_check,
         } => {
             let val = lookup_var(env, name);
-            let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
+            let is_unset_or_null = is_unset_or_null_inner(val.as_deref(), *null_check);
             if is_unset_or_null {
                 match word.as_ref() {
                     Some(w) => expand_word_to_string(env, w),
                     None => Ok(String::new()),
                 }
             } else {
-                Ok(val.unwrap_or_default())
+                Ok(val.map(Cow::into_owned).unwrap_or_default())
             }
         }
 
@@ -110,7 +112,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             null_check,
         } => {
             let val = lookup_var(env, name);
-            let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
+            let is_unset_or_null = is_unset_or_null_inner(val.as_deref(), *null_check);
             if is_unset_or_null {
                 // POSIX §2.6.2: attempting to assign a positional or special
                 // parameter with ${name=word} is an error.
@@ -139,7 +141,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                 }
                 Ok(new_val)
             } else {
-                Ok(val.unwrap_or_default())
+                Ok(val.map(Cow::into_owned).unwrap_or_default())
             }
         }
 
@@ -150,7 +152,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             null_check,
         } => {
             let val = lookup_var(env, name);
-            let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
+            let is_unset_or_null = is_unset_or_null_inner(val.as_deref(), *null_check);
             if is_unset_or_null {
                 let msg = match word.as_ref() {
                     Some(w) => expand_word_to_string(env, w)?,
@@ -161,7 +163,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                 expansion_error(env, format_args!("{}: {}", name, msg));
                 Ok(String::new())
             } else {
-                Ok(val.unwrap_or_default())
+                Ok(val.map(Cow::into_owned).unwrap_or_default())
             }
         }
 
@@ -172,7 +174,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             null_check,
         } => {
             let val = lookup_var(env, name);
-            let is_unset_or_null = is_unset_or_null_inner(&val, *null_check);
+            let is_unset_or_null = is_unset_or_null_inner(val.as_deref(), *null_check);
             if is_unset_or_null {
                 // Not set (or null with colon) — return empty
                 Ok(String::new())
@@ -218,7 +220,10 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             let Ok(value) = lookup_var_nounset(env, name) else {
                 return Ok(String::new());
             };
-            let value = value.unwrap_or_default();
+            // Owned: expanding the pattern may assign the variable
+            // (`${x#${x=y}}`), and the value read before it is the one
+            // the pattern is removed from.
+            let value = value.map(Cow::into_owned).unwrap_or_default();
             let pat = expand_word_to_pattern(env, pattern_word)?;
             Ok(apply_strip(param, &value, &pat))
         }
@@ -255,9 +260,12 @@ pub(super) fn apply_strip(param: &ParamExpr, value: &str, pat: &str) -> String {
 /// Digit-string names are positional parameters (POSIX §2.5.1 — leading
 /// zeros are decimal, so `01` ≡ `1`); an index past `$#` is unset (`None`).
 /// All other names delegate to `VarStore::get`.
-pub(super) fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
+///
+/// The value is borrowed from `env` where it is stored there, so a
+/// caller that only reads it does not copy it.
+pub(super) fn lookup_var<'a>(env: &'a ShellEnv, name: &str) -> Option<Cow<'a, str>> {
     if name == "LINENO" {
-        return Some(env.exec.lineno.to_string());
+        return Some(Cow::Owned(env.exec.lineno.to_string()));
     }
     // Special parameters reach here via the modifier forms (`${?:-x}`,
     // `${!+y}`, …); bare `$?` et al. dispatch through `ParamExpr::Special`
@@ -272,22 +280,42 @@ pub(super) fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
             }
             // `$*` joins with IFS[0] (POSIX §2.5.2); in unquoted contexts
             // field splitting on IFS then recovers the separate fields.
-            SpecialParam::Star => Some(
+            SpecialParam::Star => Some(Cow::Owned(
                 env.vars
                     .positional_params()
                     .join(&super::pipeline::ifs_join_separator(env)),
-            ),
-            _ => Some(expand_special(env, &sp)),
+            )),
+            _ => Some(Cow::Owned(expand_special(env, &sp))),
         };
     }
     if !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
         let n: usize = name.parse().unwrap_or(0);
         if n == 0 {
-            return Some(env.shell_name.clone());
+            return Some(Cow::Borrowed(&env.shell_name));
         }
-        return env.vars.positional_params().get(n - 1).cloned();
+        return env
+            .vars
+            .positional_params()
+            .get(n - 1)
+            .map(|s| Cow::Borrowed(s.as_str()));
     }
-    env.vars.get(name).map(|s| s.to_string())
+    env.vars.get(name).map(Cow::Borrowed)
+}
+
+/// The value of a `$name` / `${name}` / `$1` expansion when it is set,
+/// borrowed where possible: exactly what [`expand`] returns for it, and
+/// without side effects. `None` for any other expression, or an unset
+/// parameter (which [`expand`] handles, `set -u` included).
+pub(super) fn set_scalar_value<'a>(env: &'a ShellEnv, param: &ParamExpr) -> Option<Cow<'a, str>> {
+    match param {
+        ParamExpr::Simple(name) => lookup_var(env, name),
+        ParamExpr::Positional(n) if *n > 0 => env
+            .vars
+            .positional_params()
+            .get(n - 1)
+            .map(|s| Cow::Borrowed(s.as_str())),
+        _ => None,
+    }
 }
 
 /// `lookup_var` for the expansion forms that `set -u` covers beyond a
@@ -297,13 +325,12 @@ pub(super) fn lookup_var(env: &ShellEnv, name: &str) -> Option<String> {
 /// error and yields `Err(())` so the caller skips the rest of the
 /// expansion (no pattern side effects). `@`/`*` stay exempt, as for
 /// bare `$@`.
-fn lookup_var_nounset(env: &mut ShellEnv, name: &str) -> Result<Option<String>, ()> {
-    let val = lookup_var(env, name);
-    if val.is_none() && env.mode.options.nounset && !matches!(name, "@" | "*") {
+fn lookup_var_nounset<'a>(env: &'a mut ShellEnv, name: &str) -> Result<Option<Cow<'a, str>>, ()> {
+    if env.mode.options.nounset && !matches!(name, "@" | "*") && lookup_var(env, name).is_none() {
         expansion_error(env, format_args!("{}: parameter not set", name));
         return Err(());
     }
-    Ok(val)
+    Ok(lookup_var(env, name))
 }
 
 /// True when `name` denotes a positional or special parameter, which
@@ -316,7 +343,7 @@ pub(super) fn is_unassignable_param(name: &str) -> bool {
             .is_some_and(|b| b == b'_' || b.is_ascii_alphabetic())
 }
 
-pub(super) fn is_unset_or_null_inner(val: &Option<String>, null_check: bool) -> bool {
+pub(super) fn is_unset_or_null_inner(val: Option<&str>, null_check: bool) -> bool {
     match val {
         None => true,
         Some(v) if null_check && v.is_empty() => true,
@@ -460,6 +487,40 @@ mod tests {
 
     fn make_env() -> ShellEnv {
         ShellEnv::new("yosh", vec![])
+    }
+
+    #[test]
+    fn set_scalar_value_agrees_with_expand() {
+        let mut env = ShellEnv::new("yosh", vec!["p1".to_string(), String::new()]);
+        env.vars.set("x", "val").unwrap();
+        env.vars.set("empty", "").unwrap();
+        env.exec.lineno = 7;
+        let simple = |n: &str| ParamExpr::Simple(n.to_string());
+        for p in [
+            simple("x"),
+            simple("empty"),
+            simple("LINENO"),
+            simple("1"),
+            simple("01"),
+            simple("0"),
+            simple("?"),
+            ParamExpr::Positional(1),
+            ParamExpr::Positional(2),
+        ] {
+            let got = set_scalar_value(&env, &p).map(Cow::into_owned);
+            assert_eq!(got, Some(expand(&mut env, &p).unwrap()), "{p:?}");
+        }
+        // Unset or other forms take the general path (`set -u` there).
+        for p in [
+            simple("unset"),
+            simple("3"),
+            ParamExpr::Positional(0),
+            ParamExpr::Positional(3),
+            ParamExpr::Length("x".to_string()),
+            ParamExpr::Special(SpecialParam::Question),
+        ] {
+            assert_eq!(set_scalar_value(&env, &p), None, "{p:?}");
+        }
     }
 
     // ── PATH cache invalidation through ${PATH:=word} (SP2) ──
