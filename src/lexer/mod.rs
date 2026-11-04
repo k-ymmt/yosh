@@ -482,6 +482,33 @@ mod tests {
     }
 
     #[test]
+    fn dollar_single_quote_control_backslash_takes_both_backslashes() {
+        // POSIX §2.2.4: `\c\\` is control-backslash (0x1c); the second
+        // backslash must not escape the closing quote.
+        let tokens = tokenize("$'\\c\\\\x'");
+        assert_eq!(
+            tokens,
+            vec![Token::Word(Word {
+                parts: vec![WordPart::DollarSingleQuoted("\x1cx".to_string())],
+            })]
+        );
+    }
+
+    #[test]
+    fn dollar_single_quote_nul_escape_truncates() {
+        // A NUL-yielding escape discards the rest of the string (bash).
+        for src in ["$'a\\0b'", "$'a\\x00b'", "$'a\\c@b'", "$'a\\000\\x41'"] {
+            assert_eq!(
+                tokenize(src),
+                vec![Token::Word(Word {
+                    parts: vec![WordPart::DollarSingleQuoted("a".to_string())],
+                })],
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
     fn test_mixed_quoting_in_word() {
         let tokens = tokenize("he\"ll\"o");
         assert_eq!(tokens.len(), 1);

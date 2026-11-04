@@ -149,10 +149,16 @@ impl Lexer {
                     }
                     b'c' => {
                         self.advance();
-                        // \cX — control character
+                        // \cX — control character. The control-backslash
+                        // is spelled `\c\\` (POSIX §2.2.4): both
+                        // backslashes belong to the escape, so the second
+                        // one cannot escape the closing quote.
                         if !self.at_end() {
                             let ctrl = self.current_byte();
                             self.advance();
+                            if ctrl == b'\\' && !self.at_end() && self.current_byte() == b'\\' {
+                                self.advance();
+                            }
                             bytes.push(ctrl & 0x1f);
                         }
                     }
@@ -181,6 +187,13 @@ impl Lexer {
             } else {
                 self.push_current_char_bytes(&mut bytes)?;
             }
+        }
+        // An escape that yields a NUL byte (`\0`, `\x00`, `\c@`) ends the
+        // string: POSIX §2.2.4 lets the NUL and everything after it up to
+        // the closing quote be discarded, which is what bash does. A NUL
+        // cannot be passed in an argument or the environment anyway.
+        if let Some(nul) = bytes.iter().position(|&b| b == 0) {
+            bytes.truncate(nul);
         }
         Ok(WordPart::DollarSingleQuoted(
             crate::byteenc::encode_bytes(&bytes).into_owned(),
