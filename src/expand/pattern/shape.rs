@@ -10,6 +10,7 @@ use super::{PatternToken, parse_pattern};
 /// chars and `\x` escapes — no `*`, `?`, or `[...]`) qualify; anything else
 /// falls back to `General` so behavior for bracket/`?`-bearing patterns is
 /// unchanged.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub(crate) enum PatternShape {
     /// No metacharacters at all — an exact literal string.
     Literal(String),
@@ -25,7 +26,46 @@ pub(crate) enum PatternShape {
 }
 
 /// Classify `pat`'s shape for fast-path dispatch. See `PatternShape`.
+///
+/// Scans `pat` directly instead of building the token vector that
+/// [`classify_tokens`] (the reference) works on: a pattern with a `[`
+/// (a bracket expression, or a literal `[` when malformed) takes the
+/// reference path; otherwise `\x` is the literal `x`, a `?` makes the
+/// pattern `General`, and at most one `*` may stand at either end.
 pub(crate) fn classify(pat: &str) -> PatternShape {
+    if pat.contains('[') {
+        return classify_tokens(pat);
+    }
+    let mut lit = String::with_capacity(pat.len());
+    // Token index of the only `*`, and the number of tokens so far.
+    let mut star_at = None;
+    let mut ntokens = 0;
+    let mut chars = pat.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                if star_at.is_some() {
+                    return PatternShape::General;
+                }
+                star_at = Some(ntokens);
+            }
+            '?' => return PatternShape::General,
+            '\\' => lit.push(chars.next().unwrap_or('\\')),
+            c => lit.push(c),
+        }
+        ntokens += 1;
+    }
+    match star_at {
+        None => PatternShape::Literal(lit),
+        Some(0) => PatternShape::StarThenLiteral(lit),
+        Some(i) if i + 1 == ntokens => PatternShape::LiteralThenStar(lit),
+        Some(_) => PatternShape::General,
+    }
+}
+
+/// `classify` over the parsed pattern tokens: the reference
+/// implementation, used for patterns with a `[`.
+fn classify_tokens(pat: &str) -> PatternShape {
     let tokens = parse_pattern(pat);
     let Some(lit) = literal_run(&tokens) else {
         return PatternShape::General;
@@ -71,4 +111,21 @@ fn literal_run(tokens: &[PatternToken]) -> Option<String> {
         }
     }
     Some(lit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_scan_matches_token_reference() {
+        let pats = [
+            "", "*", "**", "?", "a", "abc", "*a", "a*", "*ab*", "a*b", ".*", "*/", r"\*", r"\*a",
+            r"a\*", r"*\*", r"\?", r"\", r"a\", r"\\", r"\\*", r"*\", "a?b", "*?", "日本*", "*語",
+            "[ab]", "a[b", "*[x]", "[", r"\[a*", "a]*", "]", "*a*", r"\**", r"*a\",
+        ];
+        for pat in pats {
+            assert_eq!(classify(pat), classify_tokens(pat), "pattern {pat:?}");
+        }
+    }
 }
