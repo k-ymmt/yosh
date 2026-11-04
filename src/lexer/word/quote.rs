@@ -1,6 +1,7 @@
 //! Quoting: `'...'`, `"..."`, backslash escapes, and `$'...'`.
 
 use super::super::Lexer;
+use super::super::scanner::SQUOTED_PLAIN;
 use crate::error::{self, ParseErrorKind, ShellError};
 use crate::parser::ast::WordPart;
 
@@ -31,7 +32,7 @@ impl Lexer {
                 if lx.current_byte() == b'\'' {
                     break;
                 }
-                lx.push_current_char(&mut content)?;
+                lx.push_plain_run(&mut content, &SQUOTED_PLAIN)?;
             }
             Ok(content)
         })?;

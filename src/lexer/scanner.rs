@@ -2,6 +2,54 @@ use super::Lexer;
 use super::token::{Span, SpannedToken, Token};
 use crate::error::{self, ParseErrorKind, ShellError};
 
+/// A set of bytes that `Lexer::push_plain_run` may copy in bulk into a
+/// literal: bytes the word loops would otherwise push one at a time as
+/// ordinary characters. A set holds only ASCII bytes other than `\` and
+/// newline (checked at compile time when the set is built).
+pub(crate) struct PlainBytes([bool; 256]);
+
+impl PlainBytes {
+    /// Every printable non-blank ASCII byte, plus `extra`, minus `stop`.
+    const fn new(extra: &[u8], stop: &[u8]) -> Self {
+        let mut set = [false; 256];
+        let mut b = 0x21;
+        while b <= 0x7e {
+            set[b] = true;
+            b += 1;
+        }
+        let mut i = 0;
+        while i < extra.len() {
+            set[extra[i] as usize] = true;
+            i += 1;
+        }
+        let mut i = 0;
+        while i < stop.len() {
+            set[stop[i] as usize] = false;
+            i += 1;
+        }
+        assert!(!set[b'\\' as usize] && !set[b'\n' as usize]);
+        let mut b = 0x80;
+        while b < 256 {
+            assert!(!set[b]);
+            b += 1;
+        }
+        PlainBytes(set)
+    }
+}
+
+/// Ordinary bytes of an unquoted word: not a metacharacter or blank, a
+/// quote, `\`, `$` or `` ` ``, and not `}` (which ends the word of a
+/// `${x-word}` expansion).
+pub(crate) static UNQUOTED_PLAIN: PlainBytes = PlainBytes::new(&[], b"|&;()<>'\"\\$`}");
+
+/// Ordinary bytes inside double quotes, where blanks and metacharacters
+/// are literal: all but `"`, `\`, `$`, `` ` `` and `}`.
+pub(crate) static DQUOTED_PLAIN: PlainBytes = PlainBytes::new(b" \t", b"\"\\$`}");
+
+/// Ordinary bytes inside single quotes: all but the closing `'` (and,
+/// as in every set, `\` and newline, which take the per-byte path).
+pub(crate) static SQUOTED_PLAIN: PlainBytes = PlainBytes::new(b" \t", b"'\\");
+
 impl Lexer {
     pub(crate) fn at_end(&self) -> bool {
         self.pos >= self.input.len()
@@ -11,14 +59,16 @@ impl Lexer {
         if self.at_end() {
             0
         } else {
-            self.input[self.pos]
+            self.input.as_bytes()[self.pos]
         }
     }
 
     /// True when `input[i..]` starts with a `\<newline>` line continuation.
     #[inline]
     fn is_line_continuation_at(&self, i: usize) -> bool {
-        i + 1 < self.input.len() && self.input[i] == b'\\' && self.input[i + 1] == b'\n'
+        i + 1 < self.input.len()
+            && self.input.as_bytes()[i] == b'\\'
+            && self.input.as_bytes()[i + 1] == b'\n'
     }
 
     /// Index of the first byte at or after `i` that is not part of a
@@ -40,13 +90,13 @@ impl Lexer {
     /// `\` with `advance_raw`).
     pub(crate) fn peek_byte(&self) -> u8 {
         let i = self.logical_index(self.pos + 1);
-        self.input.get(i).copied().unwrap_or(0)
+        self.input.as_bytes().get(i).copied().unwrap_or(0)
     }
 
     pub(crate) fn peek_byte2(&self) -> u8 {
         let i = self.logical_index(self.pos + 1);
         let j = self.logical_index(i + 1);
-        self.input.get(j).copied().unwrap_or(0)
+        self.input.as_bytes().get(j).copied().unwrap_or(0)
     }
 
     /// Consume one byte WITHOUT removing a following `\<newline>`.
@@ -115,7 +165,7 @@ impl Lexer {
             .checked_add(len)
             .filter(|end| *end <= self.input.len())
             .ok_or_else(|| self.invalid_utf8_error())?;
-        let s = std::str::from_utf8(&self.input[self.pos..end])
+        let s = std::str::from_utf8(&self.input.as_bytes()[self.pos..end])
             .map_err(|_| self.invalid_utf8_error())?;
         let ch = s.chars().next().ok_or_else(|| self.invalid_utf8_error())?;
         Ok((ch, len))
@@ -136,6 +186,37 @@ impl Lexer {
     pub(crate) fn push_current_char(&mut self, out: &mut String) -> error::Result<()> {
         let ch = self.advance_char()?;
         out.push(ch);
+        Ok(())
+    }
+
+    /// Append the current character to `out` like `push_current_char`,
+    /// together with the run of bytes after it that `plain` accepts, in
+    /// one slice copy instead of one `advance` per byte.
+    ///
+    /// `plain` only accepts ASCII bytes other than `\` and newline (see
+    /// [`PlainBytes`]): each advances the column by one, a `\<newline>`
+    /// line continuation can only follow the last byte of the run, and
+    /// the run starts and ends on character boundaries. A byte `plain`
+    /// rejects (or a non-ASCII character) ends the run, and the caller's
+    /// loop classifies it as before.
+    #[inline]
+    pub(crate) fn push_plain_run(
+        &mut self,
+        out: &mut String,
+        plain: &PlainBytes,
+    ) -> error::Result<()> {
+        let rest = &self.input.as_bytes()[self.pos..];
+        let n = rest
+            .iter()
+            .position(|&b| !plain.0[b as usize])
+            .unwrap_or(rest.len());
+        if n == 0 {
+            return self.push_current_char(out);
+        }
+        out.push_str(&self.input[self.pos..self.pos + n]);
+        self.pos += n;
+        self.column += n;
+        self.skip_line_continuations();
         Ok(())
     }
 

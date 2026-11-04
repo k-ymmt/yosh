@@ -55,7 +55,7 @@ pub struct PendingHereDoc {
 pub struct Lexer {
     /// Shared so a `$(...)` body can be parsed by a sub-lexer over the
     /// same buffer without copying the rest of the input.
-    input: Rc<[u8]>,
+    input: Rc<str>,
     pos: usize,
     line: usize,
     column: usize,
@@ -117,13 +117,13 @@ fn is_name_char(ch: u8) -> bool {
 
 impl Lexer {
     pub fn new(input: &str) -> Self {
-        Self::over(Rc::from(input.as_bytes()))
+        Self::over(Rc::from(input))
     }
 
     /// A lexer at the start of `input`, with no aliases, no pending
     /// here-documents and no nesting.
     #[inline]
-    fn over(input: Rc<[u8]>) -> Self {
+    fn over(input: Rc<str>) -> Self {
         Lexer {
             input,
             pos: 0,
@@ -214,7 +214,8 @@ impl Lexer {
     /// `position`). Used to recover the literal text of a here-document
     /// delimiter word.
     pub(crate) fn source_text(&self, start: usize, end: usize) -> String {
-        String::from_utf8_lossy(&self.input[start.min(end)..end.min(self.input.len())]).into_owned()
+        String::from_utf8_lossy(&self.input.as_bytes()[start.min(end)..end.min(self.input.len())])
+            .into_owned()
     }
 
     /// Replace the alias table (used when a persistent parser reads a

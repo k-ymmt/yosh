@@ -187,7 +187,7 @@ impl Lexer {
         self.advance(); // consume '$', now at '('
         let (_, body) = self.parse_command_sub()?;
         out.push_str("$(");
-        out.push_str(&String::from_utf8_lossy(&self.input[body]));
+        out.push_str(&String::from_utf8_lossy(&self.input.as_bytes()[body]));
         out.push(')');
         Ok(())
     }

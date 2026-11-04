@@ -92,7 +92,7 @@ impl Lexer {
                 return Err(unterminated());
             }
             let ch = self.current_byte();
-            let next = self.input.get(self.pos + 1).copied();
+            let next = self.input.as_bytes().get(self.pos + 1).copied();
             let top = stack
                 .last_mut()
                 .expect("scanner context stack is never empty");

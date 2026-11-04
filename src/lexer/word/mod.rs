@@ -9,6 +9,7 @@ mod quote;
 mod tilde;
 
 use super::Lexer;
+use super::scanner::{DQUOTED_PLAIN, UNQUOTED_PLAIN};
 use super::token::{SpannedToken, Token};
 use crate::error::{self, ParseErrorKind, ShellError};
 use crate::parser::ast::{Word, WordPart};
@@ -97,7 +98,7 @@ impl Lexer {
                         parts.push(part);
                     }
                     _ => {
-                        self.push_current_char(&mut literal)?;
+                        self.push_plain_run(&mut literal, &DQUOTED_PLAIN)?;
                     }
                 }
             } else {
@@ -147,7 +148,7 @@ impl Lexer {
                         }
                     }
                     _ => {
-                        self.push_current_char(&mut literal)?;
+                        self.push_plain_run(&mut literal, &UNQUOTED_PLAIN)?;
                     }
                 }
             }
@@ -483,6 +484,71 @@ mod tests {
                 }
             )])]
         );
+    }
+
+    /// `(line, column)` of every token of `input`.
+    fn token_spans(input: &str) -> Vec<(usize, usize)> {
+        let mut lexer = Lexer::new(input);
+        let mut out = Vec::new();
+        loop {
+            let t = lexer.next_token().unwrap();
+            if t.token == crate::lexer::token::Token::Eof {
+                break;
+            }
+            out.push((t.span.line, t.span.column));
+        }
+        out
+    }
+
+    // Boundaries of the bulk copy of plain byte runs (`push_plain_run`).
+    #[test]
+    fn plain_runs_end_at_every_special_byte() {
+        assert_eq!(parts("ab\\\ncd~e"), vec![lit("abcd~e")]);
+        assert_eq!(parts("a}b{c=d#e!f*?[g]"), vec![lit("a}b{c=d#e!f*?[g]")]);
+        assert_eq!(
+            parts("\"a}b c|d;\tx\""),
+            vec![WordPart::DoubleQuoted(vec![lit("a}b c|d;\tx")])]
+        );
+        assert_eq!(
+            parts("\"ab\\\ncd\""),
+            vec![WordPart::DoubleQuoted(vec![lit("abcd")])]
+        );
+        assert_eq!(
+            parts("'a\\b c\\\nd'"),
+            vec![WordPart::SingleQuoted("a\\b c\\\nd".to_string())]
+        );
+        assert_eq!(parts("aé日b c"), vec![lit("aé日b")]);
+        assert_eq!(
+            parts("${x:-a b|c}"),
+            vec![WordPart::Parameter(ParamExpr::Default {
+                name: "x".to_string(),
+                word: Some(word(vec![lit("a b|c")])),
+                null_check: true,
+            })]
+        );
+        assert_eq!(
+            parts("ab$x\"c\"d"),
+            vec![
+                lit("ab"),
+                WordPart::Parameter(ParamExpr::Simple("x".to_string())),
+                WordPart::DoubleQuoted(vec![lit("c")]),
+                lit("d"),
+            ]
+        );
+    }
+
+    #[test]
+    fn plain_runs_keep_line_and_column() {
+        assert_eq!(
+            token_spans("hello   world \"a b\" 'c d' e"),
+            vec![(1, 1), (1, 9), (1, 15), (1, 21), (1, 27)]
+        );
+        assert_eq!(token_spans("'a\nbc' d"), vec![(1, 1), (2, 5)]);
+        assert_eq!(token_spans("日本 x"), vec![(1, 1), (1, 4)]);
+        assert_eq!(token_spans("ab\\\ncd e"), vec![(1, 1), (2, 4)]);
+        let e = parse_err("abc${x");
+        let loc = e.location.expect("param error carries a location");
+        assert_eq!((loc.line, loc.column), (1, 5));
     }
 
     #[test]
