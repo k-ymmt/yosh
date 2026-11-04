@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
 
-use super::disposition::{default_signal, ignore_signal};
+use super::disposition::{default_signal, ignore_signal, note_disposition_change};
 use super::self_pipe::self_pipe_action;
 
 /// Set up job control signals for the shell process itself.
@@ -19,6 +19,7 @@ pub fn init_job_control_signals() {
 
     // Register SIGCHLD handler via self-pipe
     let sa = self_pipe_action(true);
+    note_disposition_change(libc::SIGCHLD);
     let sig = Signal::try_from(libc::SIGCHLD).expect("SIGCHLD is valid");
     unsafe {
         sigaction(sig, &sa).expect("sigaction(SIGCHLD) failed");
@@ -95,6 +96,7 @@ pub fn wait_until_foreground() -> bool {
         SaFlags::SA_RESTART,
         SigSet::empty(),
     );
+    note_disposition_change(libc::SIGCONT);
     // SAFETY: installing an async-signal-safe flag handler (atomic
     // store only); the previous disposition is restored below.
     let old_cont =
@@ -134,6 +136,7 @@ fn wait_until_foreground_loop() -> bool {
                 // job-controlling parent, which would otherwise turn
                 // this stop into a busy spin.
                 let dfl = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+                note_disposition_change(libc::SIGTTIN);
                 // SAFETY: installing/restoring plain dispositions for
                 // SIGTTIN; no handler code is involved.
                 let old = unsafe { sigaction(Signal::SIGTTIN, &dfl) }

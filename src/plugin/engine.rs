@@ -90,6 +90,9 @@ impl PluginManager {
     /// (called at the top of `load_one`). Idempotent.
     pub(super) fn ensure_engine(&mut self) {
         if self.engine.is_none() {
+            // wasmtime installs its own trap handlers (SEGV/BUS/ILL/FPE):
+            // forked children must reset every signal again.
+            crate::signal::assume_all_dispositions_changed();
             let engine = Self::build_engine();
             self.tick_thread = Some(TickThread::spawn(engine.clone()));
             self.engine = Some(engine);

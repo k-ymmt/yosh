@@ -29,6 +29,11 @@ static INTERACTIVE_SHELL: AtomicBool = AtomicBool::new(false);
 /// could matter to them.
 pub fn set_interactive_shell(on: bool) {
     INTERACTIVE_SHELL.store(on, Ordering::Release);
+    if on {
+        // The line editor's terminal library installs its own handlers
+        // (SIGWINCH): children must reset every signal again.
+        super::disposition::assume_all_dispositions_changed();
+    }
 }
 
 /// Returns `true` if a SIGHUP or SIGTERM has been received since the last
@@ -154,6 +159,7 @@ pub fn init_signal_handling() {
                 continue;
             }
 
+            super::disposition::note_disposition_change(num);
             let sig = Signal::try_from(num).expect("invalid signal number in HANDLED_SIGNALS");
             let sa = if num == libc::SIGHUP || num == libc::SIGTERM {
                 &sa_no_restart

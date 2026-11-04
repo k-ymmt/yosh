@@ -21,7 +21,10 @@ pub use child::{
     reset_child_signals, reset_shell_child_signals, setup_background_shell_child_signals,
     setup_foreground_child_signals, setup_foreground_shell_child_signals, spawn_default_sigset,
 };
-pub use disposition::{TrapDisposition, apply_trap_disposition, default_signal};
+pub use disposition::{
+    TrapDisposition, apply_trap_disposition, assume_all_dispositions_changed, default_signal,
+    note_disposition_change,
+};
 pub use entry::{ignored_on_entry_set_opt, is_ignored_on_entry};
 pub use job_control::{
     init_job_control_signals, reset_job_control_signals, try_enable_monitor_mode,

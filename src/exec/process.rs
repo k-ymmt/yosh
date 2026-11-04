@@ -131,6 +131,7 @@ pub(crate) fn shell_exit_by_signal(sig: i32) -> ! {
     let _ = std::io::stderr().flush();
     // SAFETY: plain sigaction / sigprocmask / raise calls on a valid
     // signal number with zero-initialized C structs.
+    crate::signal::note_disposition_change(sig);
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = libc::SIG_DFL;

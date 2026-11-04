@@ -1,10 +1,57 @@
 //! Signal disposition primitives and the trap builtin's OS-level
 //! disposition install.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
 
 use super::self_pipe::self_pipe_action;
 use super::table::HANDLED_SIGNALS;
+
+/// Bit `n` set: this process may have changed the disposition of
+/// signal `n` since it was exec'd. Every disposition install in the
+/// shell calls [`note_disposition_change`] first, so a clear bit means
+/// the signal still has the disposition the process started with —
+/// SIG_IGN when inherited ignored (§2.12), otherwise SIG_DFL (exec
+/// resets caught handlers), or the Rust runtime's SEGV/BUS handler.
+/// That is exactly what the child reset would set, so forked children
+/// only touch the set bits instead of making ~30 sigaction calls per
+/// fork.
+///
+/// Starts with SIGPIPE, which the Rust runtime ignores before `main`.
+/// A forked child inherits a copy, which is what it needs: its
+/// dispositions started as the parent's.
+static CHANGED_DISPOSITIONS: AtomicU64 = AtomicU64::new(1 << libc::SIGPIPE);
+
+/// Set when code outside the shell's control may install handlers (the
+/// interactive line editor's terminal library, the plugin runtime):
+/// children then reset every signal, as before the tracking existed.
+static ALL_DISPOSITIONS_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Record that the disposition of `sig` is about to change. Call before
+/// every `sigaction` that installs something. Async-signal-safe (an
+/// atomic RMW), so fork children may call it.
+pub fn note_disposition_change(sig: i32) {
+    if (0..64).contains(&sig) {
+        CHANGED_DISPOSITIONS.fetch_or(1u64 << sig, Ordering::Relaxed);
+    } else {
+        ALL_DISPOSITIONS_CHANGED.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Treat every signal as possibly changed from here on (see
+/// [`ALL_DISPOSITIONS_CHANGED`]).
+pub fn assume_all_dispositions_changed() {
+    ALL_DISPOSITIONS_CHANGED.store(true, Ordering::Relaxed);
+}
+
+/// Whether `sig` may no longer have the disposition the process
+/// started with (see [`CHANGED_DISPOSITIONS`]).
+pub(super) fn disposition_may_have_changed(sig: i32) -> bool {
+    ALL_DISPOSITIONS_CHANGED.load(Ordering::Relaxed)
+        || !(0..64).contains(&sig)
+        || CHANGED_DISPOSITIONS.load(Ordering::Relaxed) & (1u64 << sig) != 0
+}
 
 /// Query the current disposition of `sig` without changing it
 /// (`sigaction(sig, NULL, &mut old)`). `None` when the query fails.
@@ -17,6 +64,7 @@ pub(super) fn current_disposition(sig: i32) -> Option<libc::sigaction> {
 
 /// Set the disposition of `sig` to SIG_IGN.
 pub fn ignore_signal(sig: i32) {
+    note_disposition_change(sig);
     let signal = Signal::try_from(sig).expect("invalid signal number");
     let sa = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
     unsafe {
@@ -26,6 +74,7 @@ pub fn ignore_signal(sig: i32) {
 
 /// Set the disposition of `sig` to SIG_DFL.
 pub fn default_signal(sig: i32) {
+    note_disposition_change(sig);
     let signal = Signal::try_from(sig).expect("invalid signal number");
     let sa = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
     unsafe {
@@ -82,6 +131,7 @@ pub fn apply_trap_disposition(sig: i32, disposition: TrapDisposition, monitor: b
             }
         }
     };
+    note_disposition_change(sig);
     // SAFETY: installing an async-signal-safe handler or plain
     // disposition; failures (e.g. SIGKILL) are intentionally ignored.
     let _ = unsafe { sigaction(signal, &sa) };

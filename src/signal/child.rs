@@ -4,7 +4,9 @@
 
 use std::collections::HashSet;
 
-use super::disposition::{current_disposition, default_signal, ignore_signal};
+use super::disposition::{
+    current_disposition, default_signal, disposition_may_have_changed, ignore_signal,
+};
 use super::entry::ignored_on_entry_set_opt;
 use super::self_pipe::{close_self_pipe, reinit_self_pipe_after_fork, signal_handler};
 use super::table::catchable_signals;
@@ -30,9 +32,17 @@ fn keeps_ignored(num: i32, ignored: &[i32], entry_set: Option<&HashSet<i32>>) ->
 /// job-control signals in monitor mode — all of those must come back to
 /// SIG_DFL in children unless the user trap-ignored them. Callers that
 /// need job-control exceptions (`setup_*_child_signals`) adjust after.
+///
+/// Signals the process never changed (see
+/// [`disposition_may_have_changed`]) and the user did not trap-ignore
+/// already have exactly that disposition and are skipped: a script's
+/// children then make ~8 sigaction calls instead of ~30.
 fn reset_child_dispositions(ignored: &[i32]) {
     let entry_set = ignored_on_entry_set_opt();
     for num in catchable_signals() {
+        if !disposition_may_have_changed(num) && !ignored.contains(&num) {
+            continue;
+        }
         let keep_ignored = keeps_ignored(num, ignored, entry_set);
         if !keep_ignored
             && (num == libc::SIGSEGV || num == libc::SIGBUS)
