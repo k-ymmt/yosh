@@ -8,9 +8,10 @@
 //!
 //! Only expressions that need no `$`/backquote expansion before parsing
 //! are cached, by their source text (an expanded text such as the
-//! `n + 17` of `$((n + $1))` is typically new on every evaluation), plus
-//! variable values evaluated as expressions (`x=1+2; $((x))`), by their
-//! trimmed text.
+//! `n + 17` of `$((n + $1))` is typically new on every evaluation).
+//! Variable values evaluated as expressions (`x=1+2; $((x))`) always take
+//! the one-pass path: they recurse through each other, and a tree walk
+//! per level would need more native stack than that evaluator.
 //!
 //! Equivalence with the one-pass evaluator: the tree records exactly the
 //! structure that evaluator parses, and [`eval`] visits it in the same
@@ -38,14 +39,21 @@ const MAX_CACHED_TEXT: usize = 256;
 /// Number of distinct texts kept before the cache is emptied.
 const MAX_ENTRIES: usize = 256;
 
+/// Texts nested deeper than this get no tree. The tree walk's frames
+/// differ in size from the one-pass evaluator's, so near the native
+/// stack limit the two could disagree on whether an expression is
+/// "nested too deeply"; deep texts always take the one-pass path, and
+/// shallow ones stay far from any stack limit.
+pub(super) const MAX_CACHED_NEST: u32 = 16;
+
 thread_local! {
     /// Text → its tree, or `None` when it does not parse.
     static CACHE: RefCell<HashMap<Box<str>, Option<Rc<Node>>>> = RefCell::new(HashMap::new());
 }
 
 /// The cached tree for `text`, parsing and caching it on first sight.
-/// `None` when `text` has a syntax error or is too long to cache; the
-/// caller then uses the one-pass evaluator.
+/// `None` when `text` has a syntax error, is too long or nested too
+/// deeply to cache; the caller then uses the one-pass evaluator.
 pub(super) fn lookup(text: &str) -> Option<Rc<Node>> {
     if text.len() > MAX_CACHED_TEXT {
         return None;
@@ -129,6 +137,9 @@ struct Parser<'a> {
     nest: u32,
 }
 
+// Parsing stops (no tree) as soon as `nest` would exceed
+// `MAX_CACHED_NEST`; see `Parser::nested`.
+
 fn parse(text: &str) -> Option<Node> {
     let mut p = Parser {
         input: text.as_bytes(),
@@ -161,7 +172,7 @@ impl Parser<'_> {
     }
 
     fn nested(&mut self, parse: impl FnOnce(&mut Self) -> Option<Node>) -> Option<Node> {
-        if self.nest >= MAX_NEST_DEPTH || descent_stack_exhausted() {
+        if self.nest >= MAX_NEST_DEPTH.min(MAX_CACHED_NEST) || descent_stack_exhausted() {
             return None;
         }
         self.nest += 1;
@@ -708,26 +719,39 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
-                let n = (MAX_NEST_DEPTH - 2) as usize;
+                let n = MAX_CACHED_NEST as usize;
                 let text = format!("{}1{}", "(".repeat(n), ")".repeat(n));
-                let tree = parse(&text).expect("within the limit");
+                let tree = parse(&text).expect("within the cache limit");
                 let mut env = fresh_env();
                 assert_eq!(eval(&mut env, &tree, 0, 0), Ok(1));
-                let got = eval(&mut env, &tree, 0, 3);
-                let mut pass = ArithParser {
-                    input: text.as_bytes(),
-                    pos: 0,
-                    env: &mut env,
-                    depth: 0,
-                    nest: 3,
-                    noeval: false,
-                };
-                assert_eq!(got, pass.eval_full());
-                assert!(got.is_err());
+                let edge = MAX_NEST_DEPTH - MAX_CACHED_NEST;
+                for base in [edge, edge + 1] {
+                    let got = eval(&mut env, &tree, 0, base);
+                    let mut pass = ArithParser {
+                        input: text.as_bytes(),
+                        pos: 0,
+                        env: &mut env,
+                        depth: 0,
+                        nest: base,
+                        noeval: false,
+                    };
+                    assert_eq!(got, pass.eval_full(), "base {base}");
+                }
+                assert!(eval(&mut env, &tree, 0, edge + 1).is_err());
             })
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn deeply_nested_texts_get_no_tree() {
+        // Deep texts take the one-pass path, whose stack use is the
+        // reference for the "nested too deeply" limit.
+        let n = MAX_CACHED_NEST as usize;
+        assert!(parse(&format!("{}1{}", "(".repeat(n), ")".repeat(n))).is_some());
+        assert!(parse(&format!("{}1{}", "(".repeat(n + 1), ")".repeat(n + 1))).is_none());
+        assert!(parse(&format!("{}1", "!".repeat(n + 1))).is_none());
     }
 
     #[test]

@@ -222,32 +222,43 @@
       disposition, so yosh assumes not-ignored and restores SIG_DFL
       (`src/signal.rs::capture_ignored_on_entry`). Revisit if std
       stabilizes `unix_sigpipe` / `-Zon-broken-pipe`.
-- [ ] Perf follow-ups (re-measured 2026-11-04 after the round-1 perf
-      pass with `scripts/perf/compare_shells.py --no-plugins`; every
-      interpreter-bound workload now runs at 0.2–0.9× dash's wall time,
-      so these are low priority):
-  - [ ] Startup: `yosh -c :` takes 3.7 ms vs dash 1.7 ms, all before
-        `main` (`--version` alone is 3.6 ms). Linking CoreFoundation
-        costs ~0.77 ms per launch (iana-time-zone ← cap-time-ext ←
-        wasmtime-wasi, and rustls-platform-verifier ← ureq ←
-        yosh-plugin-manager); the 15.9 MB binary costs ~1 ms more. This
-        is essentially the whole remaining gap on `heredoc_big` (1.10×),
-        `ifs_split_big` (1.08×) and `glob_dir` (1.06×), which are
-        otherwise bound by per-byte pipe reads and open/readdir calls.
-  - [ ] Arithmetic expressions are re-lexed and re-parsed on every
-        evaluation; the parser is ~17% of `arith_loop` — an AST cache
-        would help hot loops (`src/expand/arith.rs`).
-  - [ ] Variable lookups still allocate once per expansion; a
-        `Cow<str>` return would avoid it (small payoff now;
-        `src/env/vars.rs`, `src/expand/param.rs`).
+- [ ] Perf follow-ups (round-2 perf pass 2026-11-04; measured under
+      load average 100-350, so only interleaved A/B instruction counts
+      and child CPU are trustworthy; release builds now use thin LTO,
+      so compare against LTO baselines):
+  - [ ] Startup: `yosh -c :` executes ~27M instructions vs dash ~9M
+        (peak RSS 3.3 MB vs 1.1 MB) after thin LTO and
+        `-dead_strip_dylibs` stopped linking CoreFoundation/Security;
+        the rest is binary size and dyld fixups.
+  - [ ] `yosh -c 'cmd'` does not exec its last simple command in place
+        as dash does (one extra fork+wait per `-c` invocation).
+  - [ ] Fork children call sigaction ~30 times in
+        `reset_child_dispositions` (~2% of a fork); tracking which
+        signals the shell changed would skip most of them.
+  - [ ] Variable lookups still allocate once per expansion; only
+        `${#x}` and the strip forms clone the whole value now
+        (`src/env/vars.rs`, `src/expand/param.rs`).
   - [ ] `posix_spawn` is used only for external commands without
-        redirections or monitor mode (2026-11-04); commands with
-        redirections would need spawn file actions replicating
-        `RedirectState` (heredocs, fd saves, noclobber)
+        redirections or monitor mode. Commands with redirections would
+        need parent-side opens (noclobber `O_EXCL` cannot be redone),
+        temp-fd/target collision handling, `>&-` via addclose (EBADF on
+        macOS) and a child to report errors; `redir_external` is
+        already 0.93x dash, so the risk outweighs the payoff
         (`src/exec/simple/external.rs`).
-  - [ ] Parse speed: 4000 plain function definitions parse in ~31 ms
-        vs dash ~11 ms (byte-by-byte pushes in the lexer, Vec growth;
+  - [ ] Parse speed: 4000 plain function definitions cost ~52 ms CPU
+        vs dash ~15 ms (byte-by-byte pushes in the lexer, Vec growth;
         `src/lexer/word/`).
+  - [ ] `RedirectState::new`/`unwind`/`Drop` touch the thread-local
+        saved-fd stack several times per command even with no
+        redirections (~3% of `func_call`); skip when the list is empty
+        (`src/exec/redirect.rs`).
+  - [ ] `Parser::snapshot` clones WordParts (~2% of `eval_loop`), the
+        script loop builds a `source_text` String per command even
+        without `set -v`, and `stack_guard::stack_limit`'s thread-local
+        access is ~1% (`src/parser/`, `src/exec/mod.rs`,
+        `src/exec/stack_guard.rs`).
+  - [ ] Still within 3% of the round-1 baseline but not recovered:
+        `read_loop` +2.8%, `echo_output` and `param_expand` ~+2%.
 
 ## 2026-11-04 Bug-fix Round 1: Deferrals and Decisions
 
@@ -348,6 +359,15 @@
       unterminated here-document at the end of a `$(...)` body is an
       error in yosh and dash, accepted by bash (backquote bodies accept
       it).
+- [ ] `command -v` and `type` print a non-UTF-8 path through
+      `to_string_lossy`, so its bytes come out as U+FFFD
+      (`src/builtin/command.rs`, `src/builtin/resolve.rs`).
+- DECISION: a sole external command in a pipeline member, `( )` or
+  `$( )` now replaces the forked child (exec in place, as dash and bash
+  do). Its parent pid is the shell, and a member with its own stdin
+  redirection no longer keeps the pipe's read end open in a wrapper, so
+  an upstream writer can get SIGPIPE earlier (status 141 under
+  `pipefail`, matching bash).
 
 ## History: Known Limitations
 

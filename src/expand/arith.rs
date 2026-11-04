@@ -777,8 +777,12 @@ fn eval_var_value(
             name
         )));
     }
-    // A variable's value is usually a constant expression (`x=1+2`).
-    eval_text(env, trimmed, depth + 1, nest, true)
+    // Never from a cached tree: values recurse through each other
+    // (`v0='1 && v1'`, …), and stacking tree walks per level would use
+    // more native stack than the one-pass evaluator, so only the
+    // outermost text — at most `cache::MAX_CACHED_NEST` levels — is
+    // walked from a tree.
+    eval_text(env, trimmed, depth + 1, nest, false)
 }
 
 /// Store an arithmetic assignment's result. LINENO is a computed
