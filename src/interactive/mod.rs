@@ -124,7 +124,6 @@ impl Repl {
                 let _ = executor.env.vars.set(name, default);
             }
         }
-        let histfile = executor.env.vars.get("HISTFILE").unwrap_or("").to_string();
 
         // POSIX XCU §2.5.3: PS1 and PS2 have default values for
         // interactive shells. Set them as real variables so observers
@@ -141,15 +140,6 @@ impl Repl {
         }
         if executor.env.vars.get("PS2").is_none() {
             let _ = executor.env.vars.set("PS2", "> ");
-        }
-
-        // Load history from file
-        if !histfile.is_empty() {
-            executor.env.history.load(std::path::Path::new(&histfile));
-            // An inherited HISTSIZE bounds the loaded list too (bash:
-            // HISTSIZE=0 starts with an empty history).
-            let (histsize, _) = history::history_settings(&executor.env.vars);
-            executor.env.history.trim_to(histsize);
         }
 
         // Load plugins
@@ -192,6 +182,19 @@ impl Repl {
             {
                 eprintln!("yosh: {}: No such file or directory", path);
             }
+        }
+
+        // Load history from file. After the startup files, as bash does,
+        // so a HISTFILE / HISTSIZE set in ~/.yoshrc or $ENV governs which
+        // file is read and how much of it is kept, not only where the
+        // history is saved at exit.
+        let histfile = executor.env.vars.get("HISTFILE").unwrap_or("").to_string();
+        if !histfile.is_empty() {
+            executor.env.history.load(std::path::Path::new(&histfile));
+            // HISTSIZE bounds the loaded list too (bash: HISTSIZE=0
+            // starts with an empty history).
+            let (histsize, _) = history::history_settings(&executor.env.vars);
+            executor.env.history.trim_to(histsize);
         }
 
         let spec_store = SpecStore::from_home(&home);

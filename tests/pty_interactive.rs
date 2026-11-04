@@ -2366,6 +2366,36 @@ fn test_pty_exit_in_yoshrc_exits_before_first_prompt() {
     );
 }
 
+/// A HISTFILE set in ~/.yoshrc names the file the history is loaded
+/// from (bash reads the history after its startup files); it used to be
+/// honoured only for saving at exit.
+#[test]
+fn test_pty_histfile_set_in_yoshrc_is_loaded() {
+    let home = helpers::TempDir::new();
+    let hf = home.path().join("rc_hist");
+    std::fs::write(&hf, "echo from_rc_hist_$((40+2))\n").unwrap();
+    std::fs::write(
+        home.path().join(".yoshrc"),
+        format!("HISTFILE='{}'\n", hf.display()),
+    )
+    .unwrap();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_yosh"));
+    cmd.env("TERM", "dumb");
+    cmd.env("HOME", home.path());
+    let mut s = expectrl::Session::spawn(cmd).expect("failed to spawn yosh");
+    s.set_expect_timeout(Some(TIMEOUT));
+    wait_for_prompt(&mut s);
+    s.send("\x1b[A").unwrap();
+    s.send("\r").unwrap();
+    expect_output(
+        &mut s,
+        "from_rc_hist_42",
+        "history from the rc-file HISTFILE was not loaded",
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
 #[test]
 fn test_pty_inherited_history_vars_kept() {
     let work = helpers::TempDir::new();

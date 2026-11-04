@@ -2,39 +2,53 @@ use unicode_width::UnicodeWidthChar;
 
 /// Strip ANSI escape sequences from a string.
 ///
-/// Handles CSI sequences (`\x1b[...X` where X is the final byte 0x40-0x7E)
-/// and OSC sequences (`\x1b]...ST`).
+/// Handles CSI sequences (`\x1b[...X` where X is the final byte 0x40-0x7E),
+/// the string sequences OSC (`\x1b]...`), DCS, SOS, PM and APC (ended by
+/// BEL or ST), and the other ECMA-48 escapes: intermediate bytes
+/// (0x20-0x2F) followed by one final byte (0x30-0x7E), such as the
+/// `\x1b(B` charset designation `tput sgr0` emits, or a lone final byte
+/// (`\x1b7`, `\x1b=`). Leaving any of those in would count their
+/// printable bytes as prompt columns and misplace the cursor.
 pub fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            match chars.peek() {
-                Some('[') => {
-                    chars.next();
-                    while let Some(&c) = chars.peek() {
-                        chars.next();
-                        if (0x40..=0x7E).contains(&(c as u32)) {
-                            break;
-                        }
-                    }
-                }
-                Some(']') => {
-                    chars.next();
-                    while let Some(c) = chars.next() {
-                        if c == '\x07' {
-                            break;
-                        }
-                        if c == '\x1b' && chars.peek() == Some(&'\\') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        } else {
+        if ch != '\x1b' {
             result.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some('[') => {
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    chars.next();
+                    if (0x40..=0x7E).contains(&(c as u32)) {
+                        break;
+                    }
+                }
+            }
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(&c) if (0x20..=0x7E).contains(&(c as u32)) => {
+                // Intermediates, then the final byte.
+                while let Some(&c) = chars.peek() {
+                    chars.next();
+                    if !(0x20..=0x2F).contains(&(c as u32)) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
         }
     }
     result
@@ -84,6 +98,16 @@ mod tests {
             strip_ansi("\x1b[34m~/proj\x1b[0m \x1b[32m\u{e0a0} main\x1b[0m"),
             "~/proj \u{e0a0} main"
         );
+    }
+
+    /// `tput sgr0` (xterm) is `ESC ( B ESC [ m`: the charset designation
+    /// is no visible text.
+    #[test]
+    fn strip_ansi_charset_designation_and_short_escapes() {
+        assert_eq!(strip_ansi("\x1b[32mok\x1b(B\x1b[m$ "), "ok$ ");
+        assert_eq!(display_width("\x1b(B\x1b[m$ "), 2);
+        assert_eq!(strip_ansi("a\x1b7b\x1b8c\x1b=d"), "abcd");
+        assert_eq!(strip_ansi("a\x1bP1$r\x1b\\b"), "ab");
     }
 
     #[test]
