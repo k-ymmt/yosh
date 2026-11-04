@@ -208,6 +208,12 @@ impl Lexer {
     /// Replace the alias table (used when a persistent parser reads a
     /// script command by command and earlier commands changed aliases).
     pub fn set_aliases(&mut self, aliases: &crate::env::aliases::AliasStore) {
+        // Scripts and `eval` strings re-sync the table before every
+        // complete command; with no aliases on either side (the common
+        // case) there is nothing to rebuild.
+        if aliases.is_empty() && self.aliases.is_empty() {
+            return;
+        }
         self.aliases = Rc::new(
             aliases
                 .sorted_iter()

@@ -275,6 +275,15 @@ impl JobTable {
         }
     }
 
+    /// True when some job is Running or Stopped. Unordered (no sort and
+    /// no allocation, unlike [`Self::all_jobs`]): it runs after every
+    /// complete command.
+    pub fn has_live_jobs(&self) -> bool {
+        self.jobs
+            .values()
+            .any(|j| matches!(j.status, JobStatus::Running | JobStatus::Stopped(_)))
+    }
+
     /// Iterate over all jobs sorted by id (ascending).
     pub fn all_jobs(&self) -> impl Iterator<Item = &Job> {
         let mut ids: Vec<JobId> = self.jobs.keys().copied().collect();

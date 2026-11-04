@@ -164,13 +164,7 @@ impl Executor {
         // pipeline, and command-substitution children are all waited
         // synchronously at their spawn sites. Skips a waitpid(2) on
         // every complete command.
-        let has_live_jobs = self
-            .env
-            .process
-            .jobs
-            .all_jobs()
-            .any(|j| matches!(j.status, JobStatus::Running | JobStatus::Stopped(_)));
-        if !has_live_jobs {
+        if !self.env.process.jobs.has_live_jobs() {
             return;
         }
         loop {
