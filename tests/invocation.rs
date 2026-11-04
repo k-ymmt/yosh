@@ -999,6 +999,16 @@ fn piped_stdin_group_closed_by_an_alias_runs_before_reading_on() {
 }
 
 #[test]
+fn piped_stdin_alias_ending_in_an_operator_is_not_read_past() {
+    // `a` leaves the command after `&&`, waiting for any next line, not
+    // a closer: `read` must still get the line after it.
+    let script = "alias a='true &&'\na\nread x\necho stolen\nprintf '<%s>\\n' \"$x\"\n";
+    let (out, code) = run_with_stdin(&[], script);
+    assert_eq!(out, "<echo stolen>\n");
+    assert_eq!(code, 0);
+}
+
+#[test]
 fn stdin_script_follows_exec_redirection_of_stdin() {
     // bash reads further commands from the new stdin after `exec <file`.
     let dir = tempfile::tempdir().unwrap();

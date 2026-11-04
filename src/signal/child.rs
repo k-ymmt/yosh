@@ -8,7 +8,7 @@ use super::disposition::{
     current_disposition, default_signal, disposition_may_have_changed, ignore_signal,
 };
 use super::entry::ignored_on_entry_set_opt;
-use super::self_pipe::{close_self_pipe, reinit_self_pipe_after_fork, signal_handler};
+use super::self_pipe::{reinit_self_pipe_after_fork, signal_handler};
 use super::table::catchable_signals;
 
 /// Whether a child keeps `num` at SIG_IGN: the user trap-ignored it
@@ -104,13 +104,14 @@ pub fn spawn_default_sigset(ignored: &[i32]) -> Option<libc::sigset_t> {
 }
 
 /// Reset signals after fork for children that will `exec` (or exit
-/// without running further shell code). See
-/// [`reset_child_dispositions`] for the disposition policy; the
-/// self-pipe fds are closed since an exec'd child has no use for them
-/// (they are CLOEXEC anyway — closing here also covers exec failure).
+/// without running further shell code), and before the shell process
+/// itself execs a utility in place. See [`reset_child_dispositions`] for
+/// the disposition policy. The self-pipe fds stay open: they are
+/// CLOEXEC, and closing them by number would close whatever a
+/// persistent redirection (`exec 11>&1`) has since put on those fds for
+/// the utility to inherit.
 pub fn reset_child_signals(ignored: &[i32]) {
     reset_child_dispositions(ignored);
-    close_self_pipe();
 }
 
 /// Reset signals after fork for a child that CONTINUES running shell

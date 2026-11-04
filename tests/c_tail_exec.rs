@@ -219,3 +219,36 @@ fn signal_death_of_the_tail_command_is_the_shell_death() {
     let out = yosh(&["-c", "/bin/sh -c 'kill -TERM $$'"]);
     assert_eq!(out.status.signal(), Some(libc::SIGTERM));
 }
+
+#[cfg(unix)]
+#[test]
+fn signal_queued_during_expansion_still_ends_the_shell() {
+    // The TERM arrives while the substitution runs; the exec must not
+    // drop it from the self-pipe (b0ebc43, dash and bash all die of it).
+    use std::os::unix::process::ExitStatusExt;
+    let out = yosh(&["-c", "/bin/echo $(kill -TERM $$; echo sub)"]);
+    assert_eq!(out.status.signal(), Some(libc::SIGTERM));
+}
+
+#[test]
+fn descriptors_from_exec_redirections_reach_the_command() {
+    // fd 11 may be a self-pipe fd number; the in-place exec must not
+    // close it after `exec 11>&1` put the shell's stdout there.
+    for fd in 10..=13 {
+        let script = format!("exec {fd}>&1; /bin/sh -c 'echo hello >&{fd}'");
+        let out = yosh(&["-c", &script]);
+        assert_eq!(stdout_lines(&out), ["hello"], "fd {fd}: {:?}", out);
+        assert_eq!(out.status.code(), Some(0));
+        // The forked path (a redirection on the command) too.
+        let script = format!("exec {fd}>&1; /bin/sh -c 'echo hello >&{fd}' 2>&2; :");
+        let out = yosh(&["-c", &script]);
+        assert_eq!(stdout_lines(&out), ["hello"], "fd {fd} forked: {:?}", out);
+    }
+}
+
+#[test]
+fn verbose_mode_still_echoes_trailing_blank_lines() {
+    let out = yosh(&["-v", "-c", "/bin/echo hi\n\n"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "/bin/echo hi\n\n");
+}

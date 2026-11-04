@@ -247,18 +247,6 @@ pub fn self_pipe_read_fd() -> RawFd {
         .0
 }
 
-/// Close both self-pipe fds, if the pipe exists. For fork children that
-/// will `exec`: they have no use for the pipe (the fds are CLOEXEC
-/// anyway — closing here also covers exec failure).
-pub(super) fn close_self_pipe() {
-    if let Some(&(read_fd, write_fd)) = SELF_PIPE.get() {
-        unsafe {
-            libc::close(read_fd);
-            libc::close(write_fd);
-        }
-    }
-}
-
 /// Replace the inherited self-pipe with a fresh pipe on the SAME fd
 /// numbers (the `SELF_PIPE` OnceLock cannot be re-set), and clear the
 /// pending-signal flags inherited from the parent. Called only in fork

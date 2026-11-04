@@ -199,14 +199,23 @@ impl Executor {
                     // used to get: everything to SIG_DFL except trap-
                     // ignored signals (in the non-monitor async child
                     // `ignored` already carries the SIGINT/SIGQUIT
-                    // entries exec_async inserted), and the inherited
-                    // self-pipe fds closed. The explicit reset matters
-                    // for SIG_IGN dispositions, which survive exec —
-                    // notably the background shell child's SIGTTIN
-                    // ignore: the exec'd command must be stoppable so
-                    // the now correctly tracked stop is visible.
+                    // entries exec_async inserted). The explicit reset
+                    // matters for SIG_IGN dispositions, which survive
+                    // exec — notably the background shell child's
+                    // SIGTTIN ignore: the exec'd command must be
+                    // stoppable so the now correctly tracked stop is
+                    // visible. The self-pipe fds stay open (CLOEXEC).
                     let ignored = self.env.traps.ignored_signals();
                     signal::reset_child_signals(&ignored);
+                    // A signal that arrived before the reset (during
+                    // the command's expansion: `sh -c 'cmd $(kill $$)'`)
+                    // waits on the self-pipe, which the exec would drop:
+                    // act on it now, as the shell would after the
+                    // command. Later ones meet SIG_DFL.
+                    self.process_pending_signals();
+                    if let Some(code) = self.exit_requested {
+                        return code;
+                    }
                     {
                         // Output the shell buffered (`printf x; cmd` as
                         // an `sh -c` tail) must precede the command's.
