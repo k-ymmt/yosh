@@ -19,7 +19,7 @@ use crate::lexer::token::{Span, SpannedToken, Token};
 use crate::lexer::{Lexer, LexerState};
 use ast::{AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, SeparatorOp};
 
-/// A look-ahead snapshot taken by `Parser::snapshot`.
+/// A look-ahead snapshot taken by `Parser::snapshot_and_advance`.
 pub(super) struct Snapshot {
     lexer: LexerState,
     current: SpannedToken,
@@ -149,7 +149,12 @@ impl Parser {
     }
 
     /// Save the lexer state and the current token for look-ahead that may
-    /// have to be undone with `rewind`.
+    /// have to be undone with `rewind`, then `advance` past the current
+    /// token (every look-ahead starts by stepping past it, so the token
+    /// is moved into the snapshot instead of cloned). On a lexer error
+    /// the parser is left exactly as a failed `advance` leaves it (the
+    /// current token kept), and the snapshot still rewinds to the state
+    /// before the call.
     ///
     /// The full `Lexer::save_state` (not the lexer's light `CursorState`)
     /// is required: look-ahead calls `advance`, which drives
@@ -162,12 +167,20 @@ impl Parser {
     ///
     /// `pre_current_pos` is saved too, so `consumed_bytes` after a rewind
     /// still names the start of the restored look-ahead token.
-    pub(super) fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            lexer: self.lexer.save_state(),
-            current: self.current.clone(),
-            pre_current_pos: self.pre_current_pos,
-        }
+    pub(super) fn snapshot_and_advance(&mut self) -> (Snapshot, error::Result<()>) {
+        let lexer = self.lexer.save_state();
+        let pre_current_pos = self.pre_current_pos;
+        self.pre_current_pos = self.lexer.position();
+        let (current, result) = match self.lexer.next_token() {
+            Ok(next) => (std::mem::replace(&mut self.current, next), Ok(())),
+            Err(e) => (self.current.clone(), Err(e)),
+        };
+        let snapshot = Snapshot {
+            lexer,
+            current,
+            pre_current_pos,
+        };
+        (snapshot, result)
     }
 
     /// Return to a state saved by `snapshot`.
@@ -379,7 +392,9 @@ impl Parser {
             false
         };
 
-        let mut commands = Vec::new();
+        // Most pipelines are a single command: allocate for one (an empty
+        // Vec would reserve four on the first push).
+        let mut commands = Vec::with_capacity(1);
         commands.push(self.parse_command()?);
 
         while self.current.token == Token::Pipe {
@@ -439,6 +454,11 @@ impl Parser {
     /// that pattern; for any other word the scan would stop at once (the
     /// caller's compound check already failed) and restore an unchanged
     /// state.
+    ///
+    /// The scan only classifies the assignment words; they are parsed
+    /// into `Assignment`s (after rewinding) only when a compound command
+    /// does follow, which is rare — a plain `x=1` or `x=1 cmd` would
+    /// otherwise build and drop its assignments twice.
     fn try_parse_prefixed_compound(&mut self) -> error::Result<Option<Command>> {
         let Token::Word(w) = &self.current.token else {
             return Ok(None);
@@ -446,24 +466,42 @@ impl Parser {
         if !is_assignment_word(w) {
             return Ok(None);
         }
-        let saved = self.snapshot();
+        let (saved, first) = self.snapshot_and_advance();
 
-        let mut prefix_assignments = Vec::new();
-        let found_compound = loop {
-            if let Token::Word(word) = &self.current.token
-                && let Some(a) = try_parse_assignment(word)
-            {
-                if self.advance().is_err() {
-                    break false;
+        // Assignment words scanned (each one successfully advanced past).
+        let mut n_assignments = 0;
+        let found_compound = first.is_ok() && {
+            n_assignments = 1;
+            loop {
+                if let Token::Word(word) = &self.current.token
+                    && is_assignment_word(word)
+                {
+                    if self.advance().is_err() {
+                        break false;
+                    }
+                    n_assignments += 1;
+                    continue;
                 }
-                prefix_assignments.push(a);
-                continue;
+                break self.is_compound_command_start();
             }
-            break self.is_compound_command_start();
         };
 
-        if found_compound && !prefix_assignments.is_empty() {
-            // We're committed: parse the compound and attach assignments.
+        if found_compound {
+            // We're committed: re-read the assignment words for real,
+            // then parse the compound and attach the assignments.
+            self.rewind(saved);
+            let mut prefix_assignments = Vec::with_capacity(n_assignments);
+            for _ in 0..n_assignments {
+                let assignment = match &self.current.token {
+                    Token::Word(word) => try_parse_assignment(word),
+                    _ => None,
+                };
+                let Some(assignment) = assignment else {
+                    unreachable!("the scan above classified this word as an assignment");
+                };
+                self.advance()?;
+                prefix_assignments.push(assignment);
+            }
             let mut compound = self.parse_compound_command()?;
             compound.assignments = prefix_assignments;
             let redirects = self.parse_redirect_list()?;
@@ -480,7 +518,7 @@ impl Parser {
         // the look-ahead (state is restored / abandoned either way)
         // and emit an accurate diagnostic. bash/dash both report a
         // syntax error near the `(` here.
-        if !prefix_assignments.is_empty() {
+        if n_assignments > 0 {
             let name_candidate = match &self.current.token {
                 Token::Word(w) => w.as_literal().is_some_and(word::is_valid_name),
                 _ => false,
@@ -923,8 +961,8 @@ mod tests {
         p.advance().unwrap();
         let before = p.consumed_bytes();
         assert_eq!(before, 3, "look-ahead `b=2` starts after `a=1`");
-        let saved = p.snapshot();
-        p.advance().unwrap();
+        let (saved, advanced) = p.snapshot_and_advance();
+        advanced.unwrap();
         p.advance().unwrap();
         assert_ne!(p.consumed_bytes(), before);
         p.rewind(saved);

@@ -9,32 +9,28 @@ use std::rc::Rc;
 impl Parser {
     /// Try to parse a function definition: NAME ( ) linebreak compound_command [redirect_list]
     pub(super) fn try_parse_function_def(&mut self) -> error::Result<Option<FunctionDef>> {
-        // Check if current token is a Word with a valid name
-        let name = match &self.current.token {
-            Token::Word(word) => {
-                if let Some(lit) = word.as_literal() {
-                    // POSIX §2.10.2 rule 8: a reserved word in the fname
-                    // position is that reserved word, never a NAME, so
-                    // `esac() { :; }` / `fi() ...` are syntax errors (the
-                    // simple-command parser reports the dangling word),
-                    // as in dash and bash.
-                    if is_valid_name(lit) && !is_posix_reserved_word(lit) {
-                        lit.to_string()
-                    } else {
-                        return Ok(None);
-                    }
-                } else {
-                    return Ok(None);
-                }
+        // Check if current token is a Word with a valid name.
+        // POSIX §2.10.2 rule 8: a reserved word in the fname position is
+        // that reserved word, never a NAME, so `esac() { :; }` / `fi() ...`
+        // are syntax errors (the simple-command parser reports the
+        // dangling word), as in dash and bash.
+        fn fname(token: &Token) -> Option<&str> {
+            match token {
+                Token::Word(word) => word
+                    .as_literal()
+                    .filter(|lit| is_valid_name(lit) && !is_posix_reserved_word(lit)),
+                _ => None,
             }
-            _ => return Ok(None),
-        };
+        }
+        if fname(&self.current.token).is_none() {
+            return Ok(None);
+        }
 
-        // Save state for backtracking
-        let saved = self.snapshot();
-
-        // Advance past the name
-        self.advance()?;
+        // Save state for backtracking and advance past the name (the
+        // name token moves into the snapshot; it is copied out only once
+        // this is known to be a function definition).
+        let (saved, advanced) = self.snapshot_and_advance();
+        advanced?;
 
         // Check for (
         if self.current.token != Token::LParen {
@@ -49,6 +45,9 @@ impl Parser {
             return Ok(None);
         }
         self.advance()?;
+        let Some(name) = fname(&saved.current.token).map(str::to_string) else {
+            unreachable!("checked before the look-ahead");
+        };
 
         // Skip newlines (linebreak)
         self.skip_newlines()?;
