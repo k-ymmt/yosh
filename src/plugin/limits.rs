@@ -14,7 +14,7 @@ pub(super) const DEFAULT_HOOK_TIMEOUT_MS: u64 = 5_000;
 /// Hard ceiling for hook/command timeouts (10 minutes).
 pub(super) const MAX_TIMEOUT_MS: u64 = 600_000;
 /// Ceiling for the per-plugin pre_prompt override — matches the env
-/// var's `MAX_PRE_PROMPT_TIMEOUT_MS` range in `super`.
+/// var's `MAX_PRE_PROMPT_TIMEOUT_MS` range in `super::deadline`.
 const MAX_PRE_PROMPT_MS: u64 = 60_000;
 
 /// Raw optional limit values as parsed from a `plugins.lock` entry.

@@ -41,7 +41,7 @@
       pollute the CHILD_MAX-bounded map, so it needs an
       "originally-async" marker on Job first. Deliberately left out of
       the 2026-08-25 reaped-status-map fix; revisit if a real script
-      hits it (`src/exec/job_control.rs::wait_for_foreground_job`).
+      hits it (`src/exec/job_control/foreground.rs::wait_for_foreground_job`).
 - [ ] DEVIATION (decided 2026-08-25): non-interactive `cmd & p=$!;
       wait; wait $p` returns the status (7) where bash returns 127 —
       the completed bare `wait` clears the reaped-status map but does
@@ -50,7 +50,7 @@
       waitable while only *permitting* discard after a no-operand
       wait, so this is bash-specific consumption. Revisit only if a
       real script depends on bash's 127
-      (`src/exec/job_control.rs::builtin_wait`).
+      (`src/exec/job_control/wait.rs::builtin_wait`).
 - [ ] `reset_for_subshell` keeps Running (and Stopped) parent jobs in
       the forked child's table so `$(jobs)` matches bash's special
       case, but plain `(jobs)` therefore also lists them where bash
@@ -59,7 +59,7 @@
       the `in_forked_subshell` shell_pid guard instead). Cosmetic
       divergence; revisit if scripts parse `(jobs)` output
       (`src/env/jobs/mod.rs::reset_for_subshell`,
-      `src/exec/job_control.rs`).
+      `src/exec/job_control/`).
 - [ ] Internal high fds (self-pipe at 10/11, controlling-terminal fd
       at ≥100) remain user-clobberable because yosh accepts
       multi-digit IO_NUMBER redirections — `exec 10>/dev/null` breaks
@@ -67,7 +67,7 @@
       handoffs. bash has the same exposure class for its internal fds;
       a real fix would re-dup internal fds away in the redirection
       code when a user targets one. Wrap-up review 2026-08-25 round 3
-      residual (`src/signal.rs`, `src/env/jobs/terminal.rs`,
+      residual (`src/signal/`, `src/env/jobs/terminal.rs`,
       `src/exec/redirect.rs`).
 - [ ] Async wrapper residuals after the 2026-09-01 exec-in-place fix
       and the 2026-09-02 async-pipeline direct fork — `cmd &` (single
@@ -96,8 +96,8 @@
       give_terminal-before-SIGCONT order deterministically (the
       wake-before-handoff race depends on scheduling; reverting the
       order still usually passes). Wrap-up review 2026-08-25 round 3
-      acknowledged test gaps (`src/signal.rs`,
-      `src/exec/job_control.rs`, `tests/pty_interactive.rs`).
+      acknowledged test gaps (`src/signal/`,
+      `src/exec/job_control/`, `tests/pty_interactive.rs`).
 - [ ] `disown` builtin — not implemented (non-POSIX extension)
 - [ ] `suspend` builtin — not implemented
 - [ ] Pipeline command display in `jobs` falls back to "(pipeline)" /
@@ -121,7 +121,7 @@
       job status per member) in the reaped map. Interactive-only —
       scripts never run the notification pass before `wait`
       (`src/env/jobs/mod.rs::record_reaped`,
-      `src/exec/job_control.rs::wait_one_pid`)
+      `src/exec/job_control/wait.rs::wait_one_pid`)
 - [ ] `wait_for_foreground_job` returns at the FIRST member stop
       (WUNTRACED report), so a pipeline member that stops ITSELF while
       other members keep running ends the foreground wait early:
@@ -134,7 +134,7 @@
       self-stopping members since fg-of-pipeline exists. Fix wants the
       wait loop to keep collecting until all live members have stopped
       or terminated. Adversarial review 2026-09-02 round 3 finding
-      (`src/exec/job_control.rs::wait_for_foreground_job`)
+      (`src/exec/job_control/foreground.rs::wait_for_foreground_job`)
 - [ ] Reentrant operandless `wait` (run from a trap that fires while an
       outer `wait <pid>` is blocked) discards the reaped-status map that
       the OUTER wait still needs once the `-b` notification pass has
@@ -145,7 +145,7 @@
       bug; all involved pieces (clear_reaped on bare wait, notification
       cleanup) predate 2026-09-02. A fix wants an "in-flight wait pids"
       guard on clear_reaped. Adversarial review 2026-09-02 round 2
-      finding (`src/exec/job_control.rs::builtin_wait`,
+      finding (`src/exec/job_control/wait.rs::builtin_wait`,
       `src/env/jobs/mod.rs::clear_reaped`)
 - [ ] A background job collected by the `wait` builtin lingers in the
       job table as Done in NON-interactive shells (cleanup_notified
@@ -153,7 +153,7 @@
       `%1` in the same script resolves the already-waited job and
       `$(jobs)` keeps listing it; bash deletes a job once waited.
       Pre-existing, surfaced while writing the 2026-09-02 pipefail
-      wait tests (`src/exec/job_control.rs::wait_one_pid`,
+      wait tests (`src/exec/job_control/wait.rs::wait_one_pid`,
       `src/env/jobs/notification.rs::cleanup_notified`)
 - [ ] Async-pipeline members that are syntactically simple but dispatch
       to `command`/builtins/functions run their nested externals one
@@ -220,7 +220,7 @@
       §2.12 says entry-ignored signals stay ignored). Rust's std sets
       SIGPIPE to SIG_IGN before `main`, destroying the inherited
       disposition, so yosh assumes not-ignored and restores SIG_DFL
-      (`src/signal.rs::capture_ignored_on_entry`). Revisit if std
+      (`src/signal/entry.rs::capture_ignored_on_entry`). Revisit if std
       stabilizes `unix_sigpipe` / `-Zon-broken-pipe`.
 - [ ] Perf follow-ups (round-2 perf pass 2026-11-04; measured under
       load average 100-350, so only interleaved A/B instruction counts
@@ -274,7 +274,7 @@
       source per complete command (`src/main.rs::run_string`).
 - [ ] `trap - SEGV` / `trap - BUS` in the top-level shell resets the
       signal to SIG_DFL and drops the Rust runtime's stack-overflow
-      guard handler; children keep it (`src/signal.rs`).
+      guard handler; children keep it (`src/signal/child.rs`).
 - [ ] In an interactive shell, a failed `x=1 exec missing` leaves `x`
       exported (the prefix assignment is exported before exec is
       attempted; `src/exec/simple/builtin.rs::exec_special_builtin_command`).
@@ -310,10 +310,6 @@
       nesting inside `eval` and deep arithmetic can still overflow;
       `crate::exec::stack_guard::stack_nearly_exhausted()` could guard
       them (`src/exec/stack_guard.rs`, `src/parser/nesting.rs`).
-- [ ] `expand/param.rs::special_param` duplicates
-      `SpecialParam::from_byte` except for `0`; `parse_pipeline`'s
-      here-document body assignment may duplicate
-      `fill_heredoc_bodies_deep` (`src/parser/heredoc.rs`).
 
 ## 2026-11-04 Bug-fix Round 2: Deferrals and Decisions
 
@@ -322,7 +318,7 @@
       (`src/builtin/flow.rs`).
 - [ ] A non-interactive shell does not print `Terminated` (or other
       signal names) when a foreground child dies from a signal; dash
-      and bash do. Informational only (`src/exec/job_control.rs`).
+      and bash do. Informational only (`src/exec/job_control/`).
 - [ ] `times` with operands is an error; `cd` with `HOME=` (empty) is
       an error (dash treats it as no-op / current dir).
 - [ ] Finished-but-unreported jobs keep their job number in a
@@ -579,8 +575,8 @@
 - [ ] Emacs keybindings: undo group boundary on space — spec says space triggers undo group boundary but implementation defers boundary to next non-space char; undo granularity is slightly coarser than readline (`src/interactive/line_editor/`)
 - [ ] Emacs keybindings: PTY E2E tests — kill/yank round-trip, undo, word movement, numeric arg scenarios not covered by PTY tests (`tests/pty_interactive.rs`)
 - [ ] PTY tests: remaining `thread::sleep` after send — autosuggest/tab completion/syntax highlight/`set -m` tests still rely on 50–200ms fixed waits for UI render or child startup (not raw-mode races); if CI flakiness appears on those paths, migrate them to condition-based waits similar to `wait_for_raw_mode` (`tests/pty_interactive.rs`)
-- [ ] Spec completion: `command_words` treats unquoted `&` in `2>&1` as a segment separator and counts assignment prefixes (`FOO=1 cmd`) / redirection words as command/positional words — spec lookup misses, degrading gracefully to path completion (`src/interactive/spec_completion.rs`)
-- [ ] Spec completion: parse-error warning `eprintln!` fires while the terminal is in raw mode (staircase output, prompt not redrawn; once per session per bad file) (`src/interactive/spec_completion.rs`)
+- [ ] Spec completion: `command_words` treats unquoted `&` in `2>&1` as a segment separator and counts assignment prefixes (`FOO=1 cmd`) / redirection words as command/positional words — spec lookup misses, degrading gracefully to path completion (`src/interactive/spec_completion/resolve.rs`)
+- [ ] Spec completion: parse-error warning `eprintln!` fires while the terminal is in raw mode (staircase output, prompt not redrawn; once per session per bad file) (`src/interactive/spec_completion/store.rs`)
 
 ## vim mode residuals
 
@@ -594,19 +590,23 @@ the items below are deferred work, not policy:
       recorded for `.`; Vim repeats them on a same-size region
       (`src/interactive/line_editor/`).
 - [ ] VISUAL `u` / `U` (lower/uppercase the selection) — currently bell
-      (`src/interactive/vi.rs::resolve_visual_key`).
+      (`src/interactive/vi/visual_keys.rs::resolve_visual_key`).
+- [ ] A bare Alt+key in VISUAL mode (e.g. a fast Esc then `d`, which
+      arrives as Alt+d) runs the key as a VISUAL command; the comment
+      there says it should leave VISUAL like Esc and replay nothing, as
+      Vim does (`src/interactive/vi/visual_keys.rs`).
 - [ ] Insert-mode Vim extensions — `Ctrl-O` (one-shot Normal command),
       `Ctrl-R <reg>`, `Ctrl-A` (`src/interactive/line_editor/`).
 - [ ] Named registers (`"a`–`"z`), numbered registers — only the typed
       unnamed register exists (`src/interactive/vim.rs`).
 - [ ] Blockwise VISUAL (`Ctrl-V`), `gv`, VISUAL `I`/`A`
-      (`src/interactive/vi.rs`, `src/interactive/line_editor/`).
+      (`src/interactive/vi/`, `src/interactive/line_editor/`).
 - [ ] Linewise selection of an empty logical line renders no highlighted
       cells — the renderer has no cell for `'\n'`
       (`src/interactive/line_editor/render/multiline.rs::redraw_multiline`).
 - [ ] Normal-mode `Ctrl-A`/`Ctrl-X` number increment/decrement —
       `Ctrl-X` is taken by the `Ctrl-X Ctrl-E` chord; would need a
-      different binding or a timeout (`src/interactive/vi.rs`).
+      different binding or a timeout (`src/interactive/vi/command_keys.rs`).
 - [ ] Undo commit criterion is buffer byte-difference — a change command
       whose result equals its input (e.g. `r` with the same char)
       commits nothing and preserves redo, where Vim would create a unit
@@ -629,14 +629,14 @@ the items below are deferred work, not policy:
 - [ ] Derive metadata-extract deny stubs from the bindgen `Host` traits — `crates/yosh-plugin-manager/src/metadata_extract.rs::register_all_deny_imports` lists every `yosh:plugin/*` function by hand. When a new interface or function is added to `wit/yosh-plugin.wit` it must be mirrored here (and in `src/plugin/linker.rs`), or `instantiate_pre` will fail at sync time exactly like issue #3. Implementing `wasmtime::component::bindgen!`'s generated `Host` traits on `MetadataCtx` (each returning `Err(Denied)`) and calling the generated `add_to_linker` would make the surface compile-checked. Defer until the next plugin-world expansion since the current set is small and stable.
 - [ ] Spec §8.10 "WASI surface lockdown" integration test — currently covered indirectly by `src/plugin/linker.rs::tests::linker_construction_smoke` and the empty-`WasiCtx` isolation property. A hand-crafted wasm component that imports `wasi:cli/stdout` and asserts an unsatisfied-import error at instantiate would be a stronger negative test, but requires fixture authoring (raw wasm) outside the cargo-component pipeline. Defer until a fixture pattern is established.
 - [ ] Spec §8.6–§8.8 cwasm field-mutation tests at integration level — `tests/plugin.rs` covers `t06` (cwasm missing) and `t09` (wasm SHA mismatch) end-to-end, but per-field mutation of `wasmtime_version` / `target_triple` / `engine_config_hash` is currently only unit-tested in `src/plugin/cache.rs::tests`. Adding integration smokes would require a fixture-cwasm builder helper.
-- [ ] Plugin perf §4.2 linker_cache concurrency story — `PluginManager.linker_cache: HashMap<u32, Linker<HostContext>>` (added 2026-05-09 in commit `0f49eb8` for fix#2) is plain `HashMap` because `load_one` takes `&mut self` and current loads are sequential. If `load_one` ever becomes concurrent (parallel plugin loads, runtime `plugin load` builtin), the field must migrate to `RwLock<HashMap<u32, Arc<Linker<HostContext>>>>` or equivalent — see `docs/superpowers/specs/2026-05-09-plugin-real-linker-cache-design.md` §7 + §11 for the migration path (`src/plugin/mod.rs`).
+- [ ] Plugin perf §4.2 linker_cache concurrency story — `PluginManager.linker_cache: HashMap<u32, Linker<HostContext>>` (added 2026-05-09 in commit `0f49eb8` for fix#2) is plain `HashMap` because `load_one` takes `&mut self` and current loads are sequential. If `load_one` ever becomes concurrent (parallel plugin loads, runtime `plugin load` builtin), the field must migrate to `RwLock<HashMap<u32, Arc<Linker<HostContext>>>>` or equivalent — see `docs/superpowers/specs/2026-05-09-plugin-real-linker-cache-design.md` §7 + §11 for the migration path (`src/plugin/mod.rs`, `src/plugin/load.rs`).
 - [ ] Plugin perf Appendix D delta note — `docs/superpowers/specs/2026-05-08-plugin-perf-report.md` Appendix D records the §4.2 fix#2 verification (698 blocks, −50% same-mask), but does not call out that the design spec's prediction of `≈ 467 blocks` was 33% optimistic because non-`build_linker` allocations (`instantiate_pre`, component init) also share the `LinkerInstance::insert` dhat frame. Adding a one-paragraph note would protect future planning sessions from over-trusting per-call dhat extrapolations when frames are shared. Final-review follow-up from 2026-05-09 plugin real-linker-cache branch.
 - [ ] `commands::exec` argv borrow design-spec drift — `docs/superpowers/specs/2026-05-09-plugin-commands-exec-argv-borrow-design.md` has two stale sections after implementation: (a) §3.1's closure sketch shows `args.iter(&store)` (immutable) which does not compile in wasmtime 27 because `WasmList::iter` requires `impl Into<StoreContextMut<'a, U>>`; the actual implementation uses a two-pass collect with `&mut store`, recorded in `Appendix F: Plan deviation` of the perf report; (b) §3 Scope (in) lists `src/bin/yosh-dhat.rs` "add `noop_commands_exec_borrow` smoke" but no changes were made to that file (the `--exec-loop` dispatcher is generic and looks up commands by name; the smoke command was added to `tests/plugins/perf_plugin/src/lib.rs`). Either annotate §3.1 / §3 inline as historical with forward-references to Appendix F, or rewrite the affected sections to match the implementation. Final-review follow-up from 2026-05-09 plugin commands::exec argv borrow rollout.
 - [ ] Runtime plugin load/unload — builtin commands `plugin load <path>` / `plugin unload <name>` for dynamic management
 - [ ] `GitHubClient` public API error type — `find_asset_url`, `latest_version`, `download` still return `Result<_, String>`; promote internal `GitHubApiError` to a public error type so callers can match on structured variants instead of string messages (`crates/yosh-plugin-manager/src/github.rs`)
 - [ ] Integration tests: add checksum mismatch re-download test and partial failure (404) test per spec (`crates/yosh-plugin-manager/tests/`)
 - [ ] `files:write` host ops (`write-file`/`append-file`/`create-dir`) collapse `io::ErrorKind::NotFound` into `IoFailed` rather than mapping to `ErrorCode::NotFound` like the read ops do. Spec §4 error-mapping table is written as if uniform across all 8 functions; either add a footnote acknowledging the write-side asymmetry or actually map NotFound on the write side (e.g., parent-dir-missing on `write-file`/`create-dir`). Pre-decided as acceptable during implementation but worth revisiting if a plugin author wants the parent-not-found distinction (`src/plugin/host/files.rs`, `docs/superpowers/specs/2026-04-29-plugin-files-rw-capability-design.md` §4). Code-review follow-up from 2026-04-29 plugin files-rw branch.
-- [ ] `test_helpers::load_plugin_with_caps` no-allowlist ergonomics — nearly all callers in `tests/plugin.rs` (29 as of 2026-08-25) pass `&[]` for the new `allowed_commands` parameter introduced in T6. Consider a no-allowlist convenience method or a `Default` impl so common test setups are less verbose. Code-review follow-up from 2026-04-29 plugin commands:exec branch (`src/plugin/mod.rs`).
+- [ ] `test_helpers::load_plugin_with_caps` no-allowlist ergonomics — nearly all callers in `tests/plugin.rs` (29 as of 2026-08-25) pass `&[]` for the new `allowed_commands` parameter introduced in T6. Consider a no-allowlist convenience method or a `Default` impl so common test setups are less verbose. Code-review follow-up from 2026-04-29 plugin commands:exec branch (`src/plugin/test_helpers.rs`).
 ## Future: Code Quality Improvements
 
 - [ ] Self-pipe fork race in remaining fork sites — a forked child inherits

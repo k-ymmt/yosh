@@ -108,7 +108,7 @@ fn has_unquoted_glob_chars(field: &ExpandedField) -> bool {
 
 /// Given a `[` at byte offset `open` in `bytes`, return `true` if a `]`
 /// that can close the bracket expression follows. Follows the same
-/// convention as `pattern::parse_bracket`: a `]` immediately after the
+/// convention as `pattern::bracket::parse_bracket`: a `]` immediately after the
 /// opening `[` (or after `[!`) is a literal member of the class and does
 /// not close it. Conservative in the safe direction — a `]` later
 /// swallowed by a `[:class:]` member may yield a false positive (a wasted
