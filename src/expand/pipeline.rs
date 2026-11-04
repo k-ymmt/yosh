@@ -68,10 +68,42 @@ fn expand_part_double_quoted(
     fields: &mut Vec<ExpandedField>,
 ) -> crate::error::Result<()> {
     fields.last_mut().unwrap().was_quoted = true;
+    let before = (fields.len(), fields.last().unwrap().byte_len());
     for inner in parts {
         expand_part_to_fields(env, inner, fields, true)?;
     }
+    // A double-quoted string that expanded to nothing (`""`, `"${y-}"`,
+    // `"${x:+w}"` with `x` unset) is a quoted empty string, which field
+    // splitting keeps at its position (see `ExpandedField::empty_quotes`).
+    // `"$@"` with no positional parameters is the exception: it expands
+    // to no field at all.
+    if (fields.len(), fields.last().unwrap().byte_len()) == before && !parts.iter().any(mentions_at)
+    {
+        fields.last_mut().unwrap().push_quoted("");
+    }
     Ok(())
+}
+
+/// Whether `part` is a `$@` expansion (`$@` or `${@...}`), which can
+/// expand to no field at all. A `$@` inside a modifier word does not
+/// count: `"${y-$@}"` with no parameters is one empty field (dash and
+/// bash agree).
+fn mentions_at(part: &WordPart) -> bool {
+    let WordPart::Parameter(p) = part else {
+        return false;
+    };
+    match p {
+        ParamExpr::Special(sp) => *sp == SpecialParam::At,
+        ParamExpr::Default { name, .. }
+        | ParamExpr::Assign { name, .. }
+        | ParamExpr::Error { name, .. }
+        | ParamExpr::Alt { name, .. }
+        | ParamExpr::StripShortSuffix(name, _)
+        | ParamExpr::StripLongSuffix(name, _)
+        | ParamExpr::StripShortPrefix(name, _)
+        | ParamExpr::StripLongPrefix(name, _) => name == "@",
+        ParamExpr::Simple(_) | ParamExpr::Positional(_) | ParamExpr::Length(_) => false,
+    }
 }
 
 /// Expand a tilde-prefix part. A successful expansion is treated as

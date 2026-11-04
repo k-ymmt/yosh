@@ -217,8 +217,23 @@ fn split_field(field: &ExpandedField, delims: &Delims, out: &mut Vec<ExpandedFie
     let mut current = ExpandedField::new();
     let mut state = State::Start;
 
+    // A quoted empty string (`""`) is field content without bytes: where
+    // one sits outside a field (at the start, or after a delimiter), it
+    // opens a field that is kept even if it stays empty — POSIX §2.6.5,
+    // dash: `x='a '; set -- $x""` gives `a` and an empty field.
+    let mut empty_quotes = field.empty_quotes.iter().copied().peekable();
+    let mut open_at_empty_quote = |i: usize, state: &mut State, current: &mut ExpandedField| {
+        while empty_quotes.next_if(|&at| at <= i).is_some() {
+            if *state != State::InField {
+                current.was_quoted = true;
+                *state = State::InField;
+            }
+        }
+    };
+
     let mut i = 0;
     while i < len {
+        open_at_empty_quote(i, &mut state, &mut current);
         let (class, dlen) = delims.class(field, i);
         let is_ws = class == WS_DELIM;
         let is_nws = class == NWS_DELIM;
@@ -285,7 +300,8 @@ fn split_field(field: &ExpandedField, delims: &Delims, out: &mut Vec<ExpandedFie
     // POSIX: trailing IFS-whitespace does NOT produce an extra empty field,
     // but trailing IFS non-whitespace DOES (handled via AfterNws emitting
     // empty above — here we only flush non-empty leftovers from InField).
-    if !current.is_empty() {
+    open_at_empty_quote(len, &mut state, &mut current);
+    if !current.is_empty() || current.was_quoted {
         emit(&mut current, out);
     }
 }
@@ -384,6 +400,32 @@ mod tests {
 
     fn values(fields: Vec<ExpandedField>) -> Vec<String> {
         fields.into_iter().map(|f| f.value).collect()
+    }
+
+    // ── Quoted empty strings ──
+
+    #[test]
+    fn quoted_empty_after_delimiter_opens_a_field() {
+        // `x='a '; $x""` → `a` and an empty field (dash and bash).
+        let env = env_no_ifs();
+        let mut f = unquoted("a ");
+        f.push_quoted("");
+        let out = split(&env, vec![f]);
+        assert_eq!(values(out.clone()), vec!["a", ""]);
+        assert!(out[1].was_quoted);
+        // `x=' '; $x""` → one empty field.
+        let mut f = unquoted(" ");
+        f.push_quoted("");
+        assert_eq!(values(split(&env, vec![f])), vec![""]);
+    }
+
+    #[test]
+    fn quoted_empty_inside_a_field_is_absorbed() {
+        let env = env_no_ifs();
+        let mut f = unquoted("a");
+        f.push_quoted("");
+        f.push_expanded("b c");
+        assert_eq!(values(split(&env, vec![f])), vec!["ab", "c"]);
     }
 
     // ── Basic whitespace split ──

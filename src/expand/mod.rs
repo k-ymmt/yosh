@@ -57,6 +57,12 @@ pub struct ExpandedField {
     /// inner parts expand: a zero-parameter `"$@"` must drop the field only
     /// when nothing quoted actually contributed to it.
     pub(crate) quoted_content: bool,
+    /// Byte offsets (ascending) where a quoted empty string (`""`, `''`,
+    /// `"$empty"`) sits in `value`. It adds no bytes but is still field
+    /// content: field splitting keeps a field there even when IFS
+    /// delimiters surround it (`x='a '; set -- $x""` is two fields, the
+    /// second empty — dash and bash agree).
+    pub(crate) empty_quotes: Vec<usize>,
 }
 
 impl ExpandedField {
@@ -68,6 +74,15 @@ impl ExpandedField {
             was_quoted: false,
             scalar_join_sep: None,
             quoted_content: false,
+            empty_quotes: Vec::new(),
+        }
+    }
+
+    /// Record a quoted empty string at the current end of the value.
+    fn mark_empty_quote(&mut self) {
+        let at = self.value.len();
+        if self.empty_quotes.last() != Some(&at) {
+            self.empty_quotes.push(at);
         }
     }
 
@@ -85,6 +100,9 @@ impl ExpandedField {
     /// escaped chars, tilde expansion). Bytes are protected from both
     /// field splitting and glob expansion; `was_quoted` becomes true.
     pub fn push_quoted(&mut self, s: &str) {
+        if s.is_empty() {
+            self.mark_empty_quote();
+        }
         let start = self.value.len();
         self.value.push_str(s);
         set_mask_range(&mut self.split_protected_mask, start, s.len());
@@ -137,6 +155,12 @@ impl ExpandedField {
         );
         self.was_quoted |= other.was_quoted;
         self.quoted_content |= other.quoted_content;
+        for &at in &other.empty_quotes {
+            let at = start + at;
+            if self.empty_quotes.last() != Some(&at) {
+                self.empty_quotes.push(at);
+            }
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -176,6 +200,7 @@ impl ExpandedField {
             was_quoted: false,
             scalar_join_sep: None,
             quoted_content: false,
+            empty_quotes: Vec::new(),
         }
     }
 }
