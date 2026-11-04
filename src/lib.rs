@@ -10,6 +10,7 @@ pub mod interactive;
 pub mod lexer;
 pub mod parser;
 pub mod plugin;
+pub mod script_input;
 pub mod signal;
 #[cfg(test)]
 pub(crate) mod test_sync;

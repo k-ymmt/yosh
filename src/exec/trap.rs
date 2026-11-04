@@ -233,7 +233,9 @@ impl Executor {
         if self.env.mode.is_interactive {
             self.exit_requested = Some(128 + sig);
         } else {
-            shell_exit(128 + sig);
+            // Die of the signal itself (dash/bash): the parent must see
+            // a signal death, not an exit with status 128+sig.
+            super::process::shell_exit_by_signal(sig);
         }
     }
 }

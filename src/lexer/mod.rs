@@ -191,6 +191,12 @@ impl Lexer {
         lexer
     }
 
+    /// Number the first input line `line` instead of 1 (input that
+    /// continues a longer source). Call before reading any token.
+    pub fn set_start_line(&mut self, line: usize) {
+        self.line = line;
+    }
+
     /// Returns the current byte position in the input.
     /// Since alias expansion uses a token queue instead of rewriting the buffer,
     /// this position always maps to the original input.

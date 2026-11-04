@@ -618,4 +618,161 @@ fn unreadable_script_operand_exits_126() {
     let missing = dir.path().join("missing.sh");
     let output = yosh_bin().arg(&missing).output().unwrap();
     assert_eq!(output.status.code(), Some(127));
+    // The C library wording, without Rust's "(os error N)" suffix.
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.ends_with("missing.sh: No such file or directory\n"),
+        "stderr: {err:?}"
+    );
+}
+
+// ── Reading commands from stdin without reading ahead (XCU sh, INPUT
+// FILES): a command that reads stdin must see the input right after its
+// own text, whether stdin is a pipe or a regular file. ──
+
+/// Run yosh with `script` as a regular-file stdin.
+fn run_with_file_stdin(args: &[&str], script: &str) -> (String, String, i32) {
+    let mut f = tempfile::tempfile().unwrap();
+    f.write_all(script.as_bytes()).unwrap();
+    use std::io::{Seek, SeekFrom};
+    f.seek(SeekFrom::Start(0)).unwrap();
+    let output = yosh_bin()
+        .args(args)
+        .stdin(Stdio::from(f))
+        .output()
+        .unwrap();
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
+const SHARED_STDIN_SCRIPT: &str = "read x\nhello\necho \"x=$x\"\n\
+cat <<EOF\nbody\nEOF\nread y\nYY\necho \"y=$y\"\n\
+if true; then\n  read z\nfi\nZZ\necho \"z=$z\"\n\
+while read l; do echo \"l=$l\"; [ \"$l\" = stop ] && break; done\none\nstop\n\
+echo after\n";
+
+const SHARED_STDIN_EXPECTED: &str = "x=hello\nbody\ny=YY\nz=ZZ\nl=one\nl=stop\nafter\n";
+
+#[test]
+fn piped_stdin_script_does_not_read_ahead() {
+    let (out, code) = run_with_stdin(&[], SHARED_STDIN_SCRIPT);
+    assert_eq!(out, SHARED_STDIN_EXPECTED);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn file_stdin_script_leaves_offset_after_each_command() {
+    let (out, err, code) = run_with_file_stdin(&[], SHARED_STDIN_SCRIPT);
+    assert_eq!(out, SHARED_STDIN_EXPECTED, "stderr: {err}");
+    assert_eq!(code, 0);
+    // An external utility sees the file offset too.
+    let (out, _, _) = run_with_file_stdin(&["-s"], "head -n 1\nfor-head\necho tail\n");
+    assert_eq!(out, "for-head\ntail\n");
+}
+
+#[test]
+fn piped_stdin_keeps_line_numbers_across_reads() {
+    let script =
+        "echo $LINENO\n\nif true; then\n  echo $LINENO\nfi\nread v\ndata\necho $LINENO\nif then\n";
+    let mut child = yosh_bin()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    // Lines consumed by `read` are not the shell's input lines, so the
+    // count continues from the shell's own reads (bash agrees: 7, 8).
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n4\n7\n");
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("line 8"), "stderr: {err}");
+    assert_eq!(output.status.code(), Some(2));
+}
+
+/// Run `yosh -i` on a piped (non-terminal) stdin with an isolated HOME
+/// and the given extra environment; returns (stdout, stderr, status).
+fn run_dash_i_piped(env: &[(&str, &str)], stdin: &str) -> (String, String, i32) {
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = yosh_bin();
+    cmd.arg("-i")
+        .env("HOME", home.path())
+        .env_remove("ENV")
+        .env_remove("PS1")
+        .env_remove("PS2");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
+#[test]
+fn dash_i_piped_prompts_and_sources_env() {
+    // POSIX: an interactive shell prompts with PS1/PS2 (on stderr) and
+    // reads $ENV, also when stdin is not a terminal (dash agrees).
+    let dir = tempfile::tempdir().unwrap();
+    let envfile = dir.path().join("env.sh");
+    std::fs::write(&envfile, "echo env-sourced\n").unwrap();
+    let (out, err, code) = run_dash_i_piped(
+        &[
+            ("ENV", envfile.to_str().unwrap()),
+            ("PS1", "P1> "),
+            ("PS2", "P2> "),
+        ],
+        "echo one\nif true; then\necho two\nfi\n",
+    );
+    assert_eq!(out, "env-sourced\none\ntwo\n");
+    assert_eq!(err, "P1> P1> P2> P2> P1> ");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn dash_i_piped_syntax_error_does_not_exit() {
+    // POSIX §2.8.1: a syntax error in an interactive shell discards the
+    // line and the shell reads on, with $? = 2.
+    let (out, err, code) = run_dash_i_piped(
+        &[("PS1", ""), ("PS2", "")],
+        "echo a\nif then; echo same-line\necho \"b $?\"\n",
+    );
+    assert_eq!(out, "a\nb 2\n");
+    assert!(err.contains("syntax error"), "stderr: {err}");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn stdin_script_follows_exec_redirection_of_stdin() {
+    // bash reads further commands from the new stdin after `exec <file`.
+    let dir = tempfile::tempdir().unwrap();
+    let other = dir.path().join("other.sh");
+    std::fs::write(&other, "echo from-other\n").unwrap();
+    let script = format!("exec <'{}'\necho not-reached\n", other.display());
+    let (out, _) = run_with_stdin(&[], &script);
+    assert_eq!(out, "from-other\n");
+    let (out, _, _) = run_with_file_stdin(&[], &script);
+    assert_eq!(out, "from-other\n");
 }

@@ -8,6 +8,7 @@ mod interactive;
 mod lexer;
 mod parser;
 mod plugin;
+mod script_input;
 mod signal;
 #[cfg(test)]
 mod test_sync;
@@ -271,7 +272,7 @@ fn main() {
             vec![]
         };
         let status = run_string(
-            &command,
+            script_input::Source::Text(&command),
             sn,
             positional,
             // -s alongside -c still shows `s` in $- (bash agrees),
@@ -350,29 +351,26 @@ fn run_stdin(
     invocation_ops: &[env::InvocationOp],
 ) -> ! {
     let stdin_tty = nix::unistd::isatty(std::io::stdin()).unwrap_or(false);
-    // Interactive iff stdin is a terminal, unless -i forces it on or
-    // +i forces it off. The REPL (line editor, prompts) additionally
-    // needs a real terminal, so `-i` with a non-tty stdin falls
-    // through to the script path with interactive semantics instead.
-    if force_interactive.unwrap_or(stdin_tty) && stdin_tty {
+    let stderr_tty = nix::unistd::isatty(std::io::stderr()).unwrap_or(false);
+    // Interactive iff stdin AND stderr are terminals (POSIX XCU sh; bash
+    // agrees — `sh 2>log` at a terminal runs stdin as a script), unless
+    // -i forces it on or +i forces it off. The REPL (line editor,
+    // prompts) additionally needs a real terminal, so `-i` with a
+    // non-tty stdin falls through to the script path with interactive
+    // semantics instead.
+    if force_interactive.unwrap_or(stdin_tty && stderr_tty) && stdin_tty {
         let mut repl = interactive::Repl::new(shell_name, positional, explicit_s, invocation_ops);
         process::exit(repl.run());
     } else {
-        // stdin is a pipe, or +i forced the REPL off — read the whole
-        // stream as a script (bytes, so non-UTF-8 input is preserved
-        // via the byteenc escape encoding). With -i the shell still
-        // reads the whole stream but runs with interactive semantics
-        // ($- reports i, untrapped TERM/QUIT/INT ignored, shell errors
-        // do not exit); the line editor and prompts need a terminal
-        // and are not engaged.
-        let mut raw = Vec::new();
-        io::stdin().read_to_end(&mut raw).unwrap_or_else(|e| {
-            byteenc::write_stderr_decoded_line(&format!("yosh: {}", e));
-            process::exit(1);
-        });
-        let input = byteenc::encode_bytes(&raw).into_owned();
+        // stdin is a pipe or file, or +i forced the REPL off — run it
+        // as a script, read incrementally so commands that read stdin
+        // see the input after their own text (XCU sh, INPUT FILES). With
+        // -i the shell runs with interactive semantics ($- reports i,
+        // untrapped TERM/QUIT/INT ignored, shell errors do not exit);
+        // the line editor and prompts need a terminal and are not
+        // engaged.
         let status = run_string(
-            &input,
+            script_input::Source::Stdin(script_input::StdinReader::new()),
             shell_name,
             positional,
             (false, explicit_s),
@@ -406,7 +404,7 @@ fn try_subcommand(args: &[String]) -> Option<i32> {
 }
 
 fn run_string(
-    input: &str,
+    source: script_input::Source<'_>,
     shell_name: String,
     positional: Vec<String>,
     // `$-` invocation-source letters: `c` (command string), `s`
@@ -444,76 +442,18 @@ fn run_string(
         // and the line editor stay off on this non-terminal path.
         executor.env.mode.is_interactive = true;
         signal::set_interactive_shell(true);
-    }
-
-    // Parse and execute one complete command at a time so that aliases
-    // defined by earlier commands are available for later ones.
-    //
-    // One parser reads the whole input. `parse_complete_command` stops at
-    // the newline ending a command without lexing the next line, so the
-    // next line is tokenized only after this command ran: aliases it
-    // defines apply (the alias table is refreshed before each command), a
-    // lexer error on a later line cannot discard it, and tokens queued by
-    // an alias whose value spans several lines are kept.
-    let mut p = parser::Parser::new_with_aliases(input, &executor.env.aliases);
-    // The whole input is here: end of input ends an unterminated
-    // here-document, as in dash and bash.
-    p.set_eof_ends_heredoc(true);
-    let mut status = 0;
-    let mut echoed = 0;
-
-    loop {
-        p.set_aliases(&executor.env.aliases);
-        let parsed = p.skip_newlines().and_then(|()| {
-            if p.is_at_end() {
-                return Ok(None);
-            }
-            p.parse_complete_command().map(Some)
-        });
-        // set -v: echo input to stderr as it is read (POSIX §2.15 set).
-        executor.echo_read_input(&p, &mut echoed);
-        match parsed {
-            Ok(None) => break,
-            Ok(Some(cmd)) => {
-                status = executor.exec_complete_command(&cmd);
-                // Check for flow control (exit handled by std::process::exit in builtin)
-                match executor.env.exec.flow_control {
-                    // A fatal expansion error (nounset, ${x:?}, …) exits a
-                    // non-interactive shell; an interactive shell aborts
-                    // the current command line only and keeps reading.
-                    Some(env::FlowControl::ExpansionError) if executor.env.mode.is_interactive => {
-                        executor.env.exec.flow_control = None;
-                    }
-                    // The command that raised it may have reported status 0
-                    // (`for i in ${x:?}; do :; done`); the shell still exits
-                    // with the expansion-error status (POSIX §2.8.1: non-zero).
-                    Some(env::FlowControl::ExpansionError) => {
-                        status = 1;
-                        executor.env.exec.last_exit_status = status;
-                        break;
-                    }
-                    Some(_) => break,
-                    None => {}
-                }
-                // POSIX §2.8.1 shell errors request exit via exit_requested.
-                if let Some(code) = executor.exit_requested {
-                    status = code;
-                    break;
-                }
-                executor.check_errexit(status);
-            }
-            Err(e) => {
-                byteenc::write_stderr_decoded_line(&e.to_string());
-                executor.process_pending_signals();
-                executor.execute_exit_trap();
-                return 2;
-            }
+        // An interactive shell has prompt defaults and runs its startup
+        // files (`$ENV` is read only by interactive shells, POSIX XCU
+        // sh), also when stdin is not a terminal (dash agrees).
+        interactive::set_default_prompts(&mut executor);
+        interactive::source_startup_files(&mut executor);
+        if let Some(code) = executor.exit_requested {
+            // `exit` in a startup file (its EXIT trap already ran).
+            return code;
         }
     }
 
-    executor.process_pending_signals();
-    executor.execute_exit_trap();
-    status
+    script_input::run_commands(&mut executor, source)
 }
 
 fn run_file(
@@ -531,7 +471,14 @@ fn run_file(
     let content = match fs::read(std::ffi::OsStr::from_bytes(&os_path)) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("yosh: {}: {}", path, e);
+            // The C library's wording (`No such file or directory`),
+            // without Rust's ` (os error N)` suffix; raw path bytes
+            // decoded back for the diagnostic.
+            let reason = match e.raw_os_error() {
+                Some(n) => exec::redirect::errno_text(nix::errno::Errno::from_raw(n)),
+                None => e.to_string(),
+            };
+            byteenc::write_stderr_decoded_line(&format!("yosh: {}: {}", path, reason));
             // 127 is reserved for "not found"; a script that exists but
             // cannot be read (a directory, no read permission) is 126,
             // as in bash.
@@ -544,7 +491,7 @@ fn run_file(
     };
     let content = byteenc::encode_bytes(&content).into_owned();
     run_string(
-        &content,
+        script_input::Source::Text(&content),
         shell_name,
         positional,
         (false, false),

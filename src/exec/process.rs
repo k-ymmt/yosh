@@ -119,6 +119,33 @@ pub(crate) fn shell_exit(status: i32) -> ! {
     std::process::exit(status);
 }
 
+/// End the shell by the default action of `sig`, so the parent sees a
+/// process killed by that signal (`WIFSIGNALED`), as with dash and bash
+/// — not a normal exit with status 128+sig. That matters to callers:
+/// an invoking shell stops its loop when a child dies of SIGINT
+/// (wait-and-cooperative-exit), and reports "Terminated" etc. Falls
+/// back to exiting with 128+sig if the signal does not end the process.
+pub(crate) fn shell_exit_by_signal(sig: i32) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // SAFETY: plain sigaction / sigprocmask / raise calls on a valid
+    // signal number with zero-initialized C structs.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = libc::SIG_DFL;
+        libc::sigemptyset(&mut sa.sa_mask);
+        if libc::sigaction(sig, &sa, std::ptr::null_mut()) == 0 {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, sig);
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+            libc::raise(sig);
+        }
+    }
+    shell_exit(128 + sig);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

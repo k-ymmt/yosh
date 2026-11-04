@@ -125,64 +125,12 @@ impl Repl {
             }
         }
 
-        // POSIX XCU §2.5.3: PS1 and PS2 have default values for
-        // interactive shells. Set them as real variables so observers
-        // like `[ -n "${PS1+x}" ]` see them (dash and bash do). Defer to
-        // an inherited value if already present.
-        if executor.env.vars.get("PS1").is_none() {
-            // SAFETY: getuid() is always safe to call.
-            let default = if unsafe { libc::getuid() } == 0 {
-                "# "
-            } else {
-                "$ "
-            };
-            let _ = executor.env.vars.set("PS1", default);
-        }
-        if executor.env.vars.get("PS2").is_none() {
-            let _ = executor.env.vars.set("PS2", "> ");
-        }
+        set_default_prompts(&mut executor);
 
         // Load plugins
         executor.load_plugins(true);
 
-        // Source ~/.yoshrc (yosh-specific startup file)
-        if !home.is_empty() {
-            let rc_path = std::path::PathBuf::from(&home).join(".yoshrc");
-            executor.source_file(&rc_path); // Silent skip if absent
-        }
-
-        // Source $ENV (POSIX: parameter-expanded path for interactive shells).
-        // Skipped when the rc file already ran `exit`: the shell is about
-        // to terminate (`run` checks `exit_requested` before the first
-        // prompt), so nothing further may run.
-        if executor.exit_requested.is_none()
-            && let Some(env_val) = executor.env.vars.get("ENV").map(|s| s.to_string())
-            && !env_val.is_empty()
-        {
-            // POSIX 2.6.1: tilde expansion occurs before parameter expansion
-            let home = executor.env.vars.get("HOME").map(|s| s.to_string());
-            let after_tilde = crate::expand::expand_tilde_prefix(home.as_deref(), &env_val);
-
-            // Parse as double-quoted word for parameter expansion
-            let input = format!("\"{}\"", after_tilde);
-            let expanded = match crate::lexer::Lexer::new(&input).next_token() {
-                Ok(tok) => {
-                    if let crate::lexer::token::Token::Word(word) = tok.token {
-                        crate::expand::expand_word_to_string(&mut executor.env, &word)
-                            .ok()
-                            .or_else(|| Some(after_tilde.clone()))
-                    } else {
-                        Some(after_tilde.clone())
-                    }
-                }
-                Err(_) => Some(after_tilde.clone()),
-            };
-            if let Some(path) = expanded
-                && executor.source_file(std::path::Path::new(&path)).is_none()
-            {
-                eprintln!("yosh: {}: No such file or directory", path);
-            }
-        }
+        source_startup_files(&mut executor);
 
         // Load history from file. After the startup files, as bash does,
         // so a HISTFILE / HISTSIZE set in ~/.yoshrc or $ENV governs which
@@ -546,6 +494,70 @@ impl Repl {
     /// fired by Ctrl+C at the prompt.
     fn end_top_level_command(&mut self) {
         self.executor.env.exec.flow_control = None;
+    }
+}
+
+/// POSIX XCU §2.5.3: PS1 and PS2 have default values for interactive
+/// shells (the REPL and `sh -i` reading a non-terminal).
+pub fn set_default_prompts(executor: &mut Executor) {
+    // Set as real variables so observers like `[ -n "${PS1+x}" ]` see
+    // them (dash and bash do). Defer to an inherited value if already
+    // present.
+    if executor.env.vars.get("PS1").is_none() {
+        // SAFETY: getuid() is always safe to call.
+        let default = if unsafe { libc::getuid() } == 0 {
+            "# "
+        } else {
+            "$ "
+        };
+        let _ = executor.env.vars.set("PS1", default);
+    }
+    if executor.env.vars.get("PS2").is_none() {
+        let _ = executor.env.vars.set("PS2", "> ");
+    }
+}
+
+/// Run the interactive startup files: `~/.yoshrc`, then the file named
+/// by `$ENV` (POSIX: only for interactive shells).
+pub fn source_startup_files(executor: &mut Executor) {
+    let home = executor.env.vars.get("HOME").unwrap_or("").to_string();
+    // Source ~/.yoshrc (yosh-specific startup file)
+    if !home.is_empty() {
+        let rc_path = std::path::PathBuf::from(&home).join(".yoshrc");
+        executor.source_file(&rc_path); // Silent skip if absent
+    }
+
+    // Source $ENV (POSIX: parameter-expanded path for interactive shells).
+    // Skipped when the rc file already ran `exit`: the shell is about
+    // to terminate (`run` checks `exit_requested` before the first
+    // prompt), so nothing further may run.
+    if executor.exit_requested.is_none()
+        && let Some(env_val) = executor.env.vars.get("ENV").map(|s| s.to_string())
+        && !env_val.is_empty()
+    {
+        // POSIX 2.6.1: tilde expansion occurs before parameter expansion
+        let home = executor.env.vars.get("HOME").map(|s| s.to_string());
+        let after_tilde = crate::expand::expand_tilde_prefix(home.as_deref(), &env_val);
+
+        // Parse as double-quoted word for parameter expansion
+        let input = format!("\"{}\"", after_tilde);
+        let expanded = match crate::lexer::Lexer::new(&input).next_token() {
+            Ok(tok) => {
+                if let crate::lexer::token::Token::Word(word) = tok.token {
+                    crate::expand::expand_word_to_string(&mut executor.env, &word)
+                        .ok()
+                        .or_else(|| Some(after_tilde.clone()))
+                } else {
+                    Some(after_tilde.clone())
+                }
+            }
+            Err(_) => Some(after_tilde.clone()),
+        };
+        if let Some(path) = expanded
+            && executor.source_file(std::path::Path::new(&path)).is_none()
+        {
+            eprintln!("yosh: {}: No such file or directory", path);
+        }
     }
 }
 

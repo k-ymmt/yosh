@@ -71,6 +71,19 @@ impl Parser {
         Self::from_lexer(Lexer::new_with_aliases(input, aliases))
     }
 
+    /// Like `new_with_aliases`, for input that starts at line `line` of
+    /// a longer source read piecewise (line numbers in diagnostics and
+    /// `LINENO` continue from there).
+    pub fn new_with_aliases_at_line(
+        input: &str,
+        aliases: &crate::env::aliases::AliasStore,
+        line: usize,
+    ) -> Self {
+        let mut lexer = Lexer::new_with_aliases(input, aliases);
+        lexer.set_start_line(line);
+        Self::from_lexer(lexer)
+    }
+
     /// Replace the alias table used for tokens not yet read. A driver that
     /// parses and executes one complete command at a time calls this after
     /// each command so aliases it defined apply to the following lines.

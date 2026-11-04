@@ -214,6 +214,11 @@ pub fn drain_pending_signals() -> Vec<i32> {
     signals
 }
 
+/// The self-pipe's read end, or `None` before `init_signal_handling`.
+pub fn try_self_pipe_read_fd() -> Option<RawFd> {
+    SELF_PIPE.get().map(|&(read_fd, _)| read_fd)
+}
+
 /// Return the read end of the self-pipe (for use with poll/select).
 ///
 /// # Panics

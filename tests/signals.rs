@@ -911,3 +911,104 @@ fn test_async_pipeline_redirect_only_member_keeps_first_member_preview() {
     );
     assert!(stdout.contains("done"), "wait must return: {:?}", stdout);
 }
+
+/// Spawn `yosh` reading commands from a pipe that this test keeps open,
+/// with stdout piped back. Returns the child plus its stdin writer.
+fn spawn_yosh_on_open_pipe() -> std::process::Child {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yosh"));
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    reset_trap_signals(&mut cmd);
+    cmd.spawn().expect("failed to spawn yosh")
+}
+
+/// Read stdout lines until one equals `want` (panics at EOF).
+fn read_until_line(reader: &mut impl std::io::BufRead, want: &str) {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).expect("read stdout");
+        assert!(n > 0, "stdout ended before {want:?}");
+        if line.trim_end() == want {
+            return;
+        }
+    }
+}
+
+#[test]
+fn test_trap_runs_while_waiting_for_command_input() {
+    // A trapped signal arriving while the shell waits for its next
+    // command line (stdin a pipe that stays open) runs the trap at once,
+    // not only after more input arrives (dash and bash agree).
+    use std::io::{BufReader, Write};
+    let mut child = spawn_yosh_on_open_pipe();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    stdin
+        .write_all(b"trap 'echo got-usr1' USR1\necho ready\n")
+        .unwrap();
+    read_until_line(&mut out, "ready");
+    unsafe { libc::kill(child.id() as i32, libc::SIGUSR1) };
+    // The trap output must arrive while stdin is still open; read it on
+    // a thread so a regression fails after a generous timeout instead
+    // of hanging the suite.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        read_until_line(&mut out, "got-usr1");
+        let _ = tx.send(());
+    });
+    let got = rx.recv_timeout(Duration::from_secs(30));
+    drop(stdin);
+    if got.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait().unwrap();
+    let _ = reader.join();
+    assert!(
+        got.is_ok(),
+        "trap did not run while the shell waited for input"
+    );
+    assert_eq!(status.code(), Some(0));
+}
+
+#[test]
+fn test_untrapped_signal_while_waiting_for_input_kills_shell() {
+    // An untrapped TERM ends a shell blocked reading its commands at
+    // once, by the signal itself (the parent sees a signal death, as
+    // with dash and bash) — it must not run the next line first.
+    use std::io::{BufReader, Write};
+    use std::os::unix::process::ExitStatusExt;
+    let mut child = spawn_yosh_on_open_pipe();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    stdin.write_all(b"echo ready\n").unwrap();
+    read_until_line(&mut out, "ready");
+    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if start.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            panic!("shell blocked on input ignored SIGTERM");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let _ = stdin.write_all(b"echo late\n");
+    assert_eq!(status.signal(), Some(libc::SIGTERM), "status: {status:?}");
+}
+
+#[test]
+fn test_untrapped_signal_kills_shell_by_that_signal() {
+    // `kill $$` with no trap: the shell dies of the signal (WIFSIGNALED),
+    // not a normal exit with 128+sig, so an invoking shell can tell
+    // (e.g. stop its loop on SIGINT).
+    use std::os::unix::process::ExitStatusExt;
+    for (sig, name) in [(libc::SIGTERM, "TERM"), (libc::SIGINT, "INT")] {
+        let out = yosh_exec(&format!("kill -{name} $$; echo not-reached"));
+        assert_eq!(out.status.signal(), Some(sig), "{name}: {:?}", out.status);
+        assert!(out.stdout.is_empty());
+    }
+}
