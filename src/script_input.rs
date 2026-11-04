@@ -349,6 +349,22 @@ impl StdinReader {
     fn seek(&self, pos: i64) {
         unsafe { libc::lseek(self.fd, pos as libc::off_t, libc::SEEK_SET) };
     }
+
+    /// Move the fd offset from `from` to `to` with one relative lseek,
+    /// returning true. If the offset was not at `from` (or the fd lost
+    /// its offset), leave it where it was and return false.
+    fn seek_from(&self, from: i64, to: i64) -> bool {
+        let delta = to - from;
+        let pos = unsafe { libc::lseek(self.fd, delta as libc::off_t, libc::SEEK_CUR) };
+        if pos == to {
+            return true;
+        }
+        if pos >= 0 {
+            // It moved from somewhere else: put it back.
+            unsafe { libc::lseek(self.fd, (pos - delta) as libc::off_t, libc::SEEK_SET) };
+        }
+        false
+    }
 }
 
 impl Default for StdinReader {
@@ -662,6 +678,10 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
         // Raw-byte bookkeeping for seekable stdin: encoded position
         // `enc_mark` is raw offset `raw_mark` from text_raw_start.
         let (mut enc_mark, mut raw_mark) = (0usize, 0usize);
+        // Seekable stdin: the fd offset the last command ran with and the
+        // end of its text, until the fd's offset now is compared with it
+        // (whether the command read input or replaced fd 0).
+        let mut unchecked: Option<(i64, usize)> = None;
 
         loop {
             p.set_aliases(cmd_aliases.as_ref().unwrap_or(&executor.env.aliases));
@@ -680,6 +700,34 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
                     Ok(Some(_)) => p.is_at_end(),
                     Err(e) => is_incomplete(&p, &e.kind),
                 };
+            // Check the fd offset after the last command (parsing is
+            // pure, so the next command may be parsed first from text
+            // that turns out stale). When that command is ready to run,
+            // one relative lseek both checks the offset and moves it to
+            // the end of the next command; otherwise check it now.
+            let mut positioned = None;
+            if let Some((off, end)) = unchecked.take() {
+                let r = reader.as_mut().expect("only seekable stdin defers a check");
+                let moved = if matches!(parsed, Ok(Some(_))) && !needs_more {
+                    let next_end = p.input_position();
+                    raw_mark += byteenc::decode_bytes(&text[enc_mark..next_end]).len();
+                    enc_mark = next_end;
+                    let next = text_raw_start + raw_mark as i64;
+                    positioned = Some(next);
+                    !r.seek_from(off, next)
+                } else {
+                    r.offset() != Some(off)
+                };
+                if moved {
+                    // The command read from (or replaced) stdin: continue
+                    // reading where it left off.
+                    line += count_newlines(&text, end);
+                    text.clear();
+                    r.detect();
+                    text_raw_start = r.read_pos;
+                    continue 'rebuild;
+                }
+            }
             if needs_more {
                 // The parser ran out of text inside the command, without
                 // a lexer error (see `awaits_closer`).
@@ -809,6 +857,7 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
                     // Seekable stdin: leave the fd offset right after this
                     // command's text while it runs.
                     let expected = match reader.as_mut() {
+                        Some(_) if positioned.is_some() => positioned,
                         Some(r) if r.seekable => {
                             raw_mark += byteenc::decode_bytes(&text[enc_mark..end]).len();
                             enc_mark = end;
@@ -849,17 +898,9 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
                         break 'rebuild;
                     }
                     executor.check_errexit(status);
-                    // The command read from (or replaced) stdin: continue
-                    // reading where it left off.
-                    if let (Some(r), Some(off)) = (reader.as_mut(), expected)
-                        && r.offset() != Some(off)
-                    {
-                        line += count_newlines(&text, end);
-                        text.clear();
-                        r.detect();
-                        text_raw_start = r.read_pos;
-                        continue 'rebuild;
-                    }
+                    // Whether the command moved the fd offset is checked
+                    // once the next command has been parsed.
+                    unchecked = expected.map(|off| (off, end));
                     // The command replaced stdin after its end had been
                     // seen (`exec <file` on an unterminated last line):
                     // read on from the new file after the rest of the
@@ -943,6 +984,23 @@ mod tests {
         r.fill(&mut out, 0, &mut || SignalCheck::Quiet);
         assert_eq!(out, b"echo a\necho b\npartial");
         assert!(r.eof);
+    }
+
+    #[test]
+    fn seek_from_moves_only_from_the_expected_offset() {
+        let (r, _f) = reader_over(b"0123456789");
+        r.seek(3);
+        assert!(r.seek_from(3, 7));
+        assert_eq!(r.offset(), Some(7));
+        // The offset is not where the caller left it: it stays put.
+        assert!(!r.seek_from(3, 9));
+        assert_eq!(r.offset(), Some(7));
+        assert!(!r.seek_from(9, 0));
+        assert_eq!(r.offset(), Some(7));
+        // No offset at all.
+        let (rd, _wr) = nix::unistd::pipe().unwrap();
+        use std::os::unix::io::AsRawFd;
+        assert!(!StdinReader::for_fd(rd.as_raw_fd()).seek_from(0, 1));
     }
 
     #[test]
