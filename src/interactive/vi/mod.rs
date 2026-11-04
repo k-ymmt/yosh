@@ -1,4 +1,4 @@
-// src/interactive/vi.rs
+// src/interactive/vi/mod.rs
 
 //! POSIX sh vi line editing (POSIX XCU `sh`, "vi Line Editing Command
 //! Mode" / "vi Line Editing Insert Mode").
