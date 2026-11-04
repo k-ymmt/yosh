@@ -474,8 +474,10 @@ mod tests {
             "Command exit_trap must be cleared by reset_for_subshell"
         );
 
-        let mut store = TrapStore::default();
-        store.exit_trap = Some(TrapAction::Ignore);
+        let mut store = TrapStore {
+            exit_trap: Some(TrapAction::Ignore),
+            ..Default::default()
+        };
         store.reset_for_subshell();
         assert_eq!(
             store.exit_trap,

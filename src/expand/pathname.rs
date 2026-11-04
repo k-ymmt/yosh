@@ -587,6 +587,9 @@ mod tests {
     }
 
     #[test]
+    // The file is deliberately named `\`; on Unix a backslash is not a
+    // path separator, so `join` appends it rather than replacing the path.
+    #[allow(clippy::join_absolute_paths)]
     fn escaped_backslash_class_matches_backslash_file() {
         // `echo [\\]` with a file named `\`: the escaped backslash is a
         // literal class member, so the glob matches (bash parity). The

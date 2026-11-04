@@ -831,7 +831,7 @@ mod tests {
         let replacement = format!(
             "{}{}{} ",
             result.dir_prefix,
-            &result.candidates[0],
+            result.candidates[0],
             unclosed_quote(&result.dir_prefix).unwrap()
         );
         assert_eq!(replacement, "\"sub dir/nested.txt\" ");

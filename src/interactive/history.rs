@@ -211,12 +211,9 @@ impl History {
     }
 
     pub fn navigate_down(&mut self) -> Option<&str> {
-        let pos = match self.cursor {
-            // Not navigating: returning the (empty) saved line here would
-            // let the caller wipe a freshly typed buffer on a stray Down.
-            None => return None,
-            Some(pos) => pos,
-        };
+        // Not navigating: returning the (empty) saved line here would let the
+        // caller wipe a freshly typed buffer on a stray Down.
+        let pos = self.cursor?;
 
         if pos + 1 >= self.entries.len() {
             self.cursor = None;

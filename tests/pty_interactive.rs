@@ -245,7 +245,7 @@ fn test_pty_vim_mode_ctrl_x_ctrl_e_scripted_editor() {
     wait_for_prompt(&mut s);
     s.send("unset VISUAL\r").unwrap();
     wait_for_prompt(&mut s);
-    s.send(&format!("EDITOR='/bin/sh {}'\r", script.display()))
+    s.send(format!("EDITOR='/bin/sh {}'\r", script.display()))
         .unwrap();
     wait_for_prompt(&mut s);
 
@@ -1163,9 +1163,9 @@ fn test_pty_untrapped_term_quit_int_ignored() {
     wait_for_prompt(&mut s);
 
     for sig in ["TERM", "QUIT", "INT"] {
-        s.send(&format!("kill -{} $$\r", sig)).unwrap();
+        s.send(format!("kill -{} $$\r", sig)).unwrap();
         wait_for_prompt(&mut s);
-        s.send(&format!("echo alive-{}-$?\r", sig)).unwrap();
+        s.send(format!("echo alive-{}-$?\r", sig)).unwrap();
         expect_output(
             &mut s,
             &format!("alive-{}-0", sig),
@@ -1775,7 +1775,7 @@ fn test_pty_backgrounded_repl_stops_until_foregrounded() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
-    s.send(&format!("'{}' &\r", bin)).unwrap();
+    s.send(format!("'{}' &\r", bin)).unwrap();
     wait_for_prompt(&mut s);
     s.send("echo BG-$!\r").unwrap();
     let m = s
@@ -1863,7 +1863,7 @@ fn test_pty_backgrounded_repl_with_blocked_ttin_still_stops() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
 
-    s.send(&format!(
+    s.send(format!(
         "perl -MPOSIX -e 'sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGTTIN)); exec $ARGV[0]' '{}' &\r",
         bin
     ))

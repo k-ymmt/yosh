@@ -160,7 +160,7 @@ impl LineEditor {
         // that has not been created yet); fall back to the full repaint for
         // that column rather than modeling deferred-wrap state.
         let w = prompt_width + chars_width(&self.buf[..start]);
-        if w > 0 && w % tw == 0 {
+        if w > 0 && w.is_multiple_of(tw) {
             return None;
         }
         Some(start)
