@@ -1,4 +1,16 @@
+//! Shell variable storage: the scope chain of name → `Variable` maps and
+//! the reads and writes that resolve a name through it.
+//!
+//! Function-call scopes and the per-scope `getopts` / `OPTIND` state are
+//! in `scope`, positional parameters in `positional`, and the cached
+//! exported environment handed to child processes in `environ`.
+
+mod environ;
+mod positional;
+mod scope;
+
 use super::fxhash::FxHashMap;
+use environ::ExportCache;
 
 /// A shell variable with its value and attributes.
 ///
@@ -58,6 +70,26 @@ struct Scope {
     saved_optind: Option<String>,
 }
 
+impl Scope {
+    /// A scope holding `vars` and `positional_params`, with its `getopts`
+    /// state reset and `saved_optind` to restore when it is popped.
+    fn new(
+        vars: FxHashMap<String, Variable>,
+        positional_params: Vec<String>,
+        saved_optind: Option<String>,
+    ) -> Self {
+        Scope {
+            vars,
+            positional_params,
+            positional_offset: 0,
+            getopts_subindex: 0,
+            optind_write_generation: 0,
+            getopts_observed_optind_generation: 0,
+            saved_optind,
+        }
+    }
+}
+
 /// Storage for shell variables with scope chain support.
 ///
 /// Scopes are stacked: `scopes[0]` is global, `scopes.last()` is current.
@@ -70,31 +102,26 @@ struct Scope {
 #[derive(Debug, Clone)]
 pub struct VarStore {
     scopes: Vec<Scope>,
-    environ_cache: Option<Vec<(String, String)>>,
-    /// `KEY=VALUE` C strings for `execve`, derived from `environ_cache`
-    /// and invalidated together with it. Lets a forked child exec with
-    /// a prebuilt `envp` instead of decoding + `setenv`-ing every
-    /// exported variable after the fork (which was O(n²) in libc and
-    /// allocated per spawn).
-    envp_cache: Option<Vec<std::ffi::CString>>,
+    export_cache: ExportCache,
+}
+
+/// The error a write to a readonly variable fails with.
+fn readonly_error(name: &str) -> String {
+    format!("{}: readonly variable", name)
+}
+
+/// The variable `name` resolves to, walking `scopes` from top to bottom.
+fn find_var_mut<'a>(scopes: &'a mut [Scope], name: &str) -> Option<&'a mut Variable> {
+    scopes
+        .iter_mut()
+        .rev()
+        .find_map(|scope| scope.vars.get_mut(name))
 }
 
 impl VarStore {
     /// Create an empty VarStore with a single global scope.
     pub fn new() -> Self {
-        VarStore {
-            scopes: vec![Scope {
-                vars: FxHashMap::default(),
-                positional_params: Vec::new(),
-                positional_offset: 0,
-                getopts_subindex: 0,
-                optind_write_generation: 0,
-                getopts_observed_optind_generation: 0,
-                saved_optind: None,
-            }],
-            environ_cache: None,
-            envp_cache: None,
-        }
+        Self::with_globals(FxHashMap::default())
     }
 
     /// Initialize from the current process environment.
@@ -110,139 +137,15 @@ impl VarStore {
             let value = crate::byteenc::encode_bytes(value.as_bytes()).into_owned();
             vars.insert(key, Variable::new_exported(value));
         }
+        Self::with_globals(vars)
+    }
+
+    /// A store whose only (global) scope holds `vars`.
+    fn with_globals(vars: FxHashMap<String, Variable>) -> Self {
         VarStore {
-            scopes: vec![Scope {
-                vars,
-                positional_params: Vec::new(),
-                positional_offset: 0,
-                getopts_subindex: 0,
-                optind_write_generation: 0,
-                getopts_observed_optind_generation: 0,
-                saved_optind: None,
-            }],
-            environ_cache: None,
-            envp_cache: None,
+            scopes: vec![Scope::new(vars, Vec::new(), None)],
+            export_cache: ExportCache::default(),
         }
-    }
-
-    // ── Scope management ────────────────────────────────────────────────
-
-    /// Push a new scope with the given positional parameters.
-    /// Used for function calls.
-    ///
-    /// Saves the caller's current `OPTIND` value into the new scope's
-    /// `saved_optind` and resets the visible `OPTIND` to `"1"`. The
-    /// stacked-options subcursor starts at `0`.
-    pub fn push_scope(&mut self, positional_params: Vec<String>) {
-        self.environ_cache = None;
-        self.envp_cache = None;
-        // Snapshot caller's OPTIND (may be unset → None).
-        let saved_optind = self.get("OPTIND").map(|s| s.to_string());
-        self.scopes.push(Scope {
-            vars: FxHashMap::default(),
-            positional_params,
-            positional_offset: 0,
-            getopts_subindex: 0,
-            optind_write_generation: 0,
-            getopts_observed_optind_generation: 0,
-            saved_optind,
-        });
-        // Set OPTIND="1" in the new (top) scope so the function body
-        // sees a fresh parse position. Direct write into top scope to
-        // avoid POSIX "assign in caller" semantics of `set()`.
-        self.scopes
-            .last_mut()
-            .unwrap()
-            .vars
-            .insert("OPTIND".to_string(), Variable::new("1"));
-    }
-
-    /// Pop the current scope, restoring the previous scope's positional
-    /// parameters. Panics if only the global scope remains.
-    ///
-    /// Restores the caller's `OPTIND` from the popped scope's
-    /// `saved_optind` snapshot (writing into whichever underlying scope
-    /// already holds OPTIND, or creating it in the new top scope).
-    pub fn pop_scope(&mut self) {
-        self.environ_cache = None;
-        self.envp_cache = None;
-        assert!(self.scopes.len() > 1, "cannot pop the global scope");
-        let popped = self.scopes.pop().unwrap();
-        if let Some(prev_optind) = popped.saved_optind {
-            // Write back into the now-current scope chain. Use `set` so
-            // the value lands where OPTIND was originally defined, then
-            // mark the internal restore as observed so it does not reset
-            // the caller's pending stacked-option cursor.
-            if self.set("OPTIND", prev_optind).is_ok() {
-                self.mark_getopts_observed_optind();
-            }
-        }
-    }
-
-    // ── getopts subcursor (top scope) ───────────────────────────────────
-
-    /// Get the current scope's `getopts` stacked-options subcursor.
-    pub fn getopts_subindex(&self) -> usize {
-        self.scopes.last().unwrap().getopts_subindex
-    }
-
-    /// Set the current scope's `getopts` stacked-options subcursor.
-    pub fn set_getopts_subindex(&mut self, value: usize) {
-        self.scopes.last_mut().unwrap().getopts_subindex = value;
-    }
-
-    /// Return true if `OPTIND` has been written since `getopts` last
-    /// observed the current scope's write generation.
-    pub fn optind_written_since_getopts(&self) -> bool {
-        let scope = self.scopes.last().unwrap();
-        scope.optind_write_generation != scope.getopts_observed_optind_generation
-    }
-
-    /// Mark the current scope's `OPTIND` write generation as observed by
-    /// `getopts`.
-    pub fn mark_getopts_observed_optind(&mut self) {
-        let scope = self.scopes.last_mut().unwrap();
-        scope.getopts_observed_optind_generation = scope.optind_write_generation;
-    }
-
-    /// Return the current scope depth. 1 = global scope only.
-    pub fn scope_depth(&self) -> usize {
-        self.scopes.len()
-    }
-
-    // ── Positional parameters ───────────────────────────────────────────
-
-    /// Get the current scope's positional parameters.
-    pub fn positional_params(&self) -> &[String] {
-        let scope = self.scopes.last().unwrap();
-        &scope.positional_params[scope.positional_offset..]
-    }
-
-    /// Set the current scope's positional parameters.
-    pub fn set_positional_params(&mut self, params: Vec<String>) {
-        let scope = self.scopes.last_mut().unwrap();
-        scope.positional_params = params;
-        scope.positional_offset = 0;
-    }
-
-    /// Drop the first `n` positional parameters (POSIX `shift n`).
-    /// Returns `false` (and changes nothing) when `n` exceeds `$#`.
-    pub fn shift_positional_params(&mut self, n: usize) -> bool {
-        let scope = self.scopes.last_mut().unwrap();
-        let remaining = scope.positional_params.len() - scope.positional_offset;
-        if n > remaining {
-            return false;
-        }
-        scope.positional_offset += n;
-        // Reclaim consumed strings once they dominate the buffer so a
-        // long-running loop does not pin the whole original argv.
-        if scope.positional_offset >= 64
-            && scope.positional_offset * 2 >= scope.positional_params.len()
-        {
-            scope.positional_params.drain(..scope.positional_offset);
-            scope.positional_offset = 0;
-        }
-        true
     }
 
     // ── Variable access ─────────────────────────────────────────────────
@@ -286,53 +189,7 @@ impl VarStore {
     /// exports a new variable, so cache-affecting new-var writes cannot
     /// happen here).
     pub fn set(&mut self, name: &str, value: impl Into<String>) -> Result<(), String> {
-        let value = value.into();
-
-        // Fast path: single scope (most common — outside function calls)
-        if self.scopes.len() == 1 {
-            if let Some(existing) = self.scopes[0].vars.get_mut(name) {
-                if existing.readonly {
-                    return Err(format!("{}: readonly variable", name));
-                }
-                if existing.exported {
-                    self.environ_cache = None;
-                    self.envp_cache = None;
-                }
-                existing.value = Some(value);
-                existing.readonly = false;
-            } else {
-                self.scopes[0]
-                    .vars
-                    .insert(name.to_string(), Variable::new(value));
-            }
-            self.note_optind_write(name);
-            return Ok(());
-        }
-
-        // Search for existing variable in any scope (top to bottom).
-        for idx in (0..self.scopes.len()).rev() {
-            if let Some(existing) = self.scopes[idx].vars.get_mut(name) {
-                if existing.readonly {
-                    return Err(format!("{}: readonly variable", name));
-                }
-                if existing.exported {
-                    self.environ_cache = None;
-                    self.envp_cache = None;
-                }
-                existing.value = Some(value);
-                existing.readonly = false;
-                self.note_optind_write(name);
-                return Ok(());
-            }
-        }
-
-        // Not found — create in global scope. A brand-new variable from
-        // plain `set` is never exported, so it cannot change `environ()`.
-        self.scopes[0]
-            .vars
-            .insert(name.to_string(), Variable::new(value));
-        self.note_optind_write(name);
-        Ok(())
+        self.assign(name, value.into(), false)
     }
 
     /// Set a variable's value with allexport support.
@@ -340,53 +197,45 @@ impl VarStore {
     /// Cache invalidation mirrors `set`, plus the allexport-specific case:
     /// a write that newly exports a variable (existing var promoted to
     /// exported, or a brand-new var created exported under `set -a`) must
-    /// invalidate the cache even though the plain-`set` fast path above
-    /// would not have needed to.
+    /// invalidate the cache even though plain `set` would not have
+    /// needed to.
     pub fn set_with_options(
         &mut self,
         name: &str,
         value: impl Into<String>,
         allexport: bool,
     ) -> Result<(), String> {
-        let value = value.into();
-
-        for idx in (0..self.scopes.len()).rev() {
-            if let Some(existing) = self.scopes[idx].vars.get_mut(name) {
-                if existing.readonly {
-                    return Err(format!("{}: readonly variable", name));
-                }
-                // `exported` covers both cache-relevant cases: the var
-                // was already exported (value change alters environ()),
-                // or it becomes exported now via allexport.
-                let exported = existing.exported || allexport;
-                if exported {
-                    self.environ_cache = None;
-                    self.envp_cache = None;
-                }
-                existing.value = Some(value);
-                existing.exported = exported;
-                existing.readonly = false;
-                self.note_optind_write(name);
-                return Ok(());
-            }
-        }
-
-        let mut var = Variable::new(value);
-        if allexport {
-            var.exported = true;
-            self.environ_cache = None;
-            self.envp_cache = None;
-        }
-        self.scopes[0].vars.insert(name.to_string(), var);
-        self.note_optind_write(name);
-        Ok(())
+        self.assign(name, value.into(), allexport)
     }
 
-    fn note_optind_write(&mut self, name: &str) {
-        if name == "OPTIND" {
-            let scope = self.scopes.last_mut().unwrap();
-            scope.optind_write_generation = scope.optind_write_generation.wrapping_add(1);
+    /// The shared body of `set` / `set_with_options`.
+    fn assign(&mut self, name: &str, value: String, allexport: bool) -> Result<(), String> {
+        if let Some(existing) = find_var_mut(&mut self.scopes, name) {
+            if existing.readonly {
+                return Err(readonly_error(name));
+            }
+            // `exported` covers both cache-relevant cases: the var was
+            // already exported (value change alters environ()), or it
+            // becomes exported now via allexport.
+            let exported = existing.exported || allexport;
+            if exported {
+                self.export_cache.invalidate();
+            }
+            existing.value = Some(value);
+            existing.exported = exported;
+            existing.readonly = false;
+        } else {
+            // Not found — create in global scope. A brand-new variable
+            // changes `environ()` only when allexport exports it.
+            let mut var = Variable::new(value);
+            if allexport {
+                var.exported = true;
+                self.export_cache.invalidate();
+            }
+            self.scopes[0].vars.insert(name.to_string(), var);
         }
+        self.note_optind_write(name);
+        Ok(())
     }
 
     /// Unset a variable. Returns an error if the variable is readonly.
@@ -397,11 +246,10 @@ impl VarStore {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(existing) = scope.vars.get(name) {
                 if existing.readonly {
-                    return Err(format!("{}: readonly variable", name));
+                    return Err(readonly_error(name));
                 }
                 if existing.exported {
-                    self.environ_cache = None;
-                    self.envp_cache = None;
+                    self.export_cache.invalidate();
                 }
                 scope.vars.remove(name);
                 return Ok(());
@@ -427,11 +275,10 @@ impl VarStore {
             .unwrap_or(0);
         let current = self.scopes[idx].vars.get(name);
         if current.is_some_and(|v| v.readonly) {
-            return Err(format!("{}: readonly variable", name));
+            return Err(readonly_error(name));
         }
         if saved.exported || current.is_some_and(|v| v.exported) {
-            self.environ_cache = None;
-            self.envp_cache = None;
+            self.export_cache.invalidate();
         }
         self.scopes[idx].vars.insert(name.to_string(), saved);
         self.note_optind_write(name);
@@ -445,15 +292,12 @@ impl VarStore {
     /// already exported (a no-op re-export cannot change `environ()`'s
     /// output).
     pub fn export(&mut self, name: &str) {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(var) = scope.vars.get_mut(name) {
-                if !var.exported {
-                    self.environ_cache = None;
-                    self.envp_cache = None;
-                    var.exported = true;
-                }
-                return;
+        if let Some(var) = find_var_mut(&mut self.scopes, name) {
+            if !var.exported {
+                self.export_cache.invalidate();
+                var.exported = true;
             }
+            return;
         }
         // A valueless name never appears in `environ()`, so the cache
         // stays valid.
@@ -475,11 +319,9 @@ impl VarStore {
     /// cannot appear in `environ()`. The cache is therefore never
     /// invalidated here.
     pub fn set_readonly(&mut self, name: &str) {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(var) = scope.vars.get_mut(name) {
-                var.readonly = true;
-                return;
-            }
+        if let Some(var) = find_var_mut(&mut self.scopes, name) {
+            var.readonly = true;
+            return;
         }
         self.scopes[0].vars.insert(
             name.to_string(),
@@ -496,70 +338,7 @@ impl VarStore {
     /// Allows callers (e.g. `getopts`) to dry-run an assignment without
     /// mutating state.
     pub fn is_readonly(&self, name: &str) -> bool {
-        for scope in self.scopes.iter().rev() {
-            if let Some(var) = scope.vars.get(name) {
-                return var.readonly;
-            }
-        }
-        false
-    }
-
-    /// Exported variables as `KEY=VALUE` C strings ready for `execve`,
-    /// with byteenc escapes decoded back to raw bytes. Entries whose
-    /// key or value contains NUL are skipped. Cached like [`environ`].
-    ///
-    /// [`environ`]: Self::environ
-    pub fn envp(&mut self) -> &[std::ffi::CString] {
-        if self.envp_cache.is_none() {
-            if self.environ_cache.is_none() {
-                self.environ_cache = Some(self.build_environ());
-            }
-            let pairs = self.environ_cache.as_ref().unwrap();
-            let mut v = Vec::with_capacity(pairs.len());
-            for (k, val) in pairs {
-                let mut bytes = crate::byteenc::decode_bytes(k).into_owned();
-                bytes.push(b'=');
-                bytes.extend_from_slice(&crate::byteenc::decode_bytes(val));
-                if let Ok(c) = std::ffi::CString::new(bytes) {
-                    v.push(c);
-                }
-            }
-            self.envp_cache = Some(v);
-        }
-        self.envp_cache.as_ref().unwrap()
-    }
-
-    /// Return only exported variables as (name, value) pairs.
-    /// Later scopes shadow earlier ones. Result is cached until next mutation.
-    pub fn environ(&mut self) -> &[(String, String)] {
-        if self.environ_cache.is_none() {
-            self.environ_cache = Some(self.build_environ());
-        }
-        self.environ_cache.as_ref().unwrap()
-    }
-
-    /// Build the exported-environ snapshot in a single pass: walk scopes
-    /// top-down (current scope first) and track already-seen names in a
-    /// `HashSet<&str>` so each name is resolved to its shadowing (topmost)
-    /// scope without allocating an intermediate `HashMap<String, &Variable>`
-    /// covering every variable (exported or not). Only exported entries
-    /// are cloned into the result.
-    fn build_environ(&self) -> Vec<(String, String)> {
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let mut result = Vec::new();
-        for scope in self.scopes.iter().rev() {
-            for (name, var) in &scope.vars {
-                if !seen.insert(name.as_str()) {
-                    continue;
-                }
-                if var.exported
-                    && let Some(value) = &var.value
-                {
-                    result.push((name.clone(), value.clone()));
-                }
-            }
-        }
-        result
+        self.get_var(name).is_some_and(|var| var.readonly)
     }
 
     /// Iterate over all variables as (name, &Variable) pairs.
@@ -589,57 +368,6 @@ impl Default for VarStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shift_positional_params_is_offset_based_and_compacts() {
-        let mut vs = VarStore::new();
-        let params: Vec<String> = (0..200).map(|i| i.to_string()).collect();
-        vs.set_positional_params(params);
-        assert!(vs.shift_positional_params(1));
-        assert_eq!(vs.positional_params()[0], "1");
-        assert_eq!(vs.positional_params().len(), 199);
-        for _ in 0..150 {
-            assert!(vs.shift_positional_params(1));
-        }
-        assert_eq!(vs.positional_params().len(), 49);
-        assert_eq!(vs.positional_params()[0], "151");
-        assert_eq!(vs.positional_params()[48], "199");
-        assert!(
-            !vs.shift_positional_params(50),
-            "over-shift must be rejected"
-        );
-        assert_eq!(vs.positional_params().len(), 49);
-        assert!(vs.shift_positional_params(49));
-        assert!(vs.positional_params().is_empty());
-        assert!(vs.shift_positional_params(0));
-        vs.set_positional_params(vec!["x".into()]);
-        assert_eq!(vs.positional_params(), ["x".to_string()]);
-    }
-
-    #[test]
-    fn envp_tracks_environ_and_decodes_bytes() {
-        let mut vs = VarStore::new();
-        vs.set("A", "1").unwrap();
-        vs.export("A");
-        let raw = format!("x{}y", crate::byteenc::escape_char(0xff));
-        vs.set("B", raw).unwrap();
-        vs.export("B");
-        vs.set("C", "unexported").unwrap();
-        let mut got: Vec<Vec<u8>> = vs.envp().iter().map(|c| c.as_bytes().to_vec()).collect();
-        got.sort();
-        assert_eq!(got, vec![b"A=1".to_vec(), b"B=x\xffy".to_vec()]);
-        // Cached until the next exported-var mutation.
-        assert!(vs.envp_cache.is_some());
-        vs.set("C", "still unexported").unwrap();
-        assert!(vs.envp_cache.is_some());
-        vs.set("A", "2").unwrap();
-        assert!(vs.envp_cache.is_none());
-        assert!(vs.envp().iter().any(|c| c.as_bytes() == b"A=2"));
-        // NUL-containing values are skipped rather than truncated.
-        vs.set("N", "a\0b").unwrap();
-        vs.export("N");
-        assert!(!vs.envp().iter().any(|c| c.as_bytes().starts_with(b"N=")));
-    }
 
     #[test]
     fn test_get_set() {
@@ -699,313 +427,11 @@ mod tests {
     }
 
     #[test]
-    fn test_environ_excludes_unexported() {
-        let mut store = VarStore::new();
-        store.set("FOO", "bar").unwrap();
-        store.set("BAZ", "qux").unwrap();
-        store.export("FOO");
-        let env = store.environ();
-        assert_eq!(env.len(), 1);
-        assert_eq!(env[0], ("FOO".to_string(), "bar".to_string()));
-    }
-
-    #[test]
     fn test_from_environ() {
         let store = VarStore::from_environ();
         if let Some(var) = store.get_var("PATH") {
             assert!(var.exported, "Variables from environ should be exported");
         }
-    }
-
-    #[test]
-    fn test_push_pop_scope_positional_params() {
-        let mut store = VarStore::new();
-        store.set_positional_params(vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(store.positional_params(), &["a", "b"]);
-
-        store.push_scope(vec!["x".to_string(), "y".to_string(), "z".to_string()]);
-        assert_eq!(store.positional_params(), &["x", "y", "z"]);
-
-        store.pop_scope();
-        assert_eq!(store.positional_params(), &["a", "b"]);
-    }
-
-    #[test]
-    fn test_scope_variable_lookup_walks_chain() {
-        let mut store = VarStore::new();
-        store.set("FOO", "global").unwrap();
-
-        store.push_scope(vec![]);
-        // Variable from global scope is visible
-        assert_eq!(store.get("FOO"), Some("global"));
-
-        // Setting FOO in function scope updates the global scope (POSIX)
-        store.set("FOO", "updated").unwrap();
-        store.pop_scope();
-        assert_eq!(store.get("FOO"), Some("updated"));
-    }
-
-    #[test]
-    fn test_scope_new_variable_goes_to_global() {
-        let mut store = VarStore::new();
-        store.push_scope(vec![]);
-        store.set("NEW_VAR", "value").unwrap();
-        store.pop_scope();
-        // Variable created inside function scope persists in global
-        assert_eq!(store.get("NEW_VAR"), Some("value"));
-    }
-
-    #[test]
-    fn test_scope_readonly_across_scopes() {
-        let mut store = VarStore::new();
-        store.set("RO", "immutable").unwrap();
-        store.set_readonly("RO");
-
-        store.push_scope(vec![]);
-        let result = store.set("RO", "changed");
-        assert!(result.is_err());
-        assert_eq!(store.get("RO"), Some("immutable"));
-        store.pop_scope();
-    }
-
-    #[test]
-    fn test_scope_export_across_scopes() {
-        let mut store = VarStore::new();
-        store.set("EX", "value").unwrap();
-
-        store.push_scope(vec![]);
-        store.export("EX");
-        store.pop_scope();
-
-        assert!(store.get_var("EX").unwrap().exported);
-    }
-
-    #[test]
-    fn test_scope_unset_across_scopes() {
-        let mut store = VarStore::new();
-        store.set("DEL", "value").unwrap();
-
-        store.push_scope(vec![]);
-        store.unset("DEL").unwrap();
-        store.pop_scope();
-
-        assert_eq!(store.get("DEL"), None);
-    }
-
-    #[test]
-    fn push_scope_snapshots_optind_and_resets_to_one() {
-        let mut store = VarStore::new();
-        store.set("OPTIND", "5").unwrap();
-
-        store.push_scope(vec!["a".into(), "b".into()]);
-        assert_eq!(store.get("OPTIND"), Some("1"));
-
-        store.pop_scope();
-        assert_eq!(store.get("OPTIND"), Some("5"));
-    }
-
-    #[test]
-    fn push_scope_initial_subindex_is_zero() {
-        let mut store = VarStore::new();
-        store.push_scope(vec![]);
-        assert_eq!(store.getopts_subindex(), 0);
-    }
-
-    #[test]
-    fn set_getopts_subindex_round_trips() {
-        let mut store = VarStore::new();
-        store.set_getopts_subindex(3);
-        assert_eq!(store.getopts_subindex(), 3);
-    }
-
-    #[test]
-    fn push_scope_resets_subindex_and_pop_restores() {
-        let mut store = VarStore::new();
-        store.set_getopts_subindex(7);
-
-        store.push_scope(vec![]);
-        assert_eq!(store.getopts_subindex(), 0);
-        store.set_getopts_subindex(2);
-
-        store.pop_scope();
-        assert_eq!(store.getopts_subindex(), 7);
-    }
-
-    #[test]
-    fn optind_write_since_getopts_detects_same_value_assignment() {
-        let mut store = VarStore::new();
-        store.set("OPTIND", "1").unwrap();
-        store.mark_getopts_observed_optind();
-        assert!(!store.optind_written_since_getopts());
-
-        store.set("OPTIND", "1").unwrap();
-        assert!(store.optind_written_since_getopts());
-    }
-
-    #[test]
-    fn optind_write_since_getopts_detects_assignment_with_options() {
-        let mut store = VarStore::new();
-        store.set("OPTIND", "1").unwrap();
-        store.mark_getopts_observed_optind();
-        assert!(!store.optind_written_since_getopts());
-
-        store.set_with_options("OPTIND", "1", false).unwrap();
-        assert!(store.optind_written_since_getopts());
-    }
-
-    #[test]
-    fn optind_write_generation_is_scope_local() {
-        let mut store = VarStore::new();
-        store.set("OPTIND", "1").unwrap();
-        store.mark_getopts_observed_optind();
-
-        store.push_scope(vec![]);
-        assert!(!store.optind_written_since_getopts());
-        store.set("OPTIND", "1").unwrap();
-        assert!(store.optind_written_since_getopts());
-
-        store.pop_scope();
-        assert!(!store.optind_written_since_getopts());
-    }
-
-    #[test]
-    fn pop_scope_optind_restore_does_not_trigger_caller_reset() {
-        let mut store = VarStore::new();
-        store.set("OPTIND", "1").unwrap();
-        store.set_getopts_subindex(2);
-        store.mark_getopts_observed_optind();
-
-        store.push_scope(vec![]);
-        store.set("OPTIND", "1").unwrap();
-
-        store.pop_scope();
-        assert_eq!(store.getopts_subindex(), 2);
-        assert!(!store.optind_written_since_getopts());
-    }
-
-    // ── environ_cache invalidation gating (TODO PERF item 2) ────────────
-
-    #[test]
-    fn set_on_non_exported_var_does_not_invalidate_cache() {
-        let mut store = VarStore::new();
-        store.set("FOO", "bar").unwrap();
-        let _ = store.environ(); // populate cache
-        assert!(store.environ_cache.is_some());
-
-        store.set("FOO", "baz").unwrap();
-        assert!(
-            store.environ_cache.is_some(),
-            "writing a non-exported var must not clear the environ cache"
-        );
-        assert_eq!(store.get("FOO"), Some("baz"));
-    }
-
-    #[test]
-    fn set_on_exported_var_invalidates_cache() {
-        let mut store = VarStore::new();
-        store.set("FOO", "bar").unwrap();
-        store.export("FOO");
-        let _ = store.environ(); // populate cache
-        assert!(store.environ_cache.is_some());
-
-        store.set("FOO", "baz").unwrap();
-        assert!(
-            store.environ_cache.is_none(),
-            "writing an exported var must clear the environ cache"
-        );
-        assert_eq!(store.environ(), &[("FOO".to_string(), "baz".to_string())]);
-    }
-
-    #[test]
-    fn set_creating_new_non_exported_var_does_not_invalidate_cache() {
-        let mut store = VarStore::new();
-        store.set("EXPORTED", "1").unwrap();
-        store.export("EXPORTED");
-        let _ = store.environ();
-        assert!(store.environ_cache.is_some());
-
-        // Creating a brand-new, non-exported variable must not disturb the
-        // cached exported-environ snapshot.
-        store.set("NEWVAR", "value").unwrap();
-        assert!(store.environ_cache.is_some());
-        assert_eq!(store.get("NEWVAR"), Some("value"));
-    }
-
-    #[test]
-    fn set_with_options_allexport_invalidates_cache_for_new_var() {
-        let mut store = VarStore::new();
-        store.set("EXPORTED", "1").unwrap();
-        store.export("EXPORTED");
-        let _ = store.environ();
-        assert!(store.environ_cache.is_some());
-
-        // Under `set -a` (allexport), a newly created variable becomes
-        // exported, so the cache must be invalidated.
-        store.set_with_options("NEWVAR", "value", true).unwrap();
-        assert!(
-            store.environ_cache.is_none(),
-            "allexport-created var must invalidate the cache"
-        );
-        let env = store.environ();
-        assert!(env.contains(&("NEWVAR".to_string(), "value".to_string())));
-    }
-
-    #[test]
-    fn set_with_options_non_allexport_on_non_exported_var_does_not_invalidate_cache() {
-        let mut store = VarStore::new();
-        store.set("FOO", "bar").unwrap();
-        let _ = store.environ();
-        assert!(store.environ_cache.is_some());
-
-        store.set_with_options("FOO", "baz", false).unwrap();
-        assert!(
-            store.environ_cache.is_some(),
-            "non-allexport write to a non-exported var must not invalidate the cache"
-        );
-        assert_eq!(store.get("FOO"), Some("baz"));
-    }
-
-    #[test]
-    fn unset_non_exported_var_does_not_invalidate_cache() {
-        let mut store = VarStore::new();
-        store.set("FOO", "bar").unwrap();
-        let _ = store.environ();
-        assert!(store.environ_cache.is_some());
-
-        store.unset("FOO").unwrap();
-        assert!(
-            store.environ_cache.is_some(),
-            "unsetting a non-exported var need not invalidate the cache"
-        );
-        assert_eq!(store.get("FOO"), None);
-    }
-
-    #[test]
-    fn unset_exported_var_invalidates_cache() {
-        let mut store = VarStore::new();
-        store.set("FOO", "bar").unwrap();
-        store.export("FOO");
-        let _ = store.environ();
-        assert!(store.environ_cache.is_some());
-
-        store.unset("FOO").unwrap();
-        assert!(
-            store.environ_cache.is_none(),
-            "unsetting an exported var must invalidate the cache"
-        );
-        assert!(store.environ().is_empty());
-    }
-
-    #[test]
-    fn export_invalidates_cache() {
-        let mut store = VarStore::new();
-        store.set("FOO", "bar").unwrap();
-        let _ = store.environ();
-        assert!(store.environ_cache.is_some());
-
-        store.export("FOO");
-        assert!(store.environ_cache.is_none());
-        assert_eq!(store.environ(), &[("FOO".to_string(), "bar".to_string())]);
     }
 
     // ── in-place update preserves attributes (TODO PERF item 3) ─────────
@@ -1049,47 +475,5 @@ mod tests {
         store.set_with_options("FOO", "baz", true).unwrap();
         assert!(store.get_var("FOO").unwrap().exported);
         assert_eq!(store.get("FOO"), Some("baz"));
-    }
-
-    // ── build_environ scope shadowing (TODO PERF item 4) ─────────────────
-
-    #[test]
-    fn build_environ_later_scope_shadows_earlier() {
-        let mut store = VarStore::new();
-        store.set("FOO", "global").unwrap();
-        store.export("FOO");
-
-        store.push_scope(vec![]);
-        // New scope shadows FOO with its own exported value.
-        store.set_with_options("FOO", "local", true).unwrap();
-        let env = store.environ();
-        assert_eq!(env, &[("FOO".to_string(), "local".to_string())]);
-        store.pop_scope();
-
-        // After popping, the global FOO value (mutated in place by
-        // `set_with_options`, since FOO already existed there... but here
-        // FOO only exists in global at this point since the function-scope
-        // write updates whichever scope currently holds the var. Since FOO
-        // pre-existed in global before push_scope, the write landed in the
-        // global scope too (POSIX: existing var updates affect caller).
-        assert_eq!(store.get("FOO"), Some("local"));
-    }
-
-    #[test]
-    fn build_environ_excludes_unexported_across_scopes() {
-        let mut store = VarStore::new();
-        store.set("GLOBAL_EXPORTED", "g").unwrap();
-        store.export("GLOBAL_EXPORTED");
-        store.set("GLOBAL_PLAIN", "p").unwrap();
-
-        store.push_scope(vec![]);
-        store.set("NEW_IN_SCOPE", "new").unwrap();
-        // NEW_IN_SCOPE is new (didn't exist in any scope), so it lands in
-        // the global scope per existing `set` semantics — not exported.
-
-        let env = store.environ();
-        assert_eq!(env.len(), 1);
-        assert_eq!(env[0], ("GLOBAL_EXPORTED".to_string(), "g".to_string()));
-        store.pop_scope();
     }
 }
