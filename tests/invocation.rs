@@ -1009,6 +1009,22 @@ fn piped_stdin_alias_ending_in_an_operator_is_not_read_past() {
 }
 
 #[test]
+fn piped_stdin_blank_alias_or_subshell_function_body_is_not_read_past() {
+    // A blank alias leaves `true &&` waiting for any line; after `f()`
+    // a balanced `( )` body completes the definition.
+    for head in [
+        "alias b=''\ntrue && b\n",
+        "alias b='  '\ntrue && b\n",
+        "f()\n(:)\n",
+    ] {
+        let script = format!("{head}read x\necho stolen\nprintf '<%s>\\n' \"$x\"\n");
+        let (out, code) = run_with_stdin(&[], &script);
+        assert_eq!(out, "<echo stolen>\n", "{script:?}");
+        assert_eq!(code, 0);
+    }
+}
+
+#[test]
 fn stdin_script_follows_exec_redirection_of_stdin() {
     // bash reads further commands from the new stdin after `exec <file`.
     let dir = tempfile::tempdir().unwrap();

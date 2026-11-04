@@ -498,16 +498,17 @@ fn line_may_close(line: &[u8]) -> bool {
 /// Whether no alias value can bring a closing token (or anything else
 /// `line_may_close` looks for) into a line: substituting such values
 /// keeps every verdict of `line_may_close` true to the line's tokens.
-/// Nor may a value end in an operator (`alias a='true &&'`): a line
-/// ending with that alias leaves the command waiting for any next line,
-/// not a closer, which `awaits_closer` judges from the raw text.
+/// Nor may a value end in an operator or `)` (`alias a='true &&'`,
+/// `alias d='f()'`), or be blank (`true && b` with `alias b=''`): a line
+/// ending with such an alias may leave the command waiting for any next
+/// line, not a closer, which `awaits_closer` judges from the raw text.
 fn aliases_cannot_close(aliases: &env::aliases::AliasStore) -> bool {
     aliases.is_empty()
         || aliases.sorted_iter().iter().all(|(_, value)| {
             !value.contains('#')
                 && !matches!(
                     value.trim_end_matches([' ', '\t', '\n']).as_bytes().last(),
-                    Some(b'&' | b'|' | b'!' | b'<' | b'>' | b'(' | b'\\')
+                    None | Some(b'&' | b'|' | b'!' | b'<' | b'>' | b'(' | b')' | b'\\')
                 )
                 && value.split('\n').all(|l| !line_may_close(l.as_bytes()))
         })
@@ -549,7 +550,12 @@ fn awaits_closer(text: &str, completes_with_line: impl FnOnce() -> bool) -> bool
     if comment {
         return !completes_with_line();
     }
-    !matches!(last.last(), Some(b'\\' | b'&' | b'|' | b'!' | b'<' | b'>'))
+    // After `f()` the body may be any compound command, `( )` included,
+    // whose balanced parentheses `line_may_close` does not count.
+    !matches!(
+        last.last(),
+        Some(b'\\' | b'&' | b'|' | b'!' | b'<' | b'>' | b')')
+    )
 }
 
 /// Whether `text` followed by the line `:` parses as a complete command
@@ -1196,7 +1202,19 @@ mod tests {
         aliases.set("ll", "ls -l");
         assert!(aliases_cannot_close(&aliases));
         for value in [
-            "}", "fi", "echo )", "x #", "echo 'a", "a\nb; }", "true &&", "x | ", "!", "f()",
+            "}",
+            "fi",
+            "echo )",
+            "x #",
+            "echo 'a",
+            "a\nb; }",
+            "true &&",
+            "x | ",
+            "!",
+            "f()",
+            "",
+            "  ",
+            "ls $(pwd)",
         ] {
             let mut a = aliases.clone();
             a.set("bad", value);
@@ -1226,7 +1244,6 @@ mod tests {
             "{\n",
             "{\n: a\n",
             "f() {\n",
-            "f()\n",
             "if true\n",
             "if true; then\n  :\n",
             "while :; do\n",
@@ -1256,6 +1273,8 @@ mod tests {
             "cat <<E &&\nbody\nE\n",
             "cat <<E |\nbody\nE\n",
             "true &&\\\n",
+            // The body after `f()` may be a balanced `( )`.
+            "f()\n",
         ] {
             assert!(!awaits(text), "{text:?}");
         }

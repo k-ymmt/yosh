@@ -230,14 +230,10 @@
         (peak RSS 3.3 MB vs 1.1 MB) after thin LTO and
         `-dead_strip_dylibs` stopped linking CoreFoundation/Security;
         the rest is binary size and dyld fixups.
-  - [ ] `yosh -c 'cmd'` does not exec its last simple command in place
-        as dash does (one extra fork+wait per `-c` invocation).
-  - [ ] Fork children call sigaction ~30 times in
-        `reset_child_dispositions` (~2% of a fork); tracking which
-        signals the shell changed would skip most of them.
-  - [ ] Variable lookups still allocate once per expansion; only
-        `${#x}` and the strip forms clone the whole value now
-        (`src/env/vars.rs`, `src/expand/param.rs`).
+  - [ ] `sh -c` execs only a lone last simple command in place; dash
+        also execs the last pipeline of an `&&`/`||` list
+        (`arm_exec_in_place_if_shell_tail` in
+        `src/exec/simple/external.rs`).
   - [ ] `posix_spawn` is used only for external commands without
         redirections or monitor mode. Commands with redirections would
         need parent-side opens (noclobber `O_EXCL` cannot be redone),
@@ -245,20 +241,39 @@
         macOS) and a child to report errors; `redir_external` is
         already 0.93x dash, so the risk outweighs the payoff
         (`src/exec/simple/external.rs`).
-  - [ ] Parse speed: 4000 plain function definitions cost ~52 ms CPU
-        vs dash ~15 ms (byte-by-byte pushes in the lexer, Vec growth;
-        `src/lexer/word/`).
-  - [ ] `RedirectState::new`/`unwind`/`Drop` touch the thread-local
-        saved-fd stack several times per command even with no
-        redirections (~3% of `func_call`); skip when the list is empty
-        (`src/exec/redirect.rs`).
-  - [ ] `Parser::snapshot` clones WordParts (~2% of `eval_loop`), the
-        script loop builds a `source_text` String per command even
-        without `set -v`, and `stack_guard::stack_limit`'s thread-local
-        access is ~1% (`src/parser/`, `src/exec/mod.rs`,
-        `src/exec/stack_guard.rs`).
-  - [ ] Still within 3% of the round-1 baseline but not recovered:
-        `read_loop` +2.8%, `echo_output` and `param_expand` ~+2%.
+  - [ ] Parse speed: 4000 plain function definitions cost 154.5M
+        instructions vs dash 80M after the round-3 lexer/parser pass.
+        `env.functions` and `utility_hash` still use SipHash (inserts
+        are 2.6-3.8% of the parse profile, and every command looks one
+        up); an FxHashMap would be a small change (`src/env/mod.rs`).
+  - [ ] `assignment_only::part_has_command_sub` is ~6% of `arith_loop`
+        samples; `arith_loop` itself moved +1.5% in round 3 through
+        thin-LTO inlining shifts in code that did not change.
+  - [ ] `read_loop` is about +2.8% over the round-1 baseline (round 3
+        removed its own regression): `read` classifies fd 0 with one
+        fstat or lseek per call (`src/builtin/read.rs`).
+  - [ ] Seekable stdin (`yosh < file`) costs one relative lseek per
+        command (+12-18% on 5000-20000 one-line commands vs the
+        pre-round-3 reader), needed so commands that read stdin start
+        at the right offset. Piped stdin reads one byte per read(2) to
+        avoid reading ahead, as bash does (`cat file | yosh` is ~3.5x
+        `yosh < file`) (`src/script_input.rs`).
+  - [ ] Piped stdin: an alias whose value could close a compound
+        command or ends in an operator, and `-i`, keep the old per-line
+        re-parse below the 16 KiB limit (quadratic for long groups), as
+        do lines with an unmatched `)` (each `pat)` of a long piped
+        `case`: 3000 items take ~6 s CPU in a debug build) and the line
+        after one ending in `)`; pending text holding `<<` runs one
+        extra probe parse per re-parse (`src/script_input.rs`).
+  - [ ] Piped stdin inside an open compound command reads lines that
+        cannot close it without parsing them, so a syntax error there
+        is reported only once the closer arrives, after the shell has
+        consumed more input (visible to an EXIT trap that reads stdin;
+        bash stops at the bad line) (`src/script_input.rs`).
+  - [ ] `spawn_default_sigset` still queries signals that were ignored
+        on entry and never changed; exec in place drops a signal that
+        arrives between draining the self-pipe and the exec (dash has
+        the same window) (`src/signal/child.rs`).
 
 ## 2026-11-04 Bug-fix Round 1: Deferrals and Decisions
 
@@ -425,10 +440,13 @@ Invocation / input / signals:
       limit batch already-available whole lines, so a `read` inside a
       huge compound command can miss lines the shell consumed (dash
       also reads ahead there) (`src/script_input.rs`).
-- [ ] Below that limit every line of an incomplete piped command
-      re-parses the whole text: a `{ }` group of 5000 short lines costs
-      ~29 s CPU in a debug build (0.15 s without the group). A smaller
-      limit or incremental parsing would help (`src/script_input.rs`).
+- [ ] `exec 11>&1` (or any redirection onto fd 10/11) overwrites the
+      signal self-pipe: a trapped signal then writes its number byte to
+      the redirected file and the trap never runs (`exec 11>&1; trap
+      'echo T' USR1; kill -USR1 $$` prints `\036`, not `T`). bash moves
+      its internal fds out of the way; dash rejects fds above 9. The
+      self-pipe fds live in a `OnceLock` and would need to become
+      movable (`src/signal/self_pipe.rs`, `src/exec/redirect.rs`).
 - [ ] With `trap '...' HUP` set, SIGHUP at the terminal prompt runs the
       action and then ends the REPL (its read loop breaks on the
       error); dash keeps prompting (`src/interactive/mod.rs`).
