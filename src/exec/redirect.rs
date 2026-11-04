@@ -338,11 +338,18 @@ pub(crate) fn forget_inherited_saved_redirections() {
 
 /// Tracks saved file descriptors so they can be restored after a builtin
 /// or compound command runs. The saved fds live on the per-process
-/// `SAVED_FDS` stack; this state owns the entries above `base` while
-/// the stack is still in the `epoch` it was created in.
+/// `SAVED_FDS` stack; once this state saves its first fd it owns the
+/// entries above `base` while the stack is still in the `epoch` it was
+/// in at that point.
+///
+/// The ownership is claimed lazily, on the first save: most commands
+/// have no redirections at all, and a state that never saved touches
+/// neither thread-local on creation, restore or drop (the eager claim
+/// cost ~3% of a function-call loop). Scopes nest strictly, so the stack
+/// length at the first save equals the length at creation.
 pub struct RedirectState {
-    base: usize,
-    epoch: u64,
+    /// `(base, epoch)` once this state has saved an fd.
+    owned: Option<(usize, u64)>,
 }
 
 impl Default for RedirectState {
@@ -353,27 +360,36 @@ impl Default for RedirectState {
 
 impl RedirectState {
     pub fn new() -> Self {
-        Self {
-            base: saved_fds_len(),
-            epoch: saved_fds_epoch(),
+        Self { owned: None }
+    }
+
+    /// Claim the stack suffix above its current top, before the first
+    /// push (see the type docs).
+    fn claim(&mut self) {
+        if self.owned.is_none() {
+            self.owned = Some((saved_fds_len(), saved_fds_epoch()));
         }
     }
 
     /// Restore this state's saved fds, unless an out-of-band reset
     /// already did (see `SAVED_FDS_EPOCH`).
     fn unwind(&self) {
-        if self.epoch == saved_fds_epoch() {
-            unwind_saved_fds(self.base);
+        if let Some((base, epoch)) = self.owned
+            && epoch == saved_fds_epoch()
+        {
+            unwind_saved_fds(base);
         }
     }
 
     /// Number of saved fds this state currently holds.
     #[cfg(test)]
     fn saved_len(&self) -> usize {
-        if self.epoch != saved_fds_epoch() {
-            return 0;
+        match self.owned {
+            Some((base, epoch)) if epoch == saved_fds_epoch() => {
+                saved_fds_len().saturating_sub(base)
+            }
+            _ => 0,
         }
-        saved_fds_len().saturating_sub(self.base)
     }
 
     /// Expand and apply a list of redirects (see [`expand_redirects`] and
@@ -486,6 +502,7 @@ impl RedirectState {
     /// closes it again — redirecting a closed fd is not an error
     /// (`{ echo x >&5; } 5>&1` works in every shell).
     fn save_fd(&mut self, fd: RawFd) -> Result<(), String> {
+        self.claim();
         let saved = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10) };
         if saved == -1 {
             let err = std::io::Error::last_os_error();
@@ -699,6 +716,45 @@ mod tests {
             unsafe { libc::fcntl(target, libc::F_GETFD) },
             -1,
             "fd must be closed again after restore"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A state with no redirections claims nothing on the saved-fd
+    /// stack (it is created for every command), and dropping it inside
+    /// an enclosing state that did save must not undo the outer
+    /// redirection.
+    #[test]
+    fn empty_state_does_not_touch_the_saved_fd_stack() {
+        let _guard = crate::test_sync::lock_stdio_fds();
+        let mut env = make_env();
+        // A high fd no parallel test owns (see the test above).
+        let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) }, 0);
+        let target: RawFd = (lim.rlim_cur.min(1024) - 2) as RawFd;
+        let tmp = std::env::temp_dir().join("yosh_redirect_empty_state.txt");
+        let redirects = vec![Redirect {
+            fd: Some(target),
+            kind: RedirectKind::Output(Word::literal(tmp.to_str().unwrap())),
+        }];
+        let was_open = unsafe { libc::fcntl(target, libc::F_GETFD) } != -1;
+        let mut outer = RedirectState::new();
+        outer.apply(&redirects, &mut env, true).expect("apply");
+        let depth = saved_fds_len();
+        {
+            let mut inner = RedirectState::new();
+            inner.apply_expanded(&[], true).expect("empty apply");
+            assert!(inner.owned.is_none());
+            assert_eq!(inner.saved_len(), 0);
+            inner.restore();
+        }
+        assert_eq!(saved_fds_len(), depth, "inner drop popped outer entries");
+        assert_eq!(outer.saved_len(), 1);
+        outer.restore();
+        assert_eq!(
+            unsafe { libc::fcntl(target, libc::F_GETFD) } != -1,
+            was_open,
+            "outer restore must put fd {target} back"
         );
         let _ = std::fs::remove_file(&tmp);
     }
