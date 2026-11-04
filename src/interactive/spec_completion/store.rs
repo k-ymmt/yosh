@@ -66,23 +66,19 @@ impl SpecStore {
 
     fn load(&self, name: &str) -> Option<CompletionSpec> {
         let path = self.dir.join(format!("{name}.toml"));
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match CompletionSpec::parse(&text) {
-                Ok(spec) => Some(spec),
-                // A broken user file must not silently fall back to the
-                // embedded spec — the warning tells the user which file
-                // to fix, and stale defaults would mask their edits.
-                Err(err) => {
-                    eprintln!("yosh: completion: {name}.toml: {err}");
-                    None
-                }
-            },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => self.load_embedded(name),
-            Err(err) => {
-                eprintln!("yosh: completion: {name}.toml: {err}");
-                None
+        let loaded = match std::fs::read_to_string(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return self.load_embedded(name);
             }
-        }
+            Err(err) => Err(err.to_string()),
+            Ok(text) => CompletionSpec::parse(&text),
+        };
+        // A broken (or unreadable) user file must not silently fall back
+        // to the embedded spec — the warning tells the user which file
+        // to fix, and stale defaults would mask their edits.
+        loaded
+            .map_err(|err| eprintln!("yosh: completion: {name}.toml: {err}"))
+            .ok()
     }
 
     fn load_embedded(&self, name: &str) -> Option<CompletionSpec> {

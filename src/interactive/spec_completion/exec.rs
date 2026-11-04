@@ -57,15 +57,11 @@ pub fn run_exec(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
+            Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            Err(_) => {
+            // Timed out, or the child could not be polled.
+            Ok(None) | Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 break None;

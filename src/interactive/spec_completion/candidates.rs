@@ -40,12 +40,7 @@ pub fn try_complete(
     let filter = &word[keep_prefix.len()..];
 
     match resolution {
-        Resolution::FlagNames(names) => {
-            let mut candidates: Vec<String> =
-                names.into_iter().filter(|n| n.starts_with(word)).collect();
-            candidates.sort();
-            finish(candidates, String::new())
-        }
+        Resolution::FlagNames(names) => finish(sorted_matches(names, word), String::new()),
         Resolution::FlagValue(source) => complete_source(
             source,
             filter,
@@ -63,18 +58,8 @@ pub fn try_complete(
             // Fixed candidate order: subcommand names, then flag
             // spellings, then source candidates (appended by
             // complete_source). Each group sorts alphabetically.
-            let mut sub_matches: Vec<String> = subcommands
-                .into_iter()
-                .filter(|s| s.starts_with(filter))
-                .collect();
-            sub_matches.sort();
-            let mut flag_matches: Vec<String> = flags
-                .into_iter()
-                .filter(|f| f.starts_with(filter))
-                .collect();
-            flag_matches.sort();
-            let mut static_matches = sub_matches;
-            static_matches.extend(flag_matches);
+            let mut static_matches = sorted_matches(subcommands, filter);
+            static_matches.extend(sorted_matches(flags, filter));
             match source {
                 Some(source) => complete_source(
                     source,
@@ -89,6 +74,16 @@ pub fn try_complete(
             }
         }
     }
+}
+
+/// The entries of `items` that start with `prefix`, sorted.
+fn sorted_matches(items: Vec<String>, prefix: &str) -> Vec<String> {
+    let mut matches: Vec<String> = items
+        .into_iter()
+        .filter(|item| item.starts_with(prefix))
+        .collect();
+    matches.sort();
+    matches
 }
 
 /// Path-complete an arbitrary word string (used for flag values where

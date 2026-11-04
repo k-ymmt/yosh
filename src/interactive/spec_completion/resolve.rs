@@ -79,20 +79,11 @@ pub fn resolve<'a>(
                 );
             }
         }
-        let names: Vec<String> = level
-            .flags
-            .iter()
-            .flat_map(|f| f.names.iter().cloned())
-            .collect();
-        return (Resolution::FlagNames(names), String::new());
+        return (Resolution::FlagNames(flag_names(level)), String::new());
     }
 
     let subcommands: Vec<String> = level.subcommands.iter().map(|s| s.name.clone()).collect();
-    let flags: Vec<String> = level
-        .flags
-        .iter()
-        .flat_map(|f| f.names.iter().cloned())
-        .collect();
+    let flags = flag_names(level);
     let source = if level.args.is_empty() {
         None
     } else {
@@ -106,6 +97,15 @@ pub fn resolve<'a>(
         },
         String::new(),
     )
+}
+
+/// Every spelling of every flag at `level`, in declaration order.
+fn flag_names(level: Level<'_>) -> Vec<String> {
+    level
+        .flags
+        .iter()
+        .flat_map(|f| f.names.iter().cloned())
+        .collect()
 }
 
 fn find_flag<'a>(level: Level<'a>, name: &str) -> Option<&'a FlagSpec> {
