@@ -189,6 +189,45 @@ fn handle_signals_during_read(
     SignalOutcome::Handled
 }
 
+/// Whether the last `read` found fd 0 to be a regular file: a hint for
+/// which system call `classify_stdin` tries first.
+static LAST_STDIN_REGULAR: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// `(regular, seekable)` for fd 0.
+///
+/// A successful lseek means the fd has a file offset we can rewind;
+/// ESPIPE (pipe/FIFO/socket) and failures in general mean it does not —
+/// use the conservative per-byte path. A regular file also never blocks
+/// a read(2), so it needs no readiness check (a terminal, also seekable
+/// on macOS, does). One system call settles the common cases: fstat for
+/// a regular file, lseek for a pipe; which one goes first follows the
+/// previous call, as a loop reads the same input over and over (fstat
+/// costs about 1.5x an lseek, and a readiness check as much again).
+fn classify_stdin() -> (bool, bool) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let file_type = || {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: fstat fills `st` for a valid fd and fails otherwise.
+        (unsafe { libc::fstat(libc::STDIN_FILENO, &mut st) } == 0)
+            .then_some(st.st_mode & libc::S_IFMT)
+    };
+    let has_offset = || unsafe { libc::lseek(libc::STDIN_FILENO, 0, libc::SEEK_CUR) } != -1;
+    let (regular, seekable) = if LAST_STDIN_REGULAR.load(Relaxed) {
+        match file_type() {
+            Some(libc::S_IFREG) => (true, true),
+            Some(libc::S_IFIFO | libc::S_IFSOCK) => (false, false),
+            _ => (false, has_offset()),
+        }
+    } else if has_offset() {
+        (file_type() == Some(libc::S_IFREG), true)
+    } else {
+        (false, false)
+    };
+    LAST_STDIN_REGULAR.store(regular, Relaxed);
+    (regular, seekable)
+}
+
 /// Production `ByteReader` for fd 0.
 ///
 /// POSIX requires `read` not to consume input past the logical line, so
@@ -218,6 +257,9 @@ fn handle_signals_during_read(
 /// handled, readiness is checked again before the next read(2): one that
 /// blocks would stop dispatching later signals until input arrives.
 struct StdinByteReader<F: FnMut(bool) -> SignalOutcome> {
+    /// Whether fd 0 is a regular file, which read(2) never blocks on:
+    /// no readiness check is needed (checked once at construction).
+    regular: bool,
     /// Whether fd 0 is seekable (checked once at construction).
     seekable: bool,
     /// Buffered bytes from the last block read (seekable mode only).
@@ -238,11 +280,9 @@ struct StdinByteReader<F: FnMut(bool) -> SignalOutcome> {
 
 impl<F: FnMut(bool) -> SignalOutcome> StdinByteReader<F> {
     fn new(on_signal: F) -> Self {
-        // A successful lseek means the fd has a file offset we can
-        // rewind; ESPIPE (pipe/FIFO/socket) and failures in general mean
-        // it does not — use the conservative per-byte path.
-        let seekable = unsafe { libc::lseek(libc::STDIN_FILENO, 0, libc::SEEK_CUR) } != -1;
+        let (regular, seekable) = classify_stdin();
         StdinByteReader {
+            regular,
             seekable,
             buf: Vec::new(),
             pos: 0,
@@ -298,7 +338,7 @@ impl<F: FnMut(bool) -> SignalOutcome> StdinByteReader<F> {
     /// end or abort are left for the read(2) itself to report.
     fn wait_readable(&mut self) -> std::io::Result<()> {
         loop {
-            if self.ready == 0 {
+            if self.ready == 0 && !self.regular {
                 self.wait_for_input()?;
             }
             if !self.signal_arrived(false)? {
