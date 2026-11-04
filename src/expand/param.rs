@@ -328,14 +328,8 @@ pub(super) fn is_unset_or_null_inner(val: &Option<String>, null_check: bool) -> 
 /// lexer's `read_param_name`) to its `SpecialParam`. `0` is not included:
 /// the digit-string branch of `lookup_var` already resolves it.
 fn special_param(name: &str) -> Option<SpecialParam> {
-    match name {
-        "?" => Some(SpecialParam::Question),
-        "$" => Some(SpecialParam::Dollar),
-        "#" => Some(SpecialParam::Hash),
-        "@" => Some(SpecialParam::At),
-        "*" => Some(SpecialParam::Star),
-        "!" => Some(SpecialParam::Bang),
-        "-" => Some(SpecialParam::Dash),
+    match name.as_bytes() {
+        [b] if *b != b'0' => SpecialParam::from_byte(*b),
         _ => None,
     }
 }
