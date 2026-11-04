@@ -17,6 +17,32 @@ pub(crate) type SavedVars = Vec<(String, Option<Variable>)>;
 /// Expanded prefix assignments as `(name, value)` pairs.
 pub(crate) type AssignedPairs = Vec<(String, String)>;
 
+/// Whether the temporary assignments `build_env_vars` makes while later
+/// values expand could be observed at all: not when every later value is
+/// literal text (no parameter, command or arithmetic expansion, no
+/// tilde), and no temporary is `PATH` or `OPTIND`, whose writes have side
+/// effects of their own (clearing the utility hash, resetting `getopts`).
+fn temporaries_unobservable(assignments: &[Assignment]) -> bool {
+    use crate::parser::ast::WordPart;
+    let Some((_, temporaries)) = assignments.split_last() else {
+        return true;
+    };
+    temporaries
+        .iter()
+        .all(|a| !matches!(a.name.as_str(), "PATH" | "OPTIND"))
+        && assignments[1..].iter().all(|a| {
+            a.value.as_ref().is_none_or(|w| {
+                w.parts.iter().all(|part| match part {
+                    WordPart::Literal(s) => !s.contains('~'),
+                    WordPart::EscapedLiteral(_)
+                    | WordPart::SingleQuoted(_)
+                    | WordPart::DollarSingleQuoted(_) => true,
+                    _ => false,
+                })
+            })
+        })
+}
+
 impl Executor {
     /// Expand one prefix assignment's value (empty for `name=`). A
     /// braced-parameter failure (`${x:?}`, `set -u`) only raises
@@ -106,6 +132,23 @@ impl Executor {
         assignments: &[Assignment],
     ) -> crate::error::Result<(AssignedPairs, AssignedPairs)> {
         let mut trace = Vec::with_capacity(assignments.len());
+        if temporaries_unobservable(assignments) {
+            // Nothing could see the temporaries: check and expand in the
+            // same order without them (each would discard the cached
+            // exported environment twice, rebuilt for the next command).
+            for assign in assignments {
+                let value = self.expand_assignment(assign)?;
+                if self.env.vars.is_readonly(&assign.name) {
+                    return Err(ShellError::runtime(
+                        RuntimeErrorKind::ReadonlyVariable,
+                        format!("{}: readonly variable", assign.name),
+                    ));
+                }
+                trace.push((assign.name.clone(), value));
+            }
+            let env = trace.clone();
+            return Ok((trace, env));
+        }
         let mut saved = SavedVars::new();
         let result = self.expand_env_vars_in_order(assignments, &mut trace, &mut saved);
         let env = result.map(|()| {
@@ -272,6 +315,7 @@ mod tests {
         for (failing, readonly) in [
             ("z=${r3unset?boom} last=5", false),
             ("z=3 last=5", true),
+            ("z=3 last=$old", true),
             ("z=3", true),
         ] {
             let mut exec = Executor::new("yosh", vec![]);
@@ -292,5 +336,56 @@ mod tests {
             assert_eq!(var_state(&exec, "new"), None);
             assert_eq!(var_state(&exec, "last"), None);
         }
+    }
+
+    #[test]
+    fn literal_later_values_need_no_temporaries() {
+        for (src, unobservable) in [
+            ("A=1 B=2 C=3 cmd", true),
+            ("A=$x B=2 cmd", true),
+            ("A=1 B='q' C=$'x' D=\\$ E= cmd", true),
+            ("B=2 PATH=/x cmd", true),
+            ("A=1 B=$A cmd", false),
+            ("A=1 B=${A} cmd", false),
+            ("A=1 B=$(echo) cmd", false),
+            ("A=1 B=$((1)) cmd", false),
+            ("A=1 B=\"$A\" cmd", false),
+            ("A=1 B=~ cmd", false),
+            ("A=1 B=x:~ cmd", false),
+            ("PATH=/x B=2 cmd", false),
+            ("OPTIND=1 B=2 cmd", false),
+        ] {
+            assert_eq!(
+                super::temporaries_unobservable(&prefix_assignments(src)),
+                unobservable,
+                "{src}"
+            );
+        }
+    }
+
+    /// Without temporaries the result is the same: the values in order,
+    /// nothing left assigned, and a readonly variable reported first.
+    #[test]
+    fn literal_prefix_assignments_expand_in_order_without_temporaries() {
+        let mut exec = crate::exec::Executor::new("yosh", vec![]);
+        let pairs = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter()
+                .map(|(n, x)| (n.to_string(), x.to_string()))
+                .collect()
+        };
+        let (trace, env) = exec
+            .build_env_vars(&prefix_assignments("A=1 B=2 A=3 cmd"))
+            .unwrap();
+        assert_eq!(trace, pairs(&[("A", "1"), ("B", "2"), ("A", "3")]));
+        assert_eq!(env, trace);
+        assert_eq!(var_state(&exec, "A"), None);
+        assert_eq!(var_state(&exec, "B"), None);
+        exec.env.vars.set("B", "ro").unwrap();
+        exec.env.vars.set_readonly("B");
+        let err = exec
+            .build_env_vars(&prefix_assignments("A=1 B=2 C=3 cmd"))
+            .unwrap_err();
+        assert!(err.to_string().ends_with("B: readonly variable"), "{err}");
+        assert_eq!(var_state(&exec, "A"), None);
     }
 }
