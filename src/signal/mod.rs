@@ -18,8 +18,9 @@ mod self_pipe;
 mod table;
 
 pub use child::{
-    reset_child_signals, reset_shell_child_signals, setup_background_shell_child_signals,
-    setup_foreground_child_signals, setup_foreground_shell_child_signals, spawn_default_sigset,
+    reset_child_dispositions, reset_child_signals, reset_shell_child_signals,
+    setup_background_shell_child_signals, setup_foreground_child_signals,
+    setup_foreground_shell_child_signals, spawn_default_sigset,
 };
 pub use disposition::{
     TrapDisposition, apply_trap_disposition, assume_all_dispositions_changed, default_signal,
@@ -31,8 +32,8 @@ pub use job_control::{
     wait_until_foreground,
 };
 pub use self_pipe::{
-    drain_pending_signals, has_pending_exit_signal, init_signal_handling, requeue_signals,
-    self_pipe_read_fd, set_interactive_shell, try_self_pipe_read_fd,
+    close_self_pipe, drain_pending_signals, has_pending_exit_signal, init_signal_handling,
+    requeue_signals, self_pipe_read_fd, set_interactive_shell, try_self_pipe_read_fd,
 };
 pub use table::{
     DefaultAction, SIGNAL_TABLE, default_action, signal_name_to_number, signal_number_to_name,

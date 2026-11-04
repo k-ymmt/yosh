@@ -8,7 +8,7 @@ use super::disposition::{
     current_disposition, default_signal, disposition_may_have_changed, ignore_signal,
 };
 use super::entry::ignored_on_entry_set_opt;
-use super::self_pipe::{reinit_self_pipe_after_fork, signal_handler};
+use super::self_pipe::{close_self_pipe, reinit_self_pipe_after_fork, signal_handler};
 use super::table::catchable_signals;
 
 /// Whether a child keeps `num` at SIG_IGN: the user trap-ignored it
@@ -37,7 +37,7 @@ fn keeps_ignored(num: i32, ignored: &[i32], entry_set: Option<&HashSet<i32>>) ->
 /// [`disposition_may_have_changed`]) and the user did not trap-ignore
 /// already have exactly that disposition and are skipped: a script's
 /// children then make ~8 sigaction calls instead of ~30.
-fn reset_child_dispositions(ignored: &[i32]) {
+pub fn reset_child_dispositions(ignored: &[i32]) {
     let entry_set = ignored_on_entry_set_opt();
     for num in catchable_signals() {
         if !disposition_may_have_changed(num) && !ignored.contains(&num) {
@@ -106,12 +106,14 @@ pub fn spawn_default_sigset(ignored: &[i32]) -> Option<libc::sigset_t> {
 /// Reset signals after fork for children that will `exec` (or exit
 /// without running further shell code), and before the shell process
 /// itself execs a utility in place. See [`reset_child_dispositions`] for
-/// the disposition policy. The self-pipe fds stay open: they are
-/// CLOEXEC, and closing them by number would close whatever a
-/// persistent redirection (`exec 11>&1`) has since put on those fds for
-/// the utility to inherit.
+/// the disposition policy. The self-pipe fds are closed, so a
+/// redirection naming one (`cmd 3>&11`) fails as for any closed fd —
+/// but only while they still are the pipe (CLOEXEC): a persistent
+/// redirection (`exec 11>&1`) may since have put a descriptor of the
+/// script's on that number for the utility to inherit.
 pub fn reset_child_signals(ignored: &[i32]) {
     reset_child_dispositions(ignored);
+    close_self_pipe();
 }
 
 /// Reset signals after fork for a child that CONTINUES running shell

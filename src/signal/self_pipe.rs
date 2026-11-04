@@ -247,6 +247,24 @@ pub fn self_pipe_read_fd() -> RawFd {
         .0
 }
 
+/// Close the self-pipe fds that still hold the pipe, for fork children
+/// that will `exec`. The pipe's fds are CLOEXEC; an fd number without
+/// the flag was taken over by a redirection (`exec 11>&1` dup2s onto
+/// it) and belongs to the script now.
+pub fn close_self_pipe() {
+    if let Some(&(read_fd, write_fd)) = SELF_PIPE.get() {
+        for fd in [read_fd, write_fd] {
+            // SAFETY: plain fd syscalls on fd numbers this process owns.
+            unsafe {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags != -1 && flags & libc::FD_CLOEXEC != 0 {
+                    libc::close(fd);
+                }
+            }
+        }
+    }
+}
+
 /// Replace the inherited self-pipe with a fresh pipe on the SAME fd
 /// numbers (the `SELF_PIPE` OnceLock cannot be re-set), and clear the
 /// pending-signal flags inherited from the parent. Called only in fork

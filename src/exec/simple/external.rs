@@ -85,6 +85,9 @@ impl Executor {
             && !self.env.mode.is_interactive
             && !self.env.mode.flag_i
             && !self.env.mode.options.monitor
+            // `set -v` still echoes the input after the command (also
+            // when set earlier on the same line).
+            && !self.env.mode.options.verbose
             && self.env.traps.exit_trap.is_none()
             && self.env.traps.signal_traps.is_empty()
             && self.env.process.jobs.is_empty()
@@ -204,18 +207,20 @@ impl Executor {
                     // exec — notably the background shell child's
                     // SIGTTIN ignore: the exec'd command must be
                     // stoppable so the now correctly tracked stop is
-                    // visible. The self-pipe fds stay open (CLOEXEC).
+                    // visible.
                     let ignored = self.env.traps.ignored_signals();
-                    signal::reset_child_signals(&ignored);
+                    signal::reset_child_dispositions(&ignored);
                     // A signal that arrived before the reset (during
                     // the command's expansion: `sh -c 'cmd $(kill $$)'`)
                     // waits on the self-pipe, which the exec would drop:
                     // act on it now, as the shell would after the
-                    // command. Later ones meet SIG_DFL.
+                    // command. Later ones meet SIG_DFL. Then close the
+                    // pipe (see `reset_child_signals`).
                     self.process_pending_signals();
                     if let Some(code) = self.exit_requested {
                         return code;
                     }
+                    signal::close_self_pipe();
                     {
                         // Output the shell buffered (`printf x; cmd` as
                         // an `sh -c` tail) must precede the command's.

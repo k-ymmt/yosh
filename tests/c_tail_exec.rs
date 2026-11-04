@@ -227,7 +227,7 @@ fn signal_queued_during_expansion_still_ends_the_shell() {
     // drop it from the self-pipe (b0ebc43, dash and bash all die of it).
     use std::os::unix::process::ExitStatusExt;
     let out = yosh(&["-c", "/bin/echo $(kill -TERM $$; echo sub)"]);
-    assert_eq!(out.status.signal(), Some(libc::SIGTERM));
+    assert_eq!(out.status.signal(), Some(libc::SIGTERM), "{:?}", out);
 }
 
 #[test]
@@ -251,4 +251,29 @@ fn verbose_mode_still_echoes_trailing_blank_lines() {
     let out = yosh(&["-v", "-c", "/bin/echo hi\n\n"]);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
     assert_eq!(String::from_utf8_lossy(&out.stderr), "/bin/echo hi\n\n");
+}
+
+#[test]
+fn verbose_set_on_the_same_line_still_echoes_trailing_input() {
+    let out = yosh(&["-c", "set -v; /bin/echo hi\n   \n"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "   \n");
+}
+
+#[test]
+fn redirection_from_the_signal_pipe_fds_fails() {
+    // The shell's own descriptors (>= 10) are not the script's: the
+    // command must not inherit one through `3>&N` (b0ebc43, bash, dash).
+    for script in [
+        "/bin/echo RAN 3>&11",
+        "/bin/echo RAN 3>&11; :",
+        "/bin/echo RAN 3>&10",
+    ] {
+        let out = yosh(&["-c", script]);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{script}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("Bad file descriptor"),
+            "{script}"
+        );
+    }
 }
