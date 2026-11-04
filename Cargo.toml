@@ -97,6 +97,17 @@ name = "plugin_bench"
 harness = false
 required-features = ["test-helpers"]
 
+# Thin LTO drops code no binary can reach before the final link. Besides
+# the usual speed/size effect this is what lets `-dead_strip_dylibs`
+# (build.rs) remove CoreFoundation and Security from the `yosh` binary:
+# without LTO, unreachable object code from wasmtime-wasi's cap-time-ext
+# (iana-time-zone) and yosh-plugin-manager's TLS verifier still names
+# their symbols, and ld keeps every framework a linked object names.
+# Measured on `yosh -c :`: ~27% fewer instructions and ~30% fewer cycles
+# per launch, half the peak RSS (which also makes every fork cheaper).
+[profile.release]
+lto = "thin"
+
 [profile.profiling]
 inherits = "release"
 debug = true

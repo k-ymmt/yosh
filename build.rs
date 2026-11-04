@@ -37,7 +37,32 @@ fn main() {
     let triple = std::env::var("TARGET").unwrap_or_else(|_| "unknown".into());
     println!("cargo:rustc-env=TARGET_TRIPLE_OR_RUST_BUILT_IN={}", triple);
 
+    dead_strip_unused_dylibs();
+
     generate_embedded_completions();
+}
+
+/// On Apple targets, drop load commands for dylibs the binary never
+/// references (`ld -dead_strip_dylibs`).
+///
+/// Dependencies declare frameworks unconditionally via `#[link]`:
+/// CoreFoundation (iana-time-zone <- cap-time-ext <- wasmtime-wasi) and
+/// Security + CoreFoundation (rustls-platform-verifier <- ureq <-
+/// yosh-plugin-manager). In the `yosh` binary none of their code is
+/// reachable (only `yosh-plugin` downloads anything, and wasmtime-wasi
+/// never asks for a timezone) — yet dyld would load and initialize both
+/// frameworks (and their dependency closure) on every launch, which
+/// measured ~0.8 ms of a ~3.7 ms `yosh -c :`. Binaries that do use a
+/// framework (`yosh-plugin`) keep it: only unreferenced dylibs go.
+///
+/// ld decides which dylibs are referenced *before* `-dead_strip`, so
+/// this only takes effect when the unreachable code is already gone
+/// from the objects it links: the release profile's LTO does that
+/// (debug builds keep both frameworks; harmless).
+fn dead_strip_unused_dylibs() {
+    if std::env::var("CARGO_CFG_TARGET_VENDOR").as_deref() == Ok("apple") {
+        println!("cargo:rustc-link-arg-bins=-Wl,-dead_strip_dylibs");
+    }
 }
 
 /// Verify the bundled WIT copy stays in sync with the canonical source
