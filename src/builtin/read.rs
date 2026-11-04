@@ -36,7 +36,7 @@ pub fn builtin_read(args: &[String], executor: &mut Executor) -> Result<i32, She
         }
     };
 
-    let (line_result, interrupted) = {
+    let (line_result, aborted) = {
         let mut reader =
             StdinByteReader::new(|waiting| handle_signals_during_read(executor, waiting));
         let line_result = read_logical_line(parsed.raw, &mut reader);
@@ -44,11 +44,13 @@ pub fn builtin_read(args: &[String], executor: &mut Executor) -> Result<i32, She
         // line, on success AND error paths, so the next reader of the fd
         // starts exactly where this `read` logically stopped.
         reader.rewind_unconsumed();
-        (line_result, reader.interrupted)
+        (line_result, reader.aborted)
     };
-    // A signal ended the read (see `handle_signals_during_read`): no
-    // variable is assigned and the status reports the signal.
-    if let Some(status) = interrupted {
+    // A signal abandoned the read (see `handle_signals_during_read`): no
+    // variable is assigned and the status reports the signal. A trapped
+    // signal that only *ended* the read looks like end-of-file instead:
+    // what was read so far is assigned below and the status is 1.
+    if let Some(status) = aborted {
         return Ok(status);
     }
     let env = &mut executor.env;
@@ -91,28 +93,43 @@ pub fn builtin_read(args: &[String], executor: &mut Executor) -> Result<i32, She
 /// syscalls/line before), not to stream large volumes.
 const READ_BLOCK: usize = 4096;
 
+/// What `handle_signals_during_read` decided about the read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalOutcome {
+    /// No signal was pending: nothing ran.
+    NoSignal,
+    /// Signal actions ran and the read goes on. A trap action may have
+    /// read from fd 0 itself, so input readiness must be checked again.
+    Handled,
+    /// A trapped signal ended the read like end-of-file: the bytes read
+    /// so far are assigned and the status is 1.
+    EndRead,
+    /// The read is abandoned with this status and nothing is assigned.
+    Abort(i32),
+}
+
 /// Run the trap or default action of the signals that arrived during
-/// `read`, and decide whether the read goes on. Returns the status to
-/// abort with, or `None` to keep reading. `waiting` tells whether the
-/// read is blocked on idle input or only between read(2) calls that
+/// `read`, and decide whether the read goes on. `waiting` tells whether
+/// the read is blocked on idle input or only between read(2) calls that
 /// have data ready.
 ///
 /// Untrapped fatal signals end a non-interactive shell right here (inside
 /// `run_signal_traps`), instead of only once a line completes — which
 /// never happens for endless input without a newline (`read x
-/// </dev/zero`). As in dash and `bash --posix`, a trapped signal that
-/// arrives while the read waits runs its action and then ends the read
-/// with status 128+N, so `trap ... ALRM` can time out a `read`; with data
+/// </dev/zero`). As in dash, a trapped signal that arrives while the read
+/// waits runs its action and then ends the read as end-of-file would: the
+/// partial line read so far is assigned (with the usual splitting) and
+/// the status is 1, so `trap ... ALRM` can time out a `read`. With data
 /// ready the action runs and the read goes on (dash keeps reading). An
 /// interactive shell's untrapped SIGINT abandons the read (130) either
 /// way, and with it the rest of the command line — like Ctrl+C on a
 /// foreground job in dash and bash (`read x; echo WRONG` prints nothing).
-fn handle_signals_during_read(executor: &mut Executor, waiting: bool) -> Option<i32> {
+fn handle_signals_during_read(executor: &mut Executor, waiting: bool) -> SignalOutcome {
     // No syscall unless a handler has fired since the last drain: this
     // runs before every read(2) of a busy read.
     let signals = crate::signal::drain_pending_signals();
     if signals.is_empty() {
-        return None;
+        return SignalOutcome::NoSignal;
     }
     let traps = &executor.env.traps;
     let trapped = signals.iter().copied().rev().find(|&sig| {
@@ -125,9 +142,6 @@ fn handle_signals_during_read(executor: &mut Executor, waiting: bool) -> Option<
             Some(TrapAction::Command(_) | TrapAction::Ignore)
         );
     executor.run_signal_traps(&signals);
-    if let Some(sig) = trapped.filter(|_| waiting) {
-        return Some(128 + sig);
-    }
     if interactive_int {
         // Unwind to the prompt the way a fatal expansion error does in an
         // interactive shell: every list, compound command and function
@@ -136,12 +150,15 @@ fn handle_signals_during_read(executor: &mut Executor, waiting: bool) -> Option<
         if executor.env.exec.flow_control.is_none() {
             executor.env.exec.flow_control = Some(FlowControl::ExpansionError);
         }
-        return Some(128 + libc::SIGINT);
+        return SignalOutcome::Abort(128 + libc::SIGINT);
     }
     if executor.should_unwind() {
-        return Some(128 + signals[signals.len() - 1]);
+        return SignalOutcome::Abort(128 + trapped.unwrap_or(signals[signals.len() - 1]));
     }
-    None
+    if trapped.is_some() && waiting {
+        return SignalOutcome::EndRead;
+    }
+    SignalOutcome::Handled
 }
 
 /// Production `ByteReader` for fd 0.
@@ -169,8 +186,11 @@ fn handle_signals_during_read(executor: &mut Executor, waiting: bool) -> Option<
 /// self-pipe and hands arriving signals to `on_signal(true)`. Input that
 /// is always readable (`/dev/zero`, a fast writer) never blocks, so
 /// every read(2) with data ready is preceded by `on_signal(false)` — an
-/// atomic flag test when no signal is pending.
-struct StdinByteReader<F: FnMut(bool) -> Option<i32>> {
+/// atomic flag test when no signal is pending. Once signal actions did
+/// run, readiness is checked again: a trap action may have read the
+/// input itself (`trap 'read y' USR1`), and a read(2) that then blocks
+/// would stop dispatching later signals until input arrives.
+struct StdinByteReader<F: FnMut(bool) -> SignalOutcome> {
     /// Whether fd 0 is seekable (checked once at construction).
     seekable: bool,
     /// Buffered bytes from the last block read (seekable mode only).
@@ -181,13 +201,15 @@ struct StdinByteReader<F: FnMut(bool) -> Option<i32>> {
     /// read(2) cannot block while this is non-zero.
     ready: usize,
     /// Handles pending signals (the argument: whether the read is
-    /// waiting for input); `Some(status)` aborts the read.
+    /// waiting for input) and says whether the read goes on.
     on_signal: F,
-    /// The abort status `on_signal` returned, if it ended the read.
-    interrupted: Option<i32>,
+    /// `on_signal` returned `EndRead`: the reader reports end-of-file.
+    ended: bool,
+    /// The status of an `Abort` returned by `on_signal`.
+    aborted: Option<i32>,
 }
 
-impl<F: FnMut(bool) -> Option<i32>> StdinByteReader<F> {
+impl<F: FnMut(bool) -> SignalOutcome> StdinByteReader<F> {
     fn new(on_signal: F) -> Self {
         // A successful lseek means the fd has a file offset we can
         // rewind; ESPIPE (pipe/FIFO/socket) and failures in general mean
@@ -199,7 +221,8 @@ impl<F: FnMut(bool) -> Option<i32>> StdinByteReader<F> {
             pos: 0,
             ready: 0,
             on_signal,
-            interrupted: None,
+            ended: false,
+            aborted: None,
         }
     }
 
@@ -223,31 +246,55 @@ impl<F: FnMut(bool) -> Option<i32>> StdinByteReader<F> {
         self.pos = 0;
     }
 
-    /// Let `on_signal` handle pending signals; turns an abort into an
-    /// `Interrupted` error that ends `read_logical_line`.
-    fn signal_arrived(&mut self, waiting: bool) -> std::io::Result<()> {
-        if let Some(status) = (self.on_signal)(waiting) {
-            self.interrupted = Some(status);
-            return Err(std::io::ErrorKind::Interrupted.into());
+    /// Let `on_signal` handle pending signals. Returns whether any signal
+    /// action ran; an end or abort of the read becomes an `Interrupted`
+    /// error that unwinds to `read_byte`, which reports end-of-file for an
+    /// end and passes the error on for an abort.
+    fn signal_arrived(&mut self, waiting: bool) -> std::io::Result<bool> {
+        match (self.on_signal)(waiting) {
+            SignalOutcome::NoSignal => Ok(false),
+            SignalOutcome::Handled => Ok(true),
+            SignalOutcome::EndRead => {
+                self.ended = true;
+                Err(std::io::ErrorKind::Interrupted.into())
+            }
+            SignalOutcome::Abort(status) => {
+                self.aborted = Some(status);
+                Err(std::io::ErrorKind::Interrupted.into())
+            }
         }
-        Ok(())
     }
 
     /// Wait until a read(2) on fd 0 will not block, handling signals that
     /// arrive meanwhile — or that are already pending when data is ready,
     /// so endless readable input cannot starve them. Errors other than an
-    /// abort are left for the read(2) itself to report.
+    /// end or abort are left for the read(2) itself to report.
     fn wait_readable(&mut self) -> std::io::Result<()> {
-        if self.ready > 0 {
-            return self.signal_arrived(false);
+        loop {
+            if self.ready == 0 {
+                self.wait_for_input()?;
+            }
+            if !self.signal_arrived(false)? {
+                return Ok(());
+            }
+            // A trap action ran and may have consumed the input this
+            // readiness was about (`trap 'read y' USR1`): check again
+            // rather than block in read(2), deaf to later signals.
+            self.ready = 0;
         }
+    }
+
+    /// Block until fd 0 is readable (or at EOF, hung up, invalid),
+    /// recording in `ready` how many bytes FIONREAD reports buffered.
+    /// Signals that arrive while waiting go to `on_signal(true)`.
+    fn wait_for_input(&mut self) -> std::io::Result<()> {
         let mut avail: libc::c_int = 0;
         // SAFETY: FIONREAD writes an int byte count for a valid fd; for an
         // invalid one it fails and `avail` is left untouched.
         let rc = unsafe { libc::ioctl(libc::STDIN_FILENO, libc::FIONREAD, &mut avail) };
         if rc == 0 && avail > 0 {
             self.ready = avail as usize;
-            return self.signal_arrived(false);
+            return Ok(());
         }
         let pipe_fd = crate::signal::self_pipe_read_fd();
         loop {
@@ -271,7 +318,7 @@ impl<F: FnMut(bool) -> Option<i32>> StdinByteReader<F> {
             // Readable, at EOF, hung up or invalid: read(2) will not
             // block and reports whichever it is.
             if n > 0 && fds[0].revents != 0 {
-                return self.signal_arrived(false);
+                return Ok(());
             }
             self.signal_arrived(true)?;
         }
@@ -307,6 +354,8 @@ impl<F: FnMut(bool) -> Option<i32>> StdinByteReader<F> {
             // n == -1: check errno
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(libc::EINTR) {
+                // Readiness is rechecked after any signal action.
+                self.ready = 0;
                 self.signal_arrived(true)?;
                 continue;
             }
@@ -338,6 +387,8 @@ impl<F: FnMut(bool) -> Option<i32>> StdinByteReader<F> {
             // n == -1: check errno
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(libc::EINTR) {
+                // Readiness is rechecked after any signal action.
+                self.ready = 0;
                 self.signal_arrived(true)?;
                 continue;
             }
@@ -346,17 +397,26 @@ impl<F: FnMut(bool) -> Option<i32>> StdinByteReader<F> {
     }
 }
 
-impl<F: FnMut(bool) -> Option<i32>> ByteReader for StdinByteReader<F> {
+impl<F: FnMut(bool) -> SignalOutcome> ByteReader for StdinByteReader<F> {
     fn read_byte(&mut self) -> std::io::Result<Option<u8>> {
         if self.pos < self.buf.len() {
             let b = self.buf[self.pos];
             self.pos += 1;
             return Ok(Some(b));
         }
-        if self.seekable {
+        if self.ended {
+            return Ok(None);
+        }
+        let result = if self.seekable {
             self.refill_block()
         } else {
             self.read_one()
+        };
+        match result {
+            // A trapped signal ended the read: the line ends here, as at
+            // end-of-file, so the partial line is still assigned.
+            Err(_) if self.ended => Ok(None),
+            other => other,
         }
     }
 }

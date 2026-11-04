@@ -73,36 +73,40 @@ fn expand_part_double_quoted(
         expand_part_to_fields(env, inner, fields, true)?;
     }
     // A double-quoted string that expanded to nothing (`""`, `"${y-}"`,
-    // `"${x:+w}"` with `x` unset) is a quoted empty string, which field
-    // splitting keeps at its position (see `ExpandedField::empty_quotes`).
-    // `"$@"` with no positional parameters is the exception: it expands
-    // to no field at all.
-    if (fields.len(), fields.last().unwrap().byte_len()) == before && !parts.iter().any(mentions_at)
+    // `"${x:+w}"` with `x` unset, `"${@:-}"` with one empty parameter) is
+    // a quoted empty string, which field splitting keeps at its position
+    // (see `ExpandedField::empty_quotes`). `"$@"` with no positional
+    // parameters is the exception: it expands to no field at all.
+    if (fields.len(), fields.last().unwrap().byte_len()) == before
+        && !parts.iter().any(|p| expanded_to_no_field(env, p))
     {
         fields.last_mut().unwrap().push_quoted("");
     }
     Ok(())
 }
 
-/// Whether `part` is a `$@` expansion (`$@` or `${@...}`), which can
-/// expand to no field at all. A `$@` inside a modifier word does not
-/// count: `"${y-$@}"` with no parameters is one empty field (dash and
-/// bash agree).
-fn mentions_at(part: &WordPart) -> bool {
+/// Whether `part`, expanded inside double quotes, produced no field at
+/// all: `"$@"` (or `"${@}"`, or a per-parameter `"${@#pat}"`) with no
+/// positional parameters. Only these forms expand as the parameter list
+/// then — the `${@:-w}`-style modifiers see `@` unset and use their word
+/// or nothing, which is a quoted empty string like `"${y-}"`, and with
+/// parameters set every form yields a field (`set -- ''; "${@:-}"` keeps
+/// one, as in dash and bash). A `$@` inside a modifier word does not
+/// count either: `"${y-$@}"` with no parameters is one empty field.
+fn expanded_to_no_field(env: &ShellEnv, part: &WordPart) -> bool {
     let WordPart::Parameter(p) = part else {
         return false;
     };
+    if !env.vars.positional_params().is_empty() {
+        return false;
+    }
     match p {
         ParamExpr::Special(sp) => *sp == SpecialParam::At,
-        ParamExpr::Default { name, .. }
-        | ParamExpr::Assign { name, .. }
-        | ParamExpr::Error { name, .. }
-        | ParamExpr::Alt { name, .. }
-        | ParamExpr::StripShortSuffix(name, _)
+        ParamExpr::StripShortSuffix(name, _)
         | ParamExpr::StripLongSuffix(name, _)
         | ParamExpr::StripShortPrefix(name, _)
         | ParamExpr::StripLongPrefix(name, _) => name == "@",
-        ParamExpr::Simple(_) | ParamExpr::Positional(_) | ParamExpr::Length(_) => false,
+        _ => false,
     }
 }
 
