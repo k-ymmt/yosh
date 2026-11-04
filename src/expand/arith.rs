@@ -1,6 +1,8 @@
 use crate::env::ShellEnv;
 use crate::error::{ExpansionErrorKind, ShellError};
 
+mod cache;
+
 /// Maximum depth of recursive variable-as-expression evaluation
 /// (`x=y; y=1; $((x))`). Prevents infinite loops like `x=x`.
 const MAX_RECURSION_DEPTH: u32 = 64;
@@ -69,20 +71,41 @@ pub fn evaluate(env: &mut ShellEnv, expr: &str) -> crate::error::Result<String> 
         return Ok("0".to_string());
     }
 
-    // Step 2: parse and evaluate
-    let bytes = expanded.as_bytes();
-    let mut parser = ArithParser {
-        input: bytes,
+    // Step 2: parse and evaluate. Callers print the diagnostic (word
+    // expansion via the ShellError path in `exec_command`, heredoc
+    // expansion via the redirect-error path).
+    // Only source text is worth caching: text produced by expansion
+    // (`$((n + $1))` in a `shift` loop) is usually new every time, and
+    // parsing it into a tree first would only add work.
+    let cacheable = matches!(expanded, std::borrow::Cow::Borrowed(_));
+    eval_text(env, &expanded, 0, 0, cacheable).map(|val| val.to_string())
+}
+
+/// Parse and evaluate the expanded expression `text` at variable
+/// recursion depth `depth` and syntactic nesting `nest`. With `cacheable`
+/// the text is evaluated from its cached tree (see [`cache`]), built on
+/// first sight. Without it, and whenever no tree can be built (any syntax
+/// error), the one-pass evaluator runs, so every diagnostic, and every
+/// side effect preceding one, is exactly that evaluator's.
+fn eval_text(
+    env: &mut ShellEnv,
+    text: &str,
+    depth: u32,
+    nest: u32,
+    cacheable: bool,
+) -> crate::error::Result<i64> {
+    if cacheable && let Some(tree) = cache::lookup(text) {
+        return cache::eval(env, &tree, depth, nest);
+    }
+    ArithParser {
+        input: text.as_bytes(),
         pos: 0,
         env,
-        depth: 0,
-        nest: 0,
+        depth,
+        nest,
         noeval: false,
-    };
-
-    // Callers print the diagnostic (word expansion via the ShellError path
-    // in `exec_command`, heredoc expansion via the redirect-error path).
-    parser.eval_full().map(|val| val.to_string())
+    }
+    .eval_full()
 }
 
 /// Look up a bare identifier (`name` in `$((name))`, without a leading
@@ -129,46 +152,6 @@ impl<'a> ArithParser<'a> {
             )));
         }
         Ok(val)
-    }
-
-    /// Evaluate a variable's raw string value as an operand. A plain
-    /// integer parses directly; empty/blank is 0 (matches bash: `x=""`
-    /// gives `$((x))` == 0); anything else is recursively evaluated as an
-    /// arithmetic expression (`x=1+2; $((x))` == 3, matching bash/dash),
-    /// with a depth cap so self-referential values (`x=x`) terminate.
-    fn eval_var_value(&mut self, name: &str, raw: &str) -> crate::error::Result<i64> {
-        if self.noeval {
-            return Ok(0);
-        }
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Ok(0);
-        }
-        // Fast path: a plain decimal integer. Values with a leading zero
-        // (octal `010`, hex `0x1f`, invalid `09`) take the full path so
-        // they are read as integer constants with the C rules a literal
-        // gets (`x=010; $((x))` is 8, `x=09` is an error; dash/bash).
-        if is_plain_decimal(trimmed)
-            && let Ok(v) = trimmed.parse::<i64>()
-        {
-            return Ok(v);
-        }
-        if self.depth >= MAX_RECURSION_DEPTH || crate::exec::stack_guard::descent_stack_exhausted()
-        {
-            return Err(arith_err(format!(
-                "{}: expression recursion level exceeded",
-                name
-            )));
-        }
-        let mut sub = ArithParser {
-            input: trimmed.as_bytes(),
-            pos: 0,
-            env: self.env,
-            depth: self.depth + 1,
-            nest: self.nest,
-            noeval: false,
-        };
-        sub.eval_full()
     }
 
     /// Parse a nested operand with `parse`: one more level of syntactic
@@ -683,45 +666,12 @@ impl<'a> ArithParser<'a> {
         self.var_operand(name)
     }
 
-    /// The value of variable `name` as an operand (see `eval_var_value`).
-    /// A plain decimal value (the common case) is read in place, without
-    /// copying the value string.
     fn var_operand(&mut self, name: &str) -> crate::error::Result<i64> {
-        if self.noeval {
-            return Ok(0);
-        }
-        if name != "LINENO" {
-            let Some(raw) = self.env.vars.get(name) else {
-                return Ok(0);
-            };
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return Ok(0);
-            }
-            if is_plain_decimal(trimmed)
-                && let Ok(v) = trimmed.parse::<i64>()
-            {
-                return Ok(v);
-            }
-        }
-        let raw = arith_name_lookup(self.env, name);
-        self.eval_var_value(name, &raw)
+        var_operand(self.env, name, self.depth, self.nest, self.noeval)
     }
 
-    /// Store an arithmetic assignment's result. LINENO is a computed
-    /// pseudo-variable (see `ExecState::lineno`): an assignment reads back
-    /// the value but does not persist (matches bash: `$((LINENO+=1))`
-    /// does not "stick"). `assign_var` (not `vars.set`) invalidates the
-    /// utility hash when PATH is assigned. A readonly target is an
-    /// expansion error (dash: `x: is read only`; bash: `x: readonly
-    /// variable`), never silently ignored.
     fn assign(&mut self, name: &str, val: i64) -> crate::error::Result<()> {
-        if name == "LINENO" {
-            return Ok(());
-        }
-        self.env
-            .assign_var(name, val.to_string())
-            .map_err(|msg| ShellError::expansion(ExpansionErrorKind::InvalidArithmetic, msg))
+        assign(self.env, name, val)
     }
 
     /// Try to match a compound assignment operator at current position.
@@ -764,6 +714,88 @@ impl<'a> ArithParser<'a> {
     }
 }
 
+/// The value of variable `name` as an operand at variable recursion
+/// depth `depth` and nesting `nest`; 0 without evaluation in a skipped
+/// operand (`noeval`). A plain decimal value (the common case) is read in
+/// place, without copying the value string.
+fn var_operand(
+    env: &mut ShellEnv,
+    name: &str,
+    depth: u32,
+    nest: u32,
+    noeval: bool,
+) -> crate::error::Result<i64> {
+    if noeval {
+        return Ok(0);
+    }
+    if name != "LINENO" {
+        let Some(raw) = env.vars.get(name) else {
+            return Ok(0);
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(0);
+        }
+        if is_plain_decimal(trimmed)
+            && let Ok(v) = trimmed.parse::<i64>()
+        {
+            return Ok(v);
+        }
+    }
+    let raw = arith_name_lookup(env, name);
+    eval_var_value(env, name, &raw, depth, nest)
+}
+
+/// Evaluate a variable's raw string value as an operand. A plain
+/// integer parses directly; empty/blank is 0 (matches bash: `x=""`
+/// gives `$((x))` == 0); anything else is recursively evaluated as an
+/// arithmetic expression (`x=1+2; $((x))` == 3, matching bash/dash),
+/// with a depth cap so self-referential values (`x=x`) terminate.
+fn eval_var_value(
+    env: &mut ShellEnv,
+    name: &str,
+    raw: &str,
+    depth: u32,
+    nest: u32,
+) -> crate::error::Result<i64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    // Fast path: a plain decimal integer. Values with a leading zero
+    // (octal `010`, hex `0x1f`, invalid `09`) take the full path so
+    // they are read as integer constants with the C rules a literal
+    // gets (`x=010; $((x))` is 8, `x=09` is an error; dash/bash).
+    if is_plain_decimal(trimmed)
+        && let Ok(v) = trimmed.parse::<i64>()
+    {
+        return Ok(v);
+    }
+    if depth >= MAX_RECURSION_DEPTH || crate::exec::stack_guard::descent_stack_exhausted() {
+        return Err(arith_err(format!(
+            "{}: expression recursion level exceeded",
+            name
+        )));
+    }
+    // A variable's value is usually a constant expression (`x=1+2`).
+    eval_text(env, trimmed, depth + 1, nest, true)
+}
+
+/// Store an arithmetic assignment's result. LINENO is a computed
+/// pseudo-variable (see `ExecState::lineno`): an assignment reads back
+/// the value but does not persist (matches bash: `$((LINENO+=1))`
+/// does not "stick"). `assign_var` (not `vars.set`) invalidates the
+/// utility hash when PATH is assigned. A readonly target is an
+/// expansion error (dash: `x: is read only`; bash: `x: readonly
+/// variable`), never silently ignored.
+fn assign(env: &mut ShellEnv, name: &str, val: i64) -> crate::error::Result<()> {
+    if name == "LINENO" {
+        return Ok(());
+    }
+    env.assign_var(name, val.to_string())
+        .map_err(|msg| ShellError::expansion(ExpansionErrorKind::InvalidArithmetic, msg))
+}
+
 /// True for an optionally `-`-signed run of ASCII digits with no
 /// redundant leading zero (`0`, `42`, `-7`): the strings whose `i64`
 /// parse agrees with C integer-constant rules. Anything else (`010`,
@@ -777,6 +809,7 @@ fn is_plain_decimal(s: &str) -> bool {
     }
 }
 
+#[derive(Clone, Copy)]
 enum CompoundOp {
     Add,
     Sub,
