@@ -55,7 +55,7 @@ pub fn expand(_env: &ShellEnv, fields: Vec<ExpandedField>) -> Vec<ExpandedField>
 fn escaped_pattern_of(field: &ExpandedField) -> String {
     let mut out = String::with_capacity(field.value.len());
     for (bi, ch) in field.value.char_indices() {
-        if matches!(ch, '*' | '?' | '[' | ']' | '\\') && field.is_glob_protected(bi) {
+        if crate::expand::pattern::needs_pattern_escape(ch) && field.is_glob_protected(bi) {
             out.push('\\');
         }
         out.push(ch);
@@ -126,7 +126,9 @@ fn has_unquoted_glob_chars(field: &ExpandedField) -> bool {
 /// appear inside multibyte sequences.
 fn bracket_has_close(bytes: &[u8], open: usize, is_protected: &dyn Fn(usize) -> bool) -> bool {
     let mut j = open + 1;
-    if bytes.get(j) == Some(&b'!') {
+    // Only an unquoted `!` negates: a quoted one (`["!"]`) is the
+    // class's first member, so a `]` right after it closes the class.
+    if bytes.get(j) == Some(&b'!') && !is_protected(j) {
         j += 1;
     }
     if bytes.get(j) == Some(&b']') {

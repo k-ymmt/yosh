@@ -461,7 +461,7 @@ pub fn expand_word_to_pattern(env: &mut ShellEnv, word: &Word) -> crate::error::
             // matcher's `parse_bracket` treats `\]` as a literal member
             // that cannot close the class, mirroring the mask-aware
             // closer scan in `pathname::bracket_has_close`.
-            if matches!(ch, '*' | '?' | '[' | ']' | '\\') && f.is_glob_protected(bi) {
+            if pattern::needs_pattern_escape(ch) && f.is_glob_protected(bi) {
                 result.push('\\');
             }
             result.push(ch);

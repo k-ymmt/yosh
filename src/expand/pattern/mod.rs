@@ -26,6 +26,19 @@ pub fn matches(pattern: &str, string: &str) -> bool {
     compile(pattern).matches(string)
 }
 
+/// Whether a quoted `ch` must be backslash-escaped when a word is
+/// rendered into pattern text (`expand_word_to_pattern`, the pathname
+/// renderer): the glob metacharacters plus the characters that are
+/// special only inside a bracket expression — `!` (negation after `[`)
+/// and `-` (range). POSIX §2.13.1: quoting makes each of them literal,
+/// so `[\!b]` / `["!"b]` match `!` or `b` and `[a"-"c]` matches only
+/// `a`, `-` or `c` (dash/bash agree). A `\x` outside a bracket is the
+/// literal `x`, so escaping them elsewhere is harmless.
+#[inline]
+pub(crate) fn needs_pattern_escape(ch: char) -> bool {
+    matches!(ch, '*' | '?' | '[' | ']' | '\\' | '!' | '-')
+}
+
 /// A pattern tokenized once, reusable across many `matches` calls.
 /// Kills the per-candidate re-parse cost: a 2000-entry directory glob
 /// previously re-tokenized the pattern (re-allocating each bracket's
