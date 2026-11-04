@@ -357,29 +357,18 @@ fn expand_special(env: &ShellEnv, sp: &SpecialParam) -> String {
     }
 }
 
-/// All char-boundary byte offsets of `v`, ascending: `0, b1, …, v.len()`.
-///
-/// `DoubleEndedIterator` so callers iterate longest-first via `rev()` or
-/// shortest-first forward. For an empty string this yields just `[0]`.
-fn boundaries(v: &str) -> impl DoubleEndedIterator<Item = usize> + '_ {
-    v.char_indices()
-        .map(|(i, _)| i)
-        .chain(std::iter::once(v.len()))
-}
-
 /// Remove a suffix matching `pat` from `value`.
 /// If `longest` is true, try the longest match; otherwise the shortest.
 ///
-/// Fast paths (PERF: avoids the O(n²)+ boundary-scan + backtracking-matcher
-/// combination for the common `${x%pattern}` idioms):
+/// Fast paths for the common `${x%pattern}` idioms (substring search
+/// instead of the general matcher):
 ///   - `pat` fully literal (no metachars) → a single `ends_with` check;
 ///     `longest`/`shortest` are equivalent since only one match is possible.
 ///   - `pat` = `<literal>*` (e.g. the `${x%.*}` idiom) → an anchored
 ///     `find`/`rfind` scan for the literal instead of testing every
 ///     candidate suffix boundary against the general matcher.
 ///   - Anything else (brackets, `?`, a `*` not at the pattern's end, or
-///     multiple `*`s) falls back to the general boundary-scan below,
-///     which is unchanged.
+///     multiple `*`s) takes the general linear scan below.
 fn strip_suffix(value: &str, pat: &str, longest: bool) -> String {
     match pattern::classify(pat) {
         pattern::PatternShape::Literal(lit) => {
@@ -412,25 +401,13 @@ fn strip_suffix(value: &str, pat: &str, longest: bool) -> String {
         pattern::PatternShape::StarThenLiteral(_) | pattern::PatternShape::General => {}
     }
 
-    // General path: the matcher is anchored (full match), so test each
-    // candidate suffix slice. The pattern is compiled ONCE and reused
-    // across the per-cut loop (previously re-tokenized per boundary —
-    // O(n) full parses for a value with n char boundaries). `start` is a
-    // char-boundary byte offset; the suffix is `value[start..]`.
-    let compiled = pattern::compile(pat);
-    let cut = |start: usize| {
-        compiled
-            .matches(&value[start..])
-            .then(|| value[..start].to_string())
-    };
-    let found = if longest {
-        // smallest start = longest suffix first
-        boundaries(value).find_map(cut)
-    } else {
-        // largest start = shortest suffix first
-        boundaries(value).rev().find_map(cut)
-    };
-    found.unwrap_or_else(|| value.to_string())
+    // General path: one linear scan for the shortest / longest matching
+    // suffix (see `CompiledPattern::match_suffix`) instead of matching
+    // every candidate suffix slice in turn, which is quadratic.
+    match pattern::compile(pat).match_suffix(value, longest) {
+        Some(start) => value[..start].to_string(),
+        None => value.to_string(),
+    }
 }
 
 /// Remove a prefix matching `pat` from `value`.
@@ -439,7 +416,7 @@ fn strip_suffix(value: &str, pat: &str, longest: bool) -> String {
 /// Fast paths mirror `strip_suffix` (see its doc comment):
 ///   - `pat` fully literal → a single `starts_with` check.
 ///   - `pat` = `*<literal>` (e.g. the `${x##*/}` idiom) → an anchored
-///     `find`/`rfind` scan instead of the general boundary loop.
+///     `find`/`rfind` scan instead of the general matcher.
 fn strip_prefix(value: &str, pat: &str, longest: bool) -> String {
     match pattern::classify(pat) {
         pattern::PatternShape::Literal(lit) => {
@@ -471,24 +448,12 @@ fn strip_prefix(value: &str, pat: &str, longest: bool) -> String {
         pattern::PatternShape::LiteralThenStar(_) | pattern::PatternShape::General => {}
     }
 
-    // General path: the matcher is anchored (full match), so test each
-    // candidate prefix slice. The pattern is compiled once and reused
-    // across the per-cut loop (see strip_suffix). `end` is a
-    // char-boundary byte offset; the prefix is `value[..end]`.
-    let compiled = pattern::compile(pat);
-    let cut = |end: usize| {
-        compiled
-            .matches(&value[..end])
-            .then(|| value[end..].to_string())
-    };
-    let found = if longest {
-        // largest end = longest prefix first
-        boundaries(value).rev().find_map(cut)
-    } else {
-        // smallest end = shortest prefix first
-        boundaries(value).find_map(cut)
-    };
-    found.unwrap_or_else(|| value.to_string())
+    // General path: one linear scan for the shortest / longest matching
+    // prefix (see `CompiledPattern::match_prefix`).
+    match pattern::compile(pat).match_prefix(value, longest) {
+        Some(end) => value[end..].to_string(),
+        None => value.to_string(),
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
