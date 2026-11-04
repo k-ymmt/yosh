@@ -1,8 +1,20 @@
+//! Parameter expansion (POSIX §2.6.2): dispatch on the `ParamExpr`
+//! form, and the fatal expansion errors it reports. Name lookup lives
+//! in `lookup`, the pattern-removal forms in `strip`.
+
+mod lookup;
+mod strip;
+
 use std::borrow::Cow;
 
-use super::{expand_word_to_pattern, expand_word_to_string, pattern};
+use super::{expand_word_to_pattern, expand_word_to_string};
 use crate::env::ShellEnv;
 use crate::parser::ast::{ParamExpr, SpecialParam};
+use lookup::{expand_special, lookup_var_nounset};
+pub(super) use lookup::{
+    is_unassignable_param, is_unset_or_null_inner, lookup_var, set_scalar_value,
+};
+pub(super) use strip::apply_strip;
 
 /// Report a fatal expansion error (POSIX §2.8.1): print the diagnostic,
 /// set `$?` to 1, and raise `FlowControl::ExpansionError` so the current
@@ -13,6 +25,11 @@ pub(super) fn expansion_error(env: &mut ShellEnv, msg: std::fmt::Arguments<'_>) 
     eprintln!("yosh: {msg}");
     env.exec.last_exit_status = 1;
     env.exec.flow_control = Some(crate::env::FlowControl::ExpansionError);
+}
+
+/// The `set -u` expansion error for the unset parameter `name`.
+fn parameter_not_set(env: &mut ShellEnv, name: impl std::fmt::Display) {
+    expansion_error(env, format_args!("{}: parameter not set", name));
 }
 
 /// Expand a `ParamExpr` to a String.
@@ -38,7 +55,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
             Some(val) => Ok(val.into_owned()),
             None => {
                 if env.mode.options.nounset {
-                    expansion_error(env, format_args!("{}: parameter not set", name));
+                    parameter_not_set(env, name);
                 }
                 Ok(String::new())
             }
@@ -53,7 +70,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                         // POSIX set -u: an unset positional parameter is an
                         // expansion error, same as an unset variable.
                         if env.mode.options.nounset {
-                            expansion_error(env, format_args!("{}: parameter not set", n));
+                            parameter_not_set(env, n);
                         }
                         Ok(String::new())
                     }
@@ -72,7 +89,7 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
                 && matches!(sp, SpecialParam::Bang)
                 && env.process.jobs.last_bg_pid().is_none()
             {
-                expansion_error(env, format_args!("!: parameter not set"));
+                parameter_not_set(env, "!");
                 return Ok(String::new());
             }
             Ok(expand_special(env, sp))
@@ -230,250 +247,12 @@ pub fn expand(env: &mut ShellEnv, param: &ParamExpr) -> crate::error::Result<Str
     }
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
 /// `Some(is_star)` when `name` is `@` or `*`.
 fn positional_name(name: &str) -> Option<bool> {
     match name {
         "*" => Some(true),
         "@" => Some(false),
         _ => None,
-    }
-}
-
-/// Apply the pattern removal of a `${name%pat}` / `${name%%pat}` /
-/// `${name#pat}` / `${name##pat}` expansion to `value`, with the pattern
-/// already expanded. Any other expression returns `value` unchanged.
-pub(super) fn apply_strip(param: &ParamExpr, value: &str, pat: &str) -> String {
-    match param {
-        ParamExpr::StripShortSuffix(..) => strip_suffix(value, pat, false),
-        ParamExpr::StripLongSuffix(..) => strip_suffix(value, pat, true),
-        ParamExpr::StripShortPrefix(..) => strip_prefix(value, pat, false),
-        ParamExpr::StripLongPrefix(..) => strip_prefix(value, pat, true),
-        _ => value.to_string(),
-    }
-}
-
-/// Resolve a variable by name, intercepting `LINENO` as a computed
-/// pseudo-variable backed by `env.exec.lineno` rather than a real
-/// `VarStore` entry (see `ExecState::lineno` doc comment for rationale).
-/// Digit-string names are positional parameters (POSIX §2.5.1 — leading
-/// zeros are decimal, so `01` ≡ `1`); an index past `$#` is unset (`None`).
-/// All other names delegate to `VarStore::get`.
-///
-/// The value is borrowed from `env` where it is stored there, so a
-/// caller that only reads it does not copy it.
-pub(super) fn lookup_var<'a>(env: &'a ShellEnv, name: &str) -> Option<Cow<'a, str>> {
-    if name == "LINENO" {
-        return Some(Cow::Owned(env.exec.lineno.to_string()));
-    }
-    // Special parameters reach here via the modifier forms (`${?:-x}`,
-    // `${!+y}`, …); bare `$?` et al. dispatch through `ParamExpr::Special`
-    // instead. `$!` is unset until an asynchronous list has run, and
-    // `$*`/`$@` are unset without positional parameters (POSIX §2.5.2);
-    // the rest are always set.
-    if let Some(sp) = special_param(name) {
-        return match sp {
-            SpecialParam::Bang if env.process.jobs.last_bg_pid().is_none() => None,
-            SpecialParam::At | SpecialParam::Star if env.vars.positional_params().is_empty() => {
-                None
-            }
-            // `$*` joins with IFS[0] (POSIX §2.5.2); in unquoted contexts
-            // field splitting on IFS then recovers the separate fields.
-            SpecialParam::Star => Some(Cow::Owned(
-                env.vars
-                    .positional_params()
-                    .join(&super::pipeline::ifs_join_separator(env)),
-            )),
-            _ => Some(Cow::Owned(expand_special(env, &sp))),
-        };
-    }
-    if !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
-        let n: usize = name.parse().unwrap_or(0);
-        if n == 0 {
-            return Some(Cow::Borrowed(&env.shell_name));
-        }
-        return env
-            .vars
-            .positional_params()
-            .get(n - 1)
-            .map(|s| Cow::Borrowed(s.as_str()));
-    }
-    env.vars.get(name).map(Cow::Borrowed)
-}
-
-/// The value of a `$name` / `${name}` / `$1` expansion when it is set,
-/// borrowed where possible: exactly what [`expand`] returns for it, and
-/// without side effects. `None` for any other expression, or an unset
-/// parameter (which [`expand`] handles, `set -u` included).
-pub(super) fn set_scalar_value<'a>(env: &'a ShellEnv, param: &ParamExpr) -> Option<Cow<'a, str>> {
-    match param {
-        ParamExpr::Simple(name) => lookup_var(env, name),
-        ParamExpr::Positional(n) if *n > 0 => env
-            .vars
-            .positional_params()
-            .get(n - 1)
-            .map(|s| Cow::Borrowed(s.as_str())),
-        _ => None,
-    }
-}
-
-/// `lookup_var` for the expansion forms that `set -u` covers beyond a
-/// bare `$name` — `${#name}` and the four strip forms (POSIX §2.6.2 /
-/// `set -u`: expanding an unset parameter other than `@`/`*` is an
-/// error; dash/bash/ksh agree). An unset `name` raises the expansion
-/// error and yields `Err(())` so the caller skips the rest of the
-/// expansion (no pattern side effects). `@`/`*` stay exempt, as for
-/// bare `$@`.
-fn lookup_var_nounset<'a>(env: &'a mut ShellEnv, name: &str) -> Result<Option<Cow<'a, str>>, ()> {
-    if env.mode.options.nounset && !matches!(name, "@" | "*") && lookup_var(env, name).is_none() {
-        expansion_error(env, format_args!("{}: parameter not set", name));
-        return Err(());
-    }
-    Ok(lookup_var(env, name))
-}
-
-/// True when `name` denotes a positional or special parameter, which
-/// `${name=word}` may not assign to (POSIX §2.6.2).
-pub(super) fn is_unassignable_param(name: &str) -> bool {
-    !name.is_empty()
-        && !name
-            .bytes()
-            .next()
-            .is_some_and(|b| b == b'_' || b.is_ascii_alphabetic())
-}
-
-pub(super) fn is_unset_or_null_inner(val: Option<&str>, null_check: bool) -> bool {
-    match val {
-        None => true,
-        Some(v) if null_check && v.is_empty() => true,
-        _ => false,
-    }
-}
-
-/// Map a single-character special-parameter name (as produced by the
-/// lexer's `read_param_name`) to its `SpecialParam`. `0` is not included:
-/// the digit-string branch of `lookup_var` already resolves it.
-fn special_param(name: &str) -> Option<SpecialParam> {
-    match name.as_bytes() {
-        [b] if *b != b'0' => SpecialParam::from_byte(*b),
-        _ => None,
-    }
-}
-
-fn expand_special(env: &ShellEnv, sp: &SpecialParam) -> String {
-    match sp {
-        SpecialParam::Question => env.exec.last_exit_status.to_string(),
-        SpecialParam::Dollar => env.process.shell_pid.as_raw().to_string(),
-        SpecialParam::Zero => env.shell_name.clone(),
-        SpecialParam::Hash => env.vars.positional_params().len().to_string(),
-        SpecialParam::At | SpecialParam::Star => env.vars.positional_params().join(" "),
-        SpecialParam::Bang => env
-            .process
-            .jobs
-            .last_bg_pid()
-            .map(|p| p.as_raw().to_string())
-            .unwrap_or_default(),
-        SpecialParam::Dash => env.mode.flag_string(),
-    }
-}
-
-/// Remove a suffix matching `pat` from `value`.
-/// If `longest` is true, try the longest match; otherwise the shortest.
-///
-/// Fast paths for the common `${x%pattern}` idioms (substring search
-/// instead of the general matcher):
-///   - `pat` fully literal (no metachars) → a single `ends_with` check;
-///     `longest`/`shortest` are equivalent since only one match is possible.
-///   - `pat` = `<literal>*` (e.g. the `${x%.*}` idiom) → an anchored
-///     `find`/`rfind` scan for the literal instead of testing every
-///     candidate suffix boundary against the general matcher.
-///   - Anything else (brackets, `?`, a `*` not at the pattern's end, or
-///     multiple `*`s) takes the general linear scan below.
-fn strip_suffix(value: &str, pat: &str, longest: bool) -> String {
-    match pattern::classify(pat) {
-        pattern::PatternShape::Literal(lit) => {
-            return match value.strip_suffix(lit.as_str()) {
-                Some(rest) => rest.to_string(),
-                None => value.to_string(),
-            };
-        }
-        pattern::PatternShape::LiteralThenStar(lit) => {
-            if lit.is_empty() {
-                // Pattern is just "*": longest strips everything, shortest
-                // strips nothing (matches the general algorithm — see
-                // task-2 brief verification harness).
-                return if longest {
-                    String::new()
-                } else {
-                    value.to_string()
-                };
-            }
-            let idx = if longest {
-                value.find(lit.as_str())
-            } else {
-                value.rfind(lit.as_str())
-            };
-            return match idx {
-                Some(i) => value[..i].to_string(),
-                None => value.to_string(),
-            };
-        }
-        pattern::PatternShape::StarThenLiteral(_) | pattern::PatternShape::General => {}
-    }
-
-    // General path: one linear scan for the shortest / longest matching
-    // suffix (see `CompiledPattern::match_suffix`) instead of matching
-    // every candidate suffix slice in turn, which is quadratic.
-    match pattern::compile(pat).match_suffix(value, longest) {
-        Some(start) => value[..start].to_string(),
-        None => value.to_string(),
-    }
-}
-
-/// Remove a prefix matching `pat` from `value`.
-/// If `longest` is true, try the longest match; otherwise the shortest.
-///
-/// Fast paths mirror `strip_suffix` (see its doc comment):
-///   - `pat` fully literal → a single `starts_with` check.
-///   - `pat` = `*<literal>` (e.g. the `${x##*/}` idiom) → an anchored
-///     `find`/`rfind` scan instead of the general matcher.
-fn strip_prefix(value: &str, pat: &str, longest: bool) -> String {
-    match pattern::classify(pat) {
-        pattern::PatternShape::Literal(lit) => {
-            return match value.strip_prefix(lit.as_str()) {
-                Some(rest) => rest.to_string(),
-                None => value.to_string(),
-            };
-        }
-        pattern::PatternShape::StarThenLiteral(lit) => {
-            if lit.is_empty() {
-                // Pattern is just "*": longest strips everything, shortest
-                // strips nothing.
-                return if longest {
-                    String::new()
-                } else {
-                    value.to_string()
-                };
-            }
-            let idx = if longest {
-                value.rfind(lit.as_str())
-            } else {
-                value.find(lit.as_str())
-            };
-            return match idx {
-                Some(i) => value[i + lit.len()..].to_string(),
-                None => value.to_string(),
-            };
-        }
-        pattern::PatternShape::LiteralThenStar(_) | pattern::PatternShape::General => {}
-    }
-
-    // General path: one linear scan for the shortest / longest matching
-    // prefix (see `CompiledPattern::match_prefix`).
-    match pattern::compile(pat).match_prefix(value, longest) {
-        Some(end) => value[end..].to_string(),
-        None => value.to_string(),
     }
 }
 
@@ -905,155 +684,5 @@ mod tests {
         let mut env = ShellEnv::new("yosh", vec!["a".to_string(), "b".to_string()]);
         let result = expand(&mut env, &ParamExpr::Special(SpecialParam::At)).unwrap();
         assert_eq!(result, "a b");
-    }
-
-    // ── strip_prefix / strip_suffix fast-path unit tests (Task 2 PERF item 9) ──
-    // Directly exercise the private helpers (module-internal test access) to
-    // pin fast-path behavior independently of the ParamExpr plumbing above.
-
-    // -- Literal fast path --
-
-    #[test]
-    fn strip_suffix_literal_fast_path_match() {
-        assert_eq!(strip_suffix("file.txt", ".txt", true), "file");
-        assert_eq!(strip_suffix("file.txt", ".txt", false), "file");
-    }
-
-    #[test]
-    fn strip_suffix_literal_fast_path_no_match() {
-        assert_eq!(strip_suffix("file.txt", ".rs", true), "file.txt");
-    }
-
-    #[test]
-    fn strip_prefix_literal_fast_path_match() {
-        assert_eq!(strip_prefix("/a/b/c", "/a/", true), "b/c");
-        assert_eq!(strip_prefix("/a/b/c", "/a/", false), "b/c");
-    }
-
-    #[test]
-    fn strip_prefix_literal_fast_path_no_match() {
-        assert_eq!(strip_prefix("/a/b/c", "/x/", true), "/a/b/c");
-    }
-
-    #[test]
-    fn strip_literal_empty_pattern_is_identity() {
-        // classify("") => Literal("") — matches at zero-length boundary,
-        // stripping nothing.
-        assert_eq!(strip_suffix("hello", "", true), "hello");
-        assert_eq!(strip_prefix("hello", "", true), "hello");
-    }
-
-    #[test]
-    fn strip_literal_pattern_longer_than_value_no_match() {
-        assert_eq!(strip_suffix("ab", "abcdef", true), "ab");
-        assert_eq!(strip_prefix("ab", "abcdef", true), "ab");
-    }
-
-    #[test]
-    fn strip_literal_escaped_metachar_is_literal_not_wildcard() {
-        // `\*` is a literal '*', not a wildcard — must not match unrelated
-        // suffixes/prefixes, and must match a literal trailing/leading '*'.
-        assert_eq!(strip_suffix("file*", "\\*", true), "file");
-        assert_eq!(strip_suffix("file.txt", "\\*", true), "file.txt");
-        assert_eq!(strip_prefix("*file", "\\*", true), "file");
-    }
-
-    // -- `*<literal>` / `<literal>*` idiom fast paths --
-
-    #[test]
-    fn strip_prefix_star_literal_longest_basename_idiom() {
-        // ${x##*/} idiom: strip through the LAST '/'.
-        assert_eq!(strip_prefix("/a/b/c.txt", "*/", true), "c.txt");
-    }
-
-    #[test]
-    fn strip_prefix_star_literal_shortest_idiom() {
-        // ${x#*/} idiom: strip through the FIRST '/'.
-        assert_eq!(strip_prefix("/a/b/c.txt", "*/", false), "a/b/c.txt");
-    }
-
-    #[test]
-    fn strip_prefix_star_literal_no_match() {
-        assert_eq!(strip_prefix("noslash", "*/", true), "noslash");
-    }
-
-    #[test]
-    fn strip_suffix_literal_star_shortest_extension_idiom() {
-        // ${x%.*} idiom: strip from the LAST '.' onward.
-        assert_eq!(strip_suffix("archive.tar.gz", ".*", false), "archive.tar");
-    }
-
-    #[test]
-    fn strip_suffix_literal_star_longest_idiom() {
-        // ${x%%.*} idiom: strip from the FIRST '.' onward.
-        assert_eq!(strip_suffix("archive.tar.gz", ".*", true), "archive");
-    }
-
-    #[test]
-    fn strip_suffix_literal_star_no_match() {
-        assert_eq!(strip_suffix("noext", ".*", false), "noext");
-    }
-
-    #[test]
-    fn strip_prefix_bare_star_longest_strips_everything() {
-        assert_eq!(strip_prefix("anything", "*", true), "");
-    }
-
-    #[test]
-    fn strip_prefix_bare_star_shortest_strips_nothing() {
-        assert_eq!(strip_prefix("anything", "*", false), "anything");
-    }
-
-    #[test]
-    fn strip_suffix_bare_star_longest_strips_everything() {
-        assert_eq!(strip_suffix("anything", "*", true), "");
-    }
-
-    #[test]
-    fn strip_suffix_bare_star_shortest_strips_nothing() {
-        assert_eq!(strip_suffix("anything", "*", false), "anything");
-    }
-
-    // -- General fallback still correct for non-fast-path shapes --
-
-    #[test]
-    fn strip_prefix_question_mark_uses_general_path() {
-        // '?' disqualifies the literal/star-literal fast paths.
-        assert_eq!(strip_prefix("abc", "??", true), "c");
-    }
-
-    #[test]
-    fn strip_suffix_bracket_uses_general_path() {
-        assert_eq!(strip_suffix("file1", "[0-9]", true), "file");
-    }
-
-    #[test]
-    fn strip_prefix_star_in_middle_uses_general_path() {
-        // '*' not at an edge — StarThenLiteral/LiteralThenStar don't apply,
-        // General handles "a*c" style patterns via full backtracking.
-        assert_eq!(strip_prefix("axxxc rest", "a*c", true), " rest");
-    }
-
-    #[test]
-    fn strip_suffix_multiple_stars_uses_general_path() {
-        assert_eq!(strip_suffix("aXbYc", "a*b*c", true), "");
-    }
-
-    // -- Multibyte correctness for the new fast paths --
-
-    #[test]
-    fn strip_prefix_star_literal_multibyte() {
-        assert_eq!(strip_prefix("日本/語/x", "*/", true), "x");
-    }
-
-    #[test]
-    fn strip_suffix_literal_star_multibyte() {
-        assert_eq!(strip_suffix("あ.い.う", ".*", false), "あ.い");
-    }
-
-    #[test]
-    fn strip_literal_multibyte_pattern_fast_path() {
-        assert_eq!(strip_prefix("日本語", "日本", true), "語");
-        assert_eq!(strip_suffix("日本語", "語", true), "日本");
     }
 }
