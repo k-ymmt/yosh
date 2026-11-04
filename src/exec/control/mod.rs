@@ -1,16 +1,23 @@
-use nix::unistd::ForkResult;
+//! Driving command lists: dispatching one command, AND-OR lists
+//! ([`and_or`]), asynchronous lists ([`background`]), complete
+//! commands and whole programs, and reporting command-level errors.
 
-use super::{
-    Executor, block_all_signals, exit_child, fork_shell, preview_command, restore_signal_mask,
-    stdin_from_dev_null,
-};
-use crate::error::{RuntimeErrorKind, ShellError};
-use crate::parser::ast::{
-    AndOrList, AndOrOp, Command, CompleteCommand, Pipeline, Program, SeparatorOp,
-};
-use crate::signal;
+mod and_or;
+mod background;
+
+use super::Executor;
+use crate::error::ShellError;
+use crate::parser::ast::{Command, CompleteCommand, FunctionDef, Program, SeparatorOp};
 
 impl Executor {
+    /// `set -n` (noexec) is in effect: commands are read but not run.
+    /// POSIX XCU set: "-n ... This option is ignored by interactive
+    /// shells"; flag_i covers command-substitution children, which run
+    /// with is_interactive=false but belong to an interactive shell.
+    fn noexec_in_effect(&self) -> bool {
+        self.env.mode.options.noexec && !(self.env.mode.is_interactive || self.env.mode.flag_i)
+    }
+
     /// Dispatch a `Command` to the appropriate execution path.
     pub(crate) fn exec_command(&mut self, cmd: &Command) -> i32 {
         // POSIX XCU set: "-n ... This option is ignored by interactive
@@ -20,7 +27,7 @@ impl Executor {
         // with is_interactive=false but belong to an interactive shell;
         // without it, `$(...)` inside an interactive -n shell silently
         // expands to nothing (bash keeps -n ignored there too).
-        if self.env.mode.options.noexec && !(self.env.mode.is_interactive || self.env.mode.flag_i) {
+        if self.noexec_in_effect() {
             return 0;
         }
         match cmd {
@@ -44,34 +51,38 @@ impl Executor {
                     Err(e) => self.report_command_error(&e),
                 }
             }
-            Command::FunctionDef(func_def) => {
-                // POSIX §2.9.5: a function may not be named after a special
-                // built-in; the definition is an error, and per §2.8.1 a
-                // non-interactive shell exits on it.
-                if matches!(
-                    crate::builtin::classify_builtin(&func_def.name),
-                    crate::builtin::BuiltinKind::Special
-                ) {
-                    crate::byteenc::write_stderr_decoded_line(&format!(
-                        "yosh: {}: cannot define a function named after a special builtin",
-                        func_def.name
-                    ));
-                    self.env.exec.last_exit_status = 2;
-                    if !self.env.mode.is_interactive {
-                        self.exit_requested = Some(2);
-                    }
-                    return 2;
-                }
-                // One `Rc::new` per definition; every subsequent call is
-                // a refcount bump (see `ShellEnv::functions`). The body
-                // inside `FunctionDef` is already `Rc<CompoundCommand>`,
-                // so this clone is shallow.
-                self.env
-                    .functions
-                    .insert(func_def.name.clone(), std::rc::Rc::new(func_def.clone()));
-                0
-            }
+            Command::FunctionDef(func_def) => self.define_function(func_def),
         }
+    }
+
+    /// Run a function definition command: register `func_def` and
+    /// return 0, or reject a name that is a special built-in.
+    fn define_function(&mut self, func_def: &FunctionDef) -> i32 {
+        // POSIX §2.9.5: a function may not be named after a special
+        // built-in; the definition is an error, and per §2.8.1 a
+        // non-interactive shell exits on it.
+        if matches!(
+            crate::builtin::classify_builtin(&func_def.name),
+            crate::builtin::BuiltinKind::Special
+        ) {
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: {}: cannot define a function named after a special builtin",
+                func_def.name
+            ));
+            self.env.exec.last_exit_status = 2;
+            if !self.env.mode.is_interactive {
+                self.exit_requested = Some(2);
+            }
+            return 2;
+        }
+        // One `Rc::new` per definition; every subsequent call is
+        // a refcount bump (see `ShellEnv::functions`). The body
+        // inside `FunctionDef` is already `Rc<CompoundCommand>`,
+        // so this clone is shallow.
+        self.env
+            .functions
+            .insert(func_def.name.clone(), std::rc::Rc::new(func_def.clone()));
+        0
     }
 
     /// Print a command-level `ShellError` and return its exit code.
@@ -84,7 +95,7 @@ impl Executor {
         // Empty message = the diagnostic was already printed at the point
         // of failure (e.g. `param::expansion_error` for a `${x:?}` /
         // nounset failure inside a heredoc body, converted to a
-        // redirection error in `RedirectState::apply_one`). Printing here
+        // redirection error in `redirect::expand_one`). Printing here
         // would duplicate the line; dash/bash print it once.
         if !e.message.is_empty() {
             crate::byteenc::write_stderr_decoded_line(&e.to_string());
@@ -95,286 +106,6 @@ impl Executor {
             self.exit_requested = Some(code);
         }
         code
-    }
-
-    /// Execute an AND-OR list.
-    pub(crate) fn exec_and_or(&mut self, and_or: &AndOrList) -> i32 {
-        let has_rest = !and_or.rest.is_empty();
-
-        // POSIX §2.15 set: the final status is exempt from `set -e` when the
-        // pipeline that produced it began with `!`, or when it came from a
-        // non-final component of the list (short-circuit). The flag is set
-        // AFTER each pipeline runs (nested lists inside the pipeline set it
-        // for themselves) so the value left when we return describes the
-        // status we return.
-        let first_exempt = and_or.first.negated || has_rest;
-        let mut status = self.exec_pipeline_errexit(&and_or.first, first_exempt);
-
-        if self.should_unwind() || self.and_or_step_traps(has_rest) {
-            return status;
-        }
-
-        for (i, (op, pipeline)) in and_or.rest.iter().enumerate() {
-            let is_last = i == and_or.rest.len() - 1;
-            let should_run = match op {
-                AndOrOp::And => status == 0,
-                AndOrOp::Or => status != 0,
-            };
-            if !should_run {
-                continue;
-            }
-
-            let exempt = pipeline.negated || !is_last;
-            status = self.exec_pipeline_errexit(pipeline, exempt);
-
-            if self.should_unwind() || self.and_or_step_traps(!is_last) {
-                break;
-            }
-        }
-
-        self.env.exec.last_exit_status = status;
-        status
-    }
-
-    /// Pending trap actions between the pipelines of an AND-OR list: like
-    /// between list items, a trapped signal's action runs after the
-    /// current command (POSIX §2.11), so `trap 'echo T' USR1;
-    /// kill -USR1 $$ && echo yes` prints T before yes (dash and bash
-    /// agree). Skipped after the last pipeline, whose list item drains
-    /// them. Returns true when a trap action asked the shell to exit.
-    fn and_or_step_traps(&mut self, more: bool) -> bool {
-        if !more {
-            return false;
-        }
-        self.process_pending_signals();
-        self.exit_requested.is_some()
-    }
-
-    /// Run one pipeline of an AND-OR list, maintaining
-    /// `errexit_exempt_status`: cleared before the run (so a stale value
-    /// from a previous list cannot leak in), forced on afterwards when this
-    /// pipeline is itself exempt, and otherwise left as the pipeline's body
-    /// set it — an in-process compound (brace group, loop, case) whose final
-    /// status came from an exempt pipeline propagates that exemption
-    /// (matches bash/dash; functions and subshells do not propagate).
-    fn exec_pipeline_errexit(&mut self, pipeline: &Pipeline, exempt: bool) -> i32 {
-        self.errexit_exempt_status = false;
-        let status = if exempt {
-            self.with_errexit_suppressed(|e| e.exec_pipeline(pipeline))
-        } else {
-            self.exec_pipeline(pipeline)
-        };
-        if exempt {
-            self.errexit_exempt_status = true;
-        }
-        status
-    }
-
-    /// Reap any zombie background children without blocking.
-    pub(crate) fn reap_zombies(&mut self) {
-        use crate::env::jobs::JobStatus;
-        // Fast path: no live (Running/Stopped) jobs means no child of
-        // this shell can be waiting to be reaped here — foreground,
-        // pipeline, and command-substitution children are all waited
-        // synchronously at their spawn sites. Skips a waitpid(2) on
-        // every complete command.
-        if !self.env.process.jobs.has_live_jobs() {
-            return;
-        }
-        loop {
-            match nix::sys::wait::waitpid(
-                nix::unistd::Pid::from_raw(-1),
-                Some(
-                    nix::sys::wait::WaitPidFlag::WNOHANG
-                        | nix::sys::wait::WaitPidFlag::WUNTRACED
-                        // A background job stopped and then resumed by an
-                        // external `kill -CONT` must transition back to
-                        // Running in `jobs` output (previously it stayed
-                        // displayed Stopped forever).
-                        | nix::sys::wait::WaitPidFlag::WCONTINUED,
-                ),
-            ) {
-                Ok(nix::sys::wait::WaitStatus::Exited(pid, code)) => {
-                    self.env
-                        .process
-                        .jobs
-                        .update_status(pid, JobStatus::Done(code));
-                }
-                Ok(nix::sys::wait::WaitStatus::Signaled(pid, sig, _)) => {
-                    self.env
-                        .process
-                        .jobs
-                        .update_status(pid, JobStatus::Terminated(sig as i32));
-                }
-                Ok(nix::sys::wait::WaitStatus::Stopped(pid, sig)) => {
-                    self.env
-                        .process
-                        .jobs
-                        .update_status(pid, JobStatus::Stopped(sig as i32));
-                }
-                Ok(nix::sys::wait::WaitStatus::Continued(pid)) => {
-                    self.env.process.jobs.update_status(pid, JobStatus::Running);
-                }
-                Ok(nix::sys::wait::WaitStatus::StillAlive) => break,
-                // Exited/Signaled/Stopped/Continued/StillAlive is
-                // exhaustive on macOS (Ptrace* variants are Linux-only);
-                // keep a catch-all for cross-platform builds.
-                #[allow(unreachable_patterns)]
-                Ok(_) => continue,
-                Err(_) => break,
-            }
-        }
-    }
-
-    /// Execute a command asynchronously (background with &).
-    fn exec_async(&mut self, and_or: &AndOrList) -> Result<i32, ShellError> {
-        // A bare multi-command pipeline payload forks its members
-        // directly from this shell (no wrapper subshell), so the job
-        // table tracks every member pid — stops become visible to
-        // `jobs`/`bg` and `$!` is the last member (bash parity). Negated
-        // pipelines and AND-OR lists keep the wrapper below: their final
-        // status is computed by shell code that must outlive the members.
-        if and_or.rest.is_empty() && !and_or.first.negated && and_or.first.commands.len() >= 2 {
-            return self.exec_async_pipeline(&and_or.first);
-        }
-        // Block signals across the fork: the child inherits the parent's
-        // self-pipe handler AND the shared pipe, so a signal delivered to
-        // the child before reset_child_signals runs would be written into
-        // the pipe and later misread by the parent as its own (observed as
-        // `kill -TERM $!` racing the child's signal reset and terminating
-        // the parent shell). Both sides restore the mask below.
-        let prev_mask = block_all_signals();
-        match unsafe { fork_shell() } {
-            Err(e) => {
-                restore_signal_mask(&prev_mask);
-                Err(ShellError::runtime(
-                    RuntimeErrorKind::IoError,
-                    format!("fork: {}", e),
-                ))
-            }
-            Ok(ForkResult::Child) => {
-                super::mark_forked_child();
-                self.env.mode.enter_subshell();
-                // Set process group BEFORE signal setup to ensure proper isolation.
-                let pid = nix::unistd::getpid();
-                nix::unistd::setpgid(pid, pid).ok();
-
-                let ignored = self.env.traps.ignored_signals();
-                self.env.traps.reset_for_subshell();
-                // The async child is a fresh subshell: the parent's
-                // remembered reaped statuses and terminal table jobs
-                // are not its children.
-                self.env.process.jobs.reset_for_subshell();
-                // Shell-child variants: an async child keeps running
-                // shell code, so the self-pipe is re-created (traps set
-                // inside the list must work) while parent handlers reset
-                // to SIG_DFL per POSIX §2.12.
-                if self.env.mode.options.monitor {
-                    signal::setup_background_shell_child_signals(&ignored);
-                    // A background job is a subshell, not a job-controlling
-                    // shell: with monitor left on, a nested external command
-                    // would be forked into its own new process group and this
-                    // (background) subshell would call tcsetpgrp around it,
-                    // stopping the job with SIGTTOU. Nested commands must
-                    // stay in this job's process group instead.
-                    self.env.mode.options.monitor = false;
-                } else {
-                    // POSIX §2.9.3.1 / §2.12: with job control disabled,
-                    // commands in an asynchronous list ignore SIGINT and
-                    // SIGQUIT, and read stdin from /dev/null (before any
-                    // explicit redirection, which happens later during
-                    // command execution). Record the ignores in the trap
-                    // store so nested forks (subshells, exec'd commands)
-                    // keep them ignored; a `trap` in the async list may
-                    // still override them.
-                    self.ignore_int_quit_in_async_child(ignored);
-                    stdin_from_dev_null();
-                }
-                // Signal dispositions are now the child's own — deliver
-                // anything that arrived while the fork window was blocked.
-                restore_signal_mask(&prev_mask);
-
-                // bash's nofork optimization: a `&` payload shaped like a
-                // single simple command may exec in place (no grandchild
-                // fork) if it dispatches to an external utility, so the
-                // parent's job-table entry — this child's pid — IS the
-                // command: stops become visible to job control and the
-                // exec'd command's $PPID is the forking shell.
-                // exec_simple_command takes the flag at entry and ignores
-                // it for builtins/functions, which keep the wrapper-
-                // subshell semantics below.
-                if and_or.rest.is_empty()
-                    && !and_or.first.negated
-                    && and_or.first.commands.len() == 1
-                {
-                    match and_or.first.commands[0] {
-                        Command::Simple(_) => self.env.exec.async_exec_in_place = true,
-                        // A `&` payload that is one compound command is
-                        // this subshell's whole body: its redirections
-                        // set up the subshell's environment rather than
-                        // a temporary scope inside it, so they stay
-                        // applied when the body ends or exits and the
-                        // EXIT trap writes through them (`{ trap 'echo
-                        // t' EXIT; exit; } >&2 &` prints t on stderr;
-                        // dash and bash agree). exec_compound_command
-                        // takes the flag at entry.
-                        Command::Compound(..) => self.async_compound_redirects_permanent = true,
-                        _ => {}
-                    }
-                }
-
-                let status = self.exec_and_or(and_or);
-                // POSIX §2.12: an EXIT trap set inside the async list
-                // runs when its subshell exits (`{ trap 'echo t' EXIT;
-                // :; } &` prints t; dash agrees), like every other
-                // forked subshell.
-                let status = self.child_exit_status(status);
-                self.env.exec.last_exit_status = status;
-                self.execute_exit_trap();
-                exit_child(status);
-            }
-            Ok(ForkResult::Parent { child }) => {
-                restore_signal_mask(&prev_mask);
-                nix::unistd::setpgid(child, child).ok();
-                let command_name = preview_command(and_or);
-                let job_id = self
-                    .env
-                    .process
-                    .jobs
-                    .add_job(child, vec![child], command_name, false);
-                // POSIX §2.9.3.1: the "[n] pid" notice is written only by an
-                // interactive shell; scripts stay silent, also under `set -m`
-                // (bash/dash agree).
-                if self.env.mode.is_interactive {
-                    crate::byteenc::write_stderr_decoded_line(&format!(
-                        "[{}] {}",
-                        job_id,
-                        child.as_raw()
-                    ));
-                }
-                Ok(0)
-            }
-        }
-    }
-
-    /// Signal setup of a non-job-control async child (POSIX §2.9.3.1 /
-    /// §2.12): SIGINT and SIGQUIT are ignored, recorded in the trap store
-    /// so nested forks (subshells, exec'd commands) keep them ignored —
-    /// a `trap` in the async list may still override them — and every
-    /// other disposition is reset like any shell child's (`ignored`: the
-    /// signals already ignored on entry).
-    pub(super) fn ignore_int_quit_in_async_child(&mut self, mut ignored: Vec<i32>) {
-        self.env
-            .traps
-            .signal_traps
-            .insert(libc::SIGINT, crate::env::TrapAction::Ignore);
-        self.env
-            .traps
-            .signal_traps
-            .insert(libc::SIGQUIT, crate::env::TrapAction::Ignore);
-        ignored.push(libc::SIGINT);
-        ignored.push(libc::SIGQUIT);
-        signal::reset_shell_child_signals(&ignored);
     }
 
     /// Execute a complete command (list of AND-OR lists with separators).
@@ -389,7 +120,7 @@ impl Executor {
         // ever reaching exec_command (bash -n does neither). Interactive
         // exemption mirrors the exec_command guard (POSIX: -n is
         // ignored by interactive shells; flag_i covers command subs).
-        if self.env.mode.options.noexec && !(self.env.mode.is_interactive || self.env.mode.flag_i) {
+        if self.noexec_in_effect() {
             return 0;
         }
         // Reap any finished background children before forking new ones
@@ -476,7 +207,9 @@ impl Executor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{CompoundCommand, CompoundCommandKind, Pipeline, SimpleCommand, Word};
+    use crate::parser::ast::{
+        AndOrList, AndOrOp, CompoundCommand, CompoundCommandKind, Pipeline, SimpleCommand, Word,
+    };
 
     fn make_simple_cmd(words: &[&str]) -> SimpleCommand {
         SimpleCommand {
