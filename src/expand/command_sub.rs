@@ -54,7 +54,10 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
                     last_exit_status: env.exec.last_exit_status,
                     flow_control: None,
                     trap_context_status: None,
-                    loop_depth: 0,
+                    // Inherited like a `( )` subshell: `break` inside
+                    // `$( )` within a loop ends the substitution's own
+                    // command list instead of being rejected (dash agrees).
+                    loop_depth: env.exec.loop_depth,
                     indirection_level: 0,
                     lineno: env.exec.lineno,
                     // Never inherited: a command-sub child of an async
