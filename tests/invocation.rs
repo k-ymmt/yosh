@@ -99,9 +99,11 @@ fn dash_i_ignores_untrapped_term() {
     assert!(out.contains("alive-0"), "got {out:?}");
     assert_eq!(code, 0, "-i shell must survive untrapped TERM");
 
-    // Sanity: without -i the same script dies with 128+15.
-    let (_, code) = run_with_stdin(&[], "kill -TERM $$\necho alive-$?\n");
-    assert_eq!(code, 143, "non-interactive shell must die on TERM");
+    // Sanity: without -i the same script dies of the TERM itself
+    // (run_with_stdin reports a signal death as -1).
+    let (out, code) = run_with_stdin(&[], "kill -TERM $$\necho alive-$?\n");
+    assert_eq!(code, -1, "non-interactive shell must die on TERM");
+    assert!(!out.contains("alive"), "got {out:?}");
 }
 
 /// A subshell, pipeline member, or async list of an interactive shell is
