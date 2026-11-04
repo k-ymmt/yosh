@@ -2661,6 +2661,16 @@ fn test_pty_ctrl_c_on_foreground_job_abandons_the_line() {
     );
     assert_eq!(caps.get(0), Some(&b"st=130"[..]), "status after Ctrl+C");
     wait_for_prompt(&mut s);
+    // Only the last pipeline member counts: an earlier member killed by
+    // SIGINT does not interrupt the shell (dash agrees).
+    s.send("/bin/sh -c 'kill -INT $$' | /bin/cat; echo af$((0))ter\r")
+        .unwrap();
+    expect_output(
+        &mut s,
+        "af0ter",
+        "SIGINT of an early member abandoned the line",
+    );
+    wait_for_prompt(&mut s);
     exit_shell(&mut s);
 }
 

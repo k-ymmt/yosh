@@ -61,7 +61,7 @@ impl Executor {
     }
 
     /// Ctrl+C on a foreground job reaches only the job's process group, so
-    /// the shell learns of it from the job dying by SIGINT. An interactive
+    /// the shell learns of it from the job's last process dying by SIGINT. An interactive
     /// shell whose SIGINT disposition is the default then abandons the rest
     /// of the command line, as if it had been interrupted itself (dash
     /// re-raises SIGINT; bash agrees): `sleep 5; echo x` + Ctrl+C prints
@@ -97,8 +97,8 @@ impl Executor {
         &mut self,
         job_id: crate::env::jobs::JobId,
     ) -> ForegroundWaitResult {
-        let (pgid, total_processes) = match self.env.process.jobs.get(job_id) {
-            Some(j) => (j.pgid, j.pids.len()),
+        let (pgid, total_processes, last_pid) = match self.env.process.jobs.get(job_id) {
+            Some(j) => (j.pgid, j.pids.len(), j.pids.last().copied()),
             None => {
                 return ForegroundWaitResult {
                     last_status: 1,
@@ -132,7 +132,10 @@ impl Executor {
                     process_statuses.push((pid, code));
                 }
                 Ok(WaitStatus::Signaled(pid, sig, _)) => {
-                    interrupted |= sig == nix::sys::signal::Signal::SIGINT;
+                    // Only the job's last process counts, as for its
+                    // status: `kill -INT`ed early pipeline members do not
+                    // interrupt the shell (dash's getstatus agrees).
+                    interrupted |= Some(pid) == last_pid && sig == nix::sys::signal::Signal::SIGINT;
                     let code = 128 + sig as i32;
                     self.env
                         .process
