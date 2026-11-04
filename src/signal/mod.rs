@@ -28,8 +28,8 @@ pub use job_control::{
     wait_until_foreground,
 };
 pub use self_pipe::{
-    drain_pending_signals, has_pending_exit_signal, init_signal_handling, self_pipe_read_fd,
-    set_interactive_shell, try_self_pipe_read_fd,
+    drain_pending_signals, has_pending_exit_signal, init_signal_handling, requeue_signals,
+    self_pipe_read_fd, set_interactive_shell, try_self_pipe_read_fd,
 };
 pub use table::{
     DefaultAction, SIGNAL_TABLE, default_action, signal_name_to_number, signal_number_to_name,

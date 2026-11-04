@@ -214,6 +214,16 @@ pub fn drain_pending_signals() -> Vec<i32> {
     signals
 }
 
+/// Hand already-drained signals back to the self-pipe, as if they had
+/// just been delivered, so the next drain point handles them. For a
+/// command that drains signals while it runs but must leave their trap
+/// actions until it has completed (`read`, POSIX §2.11).
+pub fn requeue_signals(signals: &[i32]) {
+    for &sig in signals {
+        signal_handler(sig);
+    }
+}
+
 /// The self-pipe's read end, or `None` before `init_signal_handling`.
 pub fn try_self_pipe_read_fd() -> Option<RawFd> {
     SELF_PIPE.get().map(|&(read_fd, _)| read_fd)

@@ -36,9 +36,11 @@ pub fn builtin_read(args: &[String], executor: &mut Executor) -> Result<i32, She
         }
     };
 
+    let mut deferred_traps = Vec::new();
     let (line_result, aborted) = {
-        let mut reader =
-            StdinByteReader::new(|waiting| handle_signals_during_read(executor, waiting));
+        let mut reader = StdinByteReader::new(|waiting| {
+            handle_signals_during_read(executor, &mut deferred_traps, waiting)
+        });
         let line_result = read_logical_line(parsed.raw, &mut reader);
         // Seek fd 0 back over any block-buffered bytes beyond the consumed
         // line, on success AND error paths, so the next reader of the fd
@@ -46,6 +48,14 @@ pub fn builtin_read(args: &[String], executor: &mut Executor) -> Result<i32, She
         reader.rewind_unconsumed();
         (line_result, reader.aborted)
     };
+    // POSIX §2.11: a trapped signal received while the shell waits for a
+    // foreground utility runs its action once the utility has completed.
+    // The trapped signals the read took in go back on the self-pipe, so
+    // the executor's next drain point — after this command, with its
+    // assignments made, its status in `$?` and its redirections undone —
+    // runs their actions, as for any other utility (dash agrees: `trap
+    // 'x=timeout' ALRM` overrides the partial line the read assigns).
+    crate::signal::requeue_signals(&deferred_traps);
     // A signal abandoned the read (see `handle_signals_during_read`): no
     // variable is assigned and the status reports the signal. A trapped
     // signal that only *ended* the read looks like end-of-file instead:
@@ -98,8 +108,9 @@ const READ_BLOCK: usize = 4096;
 enum SignalOutcome {
     /// No signal was pending: nothing ran.
     NoSignal,
-    /// Signal actions ran and the read goes on. A trap action may have
-    /// read from fd 0 itself, so input readiness must be checked again.
+    /// Signals arrived and the read goes on. Input readiness is checked
+    /// again before the next read(2), in case a signal action touched fd
+    /// 0 (cheap, and keeps the reader from blocking on stale readiness).
     Handled,
     /// A trapped signal ended the read like end-of-file: the bytes read
     /// so far are assigned and the status is 1.
@@ -108,23 +119,32 @@ enum SignalOutcome {
     Abort(i32),
 }
 
-/// Run the trap or default action of the signals that arrived during
-/// `read`, and decide whether the read goes on. `waiting` tells whether
-/// the read is blocked on idle input or only between read(2) calls that
-/// have data ready.
+/// Handle the signals that arrived during `read` and decide whether the
+/// read goes on. `waiting` tells whether the read is blocked on idle
+/// input or only between read(2) calls that have data ready.
 ///
-/// Untrapped fatal signals end a non-interactive shell right here (inside
-/// `run_signal_traps`), instead of only once a line completes — which
-/// never happens for endless input without a newline (`read x
-/// </dev/zero`). As in dash, a trapped signal that arrives while the read
-/// waits runs its action and then ends the read as end-of-file would: the
-/// partial line read so far is assigned (with the usual splitting) and
-/// the status is 1, so `trap ... ALRM` can time out a `read`. With data
-/// ready the action runs and the read goes on (dash keeps reading). An
-/// interactive shell's untrapped SIGINT abandons the read (130) either
-/// way, and with it the rest of the command line — like Ctrl+C on a
-/// foreground job in dash and bash (`read x; echo WRONG` prints nothing).
-fn handle_signals_during_read(executor: &mut Executor, waiting: bool) -> SignalOutcome {
+/// Signals with a trap action are only collected in `deferred`: as in
+/// dash, their actions run once the read has completed (see
+/// `builtin_read`), so an action sees — and may override — what the read
+/// assigned. A trapped signal that arrives while the read waits ends the
+/// read as end-of-file would: the partial line read so far is assigned
+/// (with the usual splitting) and the status is 1, so `trap ... ALRM` can
+/// time out a `read`. With data ready the read goes on (dash keeps
+/// reading too), and so it does for a trapped SIGCHLD, which a finished
+/// background job raises at any time.
+///
+/// The default action of an untrapped signal runs right here: a fatal
+/// one ends a non-interactive shell (inside `run_signal_traps`) instead
+/// of only once a line completes — which never happens for endless input
+/// without a newline (`read x </dev/zero`). An interactive shell's
+/// untrapped SIGINT abandons the read (130) either way, and with it the
+/// rest of the command line — like Ctrl+C on a foreground job in dash and
+/// bash (`read x; echo WRONG` prints nothing).
+fn handle_signals_during_read(
+    executor: &mut Executor,
+    deferred: &mut Vec<i32>,
+    waiting: bool,
+) -> SignalOutcome {
     // No syscall unless a handler has fired since the last drain: this
     // runs before every read(2) of a busy read.
     let signals = crate::signal::drain_pending_signals();
@@ -132,16 +152,23 @@ fn handle_signals_during_read(executor: &mut Executor, waiting: bool) -> SignalO
         return SignalOutcome::NoSignal;
     }
     let traps = &executor.env.traps;
-    let trapped = signals.iter().copied().rev().find(|&sig| {
-        sig != libc::SIGCHLD && matches!(traps.get_signal_trap(sig), Some(TrapAction::Command(_)))
-    });
+    let (trapped, untrapped): (Vec<i32>, Vec<i32>) = signals
+        .iter()
+        .copied()
+        .partition(|&sig| matches!(traps.get_signal_trap(sig), Some(TrapAction::Command(_))));
+    let ends_read = waiting && trapped.iter().any(|&sig| sig != libc::SIGCHLD);
     let interactive_int = executor.env.mode.is_interactive
-        && signals.contains(&libc::SIGINT)
+        && untrapped.contains(&libc::SIGINT)
         && !matches!(
             traps.get_signal_trap(libc::SIGINT),
-            Some(TrapAction::Command(_) | TrapAction::Ignore)
+            Some(TrapAction::Ignore)
         );
-    executor.run_signal_traps(&signals);
+    for sig in trapped {
+        if !deferred.contains(&sig) {
+            deferred.push(sig);
+        }
+    }
+    executor.run_signal_traps(&untrapped);
     if interactive_int {
         // Unwind to the prompt the way a fatal expansion error does in an
         // interactive shell: every list, compound command and function
@@ -153,9 +180,10 @@ fn handle_signals_during_read(executor: &mut Executor, waiting: bool) -> SignalO
         return SignalOutcome::Abort(128 + libc::SIGINT);
     }
     if executor.should_unwind() {
-        return SignalOutcome::Abort(128 + trapped.unwrap_or(signals[signals.len() - 1]));
+        let last = untrapped.last().copied();
+        return SignalOutcome::Abort(128 + last.unwrap_or(signals[signals.len() - 1]));
     }
-    if trapped.is_some() && waiting {
+    if ends_read {
         return SignalOutcome::EndRead;
     }
     SignalOutcome::Handled
@@ -186,10 +214,9 @@ fn handle_signals_during_read(executor: &mut Executor, waiting: bool) -> SignalO
 /// self-pipe and hands arriving signals to `on_signal(true)`. Input that
 /// is always readable (`/dev/zero`, a fast writer) never blocks, so
 /// every read(2) with data ready is preceded by `on_signal(false)` — an
-/// atomic flag test when no signal is pending. Once signal actions did
-/// run, readiness is checked again: a trap action may have read the
-/// input itself (`trap 'read y' USR1`), and a read(2) that then blocks
-/// would stop dispatching later signals until input arrives.
+/// atomic flag test when no signal is pending. Once signals were
+/// handled, readiness is checked again before the next read(2): one that
+/// blocks would stop dispatching later signals until input arrives.
 struct StdinByteReader<F: FnMut(bool) -> SignalOutcome> {
     /// Whether fd 0 is seekable (checked once at construction).
     seekable: bool,
@@ -277,9 +304,8 @@ impl<F: FnMut(bool) -> SignalOutcome> StdinByteReader<F> {
             if !self.signal_arrived(false)? {
                 return Ok(());
             }
-            // A trap action ran and may have consumed the input this
-            // readiness was about (`trap 'read y' USR1`): check again
-            // rather than block in read(2), deaf to later signals.
+            // Signals were handled: check readiness again rather than
+            // risk blocking in read(2), deaf to later signals.
             self.ready = 0;
         }
     }
@@ -312,12 +338,20 @@ impl<F: FnMut(bool) -> SignalOutcome> StdinByteReader<F> {
             ];
             // SAFETY: `fds` is a live two-element array for the call.
             let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
-            if n < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            if n < 0 {
+                if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                    // Poll again rather than decide here: the handler's
+                    // self-pipe byte makes it return at once, and it also
+                    // reports whether input arrived meanwhile.
+                    continue;
+                }
                 return Ok(());
             }
             // Readable, at EOF, hung up or invalid: read(2) will not
-            // block and reports whichever it is.
-            if n > 0 && fds[0].revents != 0 {
+            // block and reports whichever it is. Input that is ready
+            // when a signal arrives wins: the read was not waiting for
+            // it, so the signal is handled as one with data ready.
+            if fds[0].revents != 0 {
                 return Ok(());
             }
             self.signal_arrived(true)?;
