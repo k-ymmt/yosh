@@ -84,11 +84,11 @@ pub struct Executor {
     /// with `!`, or it came from a non-final component of an AND-OR list
     /// (short-circuit). Consumed by `check_errexit`.
     errexit_exempt_status: bool,
-    /// Number of trap actions currently running (nested when a trap
-    /// fires inside another's action). While nonzero the recursion guard
-    /// lets execution use half of its stack reserve (see
-    /// [`Self::recursion_too_deep`]).
-    trap_action_depth: usize,
+    /// One-shot marker set in an async child whose payload is a single
+    /// compound command: `exec_compound_command` takes it at entry and
+    /// applies that command's redirections without saving them, as part
+    /// of the subshell's environment (see `exec_async`).
+    async_compound_redirects_permanent: bool,
     pub exit_requested: Option<i32>,
 }
 
@@ -99,7 +99,7 @@ impl Executor {
             plugins: PluginManager::new(),
             errexit_suppressed_depth: 0,
             errexit_exempt_status: false,
-            trap_action_depth: 0,
+            async_compound_redirects_permanent: false,
             exit_requested: None,
         }
     }
@@ -111,7 +111,7 @@ impl Executor {
             plugins: PluginManager::new(),
             errexit_suppressed_depth: 0,
             errexit_exempt_status: false,
-            trap_action_depth: 0,
+            async_compound_redirects_permanent: false,
             exit_requested: None,
         }
     }
@@ -160,7 +160,7 @@ impl Executor {
                 let msg = e.to_string();
                 crate::byteenc::write_stderr_decoded_line(&format!(
                     "yosh: {}: {}",
-                    path.display(),
+                    crate::builtin::path::encode_path(path),
                     msg.strip_prefix("yosh: ").unwrap_or(&msg)
                 ));
                 2
@@ -253,11 +253,11 @@ impl Executor {
     /// text; the commands before it have run.
     ///
     /// `echo_input` marks `input` as shell input read from a file (a dot
-    /// script): under `set -v` each complete command is written to stderr
-    /// before it runs, like the top-level loop does (POSIX §2.15 set -v:
-    /// "write its input to standard error as it is read"; dash and bash
-    /// echo a dot script's lines). `eval` operands and trap actions are
-    /// not input — dash does not echo them.
+    /// script): under `set -v` the text read for each complete command is
+    /// written to stderr verbatim before it runs, like the top-level loop
+    /// does (see [`Self::echo_read_input`]; dash and bash echo a dot
+    /// script's lines). `eval` operands and trap actions are not input —
+    /// dash does not echo them.
     pub(crate) fn exec_text(
         &mut self,
         input: &str,
@@ -267,6 +267,7 @@ impl Executor {
         parser.set_eof_ends_heredoc(true);
         let mut status = 0;
         let mut first = true;
+        let mut echoed = 0;
         loop {
             if !first {
                 parser.set_aliases(&self.env.aliases);
@@ -276,24 +277,15 @@ impl Executor {
                 if parser.is_at_end() {
                     Ok(None)
                 } else {
-                    let start = parser.consumed_bytes();
-                    parser
-                        .parse_complete_command()
-                        .map(|cmd| Some((start, cmd)))
+                    parser.parse_complete_command().map(Some)
                 }
             });
+            if echo_input {
+                self.echo_read_input(&parser, &mut echoed);
+            }
             match parsed {
                 Ok(None) => break,
-                Ok(Some((start, cmd))) => {
-                    if echo_input && self.env.mode.options.verbose {
-                        let text = parser.source_text(start, parser.input_position());
-                        let text = text
-                            .trim_start_matches([' ', '\t', '\n'])
-                            .trim_end_matches('\n');
-                        if !text.is_empty() {
-                            self.verbose_print(text);
-                        }
-                    }
+                Ok(Some(cmd)) => {
                     status = self.exec_complete_command(&cmd);
                     if self.should_unwind() {
                         break;
@@ -309,9 +301,23 @@ impl Executor {
         Ok(status)
     }
 
-    /// Evaluate a string as shell commands (trap actions, `fc`), reporting
-    /// a syntax error that ends it.
+    /// Evaluate a string of commands the user entered (`fc -s` replay,
+    /// the `fc` editor command and its edited text), reporting a syntax
+    /// error that ends it. Like `eval` and `.`, this is a user-driven
+    /// recursion point (`fc -s` can replay a line that runs `fc -s`), so
+    /// the full recursion guard applies and the stack reserved for trap
+    /// actions — an EXIT trap fired at the deepest level — stays intact.
+    /// Trap actions run through `eval_trap_text` instead.
     pub fn eval_string(&mut self, input: &str) {
+        if self.recursion_too_deep("fc") {
+            return;
+        }
+        self.exec_text_reporting_errors(input);
+    }
+
+    /// Run `input` as shell commands (see [`Self::exec_text`]), reporting
+    /// a syntax error that ends it.
+    pub(crate) fn exec_text_reporting_errors(&mut self, input: &str) {
         match self.exec_text(input, false) {
             Ok(_) => {}
             Err(e) => {
@@ -321,6 +327,31 @@ impl Executor {
                 crate::byteenc::write_stderr_decoded_line(&e.to_string());
             }
         }
+    }
+
+    /// `set -v` for shell input parsed by `parser` (a script, a dot
+    /// script): write the input it has read since `*echoed` to stderr
+    /// exactly as read — comments, blank lines, indentation and the
+    /// original bytes included (POSIX §2.15 set -v: "write its input to
+    /// standard error as it is read"; dash and bash) — and move `*echoed`
+    /// past it. Input read while verbose is off is skipped, not echoed
+    /// later. A last line without a newline is ended with one (bash), so
+    /// the echo of `sh -v -c 'cmd'` does not run into the next output.
+    pub fn echo_read_input(&self, parser: &crate::parser::Parser, echoed: &mut usize) {
+        let end = parser.input_position();
+        if end <= *echoed {
+            return;
+        }
+        if self.env.mode.options.verbose {
+            use std::io::Write;
+            let text = parser.source_text(*echoed, end);
+            let mut stderr = std::io::stderr().lock();
+            let _ = stderr.write_all(&crate::byteenc::decode_bytes(&text));
+            if parser.is_at_end() && !text.ends_with('\n') {
+                let _ = stderr.write_all(b"\n");
+            }
+        }
+        *echoed = end;
     }
 
     /// Print the line if verbose mode is enabled.

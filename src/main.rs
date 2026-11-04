@@ -460,6 +460,7 @@ fn run_string(
     // here-document, as in dash and bash.
     p.set_eof_ends_heredoc(true);
     let mut status = 0;
+    let mut echoed = 0;
 
     loop {
         p.set_aliases(&executor.env.aliases);
@@ -467,21 +468,13 @@ fn run_string(
             if p.is_at_end() {
                 return Ok(None);
             }
-            let start = p.consumed_bytes();
-            let cmd = p.parse_complete_command()?;
-            Ok(Some((start, cmd)))
+            p.parse_complete_command().map(Some)
         });
+        // set -v: echo input to stderr as it is read (POSIX §2.15 set).
+        executor.echo_read_input(&p, &mut echoed);
         match parsed {
             Ok(None) => break,
-            Ok(Some((start, cmd))) => {
-                // set -v: echo input to stderr as it is read (POSIX §2.15 set).
-                let text = p.source_text(start, p.input_position());
-                let text = text
-                    .trim_start_matches([' ', '\t', '\n'])
-                    .trim_end_matches('\n');
-                if !text.is_empty() {
-                    executor.verbose_print(text);
-                }
+            Ok(Some(cmd)) => {
                 status = executor.exec_complete_command(&cmd);
                 // Check for flow control (exit handled by std::process::exit in builtin)
                 match executor.env.exec.flow_control {

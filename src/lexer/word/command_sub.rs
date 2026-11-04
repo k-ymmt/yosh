@@ -58,13 +58,24 @@ impl Lexer {
     }
 
     /// Skip a `$(...)` body that is not parsed as a program (current byte
-    /// just after the opening `(`), up to and including the matching `)`:
-    /// parentheses are counted outside single quotes, double quotes and
-    /// backslash escapes. Returns the position of the closing `)`.
+    /// just after the opening `(`), up to and including the matching `)`.
+    /// Parentheses are counted only where they are unquoted shell syntax:
+    /// not after a backslash, nor inside single quotes, double quotes,
+    /// backquotes or `${...}`; a nested `$(` inside double quotes or
+    /// `${...}` is tracked as its own level. Returns the position of the
+    /// closing `)`.
     fn skip_unparsed_command_sub(
         &mut self,
         span: crate::lexer::token::Span,
     ) -> error::Result<usize> {
+        /// The quoting context the scanner is in; a `Paren` holds its
+        /// count of open parentheses.
+        enum Ctx {
+            Paren(usize),
+            Brace,
+            Double,
+            Back,
+        }
         let unterminated = || {
             ShellError::parse(
                 ParseErrorKind::UnterminatedCommandSub,
@@ -73,31 +84,65 @@ impl Lexer {
                 "unterminated command substitution",
             )
         };
-        let mut depth = 1usize;
-        let mut quote: Option<u8> = None;
+        // An explicit stack, not recursion: the delimiter text is
+        // arbitrary user input and may nest deeply.
+        let mut stack = vec![Ctx::Paren(1)];
         loop {
             if self.at_end() {
                 return Err(unterminated());
             }
             let ch = self.current_byte();
-            match (quote, ch) {
-                (Some(b'\''), b'\'') | (Some(b'"'), b'"') => quote = None,
-                (Some(b'\''), _) => {}
+            let next = self.input.get(self.pos + 1).copied();
+            let top = stack
+                .last_mut()
+                .expect("scanner context stack is never empty");
+            match (top, ch) {
                 (_, b'\\') => {
+                    // The escaped byte is skipped below.
                     self.advance_raw();
                     if self.at_end() {
                         return Err(unterminated());
                     }
                 }
-                (Some(_), _) => {}
-                (None, b'\'' | b'"') => quote = Some(ch),
-                (None, b'(') => depth += 1,
-                (None, b')') => {
-                    depth -= 1;
-                    if depth == 0 {
-                        let close = self.pos;
-                        self.advance();
-                        return Ok(close);
+                (Ctx::Back, b'`') | (Ctx::Double, b'"') | (Ctx::Brace, b'}') => {
+                    stack.pop();
+                }
+                (Ctx::Back, _) => {}
+                (Ctx::Paren(_) | Ctx::Double | Ctx::Brace, b'$')
+                    if matches!(next, Some(b'(' | b'{')) =>
+                {
+                    self.advance_raw();
+                    stack.push(if next == Some(b'(') {
+                        Ctx::Paren(1)
+                    } else {
+                        Ctx::Brace
+                    });
+                }
+                (Ctx::Paren(_) | Ctx::Double | Ctx::Brace, b'`') => stack.push(Ctx::Back),
+                (Ctx::Double, _) => {}
+                (Ctx::Paren(_) | Ctx::Brace, b'"') => stack.push(Ctx::Double),
+                (Ctx::Paren(_) | Ctx::Brace, b'\'') => {
+                    // Single quotes: skip to the closing quote.
+                    loop {
+                        self.advance_raw();
+                        if self.at_end() {
+                            return Err(unterminated());
+                        }
+                        if self.current_byte() == b'\'' {
+                            break;
+                        }
+                    }
+                }
+                (Ctx::Paren(depth), b'(') => *depth += 1,
+                (Ctx::Paren(depth), b')') => {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        stack.pop();
+                        if stack.is_empty() {
+                            let close = self.pos;
+                            self.advance();
+                            return Ok(close);
+                        }
                     }
                 }
                 _ => {}

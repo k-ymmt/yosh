@@ -69,7 +69,10 @@ pub fn builtin_source(args: &[String], executor: &mut Executor) -> Result<i32, S
         Some(status) => Ok(status),
         None => Err(ShellError::runtime(
             RuntimeErrorKind::IoError,
-            format!(".: {}: No such file or directory", path.display()),
+            format!(
+                ".: {}: No such file or directory",
+                crate::builtin::path::encode_path(&path)
+            ),
         )),
     }
 }

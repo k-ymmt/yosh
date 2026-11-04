@@ -126,7 +126,7 @@ impl Executor {
             PathLookup::NotExecutable(p) => {
                 crate::byteenc::write_stderr_decoded_line(&format!(
                     "yosh: command: {}: permission denied",
-                    p.display()
+                    crate::builtin::path::encode_path(&p)
                 ));
                 126
             }

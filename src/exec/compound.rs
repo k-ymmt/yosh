@@ -20,6 +20,9 @@ impl Executor {
         redirects: &[Redirect],
     ) -> Result<i32, ShellError> {
         self.env.exec.lineno = compound.line;
+        // The payload of an async child: its redirections are permanent in
+        // that subshell (see `exec_async`), so nothing is saved to undo.
+        let save_redirects = !std::mem::take(&mut self.async_compound_redirects_permanent);
 
         let saved = self
             .apply_temp_assignments(&compound.assignments)
@@ -28,7 +31,7 @@ impl Executor {
             })?;
 
         let mut redirect_state = RedirectState::new();
-        if let Err(e) = redirect_state.apply(redirects, &mut self.env, true) {
+        if let Err(e) = redirect_state.apply(redirects, &mut self.env, save_redirects) {
             self.restore_assignments(saved);
             self.env.exec.last_exit_status = 1;
             return Err(e);

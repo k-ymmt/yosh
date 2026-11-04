@@ -5,8 +5,8 @@ use std::time::Duration;
 use expectrl::{Eof, Expect, Regex, session::OsSession};
 
 use helpers::pty::{
-    TIMEOUT, read_until_prompt, spawn_yosh, spawn_yosh_with_args, strip_ansi, wait_for_prompt,
-    wait_for_ps2, wait_for_raw_mode,
+    TIMEOUT, read_until_prompt, spawn_yosh, spawn_yosh_with_args, spawn_yosh_with_env, strip_ansi,
+    wait_for_prompt, wait_for_ps2, wait_for_raw_mode,
 };
 
 /// Wait for command output (a line following a newline, not the input echo).
@@ -454,6 +454,45 @@ fn test_pty_fc_not_added_to_history() {
         "fc_probe",
         "up-arrow should recall the pre-fc command",
     );
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
+#[test]
+fn test_pty_fc_replay_recursion_keeps_trap_stack_reserve() {
+    // `fc -s` replaying a line that runs `fc -s` recurses like `eval`;
+    // it must hit the full recursion guard ("fc: maximum nesting level
+    // exceeded"), not eat into the stack reserved for trap actions. At
+    // the deepest replay depth the guard accepts, `exit 7` must still
+    // run the EXIT trap and keep its status (bash). It used to be
+    // refused with "trap: maximum nesting level exceeded".
+    let (mut s, _tmpdir) = spawn_yosh_with_env(&[("n", None)]);
+    wait_for_prompt(&mut s);
+
+    // History entry 1: with `n` unset this first run does nothing.
+    s.send("n=$((n-1)); if [ \"$n\" -gt 0 ]; then fc -s 1; else [ \"$n\" -eq 0 ] && exit 7; fi\r")
+        .unwrap();
+    wait_for_prompt(&mut s);
+
+    // The deepest accepted depth depends on the build: binary-search it,
+    // each probe in a subshell so a refused level only ends the probe.
+    // `fc -s` echoes every replayed line on stderr, hence the files.
+    s.send(concat!(
+        "cd \"$HOME\"; lo=0 hi=2048; while [ $((hi - lo)) -gt 1 ]; do ",
+        "mid=$(((lo + hi) / 2)); (trap 'echo TRAP-RAN' EXIT; n=$mid; fc -s 1) >o 2>e; ",
+        "if grep -q 'fc: maximum nesting\\|nesting too deep' e; then hi=$mid; else lo=$mid; fi; ",
+        "done; (trap 'echo TRAP-RAN' EXIT; n=$lo; fc -s 1) >o 2>e; st=$?; ",
+        "echo \"result: ran=$(grep -c TRAP-RAN o) refused=$(grep -c 'trap: maximum' e) st=$st\"\r"
+    ))
+    .unwrap();
+    s.set_expect_timeout(Some(Duration::from_secs(120)));
+    expect_output(
+        &mut s,
+        r"result: ran=1 refused=0 st=7",
+        "the EXIT trap must run at the deepest fc replay depth",
+    );
+    s.set_expect_timeout(Some(TIMEOUT));
     wait_for_prompt(&mut s);
 
     exit_shell(&mut s);

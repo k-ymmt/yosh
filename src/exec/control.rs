@@ -298,9 +298,21 @@ impl Executor {
                 if and_or.rest.is_empty()
                     && !and_or.first.negated
                     && and_or.first.commands.len() == 1
-                    && matches!(and_or.first.commands[0], Command::Simple(_))
                 {
-                    self.env.exec.async_exec_in_place = true;
+                    match and_or.first.commands[0] {
+                        Command::Simple(_) => self.env.exec.async_exec_in_place = true,
+                        // A `&` payload that is one compound command is
+                        // this subshell's whole body: its redirections
+                        // set up the subshell's environment rather than
+                        // a temporary scope inside it, so they stay
+                        // applied when the body ends or exits and the
+                        // EXIT trap writes through them (`{ trap 'echo
+                        // t' EXIT; exit; } >&2 &` prints t on stderr;
+                        // dash and bash agree). exec_compound_command
+                        // takes the flag at entry.
+                        Command::Compound(..) => self.async_compound_redirects_permanent = true,
+                        _ => {}
+                    }
                 }
 
                 let status = self.exec_and_or(and_or);

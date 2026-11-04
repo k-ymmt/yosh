@@ -38,15 +38,16 @@ impl Executor {
     /// prints t and exits 7 in dash and bash). The half reserve still
     /// covers a command's execution, and descent-checked parsing,
     /// arithmetic and expansion fail gracefully below it, so the action
-    /// itself — including functions it calls, held to the same half
+    /// itself — including functions it calls and the command
+    /// substitutions and subshells it forks, held to the same half
     /// reserve — cannot overflow. Trap actions nested by signals that
     /// keep firing inside the action stop at that same bound.
     fn eval_trap_text(&mut self, cmd: &str) {
-        self.trap_action_depth += 1;
-        if !self.recursion_too_deep("trap") {
-            self.eval_string(cmd);
-        }
-        self.trap_action_depth -= 1;
+        super::stack_guard::as_trap_action(|| {
+            if !self.recursion_too_deep("trap") {
+                self.exec_text_reporting_errors(cmd);
+            }
+        });
     }
 
     /// Run `f` (a trap action) as a fresh errexit context: an action that

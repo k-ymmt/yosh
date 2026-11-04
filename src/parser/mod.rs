@@ -93,9 +93,10 @@ impl Parser {
         }
     }
 
-    /// Returns the byte position in the input up to (but not including) the current
-    /// look-ahead token. This is useful for incremental parsing.
-    pub fn consumed_bytes(&self) -> usize {
+    /// The byte position in the input up to (but not including) the
+    /// current look-ahead token.
+    #[cfg(test)]
+    fn consumed_bytes(&self) -> usize {
         self.pre_current_pos
     }
 
@@ -105,8 +106,8 @@ impl Parser {
         self.lexer.position()
     }
 
-    /// The raw input text between two byte positions (`consumed_bytes` /
-    /// `input_position` values).
+    /// The raw input text between two byte positions (`input_position`
+    /// values).
     pub fn source_text(&self, start: usize, end: usize) -> String {
         self.lexer.source_text(start, end)
     }

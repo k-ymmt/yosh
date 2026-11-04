@@ -52,6 +52,29 @@ thread_local! {
     /// half and an eighth of the thread's stack so a small stack (a 2 MiB
     /// test thread) still runs shallow recursion.
     static STACK_LIMIT: Cell<(usize, usize, usize)> = const { Cell::new((0, 0, 0)) };
+
+    /// Number of trap actions running on this thread's stack (nested
+    /// when a trap fires inside another's action). While nonzero the
+    /// recursion guard lets execution use half of its stack reserve (see
+    /// [`Executor::recursion_too_deep`]). It describes the native stack,
+    /// not the shell environment, so a process forked inside a trap
+    /// action — a command substitution, subshell or pipeline member,
+    /// whose stack is the parent's at the fork — keeps it: `trap 'echo
+    /// "$(g)"' EXIT` must run `g` wherever the action itself may run.
+    static TRAP_ACTION_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Run `f` as a trap action for the recursion guard (see
+/// `TRAP_ACTION_DEPTH`).
+pub(crate) fn as_trap_action<R>(f: impl FnOnce() -> R) -> R {
+    TRAP_ACTION_DEPTH.with(|d| d.set(d.get() + 1));
+    let result = f();
+    TRAP_ACTION_DEPTH.with(|d| d.set(d.get() - 1));
+    result
+}
+
+fn in_trap_action() -> bool {
+    TRAP_ACTION_DEPTH.with(|d| d.get() > 0)
 }
 
 /// Approximate current stack pointer: the address of a local in a frame
@@ -178,7 +201,7 @@ impl Executor {
     /// (see `eval_trap_text`): the action must still run where the code
     /// it interrupted stood just under the full reserve.
     pub(crate) fn recursion_too_deep(&mut self, what: &str) -> bool {
-        if !stack_below_reserve(self.trap_action_depth > 0) {
+        if !stack_below_reserve(in_trap_action()) {
             return false;
         }
         crate::byteenc::write_stderr_decoded_line(&format!(
