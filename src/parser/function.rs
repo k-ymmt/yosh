@@ -2,6 +2,7 @@ use super::Parser;
 use super::ast::FunctionDef;
 use super::word::is_valid_name;
 use crate::error;
+use crate::lexer::reserved::is_posix_reserved_word;
 use crate::lexer::token::Token;
 use std::rc::Rc;
 
@@ -12,7 +13,12 @@ impl Parser {
         let name = match &self.current.token {
             Token::Word(word) => {
                 if let Some(lit) = word.as_literal() {
-                    if is_valid_name(lit) {
+                    // POSIX §2.10.2 rule 8: a reserved word in the fname
+                    // position is that reserved word, never a NAME, so
+                    // `esac() { :; }` / `fi() ...` are syntax errors (the
+                    // simple-command parser reports the dangling word),
+                    // as in dash and bash.
+                    if is_valid_name(lit) && !is_posix_reserved_word(lit) {
                         lit.to_string()
                     } else {
                         return Ok(None);
@@ -73,6 +79,19 @@ mod tests {
         match cmd {
             Command::FunctionDef(fd) => assert_eq!(fd.name, "myfunc"),
             _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn reserved_word_is_not_a_function_name() {
+        for src in [
+            "esac() { :; }",
+            "fi() { :; }",
+            "done() { :; }",
+            "then() { :; }",
+        ] {
+            let mut parser = super::super::Parser::new(src);
+            assert!(parser.parse_program().is_err(), "{src} must not parse");
         }
     }
 
