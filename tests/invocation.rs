@@ -913,6 +913,92 @@ fn piped_stdin_huge_compound_command_parses_in_linear_time() {
 }
 
 #[test]
+fn piped_stdin_long_group_of_short_lines_parses_in_linear_time() {
+    // Below the 16 KiB batching length every line of an open compound
+    // command used to re-parse the whole text: 8000 one-command lines in
+    // a `{ }` group took over a minute of CPU in a debug build. Lines
+    // that cannot close the group are now read without re-parsing it,
+    // and reading still stops at the line that completes it, so the
+    // `read` after it gets the next line.
+    let mut script = String::from("{\n");
+    for _ in 0..8000 {
+        script.push_str(":\n");
+    }
+    script.push_str("}\nread x\nDATA\necho \"x=$x\"\n");
+    assert!(script.len() < 16 * 1024);
+    let start = std::time::Instant::now();
+    let (out, code) = run_with_stdin(&[], &script);
+    assert_eq!(out, "x=DATA\n");
+    assert_eq!(code, 0);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(30),
+        "took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn piped_stdin_reads_no_line_after_the_command_it_completes() {
+    // Whichever line completes a multi-line command — a closing token,
+    // or any line after an operator — the shell runs the command before
+    // reading on, so `read` gets the line that follows.
+    for (script, expected) in [
+        ("true &&\nread x\nDATA\necho \"x=$x\"\n", "x=DATA\n"),
+        ("true && # c\nread x\nDATA\necho \"x=$x\"\n", "x=DATA\n"),
+        ("true &&\n# c\n\nread x\nDATA\necho \"x=$x\"\n", "x=DATA\n"),
+        ("true |\nread x\necho \"x=$x\"\n", "x=\n"),
+        (
+            "cat <<E &&\nbody\nE\nread x\nDATA\necho \"x=$x\"\n",
+            "body\nx=DATA\n",
+        ),
+        (
+            "{\ncat <<E\nb }\nE\n:\n}\nread x\nDATA\necho \"x=$x\"\n",
+            "b }\nx=DATA\n",
+        ),
+        (
+            "f() {\n  y=${y:-1} z=$((1 + (2)))\n}\nf; read x\nDATA\necho \"x=$x$y$z\"\n",
+            "x=DATA13\n",
+        ),
+        (
+            "if true; then\n  :\nfi\nread x\nDATA\necho \"x=$x\"\n",
+            "x=DATA\n",
+        ),
+        (
+            "case a in\n a) read x;;\nesac\nDATA\necho \"x=$x\"\n",
+            "x=DATA\n",
+        ),
+        ("(\n:\n)\nread x\nDATA\necho \"x=$x\"\n", "x=DATA\n"),
+        (
+            "{\n: ${u:-\n}\n}\nread x\nDATA\necho \"x=$x\"\n",
+            "x=DATA\n",
+        ),
+        ("{\n: '\n}'\n}\nread x\nDATA\necho \"x=$x\"\n", "x=DATA\n"),
+        (
+            "{\n: do\\\nne\n}\nread x\nDATA\necho \"x=$x\"\n",
+            "x=DATA\n",
+        ),
+        (
+            "while read l; do\n  echo \"l=$l\"\n  [ \"$l\" = stop ] && break\ndone\none\nstop\necho after\n",
+            "l=one\nl=stop\nafter\n",
+        ),
+    ] {
+        let (out, code) = run_with_stdin(&[], script);
+        assert_eq!(out, expected, "script: {script:?}");
+        assert_eq!(code, 0, "script: {script:?}");
+    }
+}
+
+#[test]
+fn piped_stdin_group_closed_by_an_alias_runs_before_reading_on() {
+    // An alias may supply the closing token: lines are then re-parsed
+    // one at a time as before.
+    let script = "alias c='}'\n{\n:\nc\nread x\nDATA\necho \"x=$x\"\n";
+    let (out, code) = run_with_stdin(&[], script);
+    assert_eq!(out, "x=DATA\n");
+    assert_eq!(code, 0);
+}
+
+#[test]
 fn stdin_script_follows_exec_redirection_of_stdin() {
     // bash reads further commands from the new stdin after `exec <file`.
     let dir = tempfile::tempdir().unwrap();
