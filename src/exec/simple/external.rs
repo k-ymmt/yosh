@@ -76,8 +76,8 @@ impl Executor {
             PluginExec::Handled(status) => status,
             PluginExec::Failed => 1,
             PluginExec::NotHandled => {
-                let env_vars = self.build_env_vars(inv.assignments)?;
-                self.xtrace_simple(&env_vars, inv.name, inv.args);
+                let (trace, env_vars) = self.build_env_vars(inv.assignments)?;
+                self.xtrace_simple(&trace, inv.name, inv.args);
                 // DEVIATION (async exec-in-place, 2026-09-01): plugins'
                 // post_exec does not fire for a background external
                 // simple command — the async child is replaced by the

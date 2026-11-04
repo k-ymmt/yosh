@@ -14,6 +14,9 @@ use super::Invocation;
 /// [`Executor::restore_assignments`].
 pub(crate) type SavedVars = Vec<(String, Option<Variable>)>;
 
+/// Expanded prefix assignments as `(name, value)` pairs.
+pub(crate) type AssignedPairs = Vec<(String, String)>;
+
 impl Executor {
     /// Expand one prefix assignment's value (empty for `name=`). A
     /// braced-parameter failure (`${x:?}`, `set -u`) only raises
@@ -87,48 +90,71 @@ impl Executor {
     /// The assignments are performed in order (POSIX §2.9.1), so a later
     /// value sees an earlier one: `x=2 y=$x cmd` gives `cmd` `y=2` (dash
     /// and bash agree). Every value but the last is therefore assigned
-    /// to the shell variable while the rest expand, and all of them are
-    /// rolled back before returning.
+    /// to the shell variable — exported, as dash does it, so a utility
+    /// run by a later `$(...)` sees it too — while the rest expand, and
+    /// all of them are rolled back (value and attributes) before
+    /// returning. The last one needs no temporary assignment: nothing
+    /// expands after it.
+    ///
+    /// Returns `(trace, env)`. `trace` holds each assignment as it was
+    /// expanded (for `set -x`); `env` is what the command's environment
+    /// gets: the *final* value of each temporary, which a later
+    /// expansion may have changed (`x= y=${x:=new} cmd` gives `cmd`
+    /// `x=new`, as in dash and bash).
     pub(super) fn build_env_vars(
         &mut self,
         assignments: &[Assignment],
-    ) -> crate::error::Result<Vec<(String, String)>> {
-        let mut vars = Vec::with_capacity(assignments.len());
+    ) -> crate::error::Result<(AssignedPairs, AssignedPairs)> {
+        let mut trace = Vec::with_capacity(assignments.len());
         let mut saved = SavedVars::new();
-        let result = self.expand_env_vars_in_order(assignments, &mut vars, &mut saved);
+        let result = self.expand_env_vars_in_order(assignments, &mut trace, &mut saved);
+        let env = result.map(|()| {
+            let last = trace.len().saturating_sub(1);
+            trace
+                .iter()
+                .enumerate()
+                .map(|(i, (name, value))| {
+                    // A temporary still holds a value (no expansion can
+                    // unset a variable); fall back to the expanded one.
+                    let value = match self.env.vars.get(name) {
+                        Some(current) if i < last => current,
+                        _ => value.as_str(),
+                    };
+                    (name.clone(), value.to_string())
+                })
+                .collect()
+        });
         self.restore_assignments(saved);
-        result.map(|()| vars)
+        env.map(|env| (trace, env))
     }
 
     /// The loop of [`Self::build_env_vars`]: expand each assignment and,
-    /// when another one follows, assign it temporarily (recording the
-    /// previous variable in `saved`).
+    /// when another one follows, assign it temporarily and exported
+    /// (recording the previous variable in `saved`).
     fn expand_env_vars_in_order(
         &mut self,
         assignments: &[Assignment],
-        vars: &mut Vec<(String, String)>,
+        trace: &mut AssignedPairs,
         saved: &mut SavedVars,
     ) -> crate::error::Result<()> {
         for (i, assign) in assignments.iter().enumerate() {
             let value = self.expand_assignment(assign)?;
-            if self.env.vars.is_readonly(&assign.name) {
+            if i + 1 < assignments.len() {
+                let old = self.env.vars.get_var(&assign.name).cloned();
+                // Fails, changing nothing, on a readonly variable.
+                self.env
+                    .assign_var_with_options(&assign.name, value.clone(), true)
+                    .map_err(|e| {
+                        ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, e.to_string())
+                    })?;
+                saved.push((assign.name.clone(), old));
+            } else if self.env.vars.is_readonly(&assign.name) {
                 return Err(ShellError::runtime(
                     RuntimeErrorKind::ReadonlyVariable,
                     format!("{}: readonly variable", assign.name),
                 ));
             }
-            if i + 1 < assignments.len() {
-                saved.push((
-                    assign.name.clone(),
-                    self.env.vars.get_var(&assign.name).cloned(),
-                ));
-                self.env
-                    .assign_var(&assign.name, value.clone())
-                    .map_err(|e| {
-                        ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, e.to_string())
-                    })?;
-            }
-            vars.push((assign.name.clone(), value));
+            trace.push((assign.name.clone(), value));
         }
         Ok(())
     }
@@ -215,5 +241,56 @@ mod tests {
             .unwrap();
         exec.exec_program(&prog);
         assert_eq!(exec.env.vars.get("a"), Some("orig"));
+    }
+
+    /// The prefix assignments of the first simple command in `src`.
+    fn prefix_assignments(src: &str) -> Vec<crate::parser::ast::Assignment> {
+        use crate::parser::ast::Command;
+        let prog = crate::parser::Parser::new(src).parse_program().unwrap();
+        match &prog.commands[0].items[0].0.first.commands[0] {
+            Command::Simple(sc) => sc.assignments.clone(),
+            other => panic!("not a simple command: {other:?}"),
+        }
+    }
+
+    /// `(value, exported)` of `name`, `None` if it does not exist.
+    fn var_state(exec: &crate::exec::Executor, name: &str) -> Option<(Option<String>, bool)> {
+        exec.env
+            .vars
+            .get_var(name)
+            .map(|v| (v.value.clone(), v.exported))
+    }
+
+    /// When a later prefix assignment of an external command fails (an
+    /// expansion error or a readonly variable), the earlier ones — which
+    /// were assigned and exported while it expanded — get their old
+    /// values and export attributes back exactly.
+    #[test]
+    fn external_prefix_assignment_error_rolls_back_exactly() {
+        use crate::exec::Executor;
+
+        for (failing, readonly) in [
+            ("z=${r3unset?boom} last=5", false),
+            ("z=3 last=5", true),
+            ("z=3", true),
+        ] {
+            let mut exec = Executor::new("yosh", vec![]);
+            exec.env.vars.set("old", "o").unwrap();
+            exec.env.vars.set("exp", "e").unwrap();
+            exec.env.vars.export("exp");
+            exec.env.vars.export("valueless");
+            if readonly {
+                exec.env.vars.set("z", "ro").unwrap();
+                exec.env.vars.set_readonly("z");
+            }
+            let assignments =
+                prefix_assignments(&format!("old=1 exp=2 valueless=3 new=4 {failing} cmd"));
+            assert!(exec.build_env_vars(&assignments).is_err(), "{failing}");
+            assert_eq!(var_state(&exec, "old"), Some((Some("o".into()), false)));
+            assert_eq!(var_state(&exec, "exp"), Some((Some("e".into()), true)));
+            assert_eq!(var_state(&exec, "valueless"), Some((None, true)));
+            assert_eq!(var_state(&exec, "new"), None);
+            assert_eq!(var_state(&exec, "last"), None);
+        }
     }
 }
