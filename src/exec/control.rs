@@ -110,7 +110,7 @@ impl Executor {
         let first_exempt = and_or.first.negated || has_rest;
         let mut status = self.exec_pipeline_errexit(&and_or.first, first_exempt);
 
-        if self.should_unwind() {
+        if self.should_unwind() || self.and_or_step_traps(has_rest) {
             return status;
         }
 
@@ -127,13 +127,27 @@ impl Executor {
             let exempt = pipeline.negated || !is_last;
             status = self.exec_pipeline_errexit(pipeline, exempt);
 
-            if self.should_unwind() {
+            if self.should_unwind() || self.and_or_step_traps(!is_last) {
                 break;
             }
         }
 
         self.env.exec.last_exit_status = status;
         status
+    }
+
+    /// Pending trap actions between the pipelines of an AND-OR list: like
+    /// between list items, a trapped signal's action runs after the
+    /// current command (POSIX §2.11), so `trap 'echo T' USR1;
+    /// kill -USR1 $$ && echo yes` prints T before yes (dash and bash
+    /// agree). Skipped after the last pipeline, whose list item drains
+    /// them. Returns true when a trap action asked the shell to exit.
+    fn and_or_step_traps(&mut self, more: bool) -> bool {
+        if !more {
+            return false;
+        }
+        self.process_pending_signals();
+        self.exit_requested.is_some()
     }
 
     /// Run one pipeline of an AND-OR list, maintaining
