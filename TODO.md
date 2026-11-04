@@ -355,15 +355,105 @@
       unterminated here-document at the end of a `$(...)` body is an
       error in yosh and dash, accepted by bash (backquote bodies accept
       it).
-- [ ] `command -v` and `type` print a non-UTF-8 path through
-      `to_string_lossy`, so its bytes come out as U+FFFD
-      (`src/builtin/command.rs`, `src/builtin/resolve.rs`).
 - DECISION: a sole external command in a pipeline member, `( )` or
   `$( )` now replaces the forked child (exec in place, as dash and bash
   do). Its parent pid is the shell, and a member with its own stdin
   redirection no longer keeps the pipe's read end open in a wrapper, so
   an upstream writer can get SIGPIPE earlier (status 141 under
   `pipefail`, matching bash).
+
+## 2026-11-04 Bug-fix Round 3: Deferrals and Decisions
+
+Front end / expansion:
+- [ ] `x=1 if true; then echo y; fi` runs the `if`; POSIX grammar rule
+      7b makes the word after an assignment prefix a plain WORD (dash
+      and bash run a command named `if`, status 127). Added on purpose
+      in 2987728 and pinned by
+      `e2e/posix_spec/2_04_reserved_words/reserved_after_assignment_recognized.sh`;
+      reverting is a user decision.
+- [ ] `command export x=$y` (y='a b') field-splits and gives `a`; dash
+      gives `a b` (POSIX 2024 keeps declaration-utility expansion through
+      `command`). `src/exec/simple/mod.rs::expand_command_words` only
+      detects `export`/`readonly` directly.
+- [ ] `alias xx='echo "'; xx a"` is a syntax error; dash and bash
+      continue the open quote into the input. Alias values are tokenized
+      separately (`src/lexer/alias.rs`); supporting this means splicing
+      alias text into the input.
+- [ ] `"${x-'}'}"` gives `''}` (dash) while bash gives `'}'`; POSIX's
+      wording is ambiguous inside double quotes. Left as is.
+- [ ] `x=${y:-a:~}` expands the tilde in dash, not in yosh or bash.
+- [ ] With no positional parameters, `"${@#b}"` (also after `$x`) gives
+      zero fields in yosh and bash, one in dash; `$x"$@$@"` gives one
+      field in yosh and bash, two in dash (unspecified).
+- [ ] `set -u; echo $((y+1))` does not fail; POSIX 2024 and bash 5 say
+      it should, dash does not (`src/expand/arith/`).
+
+Executor / builtins:
+- [ ] `exit " 3"` is rejected; dash and bash accept it (shared number
+      parsing with other builtins).
+- [ ] The `.` PATH search does not skip unreadable files (bash skips,
+      dash does not).
+- [ ] `alias 'x y=z'` is accepted (cosmetic); `type -- ls` is not
+      supported.
+- [ ] Signals arriving during blocking reads other than `read` and
+      command input (e.g. `fc`/editor paths) are not audited.
+- [ ] In a subshell, an expansion error in a prefix assignment
+      (`(x=1 y=${u?boom} /usr/bin/true)`) exits 1 (yosh, bash); dash
+      exits 2.
+- DECISION: a trapped signal that arrives while `read` waits ends the
+  read like end-of-file: the partial line is assigned, the status is 1,
+  and the trap action runs after the read completes (dash; POSIX
+  §2.11). With input always ready the read goes on, so
+  `trap 'exit 3' TERM; read x </dev/zero` keeps reading (dash agrees,
+  bash runs the trap). Untrapped fatal signals end the shell; an
+  interactive untrapped SIGINT abandons the command line (130).
+- [ ] `e2e/builtin/read_trapped_signal_interrupts.sh` still sends its
+      signal after a fixed `sleep 1`; under heavy load the trap can fire
+      before `read` starts and the test then waits for the harness
+      timeout. The nudge pattern of
+      `read_trapped_signal_assigns_partial_line.sh` would fix it.
+- DECISION: an interactive shell abandons the rest of the command line
+  when its foreground job's last process dies by SIGINT and SIGINT is
+  not trapped or ignored (dash re-raises SIGINT; bash agrees).
+
+Invocation / input / signals:
+- [ ] `yosh /dev/stdin` or a FIFO script operand is still read whole
+      before running (keeping the script fd open risks colliding with
+      fds the script uses): `mkfifo f; yosh f` with a `read` inside
+      loses its input.
+- [ ] Piped compound commands or here-docs over the 16 KiB re-parse
+      limit batch already-available whole lines, so a `read` inside a
+      huge compound command can miss lines the shell consumed (dash
+      also reads ahead there) (`src/script_input.rs`).
+- [ ] Below that limit every line of an incomplete piped command
+      re-parses the whole text: a `{ }` group of 5000 short lines costs
+      ~29 s CPU in a debug build (0.15 s without the group). A smaller
+      limit or incremental parsing would help (`src/script_input.rs`).
+- [ ] With `trap '...' HUP` set, SIGHUP at the terminal prompt runs the
+      action and then ends the REPL (its read loop breaks on the
+      error); dash keeps prompting (`src/interactive/mod.rs`).
+- [ ] A NUL byte in a script acts as a separator (unspecified); no PATH
+      search for a script operand without a slash (POSIX "may"; dash
+      does not, bash does); `yosh -o` with no argument is an error
+      (dash and bash list the options); `jobs` prints
+      `Stopped(SIGSTOP)` without a space.
+- [ ] `-ic` with a multi-line string: after Ctrl+C abandons a line, the
+      next line of the string still runs (bash exits, dash drops the
+      rest), same as for expansion errors.
+
+Interactive:
+- [ ] `set -b` does not notify asynchronously while the editor waits at
+      the prompt (bash prints `[1]+ Done` and redraws); the read loop
+      cannot wake up and print, and it holds the shell state for the
+      prompt closure.
+- [ ] After a terminal resize, rows of a wrapped input above the cursor
+      stay on screen (the repaint starts at the cursor row; clearing
+      from the old layout could erase output on reflowing terminals).
+- [ ] Ctrl+D on an empty continuation line of a multi-line buffer does
+      nothing; bash and dash at PS2 report end of file and drop the
+      input.
+- [ ] Edits to a recalled history line are lost when moving to another
+      entry and back (readline keeps per-line edits).
 
 ## History: Known Limitations
 
@@ -419,12 +509,6 @@
       `$-` reports `i`, untrapped TERM/QUIT/INT ignored, shell errors
       return instead of exiting; command-sub `$-` keeps `i` via the
       `ShellMode::flag_i` snapshot):
-  - [ ] `-i` with non-tty stdin does not print PS1/PS2 prompts to stderr
-        or source `$ENV`/`~/.yoshrc` the way bash/dash do — the whole
-        stream is read up front by `run_string` (`src/main.rs`).
-  - [ ] `-i` with non-tty stdin still aborts the stream on a syntax
-        error (exit 2) instead of skipping to the next line as POSIX
-        §2.8.1 prescribes for interactive shells (`src/main.rs`).
   - [ ] `-i -c` / `-i script` do not enable monitor mode by default;
         bash reports `m` in `$-` there. An explicit `-m` now enables it
         on those paths (2026-08-25) with job-control signal init gated
@@ -591,10 +675,6 @@ the items below are deferred work, not policy:
       (`src/interactive/line_editor/`).
 - [ ] VISUAL `u` / `U` (lower/uppercase the selection) — currently bell
       (`src/interactive/vi/visual_keys.rs::resolve_visual_key`).
-- [ ] A bare Alt+key in VISUAL mode (e.g. a fast Esc then `d`, which
-      arrives as Alt+d) runs the key as a VISUAL command; the comment
-      there says it should leave VISUAL like Esc and replay nothing, as
-      Vim does (`src/interactive/vi/visual_keys.rs`).
 - [ ] Insert-mode Vim extensions — `Ctrl-O` (one-shot Normal command),
       `Ctrl-R <reg>`, `Ctrl-A` (`src/interactive/line_editor/`).
 - [ ] Named registers (`"a`–`"z`), numbered registers — only the typed
