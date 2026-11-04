@@ -27,7 +27,6 @@
 //! before the error is reached.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::ops::{BinOp, CompoundOp, UnOp};
@@ -35,6 +34,7 @@ use super::token::{self, Cursor};
 use super::var::{assign, var_operand};
 use super::{MAX_NEST_DEPTH, arith_err};
 use crate::env::ShellEnv;
+use crate::env::fxhash::FxHashMap;
 use crate::exec::stack_guard::descent_stack_exhausted;
 
 /// Texts longer than this are not cached (nor parsed into a tree): a
@@ -52,8 +52,11 @@ const MAX_ENTRIES: usize = 256;
 pub(super) const MAX_CACHED_NEST: u32 = 16;
 
 thread_local! {
-    /// Text → its tree, or `None` when it does not parse.
-    static CACHE: RefCell<HashMap<Box<str>, Option<Rc<Node>>>> = RefCell::new(HashMap::new());
+    /// Text → its tree, or `None` when it does not parse. Keyed with
+    /// the shell's FxHash (as for variables): every `$((...))`
+    /// evaluation hashes its text, and SipHash's HashDoS resistance
+    /// buys nothing for script-chosen keys in a 256-entry cache.
+    static CACHE: RefCell<FxHashMap<Box<str>, Option<Rc<Node>>>> = RefCell::new(FxHashMap::default());
 }
 
 /// The cached tree for `text`, parsing and caching it on first sight.
