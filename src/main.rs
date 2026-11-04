@@ -453,7 +453,15 @@ fn run_string(
         }
     }
 
-    script_input::run_commands(&mut executor, source)
+    let status = script_input::run_commands(&mut executor, source);
+    // Every caller exits the process right after this returns (the EXIT
+    // trap has already run), so leave the shell state to the OS instead
+    // of freeing it piece by piece: dropping the parsed function bodies,
+    // variables and alias table cost as much CPU as parsing them for a
+    // script with thousands of functions. This matches the `exit`
+    // builtin, which ends the process without dropping anything either.
+    std::mem::forget(executor);
+    status
 }
 
 fn run_file(
