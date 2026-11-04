@@ -2608,19 +2608,42 @@ fn test_pty_exec_resets_shell_ignored_job_control_signals() {
 /// Ctrl+C while the `read` builtin waits on the terminal must abandon
 /// the read (status 130) instead of being slept through until Enter:
 /// the shell's SIGINT handler uses SA_RESTART, so `read` has to watch
-/// the signal self-pipe itself.
+/// the signal self-pipe itself. Like Ctrl+C on a foreground job in dash
+/// and bash, it also abandons the rest of the command line — even from
+/// inside a function and an and-or list.
 #[test]
 fn test_pty_ctrl_c_interrupts_read_builtin() {
     let (mut s, _tmpdir) = spawn_yosh();
     wait_for_prompt(&mut s);
-    s.send("read x; echo \"st=$? x=$x\"\r").unwrap();
+    // `$((0))` keeps the expected output out of the echoed input line.
+    s.send(
+        "f() { echo re$((0))ady; read x; echo wr$((0))ong-f; }; \
+         f || echo wr$((0))ong-or; echo wr$((0))ong\r",
+    )
+    .unwrap();
+    // Send Ctrl+C only once the line runs (the editor has left raw mode,
+    // so the key is a SIGINT, not a byte for `read`), and give `read` a
+    // moment to start waiting.
+    expect_output(&mut s, "re0ady", "command line did not start");
     std::thread::sleep(std::time::Duration::from_millis(500));
     s.send("\x03").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("echo st=$?\r").unwrap();
     // The terminal echoes `^C` with no newline, so match without the
-    // line-start anchor `expect_output` adds; the echoed command line
-    // itself shows `st=$?`, never `st=130`.
-    s.expect("st=130 x=")
+    // line-start anchor `expect_output` adds.
+    let caps = s
+        .expect(Regex(r"st=\d+"))
         .unwrap_or_else(|e| panic!("Ctrl+C did not interrupt read: {e}"));
+    let before = String::from_utf8_lossy(caps.before()).into_owned();
+    assert!(
+        !before.contains("wr0ong"),
+        "Ctrl+C in read did not abandon the rest of the command line: {before:?}"
+    );
+    assert_eq!(
+        caps.get(0),
+        Some(&b"st=130"[..]),
+        "status after Ctrl+C in read"
+    );
     wait_for_prompt(&mut s);
     exit_shell(&mut s);
 }

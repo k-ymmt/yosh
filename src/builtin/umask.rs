@@ -115,10 +115,14 @@ fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
 /// permcopy   : u | g | o               (copy that class's current bits)
 /// ```
 ///
-/// `X` means `x` when some execute bit is already allowed; `s` and `t`
-/// name bits outside the permission bits and so change nothing (dash).
+/// `X` means `x` when the *original* mode — before any action of `s` —
+/// allows some execute bit (XCU `chmod`: "the current (unmodified) file
+/// mode bits"; dash: `umask 000; umask a-x+X` leaves `0000`); `s` and
+/// `t` name bits outside the permission bits and so change nothing
+/// (dash).
 fn apply_symbolic_mode(s: &str, mask: libc::mode_t) -> Option<libc::mode_t> {
     let mut perms: libc::mode_t = !mask & 0o777;
+    let original_has_exec = perms & 0o111 != 0;
 
     for clause in s.split(',') {
         let bytes = clause.as_bytes();
@@ -166,7 +170,7 @@ fn apply_symbolic_mode(s: &str, mask: libc::mode_t) -> Option<libc::mode_t> {
                             b'r' => 0o444,
                             b'w' => 0o222,
                             b'x' => 0o111,
-                            b'X' if perms & 0o111 != 0 => 0o111,
+                            b'X' if original_has_exec => 0o111,
                             b'X' | b's' | b't' => 0,
                             _ => break,
                         };
@@ -227,6 +231,16 @@ mod tests {
     fn capital_x_depends_on_existing_execute_bits() {
         assert_eq!(apply_symbolic_mode("a=rX", 0o022), Some(0o222));
         assert_eq!(apply_symbolic_mode("a+X", 0o777), Some(0o777));
+    }
+
+    #[test]
+    fn capital_x_tests_the_original_mode_not_earlier_actions() {
+        // XCU chmod: X looks at the unmodified mode bits, so removing x
+        // first (in the same clause or an earlier one) does not hide it,
+        // and adding x first does not enable it.
+        assert_eq!(apply_symbolic_mode("a-x+X", 0o000), Some(0o000));
+        assert_eq!(apply_symbolic_mode("a-x,a+X", 0o000), Some(0o000));
+        assert_eq!(apply_symbolic_mode("u+x,g+X", 0o111), Some(0o011));
     }
 
     #[test]

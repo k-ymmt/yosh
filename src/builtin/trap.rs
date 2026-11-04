@@ -41,20 +41,35 @@ pub fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
     if args.is_empty() {
         return Ok(print_traps(env, None));
     }
+    // Any leading option other than `-p` is a usage error (status 2,
+    // fatal like dash and bash), not an action or a bad signal name
+    // (`trap -l`). This holds after `-p` too (`trap -p -Z`): only `--`
+    // may follow it as an option word.
+    let is_option = |a: &String| a.len() > 1 && a.starts_with('-');
+    let unknown_option = |opt: &str| {
+        crate::byteenc::write_stderr_decoded_line(&format!(
+            "yosh: {}",
+            crate::builtin::options::invalid_option("trap", opt)
+        ));
+        Ok(2)
+    };
     if !saw_end_of_options && args[0] == "-p" {
         // POSIX 2024: with condition operands, print only the named
         // conditions; with none, print all traps. `--` may still follow.
-        let conds = strip_end_of_options(&args[1..]);
+        let mut rest = &args[1..];
+        while rest.first().is_some_and(|a| a == "-p") {
+            rest = &rest[1..];
+        }
+        let conds = strip_end_of_options(rest);
+        if conds.len() == rest.len()
+            && let Some(opt) = rest.first().filter(|a| is_option(a))
+        {
+            return unknown_option(opt);
+        }
         return Ok(print_traps(env, (!conds.is_empty()).then_some(conds)));
     }
-    // Any other leading option is a usage error (status 2, fatal like
-    // dash and bash), not an action or a bad signal name (`trap -l`).
-    if !saw_end_of_options && args[0].len() > 1 && args[0].starts_with('-') {
-        crate::byteenc::write_stderr_decoded_line(&format!(
-            "yosh: {}",
-            crate::builtin::options::invalid_option("trap", &args[0])
-        ));
-        return Ok(2);
+    if !saw_end_of_options && is_option(&args[0]) {
+        return unknown_option(&args[0]);
     }
     // POSIX trap: "If the first operand is an unsigned decimal integer,
     // the shell shall treat all operands as conditions, and shall reset
