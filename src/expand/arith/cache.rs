@@ -1,6 +1,6 @@
 //! Parsed-expression cache for arithmetic expansion.
 //!
-//! The one-pass evaluator in the parent module re-lexes and re-parses an
+//! The one-pass evaluator ([`super::one_pass`]) re-lexes and re-parses an
 //! expression on every evaluation, which was ~17% of a hot
 //! `i=$((i + 1))` loop. This module parses an expression once into a
 //! tree and keeps the tree keyed by its text, so later evaluations of the
@@ -14,7 +14,9 @@
 //! per level would need more native stack than that evaluator.
 //!
 //! Equivalence with the one-pass evaluator: the tree records exactly the
-//! structure that evaluator parses, and [`eval`] visits it in the same
+//! structure that evaluator parses (both scan with the same
+//! [`super::token::Cursor`] and its operator matchers), and [`eval`]
+//! applies the same [`super::ops`] semantics, visiting it in the same
 //! order with the same nesting bookkeeping — skipped operands (the
 //! untaken `?:` branch, the right side of a short-circuited `&&`/`||`)
 //! are walked in no-evaluation mode just as the one-pass evaluator parses
@@ -28,7 +30,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::{CompoundOp, MAX_NEST_DEPTH, arith_err, assign, div_zero_err, var_operand};
+use super::ops::{BinOp, CompoundOp, UnOp};
+use super::token::{self, Cursor};
+use super::var::{assign, var_operand};
+use super::{MAX_NEST_DEPTH, arith_err};
 use crate::env::ShellEnv;
 use crate::exec::stack_guard::descent_stack_exhausted;
 
@@ -98,42 +103,13 @@ pub(super) enum Node {
     Bin(Box<Node>, Vec<(BinOp, Node)>),
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum UnOp {
-    Neg,
-    Plus,
-    Not,
-    BitNot,
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum BinOp {
-    BitOr,
-    BitXor,
-    BitAnd,
-    Eq,
-    Ne,
-    Le,
-    Ge,
-    Lt,
-    Gt,
-    Shl,
-    Shr,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-}
-
 // ─── Parser ─────────────────────────────────────────────────────────────────
 //
 // A transcription of the one-pass evaluator's grammar that builds nodes
 // instead of values; every failure is `None` (that evaluator reports it).
 
 struct Parser<'a> {
-    input: &'a [u8],
-    pos: usize,
+    cur: Cursor<'a>,
     nest: u32,
 }
 
@@ -142,35 +118,15 @@ struct Parser<'a> {
 
 fn parse(text: &str) -> Option<Node> {
     let mut p = Parser {
-        input: text.as_bytes(),
-        pos: 0,
+        cur: Cursor::new(text),
         nest: 0,
     };
     let root = p.comma()?;
-    p.skip_whitespace();
-    (p.pos == p.input.len()).then_some(root)
+    p.cur.skip_whitespace();
+    p.cur.at_end().then_some(root)
 }
 
 impl Parser<'_> {
-    fn peek(&self) -> Option<u8> {
-        self.input.get(self.pos).copied()
-    }
-
-    fn peek_at(&self, offset: usize) -> Option<u8> {
-        self.input.get(self.pos + offset).copied()
-    }
-
-    fn skip_whitespace(&mut self) {
-        while self.peek().is_some_and(|b| b.is_ascii_whitespace()) {
-            self.pos += 1;
-        }
-    }
-
-    fn expect(&mut self, ch: u8) -> Option<()> {
-        self.skip_whitespace();
-        (self.peek() == Some(ch)).then(|| self.pos += 1)
-    }
-
     fn nested(&mut self, parse: impl FnOnce(&mut Self) -> Option<Node>) -> Option<Node> {
         if self.nest >= MAX_NEST_DEPTH.min(MAX_CACHED_NEST) || descent_stack_exhausted() {
             return None;
@@ -184,14 +140,8 @@ impl Parser<'_> {
     fn comma(&mut self) -> Option<Node> {
         let first = self.ternary()?;
         let mut rest = Vec::new();
-        loop {
-            self.skip_whitespace();
-            if self.peek() == Some(b',') {
-                self.pos += 1;
-                rest.push(self.ternary()?);
-            } else {
-                break;
-            }
+        while self.cur.eat(b',') {
+            rest.push(self.ternary()?);
         }
         Some(if rest.is_empty() {
             first
@@ -202,13 +152,11 @@ impl Parser<'_> {
 
     fn ternary(&mut self) -> Option<Node> {
         let cond = self.logical_or()?;
-        self.skip_whitespace();
-        if self.peek() != Some(b'?') {
+        if !self.cur.eat(b'?') {
             return Some(cond);
         }
-        self.pos += 1;
         let then = self.nested(Self::ternary)?;
-        self.expect(b':')?;
+        self.cur.eat(b':').then_some(())?;
         let other = self.nested(Self::ternary)?;
         Some(Node::Ternary(Box::new([cond, then, other])))
     }
@@ -216,14 +164,8 @@ impl Parser<'_> {
     fn logical_or(&mut self) -> Option<Node> {
         let first = self.logical_and()?;
         let mut rest = Vec::new();
-        loop {
-            self.skip_whitespace();
-            if self.peek() == Some(b'|') && self.peek_at(1) == Some(b'|') {
-                self.pos += 2;
-                rest.push(self.nested(Self::logical_and)?);
-            } else {
-                break;
-            }
+        while self.cur.eat_pair(*b"||") {
+            rest.push(self.nested(Self::logical_and)?);
         }
         Some(if rest.is_empty() {
             first
@@ -235,14 +177,8 @@ impl Parser<'_> {
     fn logical_and(&mut self) -> Option<Node> {
         let first = self.bitwise_or()?;
         let mut rest = Vec::new();
-        loop {
-            self.skip_whitespace();
-            if self.peek() == Some(b'&') && self.peek_at(1) == Some(b'&') {
-                self.pos += 2;
-                rest.push(self.nested(Self::bitwise_or)?);
-            } else {
-                break;
-            }
+        while self.cur.eat_pair(*b"&&") {
+            rest.push(self.nested(Self::bitwise_or)?);
         }
         Some(if rest.is_empty() {
             first
@@ -252,20 +188,15 @@ impl Parser<'_> {
     }
 
     /// One left-associative binary level: operands from `operand`, the
-    /// operator (and its byte length) at the cursor from `op`.
+    /// operator from the level's matcher `op` (see [`token`]).
     fn binary(
         &mut self,
         operand: fn(&mut Self) -> Option<Node>,
-        op: fn(&Self) -> Option<(BinOp, usize)>,
+        op: fn(&Cursor) -> Option<(BinOp, usize)>,
     ) -> Option<Node> {
         let first = operand(self)?;
         let mut rest = Vec::new();
-        loop {
-            self.skip_whitespace();
-            let Some((kind, len)) = op(self) else {
-                break;
-            };
-            self.pos += len;
+        while let Some(kind) = self.cur.binary_op(op) {
             rest.push((kind, operand(self)?));
         }
         Some(if rest.is_empty() {
@@ -276,91 +207,58 @@ impl Parser<'_> {
     }
 
     fn bitwise_or(&mut self) -> Option<Node> {
-        self.binary(Self::bitwise_xor, |p| {
-            (p.peek() == Some(b'|') && p.peek_at(1) != Some(b'|')).then_some((BinOp::BitOr, 1))
-        })
+        self.binary(Self::bitwise_xor, token::bit_or_op)
     }
 
     fn bitwise_xor(&mut self) -> Option<Node> {
-        self.binary(Self::bitwise_and, |p| {
-            (p.peek() == Some(b'^')).then_some((BinOp::BitXor, 1))
-        })
+        self.binary(Self::bitwise_and, token::bit_xor_op)
     }
 
     fn bitwise_and(&mut self) -> Option<Node> {
-        self.binary(Self::equality, |p| {
-            (p.peek() == Some(b'&') && p.peek_at(1) != Some(b'&')).then_some((BinOp::BitAnd, 1))
-        })
+        self.binary(Self::equality, token::bit_and_op)
     }
 
     fn equality(&mut self) -> Option<Node> {
-        self.binary(Self::relational, |p| match (p.peek()?, p.peek_at(1)?) {
-            (b'=', b'=') => Some((BinOp::Eq, 2)),
-            (b'!', b'=') => Some((BinOp::Ne, 2)),
-            _ => None,
-        })
+        self.binary(Self::relational, token::equality_op)
     }
 
     fn relational(&mut self) -> Option<Node> {
-        self.binary(Self::shift, |p| match (p.peek()?, p.peek_at(1)) {
-            (b'<', Some(b'=')) => Some((BinOp::Le, 2)),
-            (b'>', Some(b'=')) => Some((BinOp::Ge, 2)),
-            (b'<', next) if next != Some(b'<') => Some((BinOp::Lt, 1)),
-            (b'>', next) if next != Some(b'>') => Some((BinOp::Gt, 1)),
-            _ => None,
-        })
+        self.binary(Self::shift, token::relational_op)
     }
 
     fn shift(&mut self) -> Option<Node> {
-        self.binary(Self::additive, |p| match (p.peek()?, p.peek_at(1)?) {
-            (b'<', b'<') => Some((BinOp::Shl, 2)),
-            (b'>', b'>') => Some((BinOp::Shr, 2)),
-            _ => None,
-        })
+        self.binary(Self::additive, token::shift_op)
     }
 
     fn additive(&mut self) -> Option<Node> {
-        self.binary(Self::multiplicative, |p| match p.peek()? {
-            b'+' => Some((BinOp::Add, 1)),
-            b'-' => Some((BinOp::Sub, 1)),
-            _ => None,
-        })
+        self.binary(Self::multiplicative, token::additive_op)
     }
 
     fn multiplicative(&mut self) -> Option<Node> {
-        self.binary(Self::unary, |p| match p.peek()? {
-            b'*' => Some((BinOp::Mul, 1)),
-            b'/' => Some((BinOp::Div, 1)),
-            b'%' => Some((BinOp::Mod, 1)),
-            _ => None,
-        })
+        self.binary(Self::unary, token::multiplicative_op)
     }
 
     fn unary(&mut self) -> Option<Node> {
-        self.skip_whitespace();
-        let op = match self.peek()? {
-            b'-' => UnOp::Neg,
-            b'+' => UnOp::Plus,
-            b'!' => UnOp::Not,
-            b'~' => UnOp::BitNot,
-            _ => return self.primary(),
+        self.cur.skip_whitespace();
+        self.cur.peek()?;
+        let Some(op) = self.cur.unary_op() else {
+            return self.primary();
         };
-        self.pos += 1;
         let operand = self.nested(Self::unary)?;
         Some(Node::Unary(op, Box::new(operand)))
     }
 
     fn primary(&mut self) -> Option<Node> {
-        self.skip_whitespace();
-        let ch = self.peek()?;
+        self.cur.skip_whitespace();
+        let ch = self.cur.peek()?;
         if ch == b'(' {
-            self.pos += 1;
+            self.cur.bump(1);
             let inner = self.nested(Self::comma)?;
-            self.expect(b')')?;
+            self.cur.eat(b')').then_some(())?;
             return Some(Node::Paren(Box::new(inner)));
         }
         if ch.is_ascii_digit() {
-            return self.number();
+            return self.cur.number().ok().map(Node::Num);
         }
         if ch.is_ascii_alphabetic() || ch == b'_' {
             return self.name_or_assign();
@@ -368,76 +266,19 @@ impl Parser<'_> {
         None
     }
 
-    fn number(&mut self) -> Option<Node> {
-        let start = self.pos;
-        while self.peek().is_some_and(|b| b.is_ascii_alphanumeric()) {
-            self.pos += 1;
-        }
-        let s = std::str::from_utf8(&self.input[start..self.pos]).ok()?;
-        let value = if s.starts_with("0x") || s.starts_with("0X") {
-            i64::from_str_radix(&s[2..], 16).ok()?
-        } else if s.starts_with('0') && s.len() > 1 {
-            i64::from_str_radix(&s[1..], 8).ok()?
-        } else {
-            s.parse::<i64>().ok()?
-        };
-        Some(Node::Num(value))
-    }
-
     fn name_or_assign(&mut self) -> Option<Node> {
-        let start = self.pos;
-        while self
-            .peek()
-            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
-        {
-            self.pos += 1;
-        }
-        let name: Box<str> = std::str::from_utf8(&self.input[start..self.pos])
-            .ok()?
-            .into();
-        self.skip_whitespace();
-        if let Some(op) = self.compound_assign_op() {
+        let name: Box<str> = self.cur.name().ok()?.into();
+        self.cur.skip_whitespace();
+        if let Some(op) = self.cur.compound_assign_op() {
             let rhs = self.nested(Self::ternary)?;
             return Some(Node::OpAssign(name, op, Box::new(rhs)));
         }
-        if self.peek() == Some(b'=') && self.peek_at(1) != Some(b'=') {
-            self.pos += 1;
+        if self.cur.peek() == Some(b'=') && self.cur.peek_at(1) != Some(b'=') {
+            self.cur.bump(1);
             let rhs = self.nested(Self::ternary)?;
             return Some(Node::Assign(name, Box::new(rhs)));
         }
         Some(Node::Var(name))
-    }
-
-    /// Mirrors `ArithParser::try_compound_assign_op`.
-    fn compound_assign_op(&mut self) -> Option<CompoundOp> {
-        let ch = self.peek()?;
-        if self.peek_at(2) == Some(b'=') {
-            let shift = match (ch, self.peek_at(1)) {
-                (b'<', Some(b'<')) => Some(CompoundOp::Shl),
-                (b'>', Some(b'>')) => Some(CompoundOp::Shr),
-                _ => None,
-            };
-            if shift.is_some() {
-                self.pos += 3;
-                return shift;
-            }
-        }
-        if self.peek_at(1) == Some(b'=') {
-            let op = match ch {
-                b'+' => CompoundOp::Add,
-                b'-' => CompoundOp::Sub,
-                b'*' => CompoundOp::Mul,
-                b'/' => CompoundOp::Div,
-                b'%' => CompoundOp::Mod,
-                b'&' => CompoundOp::And,
-                b'^' => CompoundOp::Xor,
-                b'|' => CompoundOp::Or,
-                _ => return None,
-            };
-            self.pos += 2;
-            return Some(op);
-        }
-        None
     }
 }
 
@@ -489,12 +330,7 @@ impl Evaluator<'_> {
             Node::Var(name) => var_operand(self.env, name, self.depth, self.nest, self.noeval),
             Node::Unary(op, operand) => {
                 let v = self.nested(false, operand)?;
-                Ok(match op {
-                    UnOp::Neg => v.wrapping_neg(),
-                    UnOp::Plus => v,
-                    UnOp::Not => i64::from(v == 0),
-                    UnOp::BitNot => !v,
-                })
+                Ok(op.apply(v))
             }
             Node::Paren(inner) => self.nested(false, inner),
             Node::Assign(name, rhs) => {
@@ -510,28 +346,7 @@ impl Evaluator<'_> {
                     return Ok(0);
                 }
                 let cur = var_operand(self.env, name, self.depth, self.nest, false)?;
-                let val = match op {
-                    CompoundOp::Add => cur.wrapping_add(rhs),
-                    CompoundOp::Sub => cur.wrapping_sub(rhs),
-                    CompoundOp::Mul => cur.wrapping_mul(rhs),
-                    CompoundOp::Div => {
-                        if rhs == 0 {
-                            return Err(div_zero_err("division by zero"));
-                        }
-                        cur.wrapping_div(rhs)
-                    }
-                    CompoundOp::Mod => {
-                        if rhs == 0 {
-                            return Err(div_zero_err("division by zero (modulo)"));
-                        }
-                        cur.wrapping_rem(rhs)
-                    }
-                    CompoundOp::Shl => cur.wrapping_shl(rhs as u32),
-                    CompoundOp::Shr => cur.wrapping_shr(rhs as u32),
-                    CompoundOp::And => cur & rhs,
-                    CompoundOp::Xor => cur ^ rhs,
-                    CompoundOp::Or => cur | rhs,
-                };
+                let val = op.apply(cur, rhs)?;
                 assign(self.env, name, val)?;
                 Ok(val)
             }
@@ -569,33 +384,7 @@ impl Evaluator<'_> {
                 let mut left = self.eval(first)?;
                 for (op, node) in rest {
                     let right = self.eval(node)?;
-                    left = match op {
-                        BinOp::BitOr => left | right,
-                        BinOp::BitXor => left ^ right,
-                        BinOp::BitAnd => left & right,
-                        BinOp::Eq => i64::from(left == right),
-                        BinOp::Ne => i64::from(left != right),
-                        BinOp::Le => i64::from(left <= right),
-                        BinOp::Ge => i64::from(left >= right),
-                        BinOp::Lt => i64::from(left < right),
-                        BinOp::Gt => i64::from(left > right),
-                        BinOp::Shl => left.wrapping_shl(right as u32),
-                        BinOp::Shr => left.wrapping_shr(right as u32),
-                        BinOp::Add => left.wrapping_add(right),
-                        BinOp::Sub => left.wrapping_sub(right),
-                        BinOp::Mul => left.wrapping_mul(right),
-                        BinOp::Div | BinOp::Mod if right == 0 => {
-                            if self.noeval {
-                                0
-                            } else if matches!(op, BinOp::Div) {
-                                return Err(div_zero_err("division by zero"));
-                            } else {
-                                return Err(div_zero_err("division by zero (modulo)"));
-                            }
-                        }
-                        BinOp::Div => left.wrapping_div(right),
-                        BinOp::Mod => left.wrapping_rem(right),
-                    };
+                    left = op.apply(left, right, self.noeval)?;
                 }
                 Ok(left)
             }
@@ -610,15 +399,7 @@ mod tests {
 
     /// Evaluate `text` with the one-pass evaluator only.
     fn one_pass(env: &mut ShellEnv, text: &str) -> crate::error::Result<i64> {
-        ArithParser {
-            input: text.as_bytes(),
-            pos: 0,
-            env,
-            depth: 0,
-            nest: 0,
-            noeval: false,
-        }
-        .eval_full()
+        ArithParser::new(env, text, 0, 0).eval_full()
     }
 
     fn fresh_env() -> ShellEnv {
@@ -727,14 +508,7 @@ mod tests {
                 let edge = MAX_NEST_DEPTH - MAX_CACHED_NEST;
                 for base in [edge, edge + 1] {
                     let got = eval(&mut env, &tree, 0, base);
-                    let mut pass = ArithParser {
-                        input: text.as_bytes(),
-                        pos: 0,
-                        env: &mut env,
-                        depth: 0,
-                        nest: base,
-                        noeval: false,
-                    };
+                    let mut pass = ArithParser::new(&mut env, &text, 0, base);
                     assert_eq!(got, pass.eval_full(), "base {base}");
                 }
                 assert!(eval(&mut env, &tree, 0, edge + 1).is_err());
