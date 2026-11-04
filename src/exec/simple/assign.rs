@@ -83,12 +83,33 @@ impl Executor {
     /// A readonly variable cannot be overridden even for one command:
     /// that is a variable-assignment error (POSIX §2.8.1; dash refuses
     /// `readonly r=1; r=2 cmd` and exits a non-interactive shell).
+    ///
+    /// The assignments are performed in order (POSIX §2.9.1), so a later
+    /// value sees an earlier one: `x=2 y=$x cmd` gives `cmd` `y=2` (dash
+    /// and bash agree). Every value but the last is therefore assigned
+    /// to the shell variable while the rest expand, and all of them are
+    /// rolled back before returning.
     pub(super) fn build_env_vars(
         &mut self,
         assignments: &[Assignment],
     ) -> crate::error::Result<Vec<(String, String)>> {
         let mut vars = Vec::with_capacity(assignments.len());
-        for assign in assignments {
+        let mut saved = SavedVars::new();
+        let result = self.expand_env_vars_in_order(assignments, &mut vars, &mut saved);
+        self.restore_assignments(saved);
+        result.map(|()| vars)
+    }
+
+    /// The loop of [`Self::build_env_vars`]: expand each assignment and,
+    /// when another one follows, assign it temporarily (recording the
+    /// previous variable in `saved`).
+    fn expand_env_vars_in_order(
+        &mut self,
+        assignments: &[Assignment],
+        vars: &mut Vec<(String, String)>,
+        saved: &mut SavedVars,
+    ) -> crate::error::Result<()> {
+        for (i, assign) in assignments.iter().enumerate() {
             let value = self.expand_assignment(assign)?;
             if self.env.vars.is_readonly(&assign.name) {
                 return Err(ShellError::runtime(
@@ -96,9 +117,20 @@ impl Executor {
                     format!("{}: readonly variable", assign.name),
                 ));
             }
+            if i + 1 < assignments.len() {
+                saved.push((
+                    assign.name.clone(),
+                    self.env.vars.get_var(&assign.name).cloned(),
+                ));
+                self.env
+                    .assign_var(&assign.name, value.clone())
+                    .map_err(|e| {
+                        ShellError::runtime(RuntimeErrorKind::ReadonlyVariable, e.to_string())
+                    })?;
+            }
             vars.push((assign.name.clone(), value));
         }
-        Ok(vars)
+        Ok(())
     }
 
     /// Apply prefix assignments temporarily, returning saved values for later restoration.
