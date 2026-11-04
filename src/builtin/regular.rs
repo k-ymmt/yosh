@@ -3,7 +3,7 @@
 //! module; `wait`, `fg`, `bg`, `jobs`, `fc` and `command` need the
 //! executor and are dispatched from `exec/simple/` instead.
 
-use super::{alias, cd, echo, getopts, hash, kill, printf, pwd, read, test, r#type, ulimit, umask};
+use super::{alias, cd, echo, getopts, hash, kill, printf, pwd, test, r#type, ulimit, umask};
 use crate::env::ShellEnv;
 
 /// Execute a regular builtin command, returning its exit status.
@@ -25,7 +25,7 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
             eprintln!("yosh: wait: internal error");
             Ok(1)
         }
-        "fg" | "bg" | "jobs" | "fc" => {
+        "fg" | "bg" | "jobs" | "fc" | "read" => {
             // Handled in Executor::exec_simple_command
             crate::byteenc::write_stderr_decoded_line(&format!("yosh: {}: internal error", name));
             Ok(1)
@@ -38,7 +38,6 @@ pub fn exec_regular_builtin(name: &str, args: &[String], env: &mut ShellEnv) -> 
         "test" | "[" => Ok(test::builtin_test(name, args)),
         "type" => r#type::builtin_type(args, env),
         "hash" => hash::builtin_hash(args, env),
-        "read" => read::builtin_read(args, env),
         "getopts" => getopts::builtin_getopts(args, env),
         _ => {
             crate::byteenc::write_stderr_decoded_line(&format!(

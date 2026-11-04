@@ -245,6 +245,21 @@ impl Executor {
                 break;
             }
             let cond_status = self.with_errexit_suppressed(|e| e.exec_body(condition));
+            // `break` / `continue` in the condition list belong to this
+            // loop too (`while cmd || break; do`): consume them like a
+            // body's. `continue` re-evaluates the condition; `break`
+            // ends the loop with the status of the last body run (0 if
+            // none), as in dash and bash.
+            if matches!(
+                self.env.exec.flow_control,
+                Some(FlowControl::Break(_) | FlowControl::Continue(_))
+            ) && self.exit_requested.is_none()
+            {
+                if self.loop_must_stop() {
+                    break;
+                }
+                continue;
+            }
             if self.should_unwind() {
                 return cond_status;
             }

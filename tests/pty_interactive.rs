@@ -2531,3 +2531,44 @@ fn test_pty_recalled_history_keeps_raw_bytes() {
     wait_for_prompt(&mut s);
     exit_shell(&mut s);
 }
+
+/// `exec cmd` from a monitor-mode shell must not hand the job-control
+/// signals the shell ignores for itself (TSTP/TTIN/TTOU) to the new
+/// program as SIG_IGN: `exec sleep 100` would then ignore Ctrl+Z. dash
+/// resets them; a user `trap '' SIG` still survives the exec (§2.12).
+#[test]
+fn test_pty_exec_resets_shell_ignored_job_control_signals() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+    s.send(
+        "trap '' QUIT; exec perl -e 'for (qw(TSTP TTIN TTOU QUIT)) \
+         { print \"sig-$_=\", ($SIG{$_} // \"DFL\"), \" \" } print \"end\\n\"'\r",
+    )
+    .unwrap();
+    expect_output(
+        &mut s,
+        "sig-TSTP=DFL sig-TTIN=DFL sig-TTOU=DFL sig-QUIT=IGNORE end",
+        "exec'd program inherited the shell's own SIG_IGN dispositions",
+    );
+    let _ = s.expect(Eof);
+}
+
+/// Ctrl+C while the `read` builtin waits on the terminal must abandon
+/// the read (status 130) instead of being slept through until Enter:
+/// the shell's SIGINT handler uses SA_RESTART, so `read` has to watch
+/// the signal self-pipe itself.
+#[test]
+fn test_pty_ctrl_c_interrupts_read_builtin() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+    s.send("read x; echo \"st=$? x=$x\"\r").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    s.send("\x03").unwrap();
+    // The terminal echoes `^C` with no newline, so match without the
+    // line-start anchor `expect_output` adds; the echoed command line
+    // itself shows `st=$?`, never `st=130`.
+    s.expect("st=130 x=")
+        .unwrap_or_else(|e| panic!("Ctrl+C did not interrupt read: {e}"));
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}

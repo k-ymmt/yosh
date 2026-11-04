@@ -166,6 +166,10 @@ fn step_getopts(
     }
 
     let elt = operands[optind_in - 1];
+    // Parse the operand's raw bytes (byteenc-decoded), so a non-ASCII
+    // byte is reported as itself and the saved subindex counts bytes as
+    // dash and bash do.
+    let raw = crate::byteenc::decode_bytes(elt);
 
     // A saved subindex at or past the end of the current element is
     // stale: the operands changed under us (`set -- …`, or a different
@@ -173,7 +177,7 @@ fn step_getopts(
     // over at the beginning of the current element instead of indexing
     // out of bounds (`set -- -ab; getopts ab o; set -- -x; getopts ab o`
     // reports `-x` as illegal in both bash and dash).
-    if subindex_in != 0 && subindex_in >= elt.len() {
+    if subindex_in != 0 && subindex_in >= raw.len() {
         return step_getopts(spec, operands, optind_in, 0, silent);
     }
 
@@ -196,15 +200,16 @@ fn step_getopts(
         subindex_in
     };
 
-    let bytes = elt.as_bytes();
+    let bytes: &[u8] = &raw;
     // Option characters are ASCII alphanumerics per POSIX (XBD §12.2
     // Utility Syntax Guideline 3), so the parse is byte-at-a-time. A
     // non-ASCII byte (e.g. the first byte of a multi-byte UTF-8 char in
-    // `-é`) is misdecoded by the `as char` cast, so it is deterministically
-    // routed to the unknown-option branch below and never matched against
-    // `spec` — even when `spec` happens to contain the same byte inside a
-    // multi-byte character of its own.
-    let ch = bytes[cursor] as char;
+    // `-é`) is routed to the unknown-option branch below and never
+    // matched against `spec` — even when `spec` happens to contain the
+    // same byte inside a multi-byte character of its own. It is reported
+    // (diagnostic, silent-mode OPTARG) as that single raw byte, like
+    // dash and bash.
+    let ch = crate::byteenc::encode_bytes(&bytes[cursor..=cursor]).into_owned();
     let next_cursor = cursor + 1;
     let rest_of_elt = next_cursor < bytes.len();
 
@@ -228,7 +233,7 @@ fn step_getopts(
         if silent {
             return GetoptsStep {
                 var_value: "?".to_string(),
-                optarg: Some(ch.to_string()),
+                optarg: Some(ch.clone()),
                 optind: next_optind,
                 subindex: next_sub,
                 exit: 0,
@@ -251,7 +256,7 @@ fn step_getopts(
     // Known, no-arg option
     if !takes_arg {
         return GetoptsStep {
-            var_value: ch.to_string(),
+            var_value: ch.clone(),
             optarg: None,
             optind: if rest_of_elt {
                 optind_in
@@ -266,9 +271,9 @@ fn step_getopts(
 
     // Known, takes argument — argument inside same element
     if rest_of_elt {
-        let arg = &elt[next_cursor..];
+        let arg = crate::byteenc::encode_bytes(&bytes[next_cursor..]);
         return GetoptsStep {
-            var_value: ch.to_string(),
+            var_value: ch.clone(),
             optarg: Some(arg.to_string()),
             optind: optind_in + 1,
             subindex: 0,
@@ -283,7 +288,7 @@ fn step_getopts(
         if silent {
             return GetoptsStep {
                 var_value: ":".to_string(),
-                optarg: Some(ch.to_string()),
+                optarg: Some(ch.clone()),
                 optind: optind_in + 1,
                 subindex: 0,
                 exit: 0,
@@ -302,7 +307,7 @@ fn step_getopts(
 
     let arg = operands[optind_in];
     GetoptsStep {
-        var_value: ch.to_string(),
+        var_value: ch.clone(),
         optarg: Some(arg.to_string()),
         optind: optind_in + 2,
         subindex: 0,
@@ -615,6 +620,25 @@ mod tests {
         assert_eq!(step2.exit, 0);
         assert_eq!(step2.optind, 2);
         assert_eq!(step2.subindex, 0);
+    }
+
+    #[test]
+    fn step_non_ascii_option_byte_is_reported_as_the_raw_byte() {
+        // The diagnostic and silent-mode OPTARG carry the single byte
+        // (byteenc-escaped), not the Latin-1 reading of it (`Ã` for
+        // 0xC3), which bash/dash never print.
+        let c3 = crate::byteenc::encode_bytes(&[0xC3]).into_owned();
+        let step = step_getopts("a", &["-é"], 1, 0, false);
+        assert_eq!(step.stderr, Some(format!("-{c3}: illegal option")));
+        let step = step_getopts("a", &["-é"], 1, 0, true);
+        assert_eq!(step.optarg, Some(c3));
+
+        // An option-argument after an ASCII option keeps its bytes,
+        // including a byteenc-escaped invalid byte.
+        let ff = crate::byteenc::encode_bytes(&[0xFF]).into_owned();
+        let elt = format!("-a{ff}é");
+        let step = step_getopts("a:", &[elt.as_str()], 1, 0, false);
+        assert_eq!(step.optarg, Some(format!("{ff}é")));
     }
 
     #[test]

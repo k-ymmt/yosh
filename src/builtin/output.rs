@@ -53,7 +53,11 @@ thread_local! {
 /// Report a stdout write failure for builtin `name` (`yosh: name: write
 /// error: …`) and return the status the builtin must exit with.
 pub(crate) fn report_write_error(name: &str, e: &std::io::Error) -> i32 {
-    crate::byteenc::write_stderr_decoded_line(&format!("yosh: {}: write error: {}", name, e));
+    crate::byteenc::write_stderr_decoded_line(&format!(
+        "yosh: {}: write error: {}",
+        name,
+        crate::exec::redirect::io_error_text(e)
+    ));
     WRITE_ERROR_REPORTED.with(|f| f.set(true));
     1
 }

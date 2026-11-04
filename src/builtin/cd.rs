@@ -20,17 +20,26 @@ pub fn builtin_cd(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError
     // 2. Resolve operand -> target path
     let (target, from_cdpath) = resolve_target(operand.as_deref(), env)?;
 
-    // 3. Capture old PWD (logical if available, else from the kernel)
-    let old_pwd = env
-        .vars
-        .get("PWD")
-        .map(|s| s.to_string())
-        .or_else(|| std::env::current_dir().ok().map(|p| encode_path(&p)))
+    // 3. Capture the old working directory: `$PWD` when it still names
+    // the current directory (what `pwd -L` prints), else the kernel's
+    // path. A relative operand is resolved against it (POSIX cd step
+    // 7), so a stale or user-assigned `PWD=/elsewhere` must not send
+    // `cd .` / `cd sub` there. When even getcwd fails (a removed working
+    // directory) the old value is the best there is.
+    let old_pwd = crate::env::startup_pwd::logical_cwd(env.vars.get("PWD"))
+        .or_else(|| env.vars.get("PWD").map(|s| s.to_string()))
         .unwrap_or_else(|| "/".to_string());
 
     // 4. Compute and apply the chdir per mode
     let chdir_error = |e: std::io::Error| {
-        ShellError::runtime(RuntimeErrorKind::IoError, format!("cd: {}: {}", target, e))
+        ShellError::runtime(
+            RuntimeErrorKind::IoError,
+            format!(
+                "cd: {}: {}",
+                target,
+                crate::exec::redirect::io_error_text(&e)
+            ),
+        )
     };
     let new_pwd = match mode {
         CdMode::Logical => {

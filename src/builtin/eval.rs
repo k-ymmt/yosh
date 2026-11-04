@@ -67,12 +67,22 @@ pub fn builtin_source(args: &[String], executor: &mut Executor) -> Result<i32, S
     }
     match executor.source_file(&path) {
         Some(status) => Ok(status),
-        None => Err(ShellError::runtime(
-            RuntimeErrorKind::IoError,
-            format!(
-                ".: {}: No such file or directory",
-                crate::builtin::path::encode_path(&path)
-            ),
-        )),
+        None => {
+            // source_file only reports that the file could not be read;
+            // name the actual reason (`Is a directory`, `Permission
+            // denied`), as dash and bash do, rather than always ENOENT.
+            let reason = std::fs::read(&path)
+                .err()
+                .map(|e| crate::exec::redirect::io_error_text(&e))
+                .unwrap_or_else(|| "No such file or directory".to_string());
+            Err(ShellError::runtime(
+                RuntimeErrorKind::IoError,
+                format!(
+                    ".: {}: {}",
+                    crate::builtin::path::encode_path(&path),
+                    reason
+                ),
+            ))
+        }
     }
 }

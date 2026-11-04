@@ -64,7 +64,10 @@ pub fn run_special_builtin(name: &str, args: &[String], executor: &mut Executor)
             status,
             utility_error: status != 0
                 && !write_failed
-                && matches!(name, "export" | "readonly" | "unset" | "set" | "times"),
+                && (matches!(name, "export" | "readonly" | "unset" | "set" | "times")
+                    // A bad trap condition is not fatal (dash, bash); a
+                    // bad option is.
+                    || (name == "trap" && status == 2)),
         },
         Err(e) => {
             crate::byteenc::write_stderr_decoded_line(&e.to_string());

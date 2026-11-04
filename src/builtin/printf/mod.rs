@@ -45,7 +45,10 @@ pub fn builtin_printf(args: &[String]) -> Result<i32, ShellError> {
     if !run.out.is_empty()
         && let Err(e) = write_stdout_bytes(&run.out)
     {
-        run.diags.push(format!("write error: {}", e));
+        run.diags.push(format!(
+            "write error: {}",
+            crate::exec::redirect::io_error_text(&e)
+        ));
     }
     for d in &run.diags {
         crate::byteenc::write_stderr_decoded_line(&format!("yosh: printf: {}", d));

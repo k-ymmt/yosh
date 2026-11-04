@@ -21,10 +21,17 @@ fn open_decoded(path: &str, flags: OFlag, mode: Mode) -> nix::Result<std::os::fd
 /// redirection diagnostics: nix's own `Display` adds the symbolic name
 /// (`ENOENT: ...`) and has its own wording for some codes.
 pub(crate) fn errno_text(e: nix::errno::Errno) -> String {
-    let msg = std::io::Error::from_raw_os_error(e as i32).to_string();
-    match msg.rfind(" (os error ") {
-        Some(pos) => msg[..pos].to_string(),
-        None => msg,
+    io_error_text(&std::io::Error::from_raw_os_error(e as i32))
+}
+
+/// An I/O error as the shell reports it: the C library's message alone
+/// (`No such file or directory`), without the ` (os error 2)` suffix
+/// Rust's `Display` appends for OS errors.
+pub(crate) fn io_error_text(e: &std::io::Error) -> String {
+    let msg = e.to_string();
+    match (e.raw_os_error(), msg.rfind(" (os error ")) {
+        (Some(_), Some(pos)) => msg[..pos].to_string(),
+        _ => msg,
     }
 }
 

@@ -90,9 +90,17 @@ pub fn builtin_exec(args: &[String], executor: &mut Executor) -> Result<i32, She
         })
         .collect();
 
+    // Caught signals revert to SIG_DFL across execve by themselves, but
+    // SIG_IGN survives it: the job-control signals a monitor-mode shell
+    // ignores for itself (TSTP/TTIN/TTOU) must not leak into the new
+    // program (`exec sleep 100` would ignore Ctrl+Z). Signals the user
+    // trap-ignored or that were ignored on entry stay ignored (§2.12).
+    // The dispositions are put back if the exec fails and the shell
+    // carries on.
+    let restore = default_shell_ignored_signals(&executor.env.traps.ignored_signals());
     let err = nix::unistd::execve(&c_path, &c_args, &envp).unwrap_err();
     use nix::errno::Errno;
-    match err {
+    let result = match err {
         Errno::ENOENT => exec_failure(executor, format!("exec: {}: not found", cmd), 127),
         Errno::EACCES => exec_failure(executor, format!("exec: {}: permission denied", cmd), 126),
         Errno::ENOEXEC => {
@@ -116,5 +124,35 @@ pub fn builtin_exec(args: &[String], executor: &mut Executor) -> Result<i32, She
             format!("exec: {}: {}", cmd, crate::exec::redirect::errno_text(err)),
             126,
         ),
+    };
+    for &sig in &restore {
+        crate::signal::ignore_signal(sig);
     }
+    result
+}
+
+/// Set every signal the shell itself left at SIG_IGN back to SIG_DFL,
+/// except those in `trap_ignored` (`trap '' SIG`) or ignored on entry
+/// (POSIX §2.12), and return the signals changed so a failed exec can
+/// restore them.
+fn default_shell_ignored_signals(trap_ignored: &[i32]) -> Vec<i32> {
+    let mut changed = Vec::new();
+    for &(sig, _) in crate::signal::SIGNAL_TABLE {
+        if sig == libc::SIGKILL
+            || sig == libc::SIGSTOP
+            || trap_ignored.contains(&sig)
+            || crate::signal::is_ignored_on_entry(sig)
+        {
+            continue;
+        }
+        let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: query-only sigaction (null new action).
+        if unsafe { libc::sigaction(sig, std::ptr::null(), &mut old) } == 0
+            && old.sa_sigaction == libc::SIG_IGN
+        {
+            crate::signal::default_signal(sig);
+            changed.push(sig);
+        }
+    }
+    changed
 }

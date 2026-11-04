@@ -47,6 +47,15 @@ pub fn builtin_trap(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         let conds = strip_end_of_options(&args[1..]);
         return Ok(print_traps(env, (!conds.is_empty()).then_some(conds)));
     }
+    // Any other leading option is a usage error (status 2, fatal like
+    // dash and bash), not an action or a bad signal name (`trap -l`).
+    if !saw_end_of_options && args[0].len() > 1 && args[0].starts_with('-') {
+        crate::byteenc::write_stderr_decoded_line(&format!(
+            "yosh: {}",
+            crate::builtin::options::invalid_option("trap", &args[0])
+        ));
+        return Ok(2);
+    }
     // POSIX trap: "If the first operand is an unsigned decimal integer,
     // the shell shall treat all operands as conditions, and shall reset
     // each condition to the default value." A lone operand is likewise

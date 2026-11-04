@@ -1,7 +1,7 @@
 //! Variable-attribute special builtins: `export`, `readonly` and
 //! `unset` (POSIX XCU §2.15).
 
-use crate::builtin::options::{invalid_flag, scan_flag_words, strip_end_of_options};
+use crate::builtin::options::{invalid_flag, scan_flag_words};
 use crate::builtin::output::{write_lines_or_report, write_stdout_or_report};
 use crate::builtin::quote::quote_for_reinput;
 use crate::env::ShellEnv;
@@ -70,8 +70,22 @@ pub fn builtin_readonly(args: &[String], env: &mut ShellEnv) -> Result<i32, Shel
 ///   - `export -p name` prints just that variable, if it has the
 ///     attribute (without setting it).
 fn declare(attr: Attribute, args: &[String], env: &mut ShellEnv) -> i32 {
-    let print_mode = args.first().map(String::as_str) == Some("-p");
-    let operands = strip_end_of_options(&args[usize::from(print_mode)..]);
+    // Any other leading option is a usage error (status 2, like dash and
+    // bash), not a malformed identifier (`export -n x`).
+    let mut print_mode = false;
+    let operands = match scan_flag_words(args, |ch| {
+        print_mode |= ch == 'p';
+        ch == 'p'
+    }) {
+        Ok(idx) => &args[idx..],
+        Err(e) => {
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: {}",
+                invalid_flag(attr.keyword(), e.flag)
+            ));
+            return 2;
+        }
+    };
 
     if args.is_empty() || (print_mode && operands.is_empty()) {
         let mut listed: Vec<(String, Option<String>)> = env

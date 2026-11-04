@@ -91,83 +91,101 @@ fn umask_set_octal(s: &str) -> Result<i32, ShellError> {
 }
 
 fn umask_set_symbolic(s: &str) -> Result<i32, ShellError> {
-    let invalid_mode = || {
+    let mask = apply_symbolic_mode(s, current_umask()).ok_or_else(|| {
         ShellError::runtime(
             RuntimeErrorKind::InvalidArgument,
             format!("umask: {}: invalid symbolic mode", s),
         )
-    };
-    let mut mask = current_umask();
+    })?;
+    unsafe { libc::umask(mask) };
+    Ok(0)
+}
+
+/// Apply a POSIX `chmod`-style symbolic mode (XCU `chmod` grammar, which
+/// XCU `umask` reuses) to `mask` and return the new mask, or `None` when
+/// `s` is malformed. The mode edits the permissions the mask allows
+/// (`!mask & 0o777`):
+///
+/// ```text
+/// clause     : [who...] action...      (clauses separated by `,`)
+/// who        : u | g | o | a           (omitted = a)
+/// action     : op [permlist | permcopy]
+/// op         : + | - | =
+/// permlist   : r | w | x | X | s | t ...
+/// permcopy   : u | g | o               (copy that class's current bits)
+/// ```
+///
+/// `X` means `x` when some execute bit is already allowed; `s` and `t`
+/// name bits outside the permission bits and so change nothing (dash).
+fn apply_symbolic_mode(s: &str, mask: libc::mode_t) -> Option<libc::mode_t> {
+    let mut perms: libc::mode_t = !mask & 0o777;
 
     for clause in s.split(',') {
         let bytes = clause.as_bytes();
-        if bytes.is_empty() {
-            return Err(invalid_mode());
-        }
-
         let mut i = 0;
         let mut who_mask: libc::mode_t = 0;
-
-        // Parse who (u/g/o/a)
-        while i < bytes.len() && matches!(bytes[i], b'u' | b'g' | b'o' | b'a') {
-            match bytes[i] {
-                b'u' => who_mask |= 0o700,
-                b'g' => who_mask |= 0o070,
-                b'o' => who_mask |= 0o007,
-                b'a' => who_mask |= 0o777,
-                _ => unreachable!(),
-            }
+        while let Some(&b) = bytes.get(i) {
+            who_mask |= match b {
+                b'u' => 0o700,
+                b'g' => 0o070,
+                b'o' => 0o007,
+                b'a' => 0o777,
+                _ => break,
+            };
             i += 1;
         }
-
-        // Default to 'a' if no who specified
         if who_mask == 0 {
             who_mask = 0o777;
         }
 
-        // Parse operator (=, +, -)
-        if i >= bytes.len() || !matches!(bytes[i], b'=' | b'+' | b'-') {
-            return Err(invalid_mode());
+        // At least one action per clause.
+        if !matches!(bytes.get(i), Some(b'=' | b'+' | b'-')) {
+            return None;
         }
-        let op = bytes[i] as char;
-        i += 1;
-
-        // Parse permissions (r/w/x)
-        let mut perm_bits: libc::mode_t = 0;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'r' => perm_bits |= 0o444,
-                b'w' => perm_bits |= 0o222,
-                b'x' => perm_bits |= 0o111,
-                _ => {
-                    return Err(invalid_mode());
-                }
+        while let Some(&op) = bytes.get(i) {
+            if !matches!(op, b'=' | b'+' | b'-') {
+                return None;
             }
             i += 1;
-        }
 
-        // Apply within the who mask
-        let effective_perms = perm_bits & who_mask;
+            // A permcopy is a single class letter; otherwise a permlist.
+            let bits = match bytes.get(i) {
+                Some(&c @ (b'u' | b'g' | b'o')) => {
+                    i += 1;
+                    let shift = match c {
+                        b'u' => 6,
+                        b'g' => 3,
+                        _ => 0,
+                    };
+                    ((perms >> shift) & 0o7) * 0o111
+                }
+                _ => {
+                    let mut bits: libc::mode_t = 0;
+                    while let Some(&c) = bytes.get(i) {
+                        bits |= match c {
+                            b'r' => 0o444,
+                            b'w' => 0o222,
+                            b'x' => 0o111,
+                            b'X' if perms & 0o111 != 0 => 0o111,
+                            b'X' | b's' | b't' => 0,
+                            _ => break,
+                        };
+                        i += 1;
+                    }
+                    bits
+                }
+            };
 
-        match op {
-            '=' => {
-                // Clear who bits, then set umask to deny everything NOT in perm
-                mask = (mask & !who_mask) | (who_mask & !effective_perms);
-            }
-            '+' => {
-                // Adding permissions = clearing umask bits
-                mask &= !effective_perms;
-            }
-            '-' => {
-                // Removing permissions = setting umask bits
-                mask |= effective_perms;
-            }
-            _ => unreachable!(),
+            let bits = bits & who_mask;
+            perms = match op {
+                b'=' => (perms & !who_mask) | bits,
+                b'+' => perms | bits,
+                _ => perms & !bits,
+            };
         }
     }
 
-    unsafe { libc::umask(mask) };
-    Ok(0)
+    Some(!perms & 0o777)
 }
 
 /// The current file mode creation mask. `umask(2)` can only be read by
@@ -176,4 +194,51 @@ fn current_umask() -> libc::mode_t {
     let current = unsafe { libc::umask(0) };
     unsafe { libc::umask(current) };
     current
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_symbolic_mode;
+
+    #[test]
+    fn single_actions() {
+        assert_eq!(apply_symbolic_mode("u=rwx,g+w", 0o022), Some(0o002));
+        assert_eq!(apply_symbolic_mode("ug=", 0o022), Some(0o772));
+        assert_eq!(apply_symbolic_mode("=", 0o022), Some(0o777));
+        assert_eq!(apply_symbolic_mode("+x", 0o022), Some(0o022));
+        assert_eq!(apply_symbolic_mode("o-r", 0o022), Some(0o026));
+    }
+
+    #[test]
+    fn several_actions_in_one_clause() {
+        // XCU chmod: `actionlist : action | actionlist action`.
+        assert_eq!(apply_symbolic_mode("u+r-w", 0o022), Some(0o222));
+        assert_eq!(apply_symbolic_mode("a=r+x", 0o000), Some(0o222));
+    }
+
+    #[test]
+    fn permcopy_copies_the_current_class_bits() {
+        assert_eq!(apply_symbolic_mode("u=g", 0o022), Some(0o222));
+        assert_eq!(apply_symbolic_mode("g=u,o=", 0o222), Some(0o227));
+        assert_eq!(apply_symbolic_mode("go=u", 0o077), Some(0o000));
+    }
+
+    #[test]
+    fn capital_x_depends_on_existing_execute_bits() {
+        assert_eq!(apply_symbolic_mode("a=rX", 0o022), Some(0o222));
+        assert_eq!(apply_symbolic_mode("a+X", 0o777), Some(0o777));
+    }
+
+    #[test]
+    fn set_id_and_sticky_change_nothing() {
+        assert_eq!(apply_symbolic_mode("u+s", 0o022), Some(0o022));
+        assert_eq!(apply_symbolic_mode("o+t", 0o022), Some(0o022));
+    }
+
+    #[test]
+    fn malformed_modes_are_rejected() {
+        for bad in ["", "u", "u+q", "u=gw", "x", "u+r,", ",u+r", "uq+r"] {
+            assert_eq!(apply_symbolic_mode(bad, 0o022), None, "{bad:?}");
+        }
+    }
 }

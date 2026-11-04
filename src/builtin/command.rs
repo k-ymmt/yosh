@@ -76,7 +76,7 @@ pub fn render_brief(env: &mut ShellEnv, name: &str) -> (String, i32) {
         CommandKind::Keyword => (name.to_string(), 0),
         CommandKind::Function => (name.to_string(), 0),
         CommandKind::Builtin(_) => (name.to_string(), 0),
-        CommandKind::External(p) => (p.to_string_lossy().into_owned(), 0),
+        CommandKind::External(p) => (crate::builtin::path::encode_path(&p), 0),
         CommandKind::NotFound => (String::new(), 1),
     }
 }

@@ -16,7 +16,8 @@ pub(super) type HostedBuiltin = fn(&mut Executor, &[String]) -> i32;
 
 /// The Executor-hosted regular built-ins: wait / fg / bg / jobs / command
 /// need Executor access (job table, signal processing, -p / no-flag
-/// execution paths); fc needs it to re-execute history entries. `None`
+/// execution paths); fc needs it to re-execute history entries; read runs
+/// signal traps while blocked on input. `None`
 /// when `name` is not one of them. A built-in error is printed and turned
 /// into its exit status.
 pub(super) fn executor_hosted_builtin(name: &str) -> Option<HostedBuiltin> {
@@ -33,6 +34,8 @@ pub(super) fn executor_hosted_builtin(name: &str) -> Option<HostedBuiltin> {
         "jobs" => |exec, args| report(exec.builtin_jobs(args)),
         "fc" => |exec, args| report(crate::builtin::fc::builtin_fc(args, exec)),
         "command" => Executor::builtin_command,
+        // `read` runs signal traps while it waits for input.
+        "read" => |exec, args| report(crate::builtin::read::builtin_read(args, exec)),
         _ => return None,
     };
     Some(builtin)

@@ -6,11 +6,12 @@
 //! `\X` keeps `X` literally).
 
 use crate::builtin::options::{invalid_flag, scan_flag_words};
-use crate::env::ShellEnv;
+use crate::env::TrapAction;
 use crate::error::ShellError;
+use crate::exec::Executor;
 use crate::parser::word::is_valid_name;
 
-pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellError> {
+pub fn builtin_read(args: &[String], executor: &mut Executor) -> Result<i32, ShellError> {
     let parsed = match parse_args(args) {
         Ok(p) => p,
         Err(ArgError::NoVarName) => {
@@ -35,16 +36,28 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
         }
     };
 
-    let mut reader = StdinByteReader::new();
-    let line_result = read_logical_line(parsed.raw, &mut reader);
-    // Seek fd 0 back over any block-buffered bytes beyond the consumed
-    // line, on success AND error paths, so the next reader of the fd
-    // starts exactly where this `read` logically stopped.
-    reader.rewind_unconsumed();
+    let (line_result, interrupted) = {
+        let mut reader = StdinByteReader::new(|| handle_signals_during_read(executor));
+        let line_result = read_logical_line(parsed.raw, &mut reader);
+        // Seek fd 0 back over any block-buffered bytes beyond the consumed
+        // line, on success AND error paths, so the next reader of the fd
+        // starts exactly where this `read` logically stopped.
+        reader.rewind_unconsumed();
+        (line_result, reader.interrupted)
+    };
+    // A signal ended the read (see `handle_signals_during_read`): no
+    // variable is assigned and the status reports the signal.
+    if let Some(status) = interrupted {
+        return Ok(status);
+    }
+    let env = &mut executor.env;
     let result = match line_result {
         Ok(r) => r,
         Err(e) => {
-            crate::byteenc::write_stderr_decoded_line(&format!("yosh: read: {}", e));
+            crate::byteenc::write_stderr_decoded_line(&format!(
+                "yosh: read: {}",
+                crate::exec::redirect::io_error_text(&e)
+            ));
             return Ok(1);
         }
     };
@@ -77,6 +90,43 @@ pub fn builtin_read(args: &[String], env: &mut ShellEnv) -> Result<i32, ShellErr
 /// syscalls/line before), not to stream large volumes.
 const READ_BLOCK: usize = 4096;
 
+/// Run the trap or default action of the signals that arrived while
+/// `read` was blocked, and decide whether the read goes on. Returns the
+/// status to abort with, or `None` to keep reading.
+///
+/// Untrapped fatal signals end a non-interactive shell right here (inside
+/// `run_signal_traps`), instead of only once input arrives. As in dash
+/// and `bash --posix`, a trapped signal runs its action and then ends the
+/// read with status 128+N, so `trap ... ALRM` can time out a `read`. An
+/// interactive shell's untrapped SIGINT also abandons the read (130).
+fn handle_signals_during_read(executor: &mut Executor) -> Option<i32> {
+    let signals = crate::signal::drain_pending_signals();
+    if signals.is_empty() {
+        return None;
+    }
+    let traps = &executor.env.traps;
+    let trapped = signals.iter().copied().rev().find(|&sig| {
+        sig != libc::SIGCHLD && matches!(traps.get_signal_trap(sig), Some(TrapAction::Command(_)))
+    });
+    let interactive_int = executor.env.mode.is_interactive
+        && signals.contains(&libc::SIGINT)
+        && !matches!(
+            traps.get_signal_trap(libc::SIGINT),
+            Some(TrapAction::Command(_) | TrapAction::Ignore)
+        );
+    executor.run_signal_traps(&signals);
+    if let Some(sig) = trapped {
+        return Some(128 + sig);
+    }
+    if interactive_int {
+        return Some(128 + libc::SIGINT);
+    }
+    if executor.should_unwind() {
+        return Some(128 + signals[signals.len() - 1]);
+    }
+    None
+}
+
 /// Production `ByteReader` for fd 0.
 ///
 /// POSIX requires `read` not to consume input past the logical line, so
@@ -93,17 +143,32 @@ const READ_BLOCK: usize = 4096;
 /// Byte semantics are unchanged either way: this only batches syscalls;
 /// every byte still flows through `read_byte` untouched (byteenc
 /// escaping happens later, in `field_to_string`).
-struct StdinByteReader {
+///
+/// Signals: most of the shell's handlers use `SA_RESTART`, so a read(2)
+/// blocked on an idle pipe or terminal would sleep straight through a
+/// SIGINT or SIGALRM (and HUP/TERM's EINTR used to be retried as well).
+/// Before any read(2) that could block — FIONREAD reports nothing
+/// buffered — the reader instead polls fd 0 together with the signal
+/// self-pipe and hands arriving signals to `on_signal`.
+struct StdinByteReader<F: FnMut() -> Option<i32>> {
     /// Whether fd 0 is seekable (checked once at construction).
     seekable: bool,
     /// Buffered bytes from the last block read (seekable mode only).
     buf: Vec<u8>,
     /// Next unconsumed index into `buf`.
     pos: usize,
+    /// Bytes FIONREAD reported readable that have not been read yet:
+    /// read(2) cannot block while this is non-zero.
+    ready: usize,
+    /// Called when signals arrive while waiting for input; `Some(status)`
+    /// aborts the read.
+    on_signal: F,
+    /// The abort status `on_signal` returned, if it ended the read.
+    interrupted: Option<i32>,
 }
 
-impl StdinByteReader {
-    fn new() -> Self {
+impl<F: FnMut() -> Option<i32>> StdinByteReader<F> {
+    fn new(on_signal: F) -> Self {
         // A successful lseek means the fd has a file offset we can
         // rewind; ESPIPE (pipe/FIFO/socket) and failures in general mean
         // it does not — use the conservative per-byte path.
@@ -112,6 +177,9 @@ impl StdinByteReader {
             seekable,
             buf: Vec::new(),
             pos: 0,
+            ready: 0,
+            on_signal,
+            interrupted: None,
         }
     }
 
@@ -135,12 +203,66 @@ impl StdinByteReader {
         self.pos = 0;
     }
 
-    /// Refill `buf` with one block read, retrying on EINTR. Returns the
-    /// first byte, or `None` at EOF.
-    fn refill_block(&mut self) -> std::io::Result<Option<u8>> {
-        self.buf.resize(READ_BLOCK, 0);
-        self.pos = 0;
+    /// Let `on_signal` handle pending signals; turns an abort into an
+    /// `Interrupted` error that ends `read_logical_line`.
+    fn signal_arrived(&mut self) -> std::io::Result<()> {
+        if let Some(status) = (self.on_signal)() {
+            self.interrupted = Some(status);
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
+        Ok(())
+    }
+
+    /// Wait until a read(2) on fd 0 will not block, handling signals that
+    /// arrive meanwhile. Errors other than an abort are left for the
+    /// read(2) itself to report.
+    fn wait_readable(&mut self) -> std::io::Result<()> {
+        if self.ready > 0 {
+            return Ok(());
+        }
+        let mut avail: libc::c_int = 0;
+        // SAFETY: FIONREAD writes an int byte count for a valid fd; for an
+        // invalid one it fails and `avail` is left untouched.
+        let rc = unsafe { libc::ioctl(libc::STDIN_FILENO, libc::FIONREAD, &mut avail) };
+        if rc == 0 && avail > 0 {
+            self.ready = avail as usize;
+            return Ok(());
+        }
+        let pipe_fd = crate::signal::self_pipe_read_fd();
         loop {
+            let mut fds = [
+                libc::pollfd {
+                    fd: libc::STDIN_FILENO,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: pipe_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: `fds` is a live two-element array for the call.
+            let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+            if n < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                return Ok(());
+            }
+            // Readable, at EOF, hung up or invalid: read(2) will not
+            // block and reports whichever it is.
+            if n > 0 && fds[0].revents != 0 {
+                return Ok(());
+            }
+            self.signal_arrived()?;
+        }
+    }
+
+    /// Refill `buf` with one block read. Returns the first byte, or
+    /// `None` at EOF.
+    fn refill_block(&mut self) -> std::io::Result<Option<u8>> {
+        loop {
+            self.wait_readable()?;
+            self.buf.resize(READ_BLOCK, 0);
+            self.pos = 0;
             // SAFETY: `buf` is a live READ_BLOCK-byte allocation owned by
             // self for the duration of the call; the length passed matches
             // exactly. See `read_one` for why a stale/closed fd 0 is safe.
@@ -152,6 +274,7 @@ impl StdinByteReader {
                 )
             };
             if n > 0 {
+                self.ready = self.ready.saturating_sub(n as usize);
                 self.buf.truncate(n as usize);
                 self.pos = 1;
                 return Ok(Some(self.buf[0]));
@@ -163,16 +286,18 @@ impl StdinByteReader {
             // n == -1: check errno
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(libc::EINTR) {
+                self.signal_arrived()?;
                 continue;
             }
             return Err(err);
         }
     }
 
-    /// Single-byte read(2), retrying on EINTR — the non-seekable path.
+    /// Single-byte read(2) — the non-seekable path.
     fn read_one(&mut self) -> std::io::Result<Option<u8>> {
         let mut buf = [0u8; 1];
         loop {
+            self.wait_readable()?;
             // SAFETY: buf is a valid 1-byte stack allocation that lives for
             // the duration of this call; the length matches the buffer size
             // exactly. STDIN_FILENO is a plain fd number that is valid to
@@ -183,6 +308,7 @@ impl StdinByteReader {
             let n =
                 unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, 1) };
             if n == 1 {
+                self.ready = self.ready.saturating_sub(1);
                 return Ok(Some(buf[0]));
             }
             if n == 0 {
@@ -191,6 +317,7 @@ impl StdinByteReader {
             // n == -1: check errno
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(libc::EINTR) {
+                self.signal_arrived()?;
                 continue;
             }
             return Err(err);
@@ -198,7 +325,7 @@ impl StdinByteReader {
     }
 }
 
-impl ByteReader for StdinByteReader {
+impl<F: FnMut() -> Option<i32>> ByteReader for StdinByteReader<F> {
     fn read_byte(&mut self) -> std::io::Result<Option<u8>> {
         if self.pos < self.buf.len() {
             let b = self.buf[self.pos];
@@ -271,8 +398,8 @@ struct LineReadResult {
 /// in-memory input without touching fd 0.
 trait ByteReader {
     /// Returns `Ok(Some(b))` for a byte, `Ok(None)` for EOF, or
-    /// `Err(io::Error)` for genuine read failures. Implementors must
-    /// retry on `EINTR` internally.
+    /// `Err(io::Error)` for genuine read failures. Implementors handle
+    /// `EINTR` internally (retrying, or ending the read with an error).
     fn read_byte(&mut self) -> std::io::Result<Option<u8>>;
 }
 

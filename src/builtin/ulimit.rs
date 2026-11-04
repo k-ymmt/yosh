@@ -221,7 +221,10 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
             let rl = match get_rlimit(r.resource) {
                 Ok(rl) => rl,
                 Err(e) => {
-                    crate::byteenc::write_stderr_decoded_line(&format!("yosh: ulimit: {e}"));
+                    crate::byteenc::write_stderr_decoded_line(&format!(
+                        "yosh: ulimit: {}",
+                        crate::exec::redirect::io_error_text(&e)
+                    ));
                     return Ok(1);
                 }
             };
@@ -268,7 +271,10 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
         let mut rl = match get_rlimit(r.resource) {
             Ok(rl) => rl,
             Err(e) => {
-                crate::byteenc::write_stderr_decoded_line(&format!("yosh: ulimit: {e}"));
+                crate::byteenc::write_stderr_decoded_line(&format!(
+                    "yosh: ulimit: {}",
+                    crate::exec::redirect::io_error_text(&e)
+                ));
                 return Ok(1);
             }
         };
@@ -283,7 +289,7 @@ pub fn builtin_ulimit(args: &[String]) -> Result<i32, ShellError> {
             crate::byteenc::write_stderr_decoded_line(&format!(
                 "yosh: ulimit: {}: cannot modify limit: {}",
                 r.desc,
-                std::io::Error::last_os_error()
+                crate::exec::redirect::io_error_text(&std::io::Error::last_os_error())
             ));
             return Ok(1);
         }

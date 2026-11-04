@@ -48,6 +48,16 @@ pub fn resolve_command_kind(env: &mut ShellEnv, name: &str) -> CommandKind {
         BuiltinKind::NotBuiltin => {}
         kind => return CommandKind::Builtin(kind),
     }
+    // A name containing `/` is not searched for (POSIX §2.9.1.4): it
+    // names the file directly, so report it as given when it is an
+    // executable regular file (`command -v ./script`, as bash).
+    if name.contains('/') {
+        let path = crate::builtin::path::os_path(name);
+        if crate::exec::command::is_executable_file(&path) {
+            return CommandKind::External(path);
+        }
+        return CommandKind::NotFound;
+    }
     // External: search $PATH.
     // Release the env.vars borrow first so env.utility_hash can be mutably borrowed.
     if let Some(path_var) = env.vars.get("PATH").map(|s| s.to_string())
@@ -78,7 +88,9 @@ pub(crate) fn describe_command(env: &mut ShellEnv, name: &str) -> Option<String>
         CommandKind::Builtin(BuiltinKind::NotBuiltin) => {
             unreachable!("resolve_command_kind never returns Builtin(NotBuiltin)")
         }
-        CommandKind::External(p) => format!("{} is {}", name, p.to_string_lossy()),
+        CommandKind::External(p) => {
+            format!("{} is {}", name, crate::builtin::path::encode_path(&p))
+        }
         CommandKind::NotFound => return None,
     })
 }
@@ -170,6 +182,24 @@ mod tests {
             }
             other => panic!("expected External, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn slash_name_is_reported_as_given_without_path_search() {
+        let mut env = env_with_path("/nonexistent");
+        assert_eq!(
+            resolve_command_kind(&mut env, "/bin/../bin/sh"),
+            CommandKind::External(std::path::PathBuf::from("/bin/../bin/sh"))
+        );
+        // A directory or a missing file is not a command.
+        assert_eq!(
+            resolve_command_kind(&mut env, "/bin/"),
+            CommandKind::NotFound
+        );
+        assert_eq!(
+            resolve_command_kind(&mut env, "/nonexistent/sh"),
+            CommandKind::NotFound
+        );
     }
 
     #[test]

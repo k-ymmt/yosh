@@ -55,7 +55,8 @@ pub fn builtin_kill(args: &[String], env: &ShellEnv) -> Result<i32, ShellError> 
                     if let Err(e) = send_signal(-pgid.as_raw(), sig_num) {
                         crate::byteenc::write_stderr_decoded_line(&format!(
                             "yosh: kill: ({}) - {}",
-                            pid_str, e
+                            pid_str,
+                            crate::exec::redirect::errno_text(e)
                         ));
                         status = 1;
                     }
@@ -98,7 +99,8 @@ pub fn builtin_kill(args: &[String], env: &ShellEnv) -> Result<i32, ShellError> 
         if let Err(e) = send_signal(target, sig_num) {
             crate::byteenc::write_stderr_decoded_line(&format!(
                 "yosh: kill: ({}) - {}",
-                pid_str, e
+                pid_str,
+                crate::exec::redirect::errno_text(e)
             ));
             status = 1;
         }

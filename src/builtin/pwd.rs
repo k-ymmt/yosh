@@ -40,9 +40,10 @@ pub fn builtin_pwd(args: &[String], env: &ShellEnv) -> Result<i32, ShellError> {
         None => {
             // getcwd failed (e.g. the working directory was removed);
             // ask once more for the reason.
-            let reason = std::env::current_dir()
-                .err()
-                .map_or_else(|| "unknown error".to_string(), |e| e.to_string());
+            let reason = std::env::current_dir().err().map_or_else(
+                || "unknown error".to_string(),
+                |e| crate::exec::redirect::io_error_text(&e),
+            );
             crate::byteenc::write_stderr_decoded_line(&format!(
                 "yosh: pwd: cannot determine the current directory: {reason}"
             ));

@@ -12,6 +12,10 @@ pub struct ShellOptions {
     pub verbose: bool,   // -v
     pub xtrace: bool,    // -x
     pub ignoreeof: bool,
+    /// `set -o nolog` (POSIX: keep function definitions out of the
+    /// command history). Accepted and reported so `set +o` output
+    /// round-trips; yosh's history does not act on it.
+    pub nolog: bool,
     pub pipefail: bool,
     pub cmd_string: bool, // -c
     /// `-s` invocation flag / interactive stdin reading. Like
@@ -111,6 +115,7 @@ impl ShellOptions {
             "verbose" => self.verbose = on,
             "xtrace" => self.xtrace = on,
             "ignoreeof" => self.ignoreeof = on,
+            "nolog" => self.nolog = on,
             "pipefail" => self.pipefail = on,
             // Editing modes are mutually exclusive: enabling one disables
             // the other (bash/ksh behavior). Turning one *off* leaves
@@ -171,6 +176,7 @@ impl ShellOptions {
             ("noclobber", self.noclobber),
             ("noexec", self.noexec),
             ("noglob", self.noglob),
+            ("nolog", self.nolog),
             ("notify", self.notify),
             ("nounset", self.nounset),
             ("pipefail", self.pipefail),
