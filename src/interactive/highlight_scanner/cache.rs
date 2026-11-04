@@ -5,7 +5,7 @@
 //! can be reused across keystrokes.
 
 use super::super::highlight::ColorSpan;
-use super::state::ScannerState;
+use super::state::{ScanMode, ScannerState};
 
 pub(super) struct HighlightCache {
     pub prev_input: Vec<char>,
@@ -33,12 +33,28 @@ impl HighlightCache {
             .unwrap_or(self.prev_input.len().min(input.len()))
     }
 
-    /// Return the nearest checkpoint at or before `pos`.
+    /// Return the nearest usable checkpoint strictly before `pos` (the
+    /// first changed char), so that restarting there reproduces exactly
+    /// the spans a full scan would emit:
+    /// - A checkpoint marks a token boundary of the old input; one AT the
+    ///   changed char may no longer be a boundary — an inserted word char
+    ///   joins the previous word — and would split that word in two.
+    /// - Inside a quote or expansion the scanner re-emits that
+    ///   construct's span from its opener when it resumes, duplicating
+    ///   the cached span that ends at the checkpoint. Only checkpoints
+    ///   in plain command context (`Normal`, possibly nested in `$(`)
+    ///   resume cleanly.
     pub(super) fn nearest_checkpoint(&self, pos: usize) -> Option<(usize, ScannerState)> {
         self.checkpoints
             .iter()
             .rev()
-            .find(|(cp, _)| *cp <= pos)
+            .find(|(cp, st)| {
+                *cp < pos
+                    && st
+                        .mode_stack
+                        .iter()
+                        .all(|m| matches!(m, ScanMode::Normal | ScanMode::CommandSub { .. }))
+            })
             .cloned()
     }
 

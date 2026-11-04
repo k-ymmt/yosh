@@ -444,6 +444,26 @@ fn test_pty_history_up_re_executes() {
     exit_shell(&mut s);
 }
 
+/// A line rejected with a syntax error still enters history (bash, ksh
+/// and zsh), so Up recalls it for fixing.
+#[test]
+fn test_pty_syntax_error_line_enters_history() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+
+    s.send("echo synerr_$((40+2)) )\r").unwrap();
+    expect_output(&mut s, "yosh: syntax error", "syntax error not reported");
+    wait_for_prompt(&mut s);
+
+    // Recall it, drop the stray `)` and run it.
+    s.send("\x1b[A").unwrap();
+    s.send("\x7f\x7f\r").unwrap();
+    expect_output(&mut s, "synerr_42", "rejected line was not recalled");
+    wait_for_prompt(&mut s);
+
+    exit_shell(&mut s);
+}
+
 #[test]
 fn test_pty_fc_not_added_to_history() {
     // POSIX-strict fc rationale: "the fc command shall not be entered

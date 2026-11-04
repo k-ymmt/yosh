@@ -480,6 +480,18 @@ impl Repl {
                 }
                 ParseStatus::Error(msg) => {
                     eprintln!("yosh: {}", msg);
+                    // The rejected line still enters history (bash, ksh
+                    // and zsh), so Up recalls it for fixing instead of
+                    // making the user retype it.
+                    let cmd_text = input_buffer.trim_end().to_string();
+                    if !should_skip_history(&cmd_text) {
+                        let (histsize, histcontrol) =
+                            history::history_settings(&self.executor.env.vars);
+                        self.executor
+                            .env
+                            .history
+                            .add(&cmd_text, histsize, &histcontrol);
+                    }
                     input_buffer.clear();
                 }
             }

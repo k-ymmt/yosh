@@ -127,16 +127,27 @@ impl HighlightScanner {
 
         self.scan_from(current, start_pos, &mut state, checker_env, &mut spans);
 
-        // Mark unclosed modes for PS1 ---------------------------------------------
-        if is_ps1 {
-            state::mark_unclosed_errors(&state, current.len(), &mut spans);
-        }
-
         // Update cache ------------------------------------------------------------
         // Reuse prev_input's allocation rather than allocating a fresh Vec.
+        // The cached spans are the scanned ones only: the unclosed-construct
+        // markers below are recomputed on every scan, and a later
+        // incremental scan keeps the cached spans that end before its
+        // restart point — a cached marker there would be emitted twice.
         self.cache.prev_input.clear();
         self.cache.prev_input.extend_from_slice(current);
         self.cache.prev_spans = spans.clone();
+
+        // Mark unclosed modes for PS1 ---------------------------------------------
+        // The markers sit at the constructs' openers, before spans already
+        // scanned; the renderer walks spans in start order, so re-sort
+        // (stably) or an opener's marker after later spans is never shown.
+        if is_ps1 {
+            let scanned = spans.len();
+            state::mark_unclosed_errors(&state, current.len(), &mut spans);
+            if spans.len() > scanned {
+                spans.sort_by_key(|sp| sp.start);
+            }
+        }
 
         spans
     }
@@ -841,5 +852,91 @@ mod tests {
             }
             last_len = Some(spans.len());
         }
+    }
+
+    /// Incremental rescans (checkpoint restarts) must emit exactly the
+    /// spans a fresh scan emits. Replays the random edit sessions that
+    /// exposed three cache bugs: a cached unclosed-construct marker
+    /// emitted twice, a word split at a checkpoint sitting on the edit,
+    /// and a quote resumed at a checkpoint re-emitting its span.
+    #[test]
+    fn test_incremental_scan_matches_fresh_scan() {
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, n: usize) -> usize {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                (self.0 % n as u64) as usize
+            }
+        }
+        let (path, aliases) = test_env();
+        let env = CheckerEnv {
+            path: &path,
+            aliases: &aliases,
+        };
+        let alpha: Vec<char> = "ab $(){}`'\"\\|;&#<>\n=~-0123ifthenfidoneEOF"
+            .chars()
+            .collect();
+        let words = [
+            "if ", "then ", "fi", "case ", "esac", "<<EOF\n", "EOF\n", "<<-X\n", "\tX\n", "$((",
+            "))", "${", "}", "for ", "in ", "do ", "done", "#", "\\\n", "'", "\"",
+        ];
+        for seed in [11673u64, 12415, 17435, 19314, 53954] {
+            let mut r = Rng(seed.wrapping_mul(2654435761) | 1);
+            let mut buf: Vec<char> = Vec::new();
+            let mut inc = test_scanner();
+            for _ in 0..25 {
+                let pos = if buf.is_empty() {
+                    0
+                } else {
+                    r.below(buf.len() + 1)
+                };
+                match r.below(6) {
+                    0 | 1 => buf.insert(pos, alpha[r.below(alpha.len())]),
+                    2 => {
+                        for (i, c) in words[r.below(words.len())].chars().enumerate() {
+                            buf.insert(pos + i, c);
+                        }
+                    }
+                    3 => {
+                        if pos < buf.len() {
+                            buf.remove(pos);
+                        }
+                    }
+                    4 => buf.push(alpha[r.below(alpha.len())]),
+                    _ => {
+                        buf.pop();
+                    }
+                }
+                let incremental = inc.scan("", &buf, &env);
+                let fresh = test_scanner().scan("", &buf, &env);
+                assert_eq!(
+                    incremental,
+                    fresh,
+                    "seed {seed}: {:?}",
+                    buf.iter().collect::<String>()
+                );
+            }
+        }
+    }
+
+    /// The renderer walks spans in start order: the error marker of an
+    /// unclosed `$(` sits at the opener and must come before the spans
+    /// scanned inside it, or it is never painted.
+    #[test]
+    fn test_unclosed_command_sub_marker_is_in_start_order() {
+        let mut scanner = test_scanner();
+        let spans = scan_input(&mut scanner, "echo $(ls -l");
+        assert!(
+            spans.windows(2).all(|w| w[0].start <= w[1].start),
+            "spans out of order: {spans:?}"
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|sp| sp.start == 5 && sp.end == 7 && sp.style == HighlightStyle::Error),
+            "no error marker on the unclosed $(: {spans:?}"
+        );
     }
 }
