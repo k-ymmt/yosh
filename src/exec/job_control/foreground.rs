@@ -5,6 +5,7 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 
 use super::super::Executor;
 use crate::env::jobs::JobStatus;
+use crate::env::{FlowControl, TrapAction};
 
 /// Result of waiting for a foreground job.
 pub(in crate::exec) struct ForegroundWaitResult {
@@ -59,6 +60,25 @@ impl Executor {
         }
     }
 
+    /// Ctrl+C on a foreground job reaches only the job's process group, so
+    /// the shell learns of it from the job dying by SIGINT. An interactive
+    /// shell whose SIGINT disposition is the default then abandons the rest
+    /// of the command line, as if it had been interrupted itself (dash
+    /// re-raises SIGINT; bash agrees): `sleep 5; echo x` + Ctrl+C prints
+    /// nothing. Unwinds like a fatal expansion error; the REPL / `-c` loop
+    /// clears the flag before the next command line.
+    fn abandon_line_after_foreground_sigint(&mut self) {
+        if self.env.mode.is_interactive
+            && self.env.exec.flow_control.is_none()
+            && !matches!(
+                self.env.traps.get_signal_trap(libc::SIGINT),
+                Some(TrapAction::Command(_) | TrapAction::Ignore)
+            )
+        {
+            self.env.exec.flow_control = Some(FlowControl::ExpansionError);
+        }
+    }
+
     /// Wait for a foreground job to complete or stop.
     ///
     /// Returns a `ForegroundWaitResult` containing the last exit status,
@@ -90,6 +110,7 @@ impl Executor {
 
         let mut last_status = 0;
         let mut process_statuses: Vec<(nix::unistd::Pid, i32)> = Vec::new();
+        let mut interrupted = false;
 
         loop {
             if process_statuses.len() >= total_processes {
@@ -111,6 +132,7 @@ impl Executor {
                     process_statuses.push((pid, code));
                 }
                 Ok(WaitStatus::Signaled(pid, sig, _)) => {
+                    interrupted |= sig == nix::sys::signal::Signal::SIGINT;
                     let code = 128 + sig as i32;
                     self.env
                         .process
@@ -153,6 +175,10 @@ impl Executor {
                 }
                 _ => break,
             }
+        }
+
+        if interrupted {
+            self.abandon_line_after_foreground_sigint();
         }
 
         ForegroundWaitResult {

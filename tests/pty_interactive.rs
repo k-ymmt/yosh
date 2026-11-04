@@ -2636,6 +2636,34 @@ fn test_pty_exec_resets_shell_ignored_job_control_signals() {
     let _ = s.expect(Eof);
 }
 
+#[test]
+fn test_pty_ctrl_c_on_foreground_job_abandons_the_line() {
+    // Ctrl+C reaches only the foreground job's process group; the shell
+    // sees the job die by SIGINT and drops the rest of the command line
+    // (dash re-raises SIGINT; bash agrees).
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+    // `$((0))` keeps the expected output out of the echoed input line.
+    s.send("echo re$((0))ady; /bin/sleep 30; echo wr$((0))ong\r")
+        .unwrap();
+    expect_output(&mut s, "re0ady", "command line did not start");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    s.send("\x03").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("echo st=$?\r").unwrap();
+    let caps = s
+        .expect(Regex(r"st=\d+"))
+        .unwrap_or_else(|e| panic!("Ctrl+C did not interrupt the job: {e}"));
+    let before = String::from_utf8_lossy(caps.before()).into_owned();
+    assert!(
+        !before.contains("wr0ong"),
+        "Ctrl+C on a foreground job did not abandon the command line: {before:?}"
+    );
+    assert_eq!(caps.get(0), Some(&b"st=130"[..]), "status after Ctrl+C");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
 /// Ctrl+C while the `read` builtin waits on the terminal must abandon
 /// the read (status 130) instead of being slept through until Enter:
 /// the shell's SIGINT handler uses SA_RESTART, so `read` has to watch
