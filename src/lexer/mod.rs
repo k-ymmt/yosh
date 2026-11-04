@@ -492,6 +492,13 @@ mod tests {
                 parts: vec![WordPart::DollarSingleQuoted("\x1cx".to_string())],
             })]
         );
+        // `\c?` is DEL (stty's `^?`).
+        assert_eq!(
+            tokenize("$'\\c?'"),
+            vec![Token::Word(Word {
+                parts: vec![WordPart::DollarSingleQuoted("\x7f".to_string())],
+            })]
+        );
     }
 
     #[test]

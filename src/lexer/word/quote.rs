@@ -159,7 +159,9 @@ impl Lexer {
                             if ctrl == b'\\' && !self.at_end() && self.current_byte() == b'\\' {
                                 self.advance();
                             }
-                            bytes.push(ctrl & 0x1f);
+                            // `^?` is DEL in the stty table POSIX
+                            // refers to (bash: 0x7f).
+                            bytes.push(if ctrl == b'?' { 0x7f } else { ctrl & 0x1f });
                         }
                     }
                     b'0'..=b'7' => {
