@@ -73,15 +73,30 @@ impl Parser {
 
     /// Like `new_with_aliases`, for input that starts at line `line` of
     /// a longer source read piecewise (line numbers in diagnostics and
-    /// `LINENO` continue from there).
-    pub fn new_with_aliases_at_line(
+    /// `LINENO` continue from there), continuing any alias expansion that
+    /// a previous parser over the same source left unfinished (see
+    /// `pending_aliases`): its queued replacement tokens are read before
+    /// `input`.
+    pub fn resuming_at_line(
         input: &str,
         aliases: &crate::env::aliases::AliasStore,
         line: usize,
+        pending: Option<crate::lexer::PendingAliases>,
     ) -> Self {
         let mut lexer = Lexer::new_with_aliases(input, aliases);
         lexer.set_start_line(line);
+        if let Some(pending) = pending {
+            lexer.resume_aliases(pending);
+        }
         Self::from_lexer(lexer)
+    }
+
+    /// Alias replacement tokens not read yet (see
+    /// `Lexer::pending_aliases`). Taken between complete commands, it
+    /// lets a driver that re-parses the rest of the input with a new
+    /// parser (more input arrived) continue the expansion.
+    pub fn pending_aliases(&self) -> Option<crate::lexer::PendingAliases> {
+        self.lexer.pending_aliases()
     }
 
     /// Replace the alias table used for tokens not yet read. A driver that

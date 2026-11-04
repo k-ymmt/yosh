@@ -96,6 +96,11 @@ impl AliasState {
         self.frames.iter().any(|f| f.name == name)
     }
 
+    /// No alias replacement tokens are waiting to be read.
+    pub(crate) fn queue_is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
     /// See `last_source`.
     pub(crate) fn last_source(&self) -> Option<&str> {
         self.last_source.as_deref()

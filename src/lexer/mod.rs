@@ -11,6 +11,12 @@ use std::rc::Rc;
 use crate::parser::ast::WordPart;
 use token::SpannedToken;
 
+/// Alias-substitution state with replacement tokens still queued, carried
+/// from one lexer to a lexer over the rest of the same input (see
+/// `Lexer::pending_aliases`).
+#[derive(Clone, Debug)]
+pub struct PendingAliases(alias::AliasState);
+
 /// A full look-ahead snapshot: the cursor plus the alias-substitution
 /// state (see `Lexer::save_state`).
 pub struct LexerState {
@@ -255,6 +261,22 @@ impl Lexer {
     pub fn restore_state(&mut self, state: LexerState) {
         self.restore_cursor(state.cursor);
         self.alias_state = state.alias_state;
+    }
+
+    /// The alias-substitution state, when an alias expansion still has
+    /// replacement tokens queued (`alias a='echo 1\necho 2'` stopped
+    /// after `echo 1`). A driver that re-lexes the rest of its input with
+    /// a new lexer hands this to `resume_aliases` so the expansion goes
+    /// on; with nothing queued, a fresh lexer at a command start is in
+    /// the same state anyway.
+    pub fn pending_aliases(&self) -> Option<PendingAliases> {
+        (!self.alias_state.queue_is_empty()).then(|| PendingAliases(self.alias_state.clone()))
+    }
+
+    /// Continue alias expansion saved by `pending_aliases` (call before
+    /// reading any token).
+    pub fn resume_aliases(&mut self, pending: PendingAliases) {
+        self.alias_state = pending.0;
     }
 
     /// When the token most recently returned by `next_token` was produced

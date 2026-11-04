@@ -1089,3 +1089,152 @@ fn test_untrapped_signal_kills_shell_by_that_signal() {
         assert!(out.stdout.is_empty());
     }
 }
+
+/// Spawn `yosh` on a pipe and keep writing `x` to it (after `prefix`)
+/// without ever ending the line, on a thread that stops once the shell
+/// is gone. Returns the child and the writer thread.
+fn spawn_yosh_on_endless_line(
+    prefix: &'static [u8],
+) -> (std::process::Child, std::thread::JoinHandle<()>) {
+    use std::io::{BufReader, Write};
+    let mut child = spawn_yosh_on_open_pipe();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    stdin.write_all(prefix).unwrap();
+    stdin.write_all(b"echo ready\n#").unwrap();
+    read_until_line(&mut out, "ready");
+    let writer = std::thread::spawn(move || {
+        let chunk = [b'x'; 4096];
+        // Ends with EPIPE once the shell exits (or is killed).
+        while stdin.write_all(&chunk).is_ok() {}
+        drop(out);
+    });
+    (child, writer)
+}
+
+#[test]
+fn test_untrapped_term_with_endless_ready_input_kills_shell() {
+    // Input that is always readable but never ends its line used to
+    // starve signal handling: signals were looked at only while the
+    // shell waited for input, so `kill -TERM` left it reading forever.
+    // dash and bash die of the signal.
+    use std::os::unix::process::ExitStatusExt;
+    let (mut child, writer) = spawn_yosh_on_endless_line(b"");
+    std::thread::sleep(Duration::from_millis(100));
+    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    let status = wait_or_panic(&mut child, "shell reading endless input ignored SIGTERM");
+    writer.join().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGTERM), "status: {status:?}");
+}
+
+#[test]
+fn test_trap_runs_with_endless_ready_input() {
+    // A trapped signal's action runs while the shell reads endless ready
+    // input, not only once a line completes.
+    let (mut child, writer) = spawn_yosh_on_endless_line(b"trap 'exit 3' USR1\n");
+    std::thread::sleep(Duration::from_millis(100));
+    unsafe { libc::kill(child.id() as i32, libc::SIGUSR1) };
+    let status = wait_or_panic(&mut child, "USR1 trap did not run during endless input");
+    writer.join().unwrap();
+    assert_eq!(status.code(), Some(3), "status: {status:?}");
+}
+
+#[test]
+fn test_sigint_discards_partial_input_of_interactive_shell() {
+    // `sh -i` on a pipe: an untrapped SIGINT cancels the command being
+    // entered, like Ctrl+C at a terminal prompt — both the start of an
+    // unfinished line and the earlier lines of an incomplete command
+    // are dropped, and `$?` is 130 (dash and bash).
+    //
+    // Synchronisation, all without sleeps: the test keeps its own copy
+    // of the pipe's read end, so FIONREAD tells when the shell has
+    // consumed what was written; the prompts on stderr tell when the
+    // signal has been handled.
+    use std::io::{BufReader, Read, Write};
+    use std::os::fd::AsRawFd;
+    use std::sync::{Arc, Mutex};
+
+    let home = tempfile::tempdir().unwrap();
+    let (rd, wr) = nix::unistd::pipe().unwrap();
+    // The shell must not inherit the write end (it would never see EOF).
+    for fd in [rd.as_raw_fd(), wr.as_raw_fd()] {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    let rd_probe = rd.try_clone().unwrap();
+    let mut stdin = std::fs::File::from(wr);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yosh"));
+    cmd.arg("-i")
+        .env("HOME", home.path())
+        .env("PS1", "P1> ")
+        .env("PS2", "P2> ")
+        .env_remove("ENV")
+        .stdin(Stdio::from(rd))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    reset_trap_signals(&mut cmd);
+    let mut child = cmd.spawn().expect("failed to spawn yosh");
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let err_buf = Arc::new(Mutex::new(String::new()));
+    let err_reader = {
+        let err_buf = Arc::clone(&err_buf);
+        let mut err = child.stderr.take().unwrap();
+        std::thread::spawn(move || {
+            let mut b = [0u8; 256];
+            while let Ok(n) = err.read(&mut b) {
+                if n == 0 {
+                    break;
+                }
+                err_buf
+                    .lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(&b[..n]));
+            }
+        })
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let pid = child.id() as i32;
+    let wait_for = |what: &str, cond: &mut dyn FnMut() -> bool| {
+        while !cond() {
+            if std::time::Instant::now() > deadline {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                panic!(
+                    "timed out waiting for {what}; stderr: {:?}",
+                    err_buf.lock().unwrap()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let prompts = |p: &str| err_buf.lock().unwrap().matches(p).count();
+    let consumed = || {
+        let mut n: libc::c_int = 0;
+        unsafe { libc::ioctl(rd_probe.as_raw_fd(), libc::FIONREAD, &mut n) };
+        n == 0
+    };
+
+    stdin.write_all(b"echo READY\n").unwrap();
+    read_until_line(&mut out, "READY");
+    wait_for("the second PS1", &mut || prompts("P1> ") == 2);
+
+    // An unfinished line.
+    stdin.write_all(b"echo CANCELED1").unwrap();
+    wait_for("the shell to read the partial line", &mut || consumed());
+    unsafe { libc::kill(pid, libc::SIGINT) };
+    wait_for("the PS1 after SIGINT", &mut || prompts("P1> ") == 3);
+
+    // An incomplete command spanning lines.
+    stdin.write_all(b"if true; then\necho CANCELED2\n").unwrap();
+    wait_for("the PS2 prompts", &mut || prompts("P2> ") == 2);
+    unsafe { libc::kill(pid, libc::SIGINT) };
+    wait_for("the second PS1 after SIGINT", &mut || prompts("P1> ") == 4);
+
+    stdin.write_all(b"\necho \"AFTER $?\"\n").unwrap();
+    drop(stdin);
+    drop(rd_probe);
+    let mut rest = String::new();
+    out.read_to_string(&mut rest).unwrap();
+    let status = wait_or_panic(&mut child, "shell did not exit at end of input");
+    err_reader.join().unwrap();
+    assert_eq!(rest, "AFTER 130\n", "stderr: {:?}", err_buf.lock().unwrap());
+    assert_eq!(status.code(), Some(0));
+}

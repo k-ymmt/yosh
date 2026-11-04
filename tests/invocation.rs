@@ -675,6 +675,39 @@ fn file_stdin_script_leaves_offset_after_each_command() {
     assert_eq!(out, "for-head\ntail\n");
 }
 
+/// An alias whose value spans lines and ends in `&&`: its first command
+/// runs before the shell reads more input, and the rest of the value
+/// continues with the following line (dash and bash: only FIRST, exit 1).
+const MULTILINE_ALIAS_SCRIPT: &str = "alias a='echo FIRST\nfalse &&'\na\necho BAD\n";
+
+#[test]
+fn piped_stdin_continues_multiline_alias_after_reading_more() {
+    // Reading the next line used to rebuild the parser from the unread
+    // text alone, dropping the alias's pending `false &&`, so the
+    // guarded `echo BAD` ran.
+    let (out, code) = run_with_stdin(&[], MULTILINE_ALIAS_SCRIPT);
+    assert_eq!(out, "FIRST\n");
+    assert_eq!(code, 1);
+    // A complete second command in the alias value, and an alias used
+    // again later, are unaffected.
+    let (out, code) = run_with_stdin(&[], "alias b='echo ONE\necho TWO'\nb\necho THREE\nb\n");
+    assert_eq!(out, "ONE\nTWO\nTHREE\nONE\nTWO\n");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn file_stdin_continues_multiline_alias_across_blocks() {
+    // The same on a regular file, with the alias used at the end of the
+    // first 8 KiB block so the guarded command is read by a refill.
+    let head = "alias a='echo FIRST\nfalse &&'\n";
+    let pad = 8190 - head.len() - "a\n".len();
+    let script = format!("{head}#{}\na\necho BAD\n", "x".repeat(pad - 2));
+    assert_eq!(script.find("echo BAD"), Some(8190));
+    let (out, err, code) = run_with_file_stdin(&[], &script);
+    assert_eq!(out, "FIRST\n", "stderr: {err}");
+    assert_eq!(code, 1);
+}
+
 #[test]
 fn piped_stdin_keeps_line_numbers_across_reads() {
     let script =
