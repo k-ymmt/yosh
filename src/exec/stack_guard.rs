@@ -188,6 +188,15 @@ pub(crate) fn descent_stack_exhausted() -> bool {
     approx_stack_pointer().saturating_sub(low) < reserve
 }
 
+/// The stack address below which [`descent_stack_exhausted`] is true
+/// (constant for the thread), for a caller that checks many levels
+/// against it.
+#[inline]
+pub(crate) fn descent_floor() -> usize {
+    let (low, _, reserve) = stack_limit();
+    low + reserve
+}
+
 impl Executor {
     /// Check the stack before entering one more level of shell-level
     /// recursion (`what` names it for the diagnostic: a function name,

@@ -69,9 +69,10 @@ thread_local! {
 }
 
 thread_local! {
-    /// `(base, active)`: the approximate stack pointer recorded when the
-    /// outermost `StackBudget` guard on this thread was entered, and the
-    /// number of guards currently alive.
+    /// `(floor, active)`: the lowest stack pointer at which a
+    /// `StackBudget` guard may still be entered, fixed when the outermost
+    /// guard on this thread was entered, and the number of guards
+    /// currently alive.
     static PARSE_STACK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
@@ -96,20 +97,24 @@ pub(crate) struct StackBudget;
 
 impl StackBudget {
     pub(crate) fn enter(line: usize, column: usize) -> error::Result<Self> {
-        // The budget below is relative to where the outermost parse began;
-        // a parse begun deep in shell-level recursion (`eval` inside a
-        // recursive function) can run out of actual stack first.
-        if crate::exec::stack_guard::descent_stack_exhausted() {
-            return Err(too_deep(line, column, "syntax error: nesting too deep"));
-        }
         let sp = approx_stack_pointer();
         PARSE_STACK.with(|c| {
-            let (base, active) = c.get();
-            let base = if active == 0 { sp } else { base };
-            if base.saturating_sub(sp) > PARSE_STACK_BUDGET {
+            let (mut floor, active) = c.get();
+            if active == 0 {
+                // The budget is relative to where the outermost parse
+                // began (`base - sp > PARSE_STACK_BUDGET` is too deep); a
+                // parse begun deep in shell-level recursion (`eval` inside
+                // a recursive function) can run out of actual stack
+                // first (`stack_guard::descent_stack_exhausted`). Both
+                // limits are fixed while the outermost guard is alive, so
+                // fold them into one floor for the whole parse.
+                floor = crate::exec::stack_guard::descent_floor()
+                    .max(sp.saturating_sub(PARSE_STACK_BUDGET));
+            }
+            if sp < floor {
                 return Err(too_deep(line, column, "syntax error: nesting too deep"));
             }
-            c.set((base, active + 1));
+            c.set((floor, active + 1));
             Ok(StackBudget)
         })
     }
@@ -118,8 +123,8 @@ impl StackBudget {
 impl Drop for StackBudget {
     fn drop(&mut self) {
         PARSE_STACK.with(|c| {
-            let (base, active) = c.get();
-            c.set((base, active - 1));
+            let (floor, active) = c.get();
+            c.set((floor, active - 1));
         });
     }
 }
