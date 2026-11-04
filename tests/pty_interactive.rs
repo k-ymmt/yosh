@@ -387,6 +387,25 @@ fn test_pty_ctrl_d_exits() {
     s.expect(Eof).expect("shell did not exit on Ctrl+D");
 }
 
+/// Ctrl+C discarding the line at the prompt leaves `$?` at 130, as in
+/// dash, zsh and bash 5 (yosh kept the previous status).
+#[test]
+fn test_pty_ctrl_c_at_prompt_sets_status_130() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+    s.send("partial").unwrap();
+    s.send("\x03").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("echo st=$?\r").unwrap();
+    expect_output(
+        &mut s,
+        "st=130",
+        "Ctrl+C at the prompt did not set $? to 130",
+    );
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
 #[test]
 fn test_pty_ctrl_c_interrupts_input() {
     let (mut s, _tmpdir) = spawn_yosh();

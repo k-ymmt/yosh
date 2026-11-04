@@ -1,7 +1,7 @@
 //! Key dispatch and the keymap-driven (emacs-flavored) edit actions,
 //! which vi insert mode shares.
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{KeyAction, LineEditor};
 use crate::interactive::edit_action::EditAction;
@@ -19,7 +19,24 @@ impl LineEditor {
             }
             match self.vi.mode {
                 ViMode::Command => return self.handle_vi_command_key(key, history),
-                ViMode::Visual { .. } => return self.handle_vim_visual_key(key),
+                ViMode::Visual { .. } => {
+                    // A fast ESC-then-key arrives as Alt+key (terminal
+                    // ESC-prefix encoding). Vim treats it exactly like
+                    // typing the two slowly: the ESC leaves VISUAL and
+                    // the key then acts in Normal mode (`v l ESC d w`
+                    // deletes a word). Replay it the same way.
+                    if let KeyCode::Char(c) = key.code
+                        && key.modifiers.contains(KeyModifiers::ALT)
+                    {
+                        self.handle_vim_visual_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                        let plain = KeyEvent::new(
+                            KeyCode::Char(c),
+                            key.modifiers.difference(KeyModifiers::ALT),
+                        );
+                        return self.handle_key(plain, history);
+                    }
+                    return self.handle_vim_visual_key(key);
+                }
                 ViMode::Insert => {
                     if let Some(action) = self.handle_vi_insert_key(key, history) {
                         return action;

@@ -7,6 +7,7 @@ use yosh::interactive::line_editor::LineEditor;
 use yosh::interactive::vi::EditMode;
 
 mod helpers;
+use helpers::grid_terminal::GridTerminal;
 use helpers::mock_terminal::{MockTerminal, alt, chars, ctrl, key};
 
 /// Run a vi-mode read over the given events and return the submitted line
@@ -1009,4 +1010,71 @@ fn vi_empty_search_pattern_reuses_previous() {
     // /alpha finds the newest match; the empty / reuses "alpha" and
     // walks to the older one (a wildcard would recall "unrelated").
     assert_eq!(line.as_deref(), Some("echo alpha"));
+}
+
+/// A completion-loop vi read on a grid-emulating terminal: returns the
+/// terminal for screen assertions (the events end without a submit).
+fn vi_read_grid(events: Vec<crossterm::event::Event>, width: u16, height: u16) -> GridTerminal {
+    use yosh::env::aliases::AliasStore;
+    use yosh::interactive::command_completion::{CommandCompleter, CommandCompletionContext};
+    use yosh::interactive::completion::CompletionContext;
+    use yosh::interactive::highlight::{CheckerEnv, HighlightScanner};
+
+    let ctx = CompletionContext {
+        cwd: "/".to_string(),
+        home: String::new(),
+        show_dotfiles: false,
+    };
+    let mut term = GridTerminal::new(events, width, height);
+    let mut editor = LineEditor::new();
+    editor.set_edit_mode(EditMode::Vi);
+    let aliases = AliasStore::default();
+    let mut command_completer = CommandCompleter::new();
+    let mut cmd_ctx = CommandCompletionContext {
+        completer: &mut command_completer,
+        path: "",
+        builtins: &[],
+        aliases: &aliases,
+    };
+    let mut scanner = HighlightScanner::new();
+    let checker_env = CheckerEnv {
+        path: "",
+        aliases: &aliases,
+    };
+    let mut spec_store = yosh::interactive::spec_completion::SpecStore::new(
+        std::path::PathBuf::from("/nonexistent"),
+    );
+    let mut history = History::new();
+    let _ = editor.read_line_with_completion(
+        "$ ",
+        &[],
+        &mut history,
+        &mut term,
+        &ctx,
+        &mut cmd_ctx,
+        &mut spec_store,
+        &mut scanner,
+        &checker_env,
+        "",
+        &mut || "> ".to_string(),
+        &|_| false,
+    );
+    term
+}
+
+#[test]
+fn vi_count_v_without_history_line_keeps_wrapped_input_intact() {
+    // `9v` names no history line: no editor runs, so only the bell is
+    // due. Reprinting the prompt on the cursor row used to leave the
+    // wrapped rows above it stale and paint the input a second time.
+    let term = vi_read_grid(
+        seq![chars("echo abcdefghijklmn"), [esc()], chars("9v")],
+        10,
+        6,
+    );
+    assert_eq!(
+        term.screen(),
+        vec!["$ echo abc", "defghijklm", "n", "", "", ""]
+    );
+    assert_eq!(term.edge_violations(), 0);
 }

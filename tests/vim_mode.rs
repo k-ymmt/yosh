@@ -683,6 +683,23 @@ fn vim_visual_esc_exits_to_command() {
 }
 
 #[test]
+fn vim_visual_fast_esc_then_key_acts_in_normal_mode() {
+    // A fast ESC-then-d arrives as Alt+d. Vim (`vim --clean`, buffer
+    // "abc def ghi", `0vl` then ESC d w) leaves VISUAL and runs `dw` in
+    // Normal mode -> "adef ghi"; it neither deletes the selection nor
+    // drops the `d`.
+    let line = vim_read(seq![
+        chars("abc def ghi"),
+        [esc()],
+        chars("0vl"),
+        [alt('d')],
+        chars("w"),
+        [enter()]
+    ]);
+    assert_eq!(line.as_deref(), Some("adef ghi"));
+}
+
+#[test]
 fn vim_visual_ctrl_c_exits_without_cancelling_line() {
     // Vim behavior: Ctrl-C leaves VISUAL; it does not cancel the read.
     let line = vim_read(seq![

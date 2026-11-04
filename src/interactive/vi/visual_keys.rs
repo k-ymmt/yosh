@@ -62,9 +62,10 @@ impl ViEngine {
             _ => {}
         }
 
-        // Fast ESC-then-key (Alt encoding): cancel pending input, then
-        // the key acts fresh — but a bare Alt+key exits like Esc would
-        // and replays nothing (VISUAL has no Alt chords).
+        // Fast ESC-then-key (Alt encoding) is split by the caller
+        // (`LineEditor::handle_key`) into Esc + the plain key, as Vim
+        // does; should one reach here anyway, the ESC still cancels
+        // pending input before the key acts.
         let Some(ch) = self.key_char(key.code, alt) else {
             return VisualOutcome::Cmd(VC::Bell, 1);
         };

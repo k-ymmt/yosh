@@ -6,17 +6,27 @@ use super::LineEditor;
 use crate::interactive::history::History;
 use crate::interactive::terminal::Terminal;
 
+/// Outcome of [`LineEditor::run_external_editor`].
+pub(super) enum EditorRun {
+    /// The editor exited successfully; the edited text.
+    Edited(String),
+    /// The editor ran (taking over the screen) and failed.
+    Failed,
+    /// No editor process ran; the screen is untouched.
+    NotRun,
+}
+
 impl LineEditor {
     /// Run `editor` on a temp file seeded with `content`. Returns the
     /// edited text (trailing newline stripped) on success; on failure
-    /// requests a bell, invalidates the render state, and returns
-    /// `None`. Shared by POSIX-vi `v` and vim `Ctrl-X Ctrl-E`.
+    /// requests a bell (and, when the editor ran, invalidates the render
+    /// state). Shared by POSIX-vi `v` and vim `Ctrl-X Ctrl-E`.
     fn run_external_editor<T: Terminal>(
         &mut self,
         term: &mut T,
         content: &str,
         editor: &str,
-    ) -> io::Result<Option<String>> {
+    ) -> io::Result<EditorRun> {
         // O_EXCL via create_new: refuses to follow a pre-planted symlink
         // at a predictable path and never overwrites an existing file.
         let mut path = std::env::temp_dir();
@@ -48,7 +58,7 @@ impl LineEditor {
         }
         let Some((tmp_path, mut file)) = created else {
             self.pending_bell = true;
-            return Ok(None);
+            return Ok(EditorRun::NotRun);
         };
         path = tmp_path;
         {
@@ -71,17 +81,26 @@ impl LineEditor {
         });
         term.enable_raw_mode()?;
 
-        let ok = matches!(status, Some(Ok(st)) if st.success());
-        let result = if ok {
-            // `read_to_string` would turn a file with any invalid UTF-8
-            // byte into an empty line.
-            let raw = std::fs::read(&path).unwrap_or_default();
-            let text = crate::byteenc::encode_bytes(&raw);
-            Some(text.strip_suffix('\n').unwrap_or(&text).to_string())
-        } else {
-            self.pending_bell = true;
-            self.invalidate_render_state();
-            None
+        let result = match status {
+            Some(Ok(st)) if st.success() => {
+                // `read_to_string` would turn a file with any invalid
+                // UTF-8 byte into an empty line.
+                let raw = std::fs::read(&path).unwrap_or_default();
+                let text = crate::byteenc::encode_bytes(&raw);
+                EditorRun::Edited(text.strip_suffix('\n').unwrap_or(&text).to_string())
+            }
+            // The editor ran (and drew over the input area) but failed.
+            Some(Ok(_)) => {
+                self.pending_bell = true;
+                self.invalidate_render_state();
+                EditorRun::Failed
+            }
+            // It never started (empty command, not found): the input on
+            // screen is untouched and the regular redraw keeps it.
+            None | Some(Err(_)) => {
+                self.pending_bell = true;
+                EditorRun::NotRun
+            }
         };
         let _ = std::fs::remove_file(&path);
         Ok(result)
@@ -89,13 +108,17 @@ impl LineEditor {
 
     /// vi `v`: run the external editor on the current line (or history
     /// entry `entry`; 0 = current line). On success the edited text
-    /// replaces the buffer and `Ok(true)` asks the caller to submit it.
+    /// replaces the buffer and `Some(true)` asks the caller to submit
+    /// it; `Some(false)` means the editor ran but failed (the screen
+    /// needs its prompt back). `None` means no editor ran — `entry`
+    /// names no history line, or the editor could not be started — so
+    /// only a bell is due and the input on screen is still intact.
     pub(super) fn vi_edit_in_editor<T: Terminal>(
         &mut self,
         term: &mut T,
         history: &History,
         entry: u32,
-    ) -> io::Result<bool> {
+    ) -> io::Result<Option<bool>> {
         let content = if entry == 0 {
             self.buffer()
         } else {
@@ -106,7 +129,7 @@ impl LineEditor {
                 Some(idx) => history.entries()[idx].clone(),
                 None => {
                     self.pending_bell = true;
-                    return Ok(false);
+                    return Ok(None);
                 }
             }
         };
@@ -117,24 +140,26 @@ impl LineEditor {
         // (b); the vim Ctrl-X Ctrl-E path uses the ShellEnv snapshot).
         let editor = std::env::var("VISUAL")
             .unwrap_or_else(|_| std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string()));
-        match self.run_external_editor(term, &content, &editor)? {
-            Some(text) => {
+        Ok(match self.run_external_editor(term, &content, &editor)? {
+            EditorRun::Edited(text) => {
                 self.replace_buffer(&text);
-                Ok(true)
+                Some(true)
             }
-            None => Ok(false),
-        }
+            EditorRun::Failed => Some(false),
+            EditorRun::NotRun => None,
+        })
     }
 
     /// vim `Ctrl-X Ctrl-E`: run the snapshotted editor command on the
     /// buffer; the result replaces the buffer (undoable) and the read
     /// continues — the user reviews and presses Enter (zsh
-    /// `edit-command-line` behavior).
+    /// `edit-command-line` behavior). Returns whether an editor ran,
+    /// i.e. whether the screen needs the prompt repainted.
     pub(super) fn vim_edit_buffer<T: Terminal>(&mut self, term: &mut T) -> io::Result<bool> {
         let content = self.buffer();
         let editor = self.editor_command.clone();
         match self.run_external_editor(term, &content, &editor)? {
-            Some(text) => {
+            EditorRun::Edited(text) => {
                 let pre = (self.buf.clone(), self.pos);
                 self.replace_buffer(&text);
                 // The buffer replacement is one undo unit (§7.2).
@@ -145,7 +170,8 @@ impl LineEditor {
                 self.suggestion = None;
                 Ok(true)
             }
-            None => Ok(false),
+            EditorRun::Failed => Ok(true),
+            EditorRun::NotRun => Ok(false),
         }
     }
 }

@@ -372,25 +372,33 @@ impl LineEditor {
                         }
                         KeyAction::ViEditInEditor(entry) => {
                             term.reset_style()?;
-                            if self.vi_edit_in_editor(term, history, entry)? {
-                                // Execute the edited line (POSIX v).
-                                history.reset_cursor();
-                                term.move_to_column(0)?;
-                                self.reset_cursor_style(term);
-                                term.write_str("\r\n")?;
-                                term.flush()?;
-                                return Ok(Some(self.buffer()));
+                            match self.vi_edit_in_editor(term, history, entry)? {
+                                Some(true) => {
+                                    // Execute the edited line (POSIX v).
+                                    history.reset_cursor();
+                                    term.move_to_column(0)?;
+                                    self.reset_cursor_style(term);
+                                    term.write_str("\r\n")?;
+                                    term.flush()?;
+                                    return Ok(Some(self.buffer()));
+                                }
+                                // Editor failed or was aborted: repaint
+                                // the prompt line and continue editing.
+                                Some(false) => {
+                                    self.repaint_prompt(term, prompt, upper_lines, false)?
+                                }
+                                // No such history line: the bell is all;
+                                // the regular redraw below keeps the input.
+                                None => {}
                             }
-                            // Editor failed or was aborted: repaint the
-                            // prompt line and continue editing.
-                            self.repaint_prompt(term, prompt, upper_lines, false)?;
                         }
                         KeyAction::ViEditBuffer => {
                             // vim Ctrl-X Ctrl-E: the edit result loads
                             // into the buffer; the read continues.
                             term.reset_style()?;
-                            self.vim_edit_buffer(term)?;
-                            self.repaint_prompt(term, prompt, upper_lines, false)?;
+                            if self.vim_edit_buffer(term)? {
+                                self.repaint_prompt(term, prompt, upper_lines, false)?;
+                            }
                         }
                         KeyAction::Continue => {}
                     }

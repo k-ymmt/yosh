@@ -2028,6 +2028,22 @@ fn test_kill_ring_yank_pop_cycles() {
 }
 
 #[test]
+fn test_kill_ring_yank_after_yank_pop_keeps_rotation() {
+    // readline/Emacs: the yank pointer a yank-pop rotated stays put, so
+    // a later C-y inserts the popped entry (bash: `C-y M-y C-y`) until
+    // the next kill resets it to the new front entry.
+    use yosh::interactive::kill_ring::KillRing;
+    let mut kr = KillRing::new(60);
+    kr.kill("first", false);
+    kr.kill("second", false);
+    assert_eq!(kr.yank(), Some("second"));
+    assert_eq!(kr.yank_pop(), Some("first"));
+    assert_eq!(kr.yank(), Some("first"));
+    kr.kill("third", false);
+    assert_eq!(kr.yank(), Some("third"));
+}
+
+#[test]
 fn test_kill_ring_yank_empty() {
     use yosh::interactive::kill_ring::KillRing;
     let mut kr = KillRing::new(60);
@@ -2893,6 +2909,63 @@ fn test_mock_ctrl_t_transpose() {
     let mut term = MockTerminal::new(events);
     let result = ed.read_line("$ ", &[], &mut history, &mut term);
     assert_eq!(result.unwrap().unwrap(), "ba");
+}
+
+#[test]
+fn test_mock_ctrl_y_after_yank_pop_inserts_popped_entry() {
+    // bash: "echo aa" C-w "bb" C-w C-y M-y " " C-y -> "echo aa aa".
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    let events = [
+        chars("echo aa"),
+        vec![ctrl('w')],
+        chars("bb"),
+        vec![ctrl('w'), ctrl('y'), alt('y')],
+        chars(" "),
+        vec![ctrl('y'), key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &[], &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "echo aa aa");
+}
+
+#[test]
+fn test_ctrl_t_stays_within_the_logical_line() {
+    // At the end of a line that is followed by another, Ctrl+T swaps the
+    // two characters before the cursor (readline's end-of-line rule)
+    // instead of swapping the last one with the line break; at the
+    // start of a continuation line it does nothing.
+    let mut history = History::new();
+    let events = [
+        chars("ab"),
+        vec![alt_enter()],
+        chars("cd"),
+        vec![key(KeyCode::Up), ctrl('e'), ctrl('t')],
+        vec![key(KeyCode::Down), ctrl('a'), ctrl('t')],
+        vec![key(KeyCode::Enter)],
+    ]
+    .concat();
+    let (result, _) = read_multiline_sized(events, &mut history, &|_| false, 80, 24);
+    assert_eq!(result, Some("ba\ncd".to_string()));
+}
+
+#[test]
+fn test_up_at_oldest_entry_keeps_edits() {
+    // readline: Up on the oldest history line rings the bell and keeps
+    // the (edited) line; re-recalling it used to discard the edit.
+    let mut ed = LineEditor::new();
+    let mut history = History::new();
+    history.add("one", 500, "");
+    let events = [
+        vec![key(KeyCode::Up), ctrl('a')],
+        chars("echo "),
+        vec![key(KeyCode::Up), key(KeyCode::Enter)],
+    ]
+    .concat();
+    let mut term = MockTerminal::new(events);
+    let result = ed.read_line("$ ", &[], &mut history, &mut term);
+    assert_eq!(result.unwrap().unwrap(), "echo one");
 }
 
 #[test]

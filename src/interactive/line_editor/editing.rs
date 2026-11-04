@@ -225,14 +225,19 @@ impl LineEditor {
     }
 
     /// Transpose the two characters around the cursor (Ctrl+T).
+    ///
+    /// The edges are those of the current logical line, as readline's
+    /// are for its single line: at the line start nothing happens, and
+    /// at the line end the two characters before the cursor swap. A
+    /// line break is never transposed, so a multiline buffer keeps its
+    /// lines.
     pub fn transpose_chars(&mut self) {
-        if self.buf.len() < 2 {
+        let start = vi::line_start(&self.buf, self.pos);
+        let end = vi::line_end(&self.buf, self.pos);
+        if end - start < 2 || self.pos == start {
             return;
         }
-        if self.pos == 0 {
-            return;
-        }
-        if self.pos == self.buf.len() {
+        if self.pos == end {
             self.buf.swap(self.pos - 2, self.pos - 1);
         } else {
             self.buf.swap(self.pos - 1, self.pos);

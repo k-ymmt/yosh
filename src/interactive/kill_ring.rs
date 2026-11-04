@@ -60,13 +60,13 @@ impl KillRing {
         self.ring.front().map(|s| s.as_str())
     }
 
-    /// Return the most recent kill (for Ctrl+Y). Resets yank_index to 0.
+    /// Return the entry the yank pointer selects (for Ctrl+Y): the most
+    /// recent kill, unless a yank-pop has since rotated the pointer to an
+    /// older one. Readline and Emacs keep that rotation — `C-y M-y C-y`
+    /// inserts the popped entry twice — until the next kill moves the
+    /// pointer back to the new front entry.
     pub fn yank(&mut self) -> Option<&str> {
-        if self.ring.is_empty() {
-            return None;
-        }
-        self.yank_index = 0;
-        Some(self.ring[0].as_str())
+        self.ring.get(self.yank_index).map(|s| s.as_str())
     }
 
     /// Cycle to the next older entry in the kill ring (for Alt+Y).

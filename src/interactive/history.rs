@@ -93,6 +93,11 @@ pub struct History {
     base: usize,
     cursor: Option<usize>,
     saved_line: String,
+    /// Entries [`add`](Self::add) appended this session (not read from
+    /// the history file). Only these are appended to the file on
+    /// [`save`](Self::save); the file's own contents are re-read then,
+    /// so commands another shell saved meanwhile are kept.
+    added: usize,
 }
 
 impl History {
@@ -102,6 +107,7 @@ impl History {
             base: 0,
             cursor: None,
             saved_line: String::new(),
+            added: 0,
         }
     }
 
@@ -155,6 +161,7 @@ impl History {
         }
 
         self.entries.push(line.to_string());
+        self.added += 1;
         self.truncate_to(histsize);
     }
 
@@ -192,7 +199,10 @@ impl History {
                 self.saved_line = current_line.to_string();
                 self.entries.len() - 1
             }
-            Some(0) => 0,
+            // Already at the oldest entry: there is no previous line.
+            // Recalling the oldest one again would discard any edits
+            // made to it (readline rings the bell and keeps the line).
+            Some(0) => return None,
             Some(pos) => pos - 1,
         };
 
@@ -247,42 +257,31 @@ impl History {
             Ok(f) => f,
             Err(_) => return,
         };
-        // Read raw byte lines and byteenc-encode them: a line that is not
-        // valid UTF-8 (written by another tool, or a command containing
-        // raw bytes) must neither end the load — `BufRead::lines` would
-        // stop there, and the next `save` would then truncate every
-        // later entry out of the file — nor lose its bytes.
-        let reader = BufReader::new(file);
-        let mut lines = reader
-            .split(b'\n')
-            .map_while(Result::ok)
-            .map(|raw| crate::byteenc::encode_bytes(&raw).into_owned())
-            .peekable();
-        let v2 = lines.peek().map(|l| l.as_str()) == Some(FILE_HEADER_V2);
-        if v2 {
-            lines.next();
-        }
-        for line in lines {
-            if line.is_empty() {
-                continue;
-            }
-            self.entries
-                .push(if v2 { unescape_entry(&line) } else { line });
-        }
+        self.entries.extend(read_entries(file));
     }
 
-    /// Persist history entries to `path` in the v2 (newline-escaped) format,
-    /// keeping at most `histfilesize` most-recent entries (`0` keeps none,
-    /// `usize::MAX` all — see [`histfilesize_setting`]). One physical line
-    /// per entry, so multiline commands survive a save/load round trip
-    /// instead of shattering into per-line fragments.
+    /// Persist history to `path` in the v2 (newline-escaped) format: the
+    /// file's current entries followed by the commands added this
+    /// session, keeping at most `histfilesize` most-recent entries (`0`
+    /// keeps none, `usize::MAX` all — see [`histfilesize_setting`]). One
+    /// physical line per entry, so multiline commands survive a
+    /// save/load round trip instead of shattering into per-line
+    /// fragments.
     ///
-    /// Errors from `create_dir_all`, `File::create`, and per-entry `writeln!` are
+    /// The file is re-read under an exclusive `flock` rather than
+    /// overwritten with this shell's list: two shells sharing a
+    /// HISTFILE both keep their commands (ksh and zsh behave the same),
+    /// where a plain rewrite let the shell that exits last discard
+    /// everything the other one saved.
+    ///
+    /// Errors from `create_dir_all`, opening, reading and writing are
     /// propagated. On a partial-write failure the file is left truncated to
     /// whatever entries were written before the error; the caller surfaces the
     /// error (currently as a `yosh: warning:` at shell exit, without affecting
     /// the exit code).
     pub fn save(&self, path: &Path, histfilesize: usize) -> io::Result<()> {
+        use std::io::Seek;
+        use std::os::fd::AsRawFd;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -291,25 +290,60 @@ impl History {
         let mut file = {
             use std::os::unix::fs::OpenOptionsExt;
             fs::OpenOptions::new()
+                .read(true)
                 .write(true)
                 .create(true)
-                .truncate(true)
+                .truncate(false)
                 .mode(0o600)
                 .open(path)?
         };
-        writeln!(file, "{}", FILE_HEADER_V2)?;
-        let start = self.entries.len().saturating_sub(histfilesize);
+        // Serialize concurrent savers; released when `file` closes. A
+        // filesystem without flock support still gets the merge.
+        // SAFETY: flock on a valid open fd.
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        let mut entries = read_entries(&file);
+        let added = self.added.min(self.entries.len());
+        entries.extend_from_slice(&self.entries[self.entries.len() - added..]);
+        file.set_len(0)?;
+        file.rewind()?;
+        let start = entries.len().saturating_sub(histfilesize);
         // Write entries as their original bytes (the inverse of `load`'s
         // byteenc encoding), buffered: one syscall per entry is slow for
         // a large HISTFILESIZE.
         let mut out = io::BufWriter::new(&mut file);
-        for entry in &self.entries[start..] {
+        writeln!(out, "{}", FILE_HEADER_V2)?;
+        for entry in &entries[start..] {
             out.write_all(&crate::byteenc::decode_bytes(&escape_entry(entry)))?;
             out.write_all(b"\n")?;
         }
         out.flush()?;
         Ok(())
     }
+}
+
+/// Parse a history file's entries (v2 with header, or the legacy
+/// one-entry-per-line format).
+///
+/// Raw byte lines are byteenc-encoded: a line that is not valid UTF-8
+/// (written by another tool, or a command containing raw bytes) must
+/// neither end the read — `BufRead::lines` would stop there, and the
+/// next `save` would then truncate every later entry out of the file —
+/// nor lose its bytes.
+fn read_entries(file: impl io::Read) -> Vec<String> {
+    let reader = BufReader::new(file);
+    let mut lines = reader
+        .split(b'\n')
+        .map_while(Result::ok)
+        .map(|raw| crate::byteenc::encode_bytes(&raw).into_owned())
+        .peekable();
+    let v2 = lines.peek().map(|l| l.as_str()) == Some(FILE_HEADER_V2);
+    if v2 {
+        lines.next();
+    }
+    lines
+        .filter(|line| !line.is_empty())
+        .map(|line| if v2 { unescape_entry(&line) } else { line })
+        .collect()
 }
 
 #[cfg(test)]
@@ -461,7 +495,9 @@ mod tests {
         assert_eq!(h.navigate_up("current"), Some("third"));
         assert_eq!(h.navigate_up("current"), Some("second"));
         assert_eq!(h.navigate_up("current"), Some("first"));
-        assert_eq!(h.navigate_up("current"), Some("first"));
+        // No entry older than the oldest: nothing to recall.
+        assert_eq!(h.navigate_up("current"), None);
+        assert_eq!(h.navigate_down(), Some("second"));
     }
 
     #[test]
@@ -520,6 +556,36 @@ mod tests {
         let mut h2 = History::new();
         h2.load(&path);
         assert_eq!(h2.entries(), &["cmd1", "cmd2"]);
+    }
+
+    /// Two shells sharing a HISTFILE: each one's save keeps what the
+    /// other saved, instead of the last one to exit overwriting it.
+    #[test]
+    fn test_save_merges_with_concurrent_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history");
+        let mut seed = History::new();
+        seed.add("old", 500, "");
+        seed.save(&path, 500).unwrap();
+
+        let mut a = History::new();
+        a.load(&path);
+        let mut b = History::new();
+        b.load(&path);
+        a.add("from a", 500, "");
+        b.add("from b", 500, "");
+        a.save(&path, 500).unwrap();
+        b.save(&path, 500).unwrap();
+
+        let mut h = History::new();
+        h.load(&path);
+        assert_eq!(h.entries(), &["old", "from a", "from b"]);
+        // HISTFILESIZE still bounds the merged file.
+        h.add("new", 500, "");
+        h.save(&path, 2).unwrap();
+        let mut h2 = History::new();
+        h2.load(&path);
+        assert_eq!(h2.entries(), &["from b", "new"]);
     }
 
     #[test]
