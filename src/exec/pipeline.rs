@@ -103,6 +103,11 @@ impl Executor {
 
                     connect_member_to_pipes(&pipes, i);
 
+                    // A simple-command member execs an external utility
+                    // in place instead of spawning and waiting for it.
+                    if matches!(cmd, Command::Simple(_)) {
+                        self.arm_subshell_exec_in_place();
+                    }
                     let status = self.exec_command(cmd);
                     // POSIX §2.12: the EXIT trap runs on shell exit,
                     // including subshell exit — and each pipeline member is

@@ -8,6 +8,7 @@ use nix::unistd::{ForkResult, execve};
 
 use crate::env::jobs;
 use crate::error::ShellError;
+use crate::parser::ast::{Command, CompleteCommand, SeparatorOp};
 use crate::signal;
 
 use super::super::command::wait_child;
@@ -20,6 +21,44 @@ use super::resolve::{ResolvedExec, effective_path_override, resolve_exec_path};
 use super::{Invocation, command_line};
 
 impl Executor {
+    /// In a forked subshell child whose only remaining work is one
+    /// simple command (a foreground pipeline member, `( cmd )`,
+    /// `$( cmd )`), arm the one-shot exec-in-place marker so an external
+    /// utility replaces this child instead of being spawned as a
+    /// grandchild and waited for: one process creation instead of two
+    /// per command, as in dash and bash. Builtins, functions and plugin
+    /// commands ignore the marker (see `dispatch_simple_command`).
+    ///
+    /// Not armed while a plugin registers exec hooks: in place, the
+    /// command's `post_exec` hook would no longer fire in the child.
+    /// The async paths (`exec_async`) arm the marker unconditionally
+    /// (documented deviation there).
+    pub(crate) fn arm_subshell_exec_in_place(&mut self) {
+        if !self.plugins.has_exec_hooks() {
+            self.env.exec.async_exec_in_place = true;
+        }
+    }
+
+    /// [`Self::arm_subshell_exec_in_place`] when `body` — the whole
+    /// remaining program of a forked subshell — is a single simple
+    /// command: one complete command holding one `;`-terminated (not
+    /// `&`) AND-OR list of one non-negated, one-member pipeline. Anything
+    /// that runs after the command (a second command, `&&`/`||`, `!`)
+    /// keeps the wrapper semantics.
+    pub(crate) fn arm_exec_in_place_if_sole_simple(&mut self, body: &[CompleteCommand]) {
+        let [cc] = body else { return };
+        let [(and_or, sep)] = cc.items.as_slice() else {
+            return;
+        };
+        if !matches!(sep, Some(SeparatorOp::Amp))
+            && and_or.rest.is_empty()
+            && !and_or.first.negated
+            && matches!(and_or.first.commands.as_slice(), [Command::Simple(_)])
+        {
+            self.arm_subshell_exec_in_place();
+        }
+    }
+
     /// Run a command that is neither a function nor a built-in: a plugin
     /// command if a plugin claims the name, otherwise an external utility
     /// with the prefix assignments in its environment only.

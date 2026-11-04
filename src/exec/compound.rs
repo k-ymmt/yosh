@@ -154,6 +154,8 @@ impl Executor {
                 // reporting `m` via the flag_m snapshot (bash-like).
                 self.env.mode.flag_m = self.env.mode.options.monitor || self.env.mode.flag_m;
                 self.env.mode.options.monitor = false;
+                // `( cmd )`: an external utility replaces this child.
+                self.arm_exec_in_place_if_sole_simple(body);
                 // A fatal expansion error ends the subshell with a non-zero
                 // status even if the failing command reported 0 (see
                 // `child_exit_status`).

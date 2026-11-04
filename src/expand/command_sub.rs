@@ -120,6 +120,8 @@ pub fn execute(env: &mut ShellEnv, program: &Program) -> String {
             // not its children.
             child_env.process.jobs.reset_for_subshell();
             let mut executor = Executor::from_env(child_env);
+            // `$( cmd )`: an external utility replaces this child.
+            executor.arm_exec_in_place_if_sole_simple(&program.commands);
 
             let status = executor.exec_program(program);
             let status = executor.child_exit_status(status);
