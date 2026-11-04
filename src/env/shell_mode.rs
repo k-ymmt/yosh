@@ -22,6 +22,11 @@ pub struct ShellOptions {
     /// `cmd_string`, invocation state reported in `$-`, not settable
     /// via `set`.
     pub stdin_reads: bool, // -s
+    /// `-l` invocation flag / argv[0] starting with `-`: the shell is a
+    /// login shell and read `/etc/profile` and `~/.profile` at startup.
+    /// Like `cmd_string`, invocation state reported in `$-` (dash
+    /// agrees), not settable via `set`. Non-POSIX extension.
+    pub login: bool, // -l
     /// emacs-style line editing (`set -o emacs`). Non-POSIX extension
     /// (bash/ksh/zsh all provide it); mutually exclusive with `vi`.
     /// No `$-` letter.
@@ -38,7 +43,7 @@ pub struct ShellOptions {
 
 impl ShellOptions {
     /// Returns active flags as a string (e.g., "aex") for `$-`.
-    /// Order: a, b, c, C, e, f, m, n, s, u, v, x
+    /// Order: a, b, c, C, e, f, l, m, n, s, u, v, x
     pub fn to_flag_string(&self) -> String {
         let mut s = String::new();
         if self.allexport {
@@ -58,6 +63,9 @@ impl ShellOptions {
         }
         if self.noglob {
             s.push('f');
+        }
+        if self.login {
+            s.push('l');
         }
         if self.monitor {
             s.push('m');
@@ -273,14 +281,16 @@ impl ShellMode {
         let mut s = self.options.to_flag_string();
         if self.flag_m && !self.options.monitor {
             // Reinsert the snapshot `m` at to_flag_string's canonical
-            // slot (a, b, c, C, e, f, m, n, s, u, v, x).
+            // slot (a, b, c, C, e, f, l, m, n, s, u, v, x).
             let pos = s.find(['n', 's', 'u', 'v', 'x']).unwrap_or(s.len());
             s.insert(pos, 'm');
         }
         if self.is_interactive || self.flag_i {
             // Preserve to_flag_string's alphabetical-ish emit order
-            // (a, b, c, C, e, f, [i], m, n, s, u, v, x).
-            let pos = s.find(['m', 'n', 's', 'u', 'v', 'x']).unwrap_or(s.len());
+            // (a, b, c, C, e, f, [i], l, m, n, s, u, v, x).
+            let pos = s
+                .find(['l', 'm', 'n', 's', 'u', 'v', 'x'])
+                .unwrap_or(s.len());
             s.insert(pos, 'i');
         }
         s
@@ -341,6 +351,29 @@ mod tests {
 
         mode.is_interactive = false;
         assert_eq!(mode.flag_string(), "am");
+    }
+
+    #[test]
+    fn test_flag_string_login_letter_order() {
+        // `l` (login shell, invocation-only) sits between `i` and `m`;
+        // `set -l` / `set -o login` stay unknown.
+        let mut mode = ShellMode {
+            options: ShellOptions::default(),
+            is_interactive: true,
+            flag_i: false,
+            flag_m: false,
+            in_dot_script: false,
+        };
+        mode.options.login = true;
+        mode.options.monitor = true;
+        assert_eq!(mode.flag_string(), "ilm");
+
+        mode.is_interactive = false;
+        mode.options.noglob = true;
+        assert_eq!(mode.flag_string(), "flm");
+
+        assert!(mode.options.set_by_char('l', true).is_err());
+        assert!(mode.options.set_by_name("login", true).is_err());
     }
 
     #[test]

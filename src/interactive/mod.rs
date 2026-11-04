@@ -30,7 +30,7 @@ use line_editor::LineEditor;
 use spec_completion::SpecStore;
 use terminal::CrosstermTerminal;
 
-pub use startup::{set_default_prompts, source_startup_files};
+pub use startup::{set_default_prompts, source_login_files, source_startup_files};
 
 /// The interactive shell: the executor plus the line editor and its
 /// completion / highlighting state. Created by [`Repl::new`] (startup),

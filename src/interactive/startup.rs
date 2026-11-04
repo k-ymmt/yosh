@@ -18,12 +18,13 @@ impl Repl {
         shell_name: String,
         positional: Vec<String>,
         explicit_s: bool,
+        login: bool,
         invocation_ops: &[crate::env::InvocationOp],
     ) -> Self {
         signal::init_signal_handling();
         signal::set_interactive_shell(true);
         let mut executor = Executor::new(shell_name, positional);
-        set_interactive_options(&mut executor, explicit_s, invocation_ops);
+        set_interactive_options(&mut executor, explicit_s, login, invocation_ops);
         set_up_job_control(&mut executor);
 
         let home = executor.env.vars.get("HOME").unwrap_or("").to_string();
@@ -34,7 +35,17 @@ impl Repl {
         // Load plugins
         executor.load_plugins(true);
 
-        source_startup_files(&mut executor);
+        // Login shell: /etc/profile and ~/.profile first, then the
+        // interactive files (zsh: zprofile before zshrc; dash: profile
+        // before $ENV). `exit` in a profile ends the shell before the
+        // first prompt (`run` checks `exit_requested`), so the
+        // interactive files are skipped then.
+        if login {
+            source_login_files(&mut executor);
+        }
+        if executor.exit_requested.is_none() {
+            source_startup_files(&mut executor);
+        }
 
         load_history(&mut executor);
 
@@ -56,6 +67,7 @@ impl Repl {
 fn set_interactive_options(
     executor: &mut Executor,
     explicit_s: bool,
+    login: bool,
     invocation_ops: &[crate::env::InvocationOp],
 ) {
     crate::env::default_path::ensure_default_path(&mut executor.env);
@@ -71,6 +83,10 @@ fn set_interactive_options(
     // an interactive bash without -s has no `s` in $-; dash differs
     // and always reports it when reading stdin).
     executor.env.mode.options.stdin_reads = explicit_s;
+    // `$-` reports `l` for a login shell (`-l`, or argv[0] starting
+    // with `-`), set before any startup file runs so the profile
+    // files see it.
+    executor.env.mode.options.login = login;
     // Invocation-time set options, applied after the interactive
     // monitor default so an explicit `+m` can turn it off (POSIX:
     // -m is on by default for interactive shells). Validated at
@@ -171,6 +187,23 @@ pub fn set_default_prompts(executor: &mut Executor) {
     }
     if executor.env.vars.get("PS2").is_none() {
         let _ = executor.env.vars.set("PS2", "> ");
+    }
+}
+
+/// Run the login-shell startup files: `/etc/profile`, then
+/// `$HOME/.profile` (the dash set; a yosh extension, POSIX defines no
+/// login shell). Read by every login shell, interactive or not, before
+/// the interactive files. A missing file is skipped silently; `exit`
+/// in `/etc/profile` ends the shell without reading `~/.profile`.
+pub fn source_login_files(executor: &mut Executor) {
+    executor.source_file(std::path::Path::new("/etc/profile"));
+    if executor.exit_requested.is_some() {
+        return;
+    }
+    let home = executor.env.vars.get("HOME").unwrap_or("").to_string();
+    if !home.is_empty() {
+        let profile = std::path::PathBuf::from(&home).join(".profile");
+        executor.source_file(&profile);
     }
 }
 

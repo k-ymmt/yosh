@@ -71,3 +71,27 @@ preserved for child processes but interpreted as C internally."
 - Honouring non-C `LC_COLLATE` for actual collation, via `libc`
   `strcoll_l` or a pure-Rust collator.
 - LC_MESSAGES translation infrastructure.
+
+## Invocation: login shells (`-l`)
+
+POSIX XCU `sh` defines no login shell and no `-l` option. yosh
+implements `-l` as an extension, following dash:
+
+- `yosh -l`, or an argv[0] that starts with `-` (as `login(1)` and
+  terminal applications exec a login shell), makes the shell a login
+  shell. `+l` turns it off; the last of `-l`/`+l` wins, also over
+  argv[0]. `$0` keeps argv[0] unchanged (`-yosh`).
+- A login shell reads `/etc/profile`, then `$HOME/.profile`, before
+  any command — interactive or not (`yosh -l script.sh`, `yosh -l -c`
+  and a piped stdin included). An interactive login shell reads them
+  before `~/.yoshrc` and `$ENV`; those two remain interactive-only, as
+  POSIX specifies for `$ENV`. Missing files are skipped silently; a
+  syntax error is reported with the file name and the shell goes on;
+  `exit` in a profile ends the shell there.
+- `$-` reports `l` (dash does; bash does not). It is invocation
+  state, like `c` and `s`: `set -l` and `set -o login` are errors.
+- Not implemented: bash's `--login` spelling, bash's
+  `~/.bash_profile` / `~/.bash_login` search, and a logout file read
+  when a login shell exits.
+
+Design record: `docs/superpowers/specs/2026-11-04-login-shell-design.md`.

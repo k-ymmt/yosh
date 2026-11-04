@@ -2745,3 +2745,33 @@ fn test_pty_ctrl_c_interrupts_read_builtin() {
     wait_for_prompt(&mut s);
     exit_shell(&mut s);
 }
+
+/// A login shell on a terminal (`yosh -l`, or argv[0] `-yosh`) reads
+/// ~/.profile before ~/.yoshrc, and `$-` reports `l` alongside the
+/// interactive `i`.
+#[test]
+fn test_pty_login_shell_reads_profile_before_yoshrc() {
+    let home = helpers::TempDir::new();
+    std::fs::write(home.path().join(".profile"), "echo marker-profile\n").unwrap();
+    std::fs::write(home.path().join(".yoshrc"), "echo marker-rc\n").unwrap();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_yosh"));
+    cmd.arg("-l");
+    cmd.env("TERM", "dumb");
+    cmd.env("HOME", home.path());
+    let mut s = expectrl::Session::spawn(cmd).expect("failed to spawn yosh");
+    s.set_expect_timeout(Some(TIMEOUT));
+    let startup = read_until_prompt(&mut s);
+    let profile_at = startup
+        .find("marker-profile")
+        .unwrap_or_else(|| panic!("~/.profile did not run: {startup:?}"));
+    let rc_at = startup
+        .find("marker-rc")
+        .unwrap_or_else(|| panic!("~/.yoshrc did not run: {startup:?}"));
+    assert!(
+        profile_at < rc_at,
+        "~/.profile must run before ~/.yoshrc: {startup:?}"
+    );
+    s.send_line("echo flags=$-").unwrap();
+    expect_output(&mut s, "flags=il", "login REPL must report i then l in $-");
+    exit_shell(&mut s);
+}

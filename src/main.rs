@@ -71,6 +71,10 @@ fn print_help() {
                 ("-c <command>", "Read commands from command_string"),
                 ("-i", "Force the shell to be interactive"),
                 (
+                    "-l",
+                    "Act as a login shell: read /etc/profile and ~/.profile",
+                ),
+                (
                     "-s [arg...]",
                     "Read commands from stdin; args become $1, $2, ...",
                 ),
@@ -177,8 +181,9 @@ fn main() {
     // letters (-a -b -C -e -f -h -m -n -u -v -x, singly or clustered,
     // `+` prefix to unset), `-o <option>` / `+o <option>` long names,
     // `-c` (command string), `-s` (read stdin; operands become the
-    // positional parameters), and `-i` / `+i` (force interactive
-    // on/off). `--` — or a lone `-`, its obsolescent synonym — ends
+    // positional parameters), `-i` / `+i` (force interactive on/off),
+    // and `-l` / `+l` (login shell on/off; a yosh extension shared
+    // with dash and bash). `--` — or a lone `-`, its obsolescent synonym — ends
     // option parsing. Note `-h` as args[1] is claimed by the help
     // dispatch above; in clusters or later positions it is the POSIX
     // locate-utilities no-op.
@@ -188,6 +193,10 @@ fn main() {
     // = +i forces non-interactive even on a terminal (bash agrees:
     // `bash +i` at a tty reads stdin as a script, no REPL).
     let mut force_interactive: Option<bool> = None;
+    // Tri-state login override, same shape: None = decide from argv[0]
+    // (a leading `-`, as login(1) and terminal applications exec a
+    // login shell), Some(true) = -l, Some(false) = +l; last one wins.
+    let mut login: Option<bool> = None;
     let mut cmd_mode = false;
     let mut read_stdin = false;
     let mut invocation_ops: Vec<env::InvocationOp> = Vec::new();
@@ -220,6 +229,7 @@ fn main() {
                 'c' if on => cmd_mode = true,
                 's' if on => read_stdin = true,
                 'i' => force_interactive = Some(on),
+                'l' => login = Some(on),
                 'o' => {
                     // Option name: rest of the cluster (`-opipefail`) or
                     // the next argument (`-o pipefail`).
@@ -240,7 +250,8 @@ fn main() {
                 }
                 // ShellOptions::set_by_char is the single authority on
                 // which set-option letters exist; the arms above cover
-                // exactly the invocation-only options (-c, -s, -i, -o).
+                // exactly the invocation-only options (-c, -s, -i, -l,
+                // -o).
                 _ => match probe.set_by_char(c, on) {
                     Ok(()) => invocation_ops.push(env::InvocationOp::Short(c, on)),
                     Err(_) => invocation_usage_error(&format!("{}{}: invalid option", sign, c)),
@@ -248,6 +259,10 @@ fn main() {
             }
         }
     }
+
+    // Login shell: explicit -l/+l, else argv[0] starting with `-`
+    // (`-yosh`). $0 keeps the dash, as dash, bash and zsh report it.
+    let login = login.unwrap_or_else(|| shell_name.starts_with('-'));
 
     if cmd_mode {
         if idx >= args.len() {
@@ -279,6 +294,7 @@ fn main() {
             // though commands come from the string.
             (true, read_stdin),
             force_interactive == Some(true),
+            login,
             &invocation_ops,
         );
         process::exit(status);
@@ -293,6 +309,7 @@ fn main() {
             shell_name,
             positional,
             force_interactive,
+            login,
             true,
             &invocation_ops,
         );
@@ -315,6 +332,7 @@ fn main() {
             args[idx].clone(),
             positional,
             force_interactive == Some(true),
+            login,
             &invocation_ops,
         );
         process::exit(status);
@@ -324,6 +342,7 @@ fn main() {
         shell_name,
         vec![],
         force_interactive,
+        login,
         false,
         &invocation_ops,
     );
@@ -334,7 +353,7 @@ fn invocation_usage_error(msg: &str) -> ! {
     // Decode byteenc escapes so raw argv bytes round-trip to stderr.
     byteenc::write_stderr_decoded_line(&format!("yosh: {}", msg));
     eprintln!(
-        "Usage: yosh [-abCefhimnuvx] [-o option]... [+abCefhimnuvx] [+o option]... \
+        "Usage: yosh [-abCefhilmnuvx] [-o option]... [+abCefhilmnuvx] [+o option]... \
          [-c command_string | -s | file] [argument...]"
     );
     process::exit(2);
@@ -347,6 +366,7 @@ fn run_stdin(
     shell_name: String,
     positional: Vec<String>,
     force_interactive: Option<bool>,
+    login: bool,
     explicit_s: bool,
     invocation_ops: &[env::InvocationOp],
 ) -> ! {
@@ -359,7 +379,8 @@ fn run_stdin(
     // non-tty stdin falls through to the script path with interactive
     // semantics instead.
     if force_interactive.unwrap_or(stdin_tty && stderr_tty) && stdin_tty {
-        let mut repl = interactive::Repl::new(shell_name, positional, explicit_s, invocation_ops);
+        let mut repl =
+            interactive::Repl::new(shell_name, positional, explicit_s, login, invocation_ops);
         process::exit(repl.run());
     } else {
         // stdin is a pipe or file, or +i forced the REPL off — run it
@@ -375,6 +396,7 @@ fn run_stdin(
             positional,
             (false, explicit_s),
             force_interactive == Some(true),
+            login,
             invocation_ops,
         );
         process::exit(status);
@@ -411,6 +433,7 @@ fn run_string(
     // (explicit -s read-stdin); both may be set (`yosh -sc cmd`).
     (cmd_string, stdin_reads): (bool, bool),
     interactive: bool,
+    login: bool,
     invocation_ops: &[env::InvocationOp],
 ) -> i32 {
     signal::init_signal_handling();
@@ -435,6 +458,7 @@ fn run_string(
     executor.load_plugins(interactive);
     executor.env.mode.options.cmd_string = cmd_string;
     executor.env.mode.options.stdin_reads = stdin_reads;
+    executor.env.mode.options.login = login;
     if interactive {
         // POSIX sh -i: the shell is interactive regardless of stdin —
         // $- reports `i`, untrapped TERM/QUIT/INT are ignored, and
@@ -442,10 +466,24 @@ fn run_string(
         // and the line editor stay off on this non-terminal path.
         executor.env.mode.is_interactive = true;
         signal::set_interactive_shell(true);
-        // An interactive shell has prompt defaults and runs its startup
-        // files (`$ENV` is read only by interactive shells, POSIX XCU
-        // sh), also when stdin is not a terminal (dash agrees).
+        // An interactive shell has prompt defaults (set before any
+        // startup file so a profile can override them).
         interactive::set_default_prompts(&mut executor);
+    }
+    if login {
+        // A login shell reads /etc/profile and ~/.profile whether or
+        // not it is interactive (dash and bash agree), before the
+        // interactive files.
+        interactive::source_login_files(&mut executor);
+        if let Some(code) = executor.exit_requested {
+            // `exit` in a profile (its EXIT trap already ran).
+            return code;
+        }
+    }
+    if interactive {
+        // An interactive shell runs its startup files (`$ENV` is read
+        // only by interactive shells, POSIX XCU sh), also when stdin
+        // is not a terminal (dash agrees).
         interactive::source_startup_files(&mut executor);
         if let Some(code) = executor.exit_requested {
             // `exit` in a startup file (its EXIT trap already ran).
@@ -469,6 +507,7 @@ fn run_file(
     shell_name: String,
     positional: Vec<String>,
     interactive: bool,
+    login: bool,
     invocation_ops: &[env::InvocationOp],
 ) -> i32 {
     use std::os::unix::ffi::OsStrExt;
@@ -504,6 +543,7 @@ fn run_file(
         positional,
         (false, false),
         interactive,
+        login,
         invocation_ops,
     )
 }

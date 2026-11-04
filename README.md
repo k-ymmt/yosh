@@ -56,6 +56,7 @@ yosh                     # interactive shell (when stdin is a TTY)
 yosh script.sh [args]    # run a script
 yosh -c 'echo hello'     # run a command string
 echo 'echo hi' | yosh    # read a script from stdin
+yosh -l                  # login shell: reads /etc/profile and ~/.profile first
 ```
 
 Subcommands:
@@ -69,7 +70,8 @@ yosh completions --help   # manage tab-completion specs (export, list)
 
 | What | Where |
 |------|-------|
-| Startup file (interactive) | `$ENV` (parameter-expanded, per POSIX) |
+| Startup files (login shell: `-l`, or argv[0] starting with `-`) | `/etc/profile`, then `~/.profile`; read before the interactive files, also in non-interactive shells; `+l` turns it off; `$-` reports `l` |
+| Startup files (interactive) | `~/.yoshrc`, then `$ENV` (parameter-expanded, per POSIX) |
 | History | `$HISTFILE` (default `~/.yosh_history`), `$HISTSIZE` / `$HISTFILESIZE` |
 | Completion specs | `~/.config/yosh/completions/<command>.toml` (overrides bundled specs) |
 | Plugins | `~/.config/yosh/plugins.toml` |

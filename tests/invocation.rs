@@ -1036,3 +1036,212 @@ fn stdin_script_follows_exec_redirection_of_stdin() {
     let (out, _, _) = run_with_file_stdin(&[], &script);
     assert_eq!(out, "from-other\n");
 }
+
+// ── Login shell: `-l` / `+l` and argv[0] starting with `-` ────────────
+//
+// A login shell (yosh extension, dash/bash-compatible) reads
+// /etc/profile and then ~/.profile before anything else, interactive or
+// not, and reports `l` in `$-`. These tests isolate HOME; /etc/profile
+// is the real system file (harmless: on macOS it only runs path_helper).
+
+/// Run yosh with `args` on a piped stdin and an isolated HOME holding
+/// the given dotfiles; `arg0` overrides argv[0]. Prompts are blanked so
+/// stderr carries only diagnostics. Returns (stdout, stderr, status).
+fn run_login_shell(
+    args: &[&str],
+    arg0: Option<&str>,
+    files: &[(&str, &str)],
+    extra_env: &[(&str, &str)],
+    stdin: &str,
+) -> (String, String, i32) {
+    use std::os::unix::process::CommandExt;
+    let home = tempfile::tempdir().unwrap();
+    for (name, body) in files {
+        std::fs::write(home.path().join(name), body).unwrap();
+    }
+    let mut cmd = yosh_bin();
+    if let Some(a0) = arg0 {
+        cmd.arg0(a0);
+    }
+    cmd.args(args)
+        .env("HOME", home.path())
+        .env_remove("ENV")
+        .env("PS1", "")
+        .env("PS2", "");
+    for (k, v) in extra_env {
+        cmd.env(k, home.path().join(v));
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
+const PROFILE_MARKER: (&str, &str) = (".profile", "echo profile-ran\n");
+const RC_MARKER: (&str, &str) = (".yoshrc", "echo rc-ran\n");
+
+#[test]
+fn dash_l_piped_reads_profile_and_reports_l() {
+    let (out, err, code) = run_login_shell(
+        &["-l"],
+        None,
+        &[PROFILE_MARKER, RC_MARKER],
+        &[],
+        "echo flags-$-\n",
+    );
+    // ~/.profile runs; ~/.yoshrc does not (not interactive).
+    assert_eq!(out, "profile-ran\nflags-l\n", "stderr: {err}");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn without_dash_l_profile_is_not_read() {
+    let (out, _, code) = run_login_shell(&[], None, &[PROFILE_MARKER], &[], "echo flags-$-\n");
+    assert_eq!(out, "flags-\n");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn dash_l_with_c_reads_profile() {
+    let (out, _, code) =
+        run_login_shell(&["-lc", "echo flags-$-"], None, &[PROFILE_MARKER], &[], "");
+    assert_eq!(out, "profile-ran\nflags-cl\n");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn dash_l_script_file_reads_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("login.sh");
+    std::fs::write(&script, "echo flags-$- zero-$0\n").unwrap();
+    let (out, _, code) = run_login_shell(
+        &["-l", script.to_str().unwrap()],
+        None,
+        &[PROFILE_MARKER],
+        &[],
+        "",
+    );
+    assert_eq!(
+        out,
+        format!("profile-ran\nflags-l zero-{}\n", script.display())
+    );
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn dash_il_reads_profile_then_yoshrc_then_env() {
+    // Interactive login shell: profile files first (zsh: zprofile
+    // before zshrc; dash: profile before $ENV), then ~/.yoshrc, then
+    // $ENV. `$-` reports both `i` and `l`, `i` first.
+    let (out, _, code) = run_login_shell(
+        &["-il"],
+        None,
+        &[PROFILE_MARKER, RC_MARKER, ("envfile", "echo env-ran\n")],
+        &[("ENV", "envfile")],
+        "echo flags-$-\n",
+    );
+    assert_eq!(out, "profile-ran\nrc-ran\nenv-ran\nflags-il\n");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn plus_l_cancels_dash_l_and_last_one_wins() {
+    let (out, _, _) = run_login_shell(
+        &["-l", "+l"],
+        None,
+        &[PROFILE_MARKER],
+        &[],
+        "echo flags-$-\n",
+    );
+    assert_eq!(out, "flags-\n");
+    let (out, _, _) = run_login_shell(
+        &["+l", "-l"],
+        None,
+        &[PROFILE_MARKER],
+        &[],
+        "echo flags-$-\n",
+    );
+    assert_eq!(out, "profile-ran\nflags-l\n");
+}
+
+#[test]
+fn argv0_leading_dash_makes_a_login_shell() {
+    // login(1) and terminal applications exec the shell as `-yosh`.
+    // $0 keeps the dash (dash, bash and zsh agree).
+    let (out, _, code) = run_login_shell(
+        &[],
+        Some("-yosh"),
+        &[PROFILE_MARKER],
+        &[],
+        "echo flags-$- zero-$0\n",
+    );
+    assert_eq!(out, "profile-ran\nflags-l zero--yosh\n");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn argv0_leading_dash_is_cancelled_by_plus_l() {
+    let (out, _, _) = run_login_shell(
+        &["+l"],
+        Some("-yosh"),
+        &[PROFILE_MARKER],
+        &[],
+        "echo flags-$-\n",
+    );
+    assert_eq!(out, "flags-\n");
+}
+
+#[test]
+fn exit_in_profile_ends_the_shell_before_yoshrc() {
+    let (out, _, code) = run_login_shell(
+        &["-il"],
+        None,
+        &[(".profile", "echo in-profile\nexit 7\n"), RC_MARKER],
+        &[],
+        "echo not-reached\n",
+    );
+    assert_eq!(out, "in-profile\n");
+    assert_eq!(code, 7);
+}
+
+#[test]
+fn syntax_error_in_profile_is_reported_and_shell_continues() {
+    // Same handling as ~/.yoshrc: the error names the file and the
+    // shell goes on with the commands that follow.
+    let (out, err, code) = run_login_shell(
+        &["-l"],
+        None,
+        &[(".profile", "echo before\nif then\n")],
+        &[],
+        "echo after\n",
+    );
+    assert_eq!(out, "before\nafter\n");
+    assert!(err.contains(".profile"), "stderr: {err}");
+    assert!(err.contains("syntax error"), "stderr: {err}");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn set_dash_l_is_still_an_error() {
+    // `l` is invocation state like `c` and `s`, not a settable option.
+    let output = yosh_bin().args(["-c", "set -l"]).output().unwrap();
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("unknown option: -l"), "stderr: {err}");
+    assert_eq!(output.status.code(), Some(2));
+    let output = yosh_bin().args(["-c", "set -o login"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}

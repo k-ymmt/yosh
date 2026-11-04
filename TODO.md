@@ -479,6 +479,14 @@ Interactive:
 
 ## Future: Interactive Mode Enhancements
 
+- [ ] Login-shell logout file — a login shell (`-l`) reads
+      `/etc/profile` and `~/.profile` at startup (2026-11-04) but reads
+      nothing at exit; zsh (`~/.zlogout`) and bash (`~/.bash_logout`)
+      run a logout file on `exit`/EOF, skipped when the shell `exec`s
+      another process. Deferred by design
+      (`docs/superpowers/specs/2026-11-04-login-shell-design.md`);
+      hook point is `Repl::shut_down` / the `run_string` tail
+      (`src/interactive/shutdown.rs`, `src/main.rs`)
 - [ ] `ENV` tilde expansion PTY test — `ENV=~/foo` tilde expansion is only exercised on interactive startup; add PTY test to verify `~` and `~user` cases (`tests/pty_interactive.rs`)
 - [ ] Multiline editing follow-ups (core landed 2026-07-26: in-buffer
       continuation on incomplete Enter, Alt+Enter forced newline, up/down
