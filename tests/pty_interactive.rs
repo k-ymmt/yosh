@@ -1103,6 +1103,35 @@ fn test_pty_sighup_saves_history() {
 }
 
 #[test]
+fn test_pty_untrapped_sighup_at_prompt_dies_by_signal() {
+    // An untrapped SIGHUP at the prompt runs the EXIT trap and then
+    // ends the shell by the signal itself (WIFSIGNALED), as with dash
+    // and bash, so the parent can tell a hangup from a normal exit. The
+    // shell used to exit normally with status 0.
+    let (mut s, _tmpdir) = spawn_yosh_with_env(&[("HISTFILE", Some(""))]);
+    wait_for_prompt(&mut s);
+    // `$((6*7))`: the typed line's echo must not match the expectation.
+    s.send("trap 'echo exit-trap-$((6*7))' EXIT\r").unwrap();
+    wait_for_prompt(&mut s);
+
+    let pid = s.get_process().pid();
+    unsafe {
+        libc::kill(pid.as_raw(), libc::SIGHUP);
+    }
+    s.expect("exit-trap-42")
+        .expect("EXIT trap did not run on SIGHUP");
+    let _ = s.expect(Eof);
+    let mut status = 0;
+    // SAFETY: waits for our own child; `status` is a valid out-pointer.
+    let rc = unsafe { libc::waitpid(pid.as_raw(), &mut status, 0) };
+    assert_eq!(rc, pid.as_raw(), "waitpid failed");
+    assert!(
+        libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGHUP,
+        "shell must die of SIGHUP, got wait status {status:#x}"
+    );
+}
+
+#[test]
 fn test_pty_external_sigterm_ignored_at_prompt() {
     // POSIX sh: an interactive shell ignores untrapped SIGTERM. The
     // external-delivery variant exercises the read-loop gating: before

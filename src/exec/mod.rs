@@ -90,6 +90,11 @@ pub struct Executor {
     /// of the subshell's environment (see `exec_async`).
     async_compound_redirects_permanent: bool,
     pub exit_requested: Option<i32>,
+    /// An interactive shell is ending because of this untrapped signal
+    /// (see `handle_default_signal`): once its EXIT trap ran and history
+    /// was saved, it dies of the signal instead of exiting with
+    /// `exit_requested` (128+N), as dash and bash do.
+    pub exit_signal: Option<i32>,
 }
 
 impl Executor {
@@ -101,6 +106,7 @@ impl Executor {
             errexit_exempt_status: false,
             async_compound_redirects_permanent: false,
             exit_requested: None,
+            exit_signal: None,
         }
     }
 
@@ -113,6 +119,7 @@ impl Executor {
             errexit_exempt_status: false,
             async_compound_redirects_permanent: false,
             exit_requested: None,
+            exit_signal: None,
         }
     }
 

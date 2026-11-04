@@ -229,9 +229,17 @@ impl Executor {
         {
             return;
         }
+        let pending = self.exit_requested;
         self.execute_exit_trap();
+        let exit_trap_exited = pending.is_none() && self.exit_requested.is_some();
         if self.env.mode.is_interactive {
-            self.exit_requested = Some(128 + sig);
+            // The interactive loop ends, saves history and then dies of
+            // the signal (`exit_signal`) — unless the EXIT trap action
+            // ran `exit` itself, whose status then stands.
+            if !exit_trap_exited {
+                self.exit_requested = Some(128 + sig);
+                self.exit_signal = Some(sig);
+            }
         } else {
             // Die of the signal itself (dash/bash): the parent must see
             // a signal death, not an exit with status 128+sig.
@@ -250,6 +258,23 @@ mod tests {
         exec.env.mode.is_interactive = true;
         exec.handle_default_signal(libc::SIGHUP);
         assert_eq!(exec.exit_requested, Some(128 + libc::SIGHUP));
+        // The shell is to die of the signal once it has wound down.
+        assert_eq!(exec.exit_signal, Some(libc::SIGHUP));
+    }
+
+    #[test]
+    fn handle_default_signal_keeps_exit_status_of_interactive_exit_trap() {
+        // An EXIT trap action that runs `exit` decides how the shell
+        // ends: with that status, not by the signal.
+        let mut exec = Executor::new("yosh", vec![]);
+        exec.env.mode.is_interactive = true;
+        exec.env
+            .traps
+            .set_trap("EXIT", TrapAction::Command("exit 5".into()))
+            .unwrap();
+        exec.handle_default_signal(libc::SIGHUP);
+        assert_eq!(exec.exit_requested, Some(5));
+        assert_eq!(exec.exit_signal, None);
     }
 
     #[test]

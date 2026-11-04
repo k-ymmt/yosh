@@ -464,10 +464,14 @@ impl Repl {
             }
         }
 
+        // A signal that ended the read (SIGHUP at the prompt) is handled
+        // here: its trap action, or the default action, which runs the
+        // EXIT trap and marks the shell to die of the signal below.
         self.executor.process_pending_signals();
         self.end_top_level_command();
-        if self.executor.exit_requested.is_none() {
-            self.executor.execute_exit_trap();
+        match self.executor.exit_requested {
+            Some(code) => self.executor.env.exec.last_exit_status = code,
+            None => self.executor.execute_exit_trap(),
         }
 
         // Save history to file
@@ -489,6 +493,12 @@ impl Repl {
             eprintln!("yosh: warning: cannot save history to {}: {}", histfile, e);
         }
 
+        // An untrapped fatal signal (SIGHUP at the prompt, `kill -USR1
+        // $$`) ends the shell by that signal, so the parent sees a
+        // signal death, as with dash and bash — not an exit with 128+N.
+        if let Some(sig) = self.executor.exit_signal {
+            crate::exec::shell_exit_by_signal(sig);
+        }
         self.executor.env.exec.last_exit_status
     }
 

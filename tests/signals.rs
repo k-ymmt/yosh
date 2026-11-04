@@ -1092,24 +1092,54 @@ fn test_untrapped_signal_kills_shell_by_that_signal() {
 
 /// Spawn `yosh` on a pipe and keep writing `x` to it (after `prefix`)
 /// without ever ending the line, on a thread that stops once the shell
-/// is gone. Returns the child and the writer thread.
+/// is gone. Returns the child, the writer thread and the number of `x`
+/// bytes written so far.
 fn spawn_yosh_on_endless_line(
     prefix: &'static [u8],
-) -> (std::process::Child, std::thread::JoinHandle<()>) {
+) -> (
+    std::process::Child,
+    std::thread::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
     use std::io::{BufReader, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
     let mut child = spawn_yosh_on_open_pipe();
     let mut stdin = child.stdin.take().unwrap();
     let mut out = BufReader::new(child.stdout.take().unwrap());
     stdin.write_all(prefix).unwrap();
     stdin.write_all(b"echo ready\n#").unwrap();
     read_until_line(&mut out, "ready");
-    let writer = std::thread::spawn(move || {
-        let chunk = [b'x'; 4096];
-        // Ends with EPIPE once the shell exits (or is killed).
-        while stdin.write_all(&chunk).is_ok() {}
-        drop(out);
-    });
-    (child, writer)
+    let written = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let written = Arc::clone(&written);
+        std::thread::spawn(move || {
+            let chunk = [b'x'; 4096];
+            // Ends with EPIPE once the shell exits (or is killed).
+            while stdin.write_all(&chunk).is_ok() {
+                written.fetch_add(chunk.len(), Ordering::SeqCst);
+            }
+            drop(out);
+        })
+    };
+    (child, writer, written)
+}
+
+/// Wait until the shell has demonstrably been reading the endless line
+/// for a while: far more than a pipe buffer (at most 64 KiB) has been
+/// written, so the shell consumed most of it while more kept arriving.
+/// Only then is its input continuously readable when the signal comes;
+/// sent earlier, the signal could find the shell still waiting for
+/// input, where signals were handled even before the fix.
+fn wait_until_streaming(child: &mut std::process::Child, written: &std::sync::atomic::AtomicUsize) {
+    let start = std::time::Instant::now();
+    while written.load(Ordering::SeqCst) < 512 * 1024 {
+        if start.elapsed() > Duration::from_secs(60) {
+            let _ = child.kill();
+            panic!("the shell did not consume the endless line");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]
@@ -1119,8 +1149,8 @@ fn test_untrapped_term_with_endless_ready_input_kills_shell() {
     // shell waited for input, so `kill -TERM` left it reading forever.
     // dash and bash die of the signal.
     use std::os::unix::process::ExitStatusExt;
-    let (mut child, writer) = spawn_yosh_on_endless_line(b"");
-    std::thread::sleep(Duration::from_millis(100));
+    let (mut child, writer, written) = spawn_yosh_on_endless_line(b"");
+    wait_until_streaming(&mut child, &written);
     unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
     let status = wait_or_panic(&mut child, "shell reading endless input ignored SIGTERM");
     writer.join().unwrap();
@@ -1131,8 +1161,8 @@ fn test_untrapped_term_with_endless_ready_input_kills_shell() {
 fn test_trap_runs_with_endless_ready_input() {
     // A trapped signal's action runs while the shell reads endless ready
     // input, not only once a line completes.
-    let (mut child, writer) = spawn_yosh_on_endless_line(b"trap 'exit 3' USR1\n");
-    std::thread::sleep(Duration::from_millis(100));
+    let (mut child, writer, written) = spawn_yosh_on_endless_line(b"trap 'exit 3' USR1\n");
+    wait_until_streaming(&mut child, &written);
     unsafe { libc::kill(child.id() as i32, libc::SIGUSR1) };
     let status = wait_or_panic(&mut child, "USR1 trap did not run during endless input");
     writer.join().unwrap();
@@ -1237,4 +1267,157 @@ fn test_sigint_discards_partial_input_of_interactive_shell() {
     err_reader.join().unwrap();
     assert_eq!(rest, "AFTER 130\n", "stderr: {:?}", err_buf.lock().unwrap());
     assert_eq!(status.code(), Some(0));
+}
+
+/// Spawn `yosh` reading commands from a pipe this test keeps open. Also
+/// returns a copy of the pipe's read end (FIONREAD on it tells when the
+/// shell has consumed what was written) and the shell's stdout lines,
+/// forwarded on a channel so a test can wait for one with a timeout.
+fn spawn_yosh_on_probed_pipe() -> (
+    std::process::Child,
+    std::fs::File,
+    std::os::fd::OwnedFd,
+    std::sync::mpsc::Receiver<String>,
+) {
+    use std::io::BufRead;
+    use std::os::fd::AsRawFd;
+    let (rd, wr) = nix::unistd::pipe().unwrap();
+    // The shell must not inherit the write end (it would never see EOF).
+    for fd in [rd.as_raw_fd(), wr.as_raw_fd()] {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    let probe = rd.try_clone().unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yosh"));
+    cmd.stdin(Stdio::from(rd))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    reset_trap_signals(&mut cmd);
+    let mut child = cmd.spawn().expect("failed to spawn yosh");
+    let out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in out.lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    (child, std::fs::File::from(wr), probe, rx)
+}
+
+/// The next stdout line of `child` (from `spawn_yosh_on_probed_pipe`);
+/// kills the shell and panics, naming `what`, if none comes in time.
+fn next_line(
+    lines: &std::sync::mpsc::Receiver<String>,
+    child: &mut std::process::Child,
+    what: &str,
+) -> String {
+    match lines.recv_timeout(Duration::from_secs(30)) {
+        Ok(line) => line,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("no output line: {what}");
+        }
+    }
+}
+
+/// Poll `cond` every few milliseconds for up to 30 seconds; kills the
+/// shell and panics, naming `what`, if it never holds.
+fn poll_until(child: &mut std::process::Child, what: &str, cond: &mut dyn FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !cond() {
+        if start.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("timed out waiting for {what}");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn test_trap_consuming_command_input_keeps_signals_live() {
+    // The shell waits for its next command line; the line arrives
+    // together with a signal whose trap reads that line itself
+    // (`trap 'read y' USR1`). The command reader must not trust the
+    // readiness it saw before the trap ran: blocked in read(2) on the
+    // now empty pipe, it stayed deaf to later trapped signals until
+    // more input came (dash and bash run the ALRM trap at once).
+    use std::io::Write;
+    let (mut child, mut stdin, _probe, lines) = spawn_yosh_on_probed_pipe();
+    let pid = child.id() as i32;
+    stdin
+        .write_all(b"trap 'read y; echo INNER:$y' USR1\ntrap 'echo ALARM' ALRM\necho READY\n")
+        .unwrap();
+    assert_eq!(next_line(&lines, &mut child, "READY"), "READY");
+    // Let the shell go back to waiting for input (it sleeps nowhere
+    // else now), then stop it, so that the line and the signal are
+    // both pending when it wakes up.
+    let sleeping = || {
+        Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|o| o.stdout.starts_with(b"S"))
+    };
+    poll_until(&mut child, "the shell to wait for input", &mut || {
+        sleeping()
+    });
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    let mut st = 0;
+    unsafe { libc::waitpid(pid, &mut st, libc::WUNTRACED) };
+    stdin.write_all(b"abc\n").unwrap();
+    unsafe {
+        libc::kill(pid, libc::SIGUSR1);
+        libc::kill(pid, libc::SIGCONT);
+    }
+    assert_eq!(next_line(&lines, &mut child, "INNER:abc"), "INNER:abc");
+    unsafe { libc::kill(pid, libc::SIGALRM) };
+    // stdin stays open: the trap must run while the shell waits.
+    assert_eq!(
+        next_line(&lines, &mut child, "ALARM while stdin is open"),
+        "ALARM"
+    );
+    drop(stdin);
+    let status = wait_or_panic(&mut child, "shell did not exit at end of input");
+    assert_eq!(status.code(), Some(0), "status: {status:?}");
+}
+
+#[test]
+fn test_trap_changing_alias_keeps_words_already_read() {
+    // Alias substitution happens as a word is read: `a` on a line read
+    // before the trap redefined the alias keeps the old value, even
+    // though the command it is in only completes later (dash and bash
+    // print OLD). The shell used to re-parse the incomplete command's
+    // text with the new alias table once the rest arrived.
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    let (mut child, mut stdin, probe, lines) = spawn_yosh_on_probed_pipe();
+    let pid = child.id() as i32;
+    stdin
+        .write_all(
+            b"alias a='echo OLD'\n\
+              trap \"alias a='echo NEW'; echo TRAPPED\" USR1\n\
+              echo READY\n\
+              if true; then\n\
+              a\n",
+        )
+        .unwrap();
+    assert_eq!(next_line(&lines, &mut child, "READY"), "READY");
+    let consumed = || {
+        let mut n: libc::c_int = 0;
+        unsafe { libc::ioctl(probe.as_raw_fd(), libc::FIONREAD, &mut n) };
+        n == 0
+    };
+    poll_until(&mut child, "the shell to read `a`", &mut || consumed());
+    unsafe { libc::kill(pid, libc::SIGUSR1) };
+    assert_eq!(next_line(&lines, &mut child, "TRAPPED"), "TRAPPED");
+    stdin.write_all(b"fi\na\n").unwrap();
+    drop(stdin);
+    assert_eq!(next_line(&lines, &mut child, "the if body"), "OLD");
+    // A line read after the trap ran sees the new alias.
+    assert_eq!(next_line(&lines, &mut child, "the last line"), "NEW");
+    let status = wait_or_panic(&mut child, "shell did not exit at end of input");
+    assert_eq!(status.code(), Some(0), "status: {status:?}");
 }

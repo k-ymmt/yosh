@@ -320,6 +320,33 @@ fn dash_s_keeps_shell_name_as_dollar_zero() {
 }
 
 #[test]
+fn exec_redirect_on_unterminated_last_line_reads_new_stdin() {
+    // `exec <file` on the last input line, with no newline after it: the
+    // shell had seen the end of its input before running the line, kept
+    // that end-of-input latched, and so never ran the replacement file's
+    // commands (dash and bash run them).
+    let dir = tempfile::tempdir().unwrap();
+    let next = dir.path().join("next.sh");
+    std::fs::write(&next, "echo hello\necho world\n").unwrap();
+    let input = format!("echo first\nexec <'{}'", next.display());
+    // stdin a pipe
+    let (out, code) = run_with_stdin(&[], &input);
+    assert_eq!((out.as_str(), code), ("first\nhello\nworld\n", 0));
+    // stdin a regular file
+    let script = dir.path().join("main.sh");
+    std::fs::write(&script, &input).unwrap();
+    let output = yosh_bin()
+        .stdin(std::fs::File::open(&script).unwrap())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "first\nhello\nworld\n"
+    );
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
 fn dash_s_clusters_with_set_options() {
     let (out, code) = run_with_stdin(&["-es"], "false\necho after\n");
     assert!(!out.contains("after"), "got {out:?}");

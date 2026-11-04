@@ -113,10 +113,14 @@ fn shell_exits_when_pty_master_closes() {
     loop {
         match child.try_wait().expect("try_wait failed") {
             Some(status) => {
-                // EOF exit path: same as Ctrl+D, normal termination.
+                // Either exit path is fine: the hangup read as EOF (like
+                // Ctrl+D, a normal exit), or the SIGHUP the kernel sends
+                // the session leader when the master closes (an untrapped
+                // SIGHUP kills the shell, as with dash and bash).
+                use std::os::unix::process::ExitStatusExt;
                 assert!(
-                    status.success(),
-                    "shell exited with non-success status: {:?}",
+                    status.success() || status.signal() == Some(libc::SIGHUP),
+                    "shell ended with unexpected status: {:?}",
                     status
                 );
                 break;
