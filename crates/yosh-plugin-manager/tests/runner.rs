@@ -87,8 +87,12 @@ fn case_5_timeout_on_slow_plugin_pre_prompt() {
         caps: yosh_plugin_api::CAP_HOOK_PRE_PROMPT,
         ..Default::default()
     };
-    let start = std::time::Instant::now();
     let loaded = load_plugin(&slow, s, Duration::from_millis(200)).expect("load");
+    // Time only the hook call: compiling the component under a debug
+    // wasmtime takes seconds on a loaded machine and says nothing about
+    // interrupt latency. The deadline is armed before instantiation, so
+    // this bound is still the deadline plus at most one tick window.
+    let start = std::time::Instant::now();
     let outcome = invoke_hook(loaded, HookCall::PrePrompt);
     let elapsed = start.elapsed();
     assert_eq!(outcome.error_kind, Some("timeout"));
