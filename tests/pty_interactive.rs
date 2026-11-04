@@ -406,6 +406,37 @@ fn test_pty_ctrl_c_at_prompt_sets_status_130() {
     exit_shell(&mut s);
 }
 
+/// With SIGINT ignored (`trap '' INT`) or trapped, Ctrl+C at the prompt
+/// leaves `$?` alone: dash and zsh print 1 for `false`, Ctrl+C,
+/// `echo $?` (yosh printed 130), and the trap action sees 1 as well.
+#[test]
+fn test_pty_ctrl_c_at_prompt_keeps_status_when_int_ignored_or_trapped() {
+    let (mut s, _tmpdir) = spawn_yosh();
+    wait_for_prompt(&mut s);
+    s.send("trap '' INT\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("false\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("partial").unwrap();
+    s.send("\x03").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("echo ign_st=$?\r").unwrap();
+    expect_output(&mut s, "ign_st=1", "Ctrl+C with INT ignored changed $?");
+    wait_for_prompt(&mut s);
+
+    s.send("trap 'echo trap_st=$?' INT\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("false\r").unwrap();
+    wait_for_prompt(&mut s);
+    s.send("\x03").unwrap();
+    expect_output(&mut s, "trap_st=1", "INT trap action did not see $? = 1");
+    wait_for_prompt(&mut s);
+    s.send("echo after_st=$?\r").unwrap();
+    expect_output(&mut s, "after_st=1", "Ctrl+C with an INT trap changed $?");
+    wait_for_prompt(&mut s);
+    exit_shell(&mut s);
+}
+
 #[test]
 fn test_pty_ctrl_c_interrupts_input() {
     let (mut s, _tmpdir) = spawn_yosh();

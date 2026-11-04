@@ -1000,6 +1000,83 @@ fn test_untrapped_signal_while_waiting_for_input_kills_shell() {
     assert_eq!(status.signal(), Some(libc::SIGTERM), "status: {status:?}");
 }
 
+/// Spawn `yosh -i` (interactive on a non-terminal) reading commands
+/// from a pipe this test keeps open, with an isolated HOME.
+fn spawn_interactive_yosh_on_open_pipe(home: &std::path::Path) -> std::process::Child {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yosh"));
+    cmd.arg("-i")
+        .env("HOME", home)
+        .env_remove("ENV")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    reset_trap_signals(&mut cmd);
+    cmd.spawn().expect("failed to spawn yosh")
+}
+
+/// Wait up to a generous timeout for `child` to end; kill it and panic
+/// with `what` if it does not.
+fn wait_or_panic(child: &mut std::process::Child, what: &str) -> std::process::ExitStatus {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            return s;
+        }
+        if start.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            panic!("{what}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn test_untrapped_hup_while_waiting_for_input_kills_interactive_shell() {
+    // `sh -i` on a non-terminal records an untrapped HUP as an exit
+    // request; blocked reading its next line it used to ignore that
+    // request until stdin closed, then exit 0. dash and bash die of the
+    // signal at once.
+    use std::io::{BufReader, Write};
+    use std::os::unix::process::ExitStatusExt;
+    let home = tempfile::tempdir().unwrap();
+    let mut child = spawn_interactive_yosh_on_open_pipe(home.path());
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    stdin.write_all(b"echo ready\n").unwrap();
+    read_until_line(&mut out, "ready");
+    unsafe { libc::kill(child.id() as i32, libc::SIGHUP) };
+    let status = wait_or_panic(
+        &mut child,
+        "interactive shell blocked on input ignored SIGHUP",
+    );
+    let _ = stdin.write_all(b"echo late\n");
+    assert_eq!(status.signal(), Some(libc::SIGHUP), "status: {status:?}");
+}
+
+#[test]
+fn test_trap_exit_while_waiting_for_input_ends_interactive_shell() {
+    // An `exit` in a trap action run while `sh -i` waits for input ends
+    // the shell at once with that status (bash; dash only after the next
+    // line arrives).
+    use std::io::{BufReader, Write};
+    let home = tempfile::tempdir().unwrap();
+    let mut child = spawn_interactive_yosh_on_open_pipe(home.path());
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    stdin
+        .write_all(b"trap 'echo got-hup; exit 7' HUP\necho ready\n")
+        .unwrap();
+    read_until_line(&mut out, "ready");
+    unsafe { libc::kill(child.id() as i32, libc::SIGHUP) };
+    let status = wait_or_panic(
+        &mut child,
+        "exit in a HUP trap did not end the waiting shell",
+    );
+    let _ = stdin.write_all(b"echo late\n");
+    read_until_line(&mut out, "got-hup");
+    assert_eq!(status.code(), Some(7), "status: {status:?}");
+}
+
 #[test]
 fn test_untrapped_signal_kills_shell_by_that_signal() {
     // `kill $$` with no trap: the shell dies of the signal (WIFSIGNALED),

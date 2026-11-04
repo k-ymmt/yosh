@@ -339,17 +339,25 @@ impl Repl {
             // read as a key because the editor runs with ISIG off: run an
             // INT trap action as the SIGINT it stands for would (bash and
             // dash do). Default / ignored INT just discards the line.
-            // Either way the discarded line leaves `$?` at 128+SIGINT, as
-            // in dash, zsh and bash 5 (the trap action then sees it too).
+            // Only the default disposition leaves `$?` at 128+SIGINT, as
+            // in dash, zsh and bash 5: the shell was "killed" out of the
+            // line. An ignored INT (`trap '' INT`) did not interrupt
+            // anything, and a trapped one runs its action with `$?`
+            // unchanged — dash and zsh keep the previous status in both
+            // cases (`false`, Ctrl+C, `echo $?` prints 1).
             if self.line_editor.take_interrupted() {
-                self.executor.env.exec.last_exit_status = 128 + libc::SIGINT;
-                if let Some(crate::env::traps::TrapAction::Command(_)) =
-                    self.executor.env.traps.get_signal_trap(libc::SIGINT)
-                {
-                    input_buffer.clear();
-                    self.executor.run_signal_traps(&[libc::SIGINT]);
-                    self.end_top_level_command();
-                    continue;
+                use crate::env::traps::TrapAction;
+                match self.executor.env.traps.get_signal_trap(libc::SIGINT) {
+                    Some(TrapAction::Command(_)) => {
+                        input_buffer.clear();
+                        self.executor.run_signal_traps(&[libc::SIGINT]);
+                        self.end_top_level_command();
+                        continue;
+                    }
+                    Some(TrapAction::Ignore) => {}
+                    Some(TrapAction::Default) | None => {
+                        self.executor.env.exec.last_exit_status = 128 + libc::SIGINT;
+                    }
                 }
             }
 

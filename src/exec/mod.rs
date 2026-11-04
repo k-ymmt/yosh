@@ -13,7 +13,7 @@ mod trap;
 
 pub(crate) use process::{
     block_all_signals, exit_child, fork_shell, mark_forked_child, restore_signal_mask, shell_exit,
-    stdin_from_dev_null,
+    shell_exit_by_signal, stdin_from_dev_null,
 };
 
 use crate::env::ShellEnv;

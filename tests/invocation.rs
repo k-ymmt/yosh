@@ -767,6 +767,92 @@ fn dash_i_piped_syntax_error_does_not_exit() {
 }
 
 #[test]
+fn dash_i_piped_syntax_error_before_multibyte_char_recovers() {
+    // Recovery discards the bad line by scanning for its newline from one
+    // byte before the parser's position — inside the two-byte `é` here.
+    // That used to panic ("not a char boundary", exit 101); bash reports
+    // the error and runs the next line.
+    let (out, err, code) =
+        run_dash_i_piped(&[("PS1", ""), ("PS2", "")], "{ :; } \u{e9}\necho after\n");
+    assert_eq!(out, "after\n", "stderr: {err}");
+    assert!(err.contains("syntax error"), "stderr: {err}");
+    assert!(!err.contains("panicked"), "stderr: {err}");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn piped_stdin_long_command_runs_while_writer_keeps_pipe_open() {
+    // A command longer than the re-parse batching threshold must run as
+    // soon as it is complete, not wait for more input (or EOF) from a
+    // writer that keeps the pipe open — dash and bash print READY at
+    // once. The shell read on until its batch length was reached.
+    use std::io::{BufRead, BufReader};
+    let mut script = b"if true; then\n#".to_vec();
+    script.extend(std::iter::repeat_n(b'x', 17000));
+    script.extend_from_slice(b"\necho READY\nfi\n");
+    for args in [&[][..], &["-i"][..]] {
+        let home = tempfile::tempdir().unwrap();
+        let mut child = yosh_bin()
+            .args(args)
+            .env("HOME", home.path())
+            .env_remove("ENV")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(&script).unwrap();
+        stdin.flush().unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        // Read on a thread so a regression fails after a generous
+        // timeout instead of hanging the suite.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut line = String::new();
+            let _ = out.read_line(&mut line);
+            let _ = tx.send(line);
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(30));
+        drop(stdin);
+        if got.is_err() {
+            let _ = child.kill();
+        }
+        let status = child.wait().unwrap();
+        let _ = reader.join();
+        assert_eq!(
+            got.as_deref(),
+            Ok("READY\n"),
+            "args {args:?}: complete command did not run while stdin stayed open"
+        );
+        assert_eq!(status.code(), Some(0), "args {args:?}");
+    }
+}
+
+#[test]
+fn piped_stdin_huge_compound_command_parses_in_linear_time() {
+    // The re-parse batching keeps a long multi-line command from being
+    // re-parsed once per line (quadratic: ~450 MB of lexing here, minutes
+    // in a debug build). 3000 100-byte lines inside one `{ }` group take
+    // about a second when written all at once.
+    let pad = "a".repeat(90);
+    let mut script = String::from("{\n");
+    for i in 0..3000 {
+        script.push_str(&format!("x={i}:{pad}\n"));
+    }
+    script.push_str("echo $x\n}\n");
+    let start = std::time::Instant::now();
+    let (out, code) = run_with_stdin(&[], &script);
+    assert_eq!(out, format!("2999:{pad}\n"));
+    assert_eq!(code, 0);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(60),
+        "took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
 fn stdin_script_follows_exec_redirection_of_stdin() {
     // bash reads further commands from the new stdin after `exec <file`.
     let dir = tempfile::tempdir().unwrap();

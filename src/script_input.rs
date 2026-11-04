@@ -39,6 +39,9 @@ pub struct StdinReader {
     /// File offset of the next byte to read (seekable only).
     read_pos: i64,
     eof: bool,
+    /// Non-seekable: the start of a line that `fill_ready_line` read
+    /// before the input ran dry; the next read continues it.
+    partial: Vec<u8>,
 }
 
 /// Block size for seekable reads.
@@ -49,6 +52,10 @@ const BLOCK: usize = 8192;
 /// input), keeping a long compound command linear to parse instead of
 /// re-parsing it once per line. Below it every line is tried, so no
 /// line after a complete command is read before that command runs.
+/// The batching reads only input that is already available: once the
+/// input runs dry the text is re-parsed at any length, so a complete
+/// command never waits for more input from a writer that keeps the
+/// stream open.
 const REPARSE_EVERY_LINE_LIMIT: usize = 16 * 1024;
 
 impl StdinReader {
@@ -62,6 +69,7 @@ impl StdinReader {
             seekable: false,
             read_pos: 0,
             eof: false,
+            partial: Vec::new(),
         };
         r.detect();
         r
@@ -77,6 +85,7 @@ impl StdinReader {
         self.seekable = regular && pos >= 0;
         self.read_pos = pos.max(0);
         self.eof = false;
+        self.partial.clear();
     }
 
     /// Append more raw input to `out`. Non-seekable input gets one line
@@ -87,15 +96,31 @@ impl StdinReader {
     /// While waiting for input, `on_signal` is called whenever a signal
     /// arrives on the shell's self-pipe, so traps run (and untrapped
     /// fatal signals end the shell) without waiting for the next line.
-    fn fill(&mut self, out: &mut Vec<u8>, min: usize, on_signal: &mut dyn FnMut()) {
+    /// When it returns true (the shell is to exit), the read is
+    /// abandoned: `fill` returns with what it has, `eof` left unset.
+    fn fill(&mut self, out: &mut Vec<u8>, min: usize, on_signal: &mut dyn FnMut() -> bool) {
         if self.eof {
             return;
         }
         if self.seekable {
             self.fill_block(out, min.max(BLOCK));
         } else {
-            self.fill_line(out, on_signal);
+            self.fill_line(out, Some(on_signal));
         }
+    }
+
+    /// Non-seekable input: append one line to `out` only if it can be
+    /// read without blocking. Returns true when a whole line was
+    /// appended (end of input is left to the next blocking read). A
+    /// line that is only partly there is kept back and finished by the
+    /// next read, so `out` never ends inside a line (or a character).
+    fn fill_ready_line(&mut self, out: &mut Vec<u8>) -> bool {
+        if self.eof || self.seekable {
+            return false;
+        }
+        let before = out.len();
+        self.fill_line(out, None);
+        out.len() > before
     }
 
     /// Block until fd has input (or EOF/error), calling `on_signal`
@@ -105,12 +130,14 @@ impl StdinReader {
     /// `select`, not `poll`: macOS `poll` never reports end of input on
     /// a named FIFO once its writers are gone (nor works on some
     /// devices), which would hang `sh < fifo`.
-    fn wait_readable(&self, on_signal: &mut dyn FnMut()) {
+    ///
+    /// Returns false when `on_signal` asked to abandon the read.
+    fn wait_readable(&self, on_signal: &mut dyn FnMut() -> bool) -> bool {
         let pipe = crate::signal::try_self_pipe_read_fd().unwrap_or(-1);
         let limit = libc::FD_SETSIZE as RawFd;
         if pipe < 0 || pipe >= limit || self.fd < 0 || self.fd >= limit {
             // Cannot wait on both: fall back to the plain blocking read.
-            return;
+            return true;
         }
         loop {
             // SAFETY: fd_set is plain data initialized by FD_ZERO; both
@@ -134,18 +161,23 @@ impl StdinReader {
                     continue;
                 }
                 // EBADF etc.: let the read report the problem.
-                return;
+                return true;
             }
-            if unsafe { libc::FD_ISSET(pipe, &set) } {
-                on_signal();
+            if unsafe { libc::FD_ISSET(pipe, &set) } && on_signal() {
+                return false;
             }
             if unsafe { libc::FD_ISSET(self.fd, &set) } {
-                return;
+                return true;
             }
         }
     }
 
-    fn fill_line(&mut self, out: &mut Vec<u8>, on_signal: &mut dyn FnMut()) {
+    /// Read one line (continuing `partial`) and append it to `out`.
+    /// With `on_signal`, wait for input as needed; without it, stop as
+    /// soon as no more input is ready and keep the bytes read so far in
+    /// `partial`.
+    fn fill_line(&mut self, out: &mut Vec<u8>, mut on_signal: Option<&mut dyn FnMut() -> bool>) {
+        let mut line = std::mem::take(&mut self.partial);
         let mut b = [0u8; 1];
         // Bytes known to be readable without blocking (FIONREAD), so the
         // signal-aware wait is needed only when the input runs dry.
@@ -157,14 +189,23 @@ impl StdinReader {
                     avail = 0;
                 }
                 if avail <= 0 {
-                    self.wait_readable(on_signal);
+                    let keep_waiting = match on_signal.as_deref_mut() {
+                        Some(f) => self.wait_readable(f),
+                        None => false,
+                    };
+                    if !keep_waiting {
+                        // Nothing ready, or a signal ended the shell.
+                        self.partial = line;
+                        return;
+                    }
                 }
             }
             let n = unsafe { libc::read(self.fd, b.as_mut_ptr() as *mut libc::c_void, 1) };
             if n == 1 {
                 avail -= 1;
-                out.push(b[0]);
+                line.push(b[0]);
                 if b[0] == b'\n' {
+                    out.extend_from_slice(&line);
                     return;
                 }
             } else if n < 0
@@ -174,6 +215,7 @@ impl StdinReader {
             } else {
                 // EOF, or an unreadable fd (`exec <&-`): end of input.
                 self.eof = true;
+                out.extend_from_slice(&line);
                 return;
             }
         }
@@ -263,6 +305,41 @@ fn is_incomplete(p: &Parser, kind: &ShellErrorKind) -> bool {
         )
 }
 
+/// Newlines in the first `end` bytes of `text` (counted as bytes, so
+/// `end` need not be a char boundary).
+fn count_newlines(text: &str, end: usize) -> usize {
+    text.as_bytes()[..end]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
+}
+
+/// Run the trap actions for signals that arrived while the shell was
+/// waiting for command input. Returns true when one of them asked the
+/// shell to exit, so the wait is abandoned.
+///
+/// An interactive shell (`sh -i` reading a non-terminal) records an
+/// untrapped fatal signal (HUP, ALRM, USR1, …) as an exit request
+/// instead of dying on the spot; blocked in a read, nothing else would
+/// act on it before the next line arrives. The shell then dies of that
+/// signal (its EXIT trap already ran), as dash and bash do.
+fn run_traps_while_waiting(executor: &mut Executor) -> bool {
+    for sig in crate::signal::drain_pending_signals() {
+        let untrapped = matches!(
+            executor.env.traps.get_signal_trap(sig),
+            None | Some(env::traps::TrapAction::Default)
+        );
+        executor.run_signal_traps(&[sig]);
+        if executor.exit_requested.is_some() {
+            if untrapped && executor.exit_requested == Some(128 + sig) {
+                crate::exec::shell_exit_by_signal(sig);
+            }
+            return true;
+        }
+    }
+    executor.exit_requested.is_some()
+}
+
 /// Expand and print a prompt variable to stderr.
 fn write_prompt(executor: &mut Executor, var: &str) {
     use std::io::Write;
@@ -334,7 +411,7 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
             if needs_more {
                 let reader = reader.as_mut().expect("needs_more implies a reader");
                 // Drop the executed commands and read more after the rest.
-                line += text[..cmd_start].bytes().filter(|&b| b == b'\n').count();
+                line += count_newlines(&text, cmd_start);
                 if reader.seekable {
                     text_raw_start += raw_mark as i64
                         + byteenc::decode_bytes(&text[enc_mark..cmd_start]).len() as i64;
@@ -342,14 +419,15 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
                 text.drain(..cmd_start);
                 let mut raw = Vec::new();
                 if reader.seekable {
-                    reader.fill(&mut raw, text.len(), &mut || {});
+                    reader.fill(&mut raw, text.len(), &mut || false);
                 } else {
                     // An interactive shell (`sh -i` on a non-terminal)
                     // prompts for each line: PS1 at a command start, PS2
                     // for a continuation line (dash and bash agree).
                     let mut ps1 = matches!(parsed, Ok(None));
-                    let mut read_line = |raw: &mut Vec<u8>| {
-                        if executor.env.mode.is_interactive {
+                    let interactive = executor.env.mode.is_interactive;
+                    let mut prompt = |executor: &mut Executor| {
+                        if interactive {
                             if ps1 {
                                 // Job status changes are reported before
                                 // the PS1 prompt, as in the REPL.
@@ -359,15 +437,23 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
                             write_prompt(executor, if ps1 { "PS1" } else { "PS2" });
                             ps1 = false;
                         }
-                        reader.fill(raw, 0, &mut || executor.process_pending_signals());
-                        !reader.eof
                     };
-                    // Read lines until the pending text is long enough to
-                    // be worth re-parsing (every line while it is short).
-                    if text.len() < retry_len {
-                        while text.len() + raw.len() < retry_len && read_line(&mut raw) {}
-                    } else {
-                        read_line(&mut raw);
+                    // Read a line, then more while the pending text is
+                    // still short of the re-parse length — but only whole
+                    // lines already available: the shell must never block
+                    // for input while what it holds may be a complete
+                    // command (a writer that keeps the pipe open waits
+                    // for its output). Once the input runs dry the text
+                    // is re-parsed whatever its length.
+                    prompt(executor);
+                    reader.fill(&mut raw, 0, &mut || run_traps_while_waiting(executor));
+                    if !reader.eof && executor.exit_requested.is_none() {
+                        while text.len() + raw.len() < retry_len && reader.fill_ready_line(&mut raw)
+                        {
+                            // (The prompt for a line read without waiting
+                            // follows it; there was no wait to prompt for.)
+                            prompt(executor);
+                        }
                     }
                     let len = text.len() + raw.len();
                     retry_len = if len > REPARSE_EVERY_LINE_LIMIT {
@@ -375,6 +461,12 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
                     } else {
                         0
                     };
+                }
+                // A signal trap (or an untrapped signal in an interactive
+                // shell) asked the shell to exit while it waited for input.
+                if let Some(code) = executor.exit_requested {
+                    status = code;
+                    break 'rebuild;
                 }
                 text.push_str(&byteenc::encode_bytes(&raw));
                 continue 'rebuild;
@@ -432,7 +524,7 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
                     if let (Some(r), Some(off)) = (reader.as_mut(), expected)
                         && r.offset() != Some(off)
                     {
-                        line += text[..end].bytes().filter(|&b| b == b'\n').count();
+                        line += count_newlines(&text, end);
                         text.clear();
                         r.detect();
                         text_raw_start = r.read_pos;
@@ -446,9 +538,16 @@ fn run_text(executor: &mut Executor, initial: &str, mut reader: Option<StdinRead
                     byteenc::write_stderr_decoded_line(&e.to_string());
                     status = 2;
                     executor.env.exec.last_exit_status = status;
+                    // Searched as bytes: `from` steps back one byte from
+                    // the parser's position, which may land inside a
+                    // multi-byte character (`{ :; } é`); a newline byte
+                    // never does, so `end` is always a char boundary.
                     let from = p.input_position().saturating_sub(1).max(cmd_start);
-                    let end = text[from..].find('\n').map_or(text.len(), |i| from + i + 1);
-                    line += text[..end].bytes().filter(|&b| b == b'\n').count();
+                    let end = text.as_bytes()[from.min(text.len())..]
+                        .iter()
+                        .position(|&b| b == b'\n')
+                        .map_or(text.len(), |i| from + i + 1);
+                    line += count_newlines(&text, end);
                     // (Interactive stdin is never read in seekable block
                     // mode, so there is no file offset to adjust.)
                     text.drain(..end);
@@ -491,10 +590,10 @@ mod tests {
         let (mut r, _f) = reader_over(b"echo a\necho b\npartial");
         assert!(r.seekable);
         let mut out = Vec::new();
-        r.fill(&mut out, 0, &mut || {});
+        r.fill(&mut out, 0, &mut || false);
         assert_eq!(out, b"echo a\necho b\n");
         assert!(!r.eof);
-        r.fill(&mut out, 0, &mut || {});
+        r.fill(&mut out, 0, &mut || false);
         assert_eq!(out, b"echo a\necho b\npartial");
         assert!(r.eof);
     }
@@ -508,11 +607,35 @@ mod tests {
         let mut r = StdinReader::for_fd(rd.as_raw_fd());
         assert!(!r.seekable);
         let mut out = Vec::new();
-        r.fill(&mut out, 0, &mut || {});
+        r.fill(&mut out, 0, &mut || false);
         assert_eq!(out, b"one\n");
-        r.fill(&mut out, 0, &mut || {});
+        r.fill(&mut out, 0, &mut || false);
         assert_eq!(out, b"one\ntwo\n");
-        r.fill(&mut out, 0, &mut || {});
+        r.fill(&mut out, 0, &mut || false);
         assert!(r.eof);
+    }
+
+    #[test]
+    fn ready_line_never_blocks_and_keeps_a_partial_line() {
+        let (rd, wr) = nix::unistd::pipe().unwrap();
+        nix::unistd::write(&wr, b"one\ntw\xc3").unwrap();
+        use std::os::unix::io::AsRawFd;
+        let mut r = StdinReader::for_fd(rd.as_raw_fd());
+        let mut out = Vec::new();
+        assert!(r.fill_ready_line(&mut out));
+        assert_eq!(out, b"one\n");
+        // Only part of the next line (ending inside a character) is
+        // there: nothing is appended, and the call does not block.
+        assert!(!r.fill_ready_line(&mut out));
+        assert_eq!(out, b"one\n");
+        nix::unistd::write(&wr, b"\xa9\nthree").unwrap();
+        drop(wr);
+        assert!(r.fill_ready_line(&mut out));
+        assert_eq!(out, "one\ntw\u{e9}\n".as_bytes());
+        // A blocking read finishes the unterminated last line at EOF.
+        r.fill(&mut out, 0, &mut || false);
+        assert_eq!(out, "one\ntw\u{e9}\nthree".as_bytes());
+        assert!(r.eof);
+        assert!(!r.fill_ready_line(&mut out));
     }
 }
